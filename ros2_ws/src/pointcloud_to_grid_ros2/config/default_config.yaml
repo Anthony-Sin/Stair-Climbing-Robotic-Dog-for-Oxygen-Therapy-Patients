@@ -1,0 +1,23 @@
+pc2_to_grid:
+  ros__parameters:
+    position_x: 0.0
+    position_y: 0.0
+    cell_size: 0.2
+    length_x: 4.0 # 80
+    length_y: 4.0 # 80
+    intensity_factor: 0.2
+    height_factor: 1.0
+    cloud_in_topic:  "/lidar_points_filter"    # "/xt16/lidar_points", "/lio_sam/mapping/map_local"
+    mapi_topic_name: "/intensity_map"
+    maph_topic_name: "/height_map"
+    debug: true
+
+igrid_interpolation:
+  ros__parameters:
+    unresolved_grid: "/intensity_map"
+    interpolated_grid: "/interpolated_imap"
+
+hgrid_interpolation:
+  ros__parameters:
+    unresolved_grid: "/height_map"
+    interpolated_grid: "/map"

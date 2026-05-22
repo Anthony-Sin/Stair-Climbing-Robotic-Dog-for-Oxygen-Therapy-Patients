@@ -1,0 +1,52 @@
+# Runtime logs and traces
+logs/
+log/
+debug_logs/
+*.jsonl
+*.csv
+*.tar
+*.tar.gz
+
+# Temporary folders
+tmp/
+
+# Python cache and virtualenvs
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.venv/
+venv/
+
+# ROS/colcon build outputs
+build/
+install/
+log/
+robot-dog-thing/build/
+robot-dog-thing/install/
+robot-dog-thing/log/
+
+# Local SDK/vendor build artifacts
+src/unitree_sdk2_python/build/
+src/unitree_sdk2_python/venv/
+src/unitree_sdk2_python/unitree_sdk2py.egg-info/
+
+# Model and binary artifacts
+docker/*.whl
+docker/*.deb
+*.whl
+*.deb
+*.onnx
+*.pt
+*.trt
+
+# Generated media/debug artifacts
+*.jpg
+*.png
+*.txt
+robot-dog-thing/src/person_following/src/xfeat_output/
+
+# Local dependency trees
+librealsense/

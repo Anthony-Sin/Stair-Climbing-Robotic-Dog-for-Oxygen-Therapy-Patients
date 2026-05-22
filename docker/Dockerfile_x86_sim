@@ -1,0 +1,54 @@
+FROM nvcr.io/nvidia/cuda:12.6.0-cudnn-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    python3-pip python3-dev \
+    libgl1-mesa-glx libglfw3-dev libusb-1.0-0-dev \
+    libssl-dev libffi-dev cmake git wget unzip ffmpeg \
+    x11-apps \
+    libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --no-cache-dir \
+    numpy \
+    opencv-python-headless \
+    scipy \
+    tqdm \
+    onnx \
+    ecs-logging \
+    kornia
+
+RUN pip3 install --no-cache-dir \
+    torch torchvision \
+    --index-url https://download.pytorch.org/whl/cu126
+
+RUN git clone https://github.com/ifzhang/ByteTrack.git /opt/bytetrack && \
+    pip3 install --no-cache-dir --no-deps -e /opt/bytetrack && \
+    pip3 install --no-cache-dir loguru lap cython_bbox
+
+RUN pip3 install --no-cache-dir ultralytics --no-deps && \
+    pip3 install --no-cache-dir pyyaml pandas psutil requests
+
+WORKDIR /opt
+RUN git clone https://github.com/eclipse-cyclonedds/cyclonedds.git -b releases/0.10.x && \
+    cd cyclonedds && mkdir build install && cd build && \
+    cmake .. -DCMAKE_INSTALL_PREFIX=../install && \
+    cmake --build . --target install
+
+ENV CYCLONEDDS_HOME=/opt/cyclonedds/install
+ENV CMAKE_PREFIX_PATH=${CYCLONEDDS_HOME}
+
+RUN pip3 install --no-cache-dir cyclonedds==0.10.2
+
+RUN git clone https://github.com/unitreerobotics/unitree_sdk2_python.git /opt/unitree_sdk2_python && \
+    pip3 install --no-cache-dir --no-deps -e /opt/unitree_sdk2_python
+
+ENV PYTHONPATH="/opt/unitree_sdk2_python"
+
+WORKDIR /workspace
+CMD ["bash"]
+
+RUN pip3 install --no-cache-dir \
+    tensorrt==10.6.0 \
+    --index-url https://pypi.nvidia.com

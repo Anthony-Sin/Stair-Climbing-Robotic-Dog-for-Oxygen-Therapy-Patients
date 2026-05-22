@@ -1,0 +1,12 @@
+FROM ros:humble-perception-jammy
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+SHELL ["/bin/bash", "-lc"]
+
+RUN apt-get update && apt-get install -y \
+    ros-humble-rviz2 \
+    x11-apps \
+    && rm -rf /var/lib/apt/lists/*
+
+CMD ["bash"]
