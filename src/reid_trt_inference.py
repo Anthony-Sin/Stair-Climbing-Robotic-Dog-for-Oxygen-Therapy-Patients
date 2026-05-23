@@ -24,14 +24,22 @@ class ReIDTRTInference:
 
         self.engine = engine
         self.context = self.engine.create_execution_context()
-        self.input_binding_idx = next(i for i in range(self.engine.num_bindings) if self.engine.binding_is_input(i))
-        self.output_binding_idx = next(i for i in range(self.engine.num_bindings) if not self.engine.binding_is_input(i))
+        
+        # Modern TensorRT API
+        self.input_name = None
+        self.output_name = None
+        for i in range(self.engine.num_io_tensors):
+            name = self.engine.get_tensor_name(i)
+            if self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
+                self.input_name = name
+            elif self.engine.get_tensor_mode(name) == trt.TensorIOMode.OUTPUT:
+                self.output_name = name
 
-        self.input_dtype = trt.nptype(self.engine.get_binding_dtype(self.input_binding_idx))
-        self.output_dtype = trt.nptype(self.engine.get_binding_dtype(self.output_binding_idx))
+        self.input_dtype = trt.nptype(self.engine.get_tensor_dtype(self.input_name))
+        self.output_dtype = trt.nptype(self.engine.get_tensor_dtype(self.output_name))
 
         self.stream = cuda.Stream()
-        self.bindings = [0] * self.engine.num_bindings
+        
         self.d_input = None
         self.d_output = None
         self.input_size_bytes = 0
@@ -81,8 +89,8 @@ class ReIDTRTInference:
         return np.ascontiguousarray(np.stack(processed, axis=0).astype(np.float32))
 
     def _ensure_buffers(self, input_shape: tuple) -> tuple:
-        self.context.set_binding_shape(self.input_binding_idx, input_shape)
-        output_shape = tuple(self.context.get_binding_shape(self.output_binding_idx))
+        self.context.set_input_shape(self.input_name, input_shape)
+        output_shape = tuple(self.context.get_tensor_shape(self.output_name))
 
         input_bytes = int(np.prod(input_shape) * np.dtype(self.input_dtype).itemsize)
         output_bytes = int(np.prod(output_shape) * np.dtype(self.output_dtype).itemsize)
@@ -90,13 +98,12 @@ class ReIDTRTInference:
         if self.d_input is None or input_bytes != self.input_size_bytes:
             self.d_input = cuda.mem_alloc(input_bytes)
             self.input_size_bytes = input_bytes
+            self.context.set_tensor_address(self.input_name, int(self.d_input))
 
         if self.d_output is None or output_bytes != self.output_size_bytes:
             self.d_output = cuda.mem_alloc(output_bytes)
             self.output_size_bytes = output_bytes
-
-        self.bindings[self.input_binding_idx] = int(self.d_input)
-        self.bindings[self.output_binding_idx] = int(self.d_output)
+            self.context.set_tensor_address(self.output_name, int(self.d_output))
 
         if len(output_shape) >= 2 and output_shape[-1] > 0:
             self.embedding_dim = int(output_shape[-1])
@@ -116,7 +123,8 @@ class ReIDTRTInference:
         host_output = np.empty(output_shape, dtype=self.output_dtype)
 
         cuda.memcpy_htod_async(self.d_input, input_tensor, self.stream)
-        self.context.execute_async_v2(bindings=self.bindings, stream_handle=self.stream.handle)
+        # Use execute_async_v3 for modern TensorRT API
+        self.context.execute_async_v3(stream_handle=self.stream.handle)
         cuda.memcpy_dtoh_async(host_output, self.d_output, self.stream)
         self.stream.synchronize()
 

@@ -9,7 +9,7 @@ class SimRobotController:
     Mirrors the RobotController API so main.py needs no changes.
     """
 
-    def __init__(self, cmd_host: str = "127.0.0.1", cmd_port: int = 55001) -> None:
+    def __init__(self, cmd_host: str = '192.168.1.91', cmd_port: int = 55001) -> None:
         self._host = cmd_host
         self._port = cmd_port
         self._sock = None

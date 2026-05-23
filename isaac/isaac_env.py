@@ -27,6 +27,8 @@ parser.add_argument("--person-y", type=float, default=0.0,
                     help="Initial Y position of the person target")
 parser.add_argument("--person-move", action="store_true",
                     help="Make the person walk a simple patrol path")
+parser.add_argument("--frame-host", type=str, default='0.0.0.0',
+                    help="Destination IP for camera frame UDP (WSL2 IP if running vision in WSL)")
 args = parser.parse_args()
  
 simulation_app = SimulationApp({
@@ -80,7 +82,7 @@ def _cmd_receiver_thread(port: int) -> None:
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("0.0.0.0", port))
     sock.settimeout(0.5)
-    print(f"[isaac_env] CMD receiver listening on UDP 127.0.0.1:{port}")
+    print(f"[isaac_env] CMD receiver listening on UDP 0.0.0.0:{port}")
     while _running:
         try:
             data, _ = sock.recvfrom(256)
@@ -138,7 +140,11 @@ def load_go2(world: World) -> Articulation:
     usd_path = _resolve_go2_usd()
     add_reference_to_stage(usd_path=usd_path, prim_path=GO2_USD_PATH)
     go2 = world.scene.add(
-        Articulation(prim_path=GO2_USD_PATH, name="go2")
+        Articulation(
+            prim_path=GO2_USD_PATH, 
+            name="go2",
+            position=np.array([0.0, 0.0, 0.4])  # <--- Spawns dog 40cm in the air
+        )
     )
     return go2
  
@@ -209,9 +215,10 @@ def apply_velocity_to_go2(go2: Articulation, vx: float, vy: float, wz: float,
     without requiring a full locomotion controller.
     """
     try:
-        root_prim = go2.prim
         rb_api = UsdPhysics.RigidBodyAPI(root_prim)
-        if rb_api:
+        vel_attr = rb_api.GetVelocityAttr()
+        root_prim = go2.prim
+        if vel_attr and vel_attr.IsValid():
             xform = UsdGeom.Xformable(root_prim)
             mat   = xform.ComputeLocalToWorldTransform(0)
             yaw   = _extract_yaw(mat)
@@ -273,17 +280,16 @@ def update_person_patrol(person, dt: float) -> None:
 # ---------------------------------------------------------------------------
 class FramePublisher:
     """Encodes RGB + depth frames and sends over UDP to SimCameraCapture."""
- 
-    # Stay well under loopback MTU; SimCameraCapture handles upsampling
-    PUBLISH_W = 320
-    PUBLISH_H = 240
- 
-    def __init__(self, port: int) -> None:
+
+    PUBLISH_W = 160
+    PUBLISH_H = 120
+    
+    def __init__(self, host: str, port: int) -> None:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 22)
-        self._dest = ("172.18.128", port)
+        self._dest = (host, port)
         self._seq  = 0
-        print(f"[isaac_env] Frame publisher sending to UDP 127.0.0.1:{port}")
+        print(f"[isaac_env] Frame publisher sending to UDP {host}:{port}")
  
     def send(self, rgb: np.ndarray, depth: np.ndarray) -> None:
         import cv2, base64, zlib
@@ -291,13 +297,16 @@ class FramePublisher:
         small_rgb   = cv2.resize(rgb,   (w, h), interpolation=cv2.INTER_LINEAR)
         small_depth = cv2.resize(depth, (w, h), interpolation=cv2.INTER_NEAREST)
 
-        # JPEG-encode color (~5-15KB), zlib-compress depth (~15-25KB)
+        # JPEG-encode color (~5-15KB)
         ok, buf = cv2.imencode('.jpg', small_rgb, [cv2.IMWRITE_JPEG_QUALITY, 85])
         if not ok:
             return
+            
         rgb_b64   = base64.b64encode(buf.tobytes()).decode('ascii')
+        
+        # zlib-compress depth (~15-25KB) with compression level 9
         depth_b64 = base64.b64encode(
-            zlib.compress(small_depth.astype(np.uint16).tobytes(), level=1)
+            zlib.compress(small_depth.astype(np.uint16).tobytes(), level=9)
         ).decode('ascii')
 
         meta = {
@@ -318,10 +327,9 @@ class FramePublisher:
             self._sock.sendto(payload, self._dest)
         except Exception as exc:
             print(f"[isaac_env] Frame send error: {exc}")
+            
     def close(self) -> None:
         self._sock.close()
- 
- 
 # ---------------------------------------------------------------------------
 # Main simulation loop
 # ---------------------------------------------------------------------------
@@ -352,7 +360,7 @@ def main() -> None:
     )
     cmd_thread.start()
  
-    publisher  = FramePublisher(port=args.frame_port)
+    publisher  = FramePublisher(host=args.frame_host, port=args.frame_port)
     dt         = 1.0 / args.physics_hz
     step_count = 0
  

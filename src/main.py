@@ -72,7 +72,7 @@ def _build_robot_controller(args):
         from sim_robot_controller import SimRobotController
         print("[main] Sim mode: using SimRobotController")
         ctrl = SimRobotController(
-            cmd_host="127.0.0.1",
+            cmd_host='192.168.1.91',
             cmd_port=args.cmd_port,
         )
         ctrl.initialize()

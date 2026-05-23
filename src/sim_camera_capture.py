@@ -56,7 +56,7 @@ class SimCameraCapture:
         self._receiver_thread.start()
 
         if self.verbose:
-            print(f"[SimCameraCapture] Listening on UDP 127.0.0.1:{frame_port}")
+            print(f"[SimCameraCapture] Listening on UDP 0.0.0.0:{frame_port}")
             print(f"[SimCameraCapture] Output resolution: {width}x{height}")
 
     # ------------------------------------------------------------------
@@ -69,11 +69,13 @@ class SimCameraCapture:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 22)
         sock.bind(("0.0.0.0", self.frame_port))
+        print(f"[SimCameraCapture] Socket bound to 0.0.0.0:{self.frame_port} – waiting for data...", flush=True)
         sock.settimeout(0.5)
 
         while not self._stop_event.is_set():
             try:
                 data, _ = sock.recvfrom(131072)
+                print(f"[SimCameraCapture] Received {len(data)} bytes", flush=True)
             except socket.timeout:
                 continue
             except Exception as exc:
@@ -127,11 +129,13 @@ class SimCameraCapture:
                         pass
 
                 self._frame_queue.put_nowait((bgr, depth))
+                print(f"[SimCameraCapture] Decoded frame, queue size {self._frame_queue.qsize()}", flush=True)
 
             except Exception as exc:
                 if self.verbose:
-                    print(f"[SimCameraCapture] Frame decode error: {exc}")
-
+                    print(f"[SimCameraCapture] Frame decode error: {exc}", flush=True)
+                    import traceback
+                    traceback.print_exc()
         sock.close()
     # ------------------------------------------------------------------
     # Public API -- matches CameraCapture exactly

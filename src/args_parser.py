@@ -87,7 +87,7 @@ def parse_args():
     # -----------------------------------------------------------------------
     # MPPI target export
     # -----------------------------------------------------------------------
-    parser.add_argument('--target-export-host', type=str, default='127.0.0.1',
+    parser.add_argument('--target-export-host', type=str, default='0.0.0.0',
                         help='UDP target export host for the MPPI sidecar')
     parser.add_argument('--target-export-port', type=int, default=41234,
                         help='UDP target export port for the MPPI sidecar')
