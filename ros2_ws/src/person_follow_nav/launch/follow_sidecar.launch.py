@@ -37,6 +37,7 @@ def generate_launch_description() -> LaunchDescription:
     ros_log_level = LaunchConfiguration("ros_log_level")
     ecs_log_dir = LaunchConfiguration("ecs_log_dir")
     debug_trace_dir = LaunchConfiguration("debug_trace_dir")
+    sim_obstacles = LaunchConfiguration("sim_obstacles")
 
     return LaunchDescription(
         [
@@ -63,6 +64,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("ros_log_level", default_value="error"),
             DeclareLaunchArgument("ecs_log_dir", default_value="logs"),
             DeclareLaunchArgument("debug_trace_dir", default_value=""),
+            DeclareLaunchArgument("sim_obstacles", default_value="false"),
             Node(
                 package="go2_nav_bridge",
                 executable="bridge_node",
@@ -86,6 +88,7 @@ def generate_launch_description() -> LaunchDescription:
                         "enable_ecs_logging": ParameterValue(log_bridge, value_type=bool),
                         "ecs_log_dir": ecs_log_dir,
                         "debug_trace_dir": debug_trace_dir,
+                        "sim_obstacles": sim_obstacles,
                     }
                 ],
             ),

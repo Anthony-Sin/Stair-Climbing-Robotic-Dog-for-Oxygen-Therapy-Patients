@@ -1,4 +1,28 @@
 import numpy as np
+import importlib.util
+import sys
+import types
+
+
+def _install_bytetrack_thop_import_shim() -> None:
+    if importlib.util.find_spec("thop") is not None:
+        return
+    if "thop" in sys.modules:
+        return
+
+    thop_stub = types.ModuleType("thop")
+
+    def _profile_unavailable(*_args, **_kwargs):
+        raise RuntimeError(
+            "ByteTrack imported optional thop profiling support, but thop is not installed. "
+            "Install thop or rebuild the x86 sim image before using model profiling."
+        )
+
+    thop_stub.profile = _profile_unavailable
+    sys.modules["thop"] = thop_stub
+
+
+_install_bytetrack_thop_import_shim()
 from yolox.tracker.byte_tracker import BYTETracker
 from types import SimpleNamespace
 

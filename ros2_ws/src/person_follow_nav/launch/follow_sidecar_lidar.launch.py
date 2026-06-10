@@ -30,6 +30,7 @@ def generate_launch_description() -> LaunchDescription:
     ros_log_level = LaunchConfiguration("ros_log_level")
     ecs_log_dir = LaunchConfiguration("ecs_log_dir")
     debug_trace_dir = LaunchConfiguration("debug_trace_dir")
+    sim_obstacles = LaunchConfiguration("sim_obstacles")
     pointcloud_param_file = LaunchConfiguration("pointcloud_param_file")
     lidar_frame_id = LaunchConfiguration("lidar_frame_id")
     lidar_tf_x = LaunchConfiguration("lidar_tf_x")
@@ -90,6 +91,7 @@ def generate_launch_description() -> LaunchDescription:
             "ros_log_level": ros_log_level,
             "ecs_log_dir": ecs_log_dir,
             "debug_trace_dir": debug_trace_dir,
+            "sim_obstacles": sim_obstacles,
         }.items(),
     )
 
@@ -171,6 +173,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("ros_log_level", default_value="error"),
             DeclareLaunchArgument("ecs_log_dir", default_value="logs"),
             DeclareLaunchArgument("debug_trace_dir", default_value=""),
+            DeclareLaunchArgument("sim_obstacles", default_value="false"),
             DeclareLaunchArgument("pointcloud_param_file", default_value=default_pointcloud_params),
             DeclareLaunchArgument("lidar_frame_id", default_value="hesai_xt16"),
             DeclareLaunchArgument("lidar_tf_x", default_value="0.0"),

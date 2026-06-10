@@ -1,9 +1,6 @@
 import numpy as np
 import cv2
-import matplotlib.pyplot as plt
-from matplotlib import cm
 from io import BytesIO
-from PIL import Image
 
 def create_vertical_colorbar(height=480, min_depth=0.0, max_depth=5.0, cmap='jet'):
     """
@@ -18,6 +15,10 @@ def create_vertical_colorbar(height=480, min_depth=0.0, max_depth=5.0, cmap='jet
     Returns:
         np.ndarray: OpenCV BGR image of the colorbar.
     """
+    import matplotlib.pyplot as plt
+    from matplotlib import cm
+    from PIL import Image
+
     fig, ax = plt.subplots(figsize=(0.6, 4.8), dpi=100)  # Vertical figure
     norm = plt.Normalize(vmin=min_depth, vmax=max_depth)
     fig.subplots_adjust(left=0.3, right=0.7)

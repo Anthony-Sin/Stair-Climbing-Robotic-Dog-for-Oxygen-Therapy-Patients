@@ -1,4 +1,5 @@
 import argparse
+import os
  
  
 _VALID_VISION_LOG_COMPONENTS = {"none", "all", "vision.main", "vision.exporter"}
@@ -39,6 +40,10 @@ def parse_args():
     sim_group.add_argument(
         '--frame-port', type=int, default=55002,
         help='UDP port SimCameraCapture listens on for frames from isaac_env.py'
+    )
+    sim_group.add_argument(
+        '--cmd-host', type=str, default=os.environ.get('SIM_CMD_HOST', '192.168.1.91'),
+        help='Host/IP where isaac_env.py receives sim velocity commands'
     )
     sim_group.add_argument(
         '--cmd-port', type=int, default=55001,

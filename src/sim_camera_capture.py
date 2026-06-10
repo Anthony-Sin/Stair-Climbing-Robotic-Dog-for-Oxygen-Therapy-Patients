@@ -11,6 +11,60 @@ import numpy as np
 import base64, zlib
 
 
+class SimDepthFrame:
+    def __init__(self, depth_data: np.ndarray, units: float = 0.001) -> None:
+        self._data = depth_data
+        self._units = units
+
+    def get_units(self) -> float:
+        return self._units
+
+    def get_data(self) -> np.ndarray:
+        return self._data
+
+    def get_distance(self, u: int, v: int) -> float:
+        h, w = self._data.shape
+        if 0 <= u < w and 0 <= v < h:
+            return float(self._data[v, u]) * self._units
+        return 0.0
+
+
+class SimIntrinsics:
+    def __init__(self, fx, fy, cx, cy, width, height, model=4, coeffs=None) -> None:
+        self.fx = float(fx)
+        self.fy = float(fy)
+        self.cx = float(cx)
+        self.cy = float(cy)
+        self.ppx = float(cx)
+        self.ppy = float(cy)
+        self.width = int(width)
+        self.height = int(height)
+        self.model = int(model)
+        self.coeffs = list(coeffs) if coeffs is not None else [0.15, -0.05, 0.002, 0.002, 0.0]
+
+    def __getitem__(self, key: str):
+        if key == "fx": return self.fx
+        if key == "fy": return self.fy
+        if key == "cx" or key == "ppx": return self.cx
+        if key == "cy" or key == "ppy": return self.cy
+        if key == "width": return self.width
+        if key == "height": return self.height
+        if key == "model": return self.model
+        if key == "coeffs": return self.coeffs
+        raise KeyError(key)
+
+    def get(self, key: str, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def keys(self):
+        return ["fx", "fy", "cx", "cy", "width", "height", "model", "coeffs"]
+
+    def items(self):
+        return [(k, self[k]) for k in self.keys()]
+
 
 class SimCameraCapture:
     def __init__(
@@ -69,13 +123,14 @@ class SimCameraCapture:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 22)
         sock.bind(("0.0.0.0", self.frame_port))
-        print(f"[SimCameraCapture] Socket bound to 0.0.0.0:{self.frame_port} – waiting for data...", flush=True)
+        print(f"[SimCameraCapture] Socket bound to 0.0.0.0:{self.frame_port} - waiting for data...", flush=True)
         sock.settimeout(0.5)
 
         while not self._stop_event.is_set():
             try:
                 data, _ = sock.recvfrom(131072)
-                print(f"[SimCameraCapture] Received {len(data)} bytes", flush=True)
+                if self.verbose:
+                    print(f"[SimCameraCapture] Received {len(data)} bytes", flush=True)
             except socket.timeout:
                 continue
             except Exception as exc:
@@ -87,6 +142,10 @@ class SimCameraCapture:
                 meta = json.loads(data.decode("utf-8"))
                 enc  = meta.get("enc", "hex")
                 w, h = int(meta["w"]), int(meta["h"])
+                rgb_w = int(meta.get("rgb_w", w))
+                rgb_h = int(meta.get("rgb_h", h))
+                depth_w = int(meta.get("depth_w", w))
+                depth_h = int(meta.get("depth_h", h))
 
                 if enc == "jpg+zlib":
                     rgb_bytes   = base64.b64decode(meta["rgb"])
@@ -96,21 +155,22 @@ class SimCameraCapture:
                     )
                     depth = np.frombuffer(
                         zlib.decompress(depth_bytes), dtype=np.uint16
-                    ).reshape(h, w)
+                    ).reshape(depth_h, depth_w)
                 else:
                     rgb_bytes   = bytes.fromhex(meta["rgb"])
                     depth_bytes = bytes.fromhex(meta["depth"])
-                    rgb   = np.frombuffer(rgb_bytes,   dtype=np.uint8).reshape(h, w, 3)
-                    depth = np.frombuffer(depth_bytes, dtype=np.uint16).reshape(h, w)
+                    rgb   = np.frombuffer(rgb_bytes,   dtype=np.uint8).reshape(rgb_h, rgb_w, 3)
+                    depth = np.frombuffer(depth_bytes, dtype=np.uint16).reshape(depth_h, depth_w)
                     bgr   = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
                 if bgr is None:
                     continue
 
-                # Upsample to requested output resolution
-                if (w, h) != (self.width, self.height):
+                # Upsample to requested output resolution using nearest-neighbor to preserve blockiness
+                if (bgr.shape[1], bgr.shape[0]) != (self.width, self.height):
                     bgr   = cv2.resize(bgr,   (self.width, self.height),
-                                    interpolation=cv2.INTER_LINEAR)
+                                    interpolation=cv2.INTER_NEAREST)
+                if (depth.shape[1], depth.shape[0]) != (self.width, self.height):
                     depth = cv2.resize(depth, (self.width, self.height),
                                     interpolation=cv2.INTER_NEAREST)
 
@@ -119,6 +179,7 @@ class SimCameraCapture:
                     bgr   = rotate_image(bgr,   self.rotate)
                     depth = rotate_image(depth, self.rotate)
 
+                depth_frame = SimDepthFrame(depth)
                 self._seq_received += 1
 
                 if self._frame_queue.full():
@@ -128,8 +189,21 @@ class SimCameraCapture:
                     except queue.Empty:
                         pass
 
-                self._frame_queue.put_nowait((bgr, depth))
-                print(f"[SimCameraCapture] Decoded frame, queue size {self._frame_queue.qsize()}", flush=True)
+                self._frame_queue.put_nowait((bgr, depth_frame))
+                
+                # Store ground truth positions in frame metadata
+                gt_patient = meta.get("gt_patient")
+                gt_distractor = meta.get("gt_distractor")
+                self._last_frame_meta = {
+                    "success":    True,
+                    "wait_ms":    0.0,
+                    "timeout_ms": int(self.timeout_sec * 1000),
+                    "error":      None,
+                    "gt_patient": gt_patient,
+                    "gt_distractor": gt_distractor,
+                }
+                if self.verbose:
+                    print(f"[SimCameraCapture] Decoded frame, queue size {self._frame_queue.qsize()}", flush=True)
 
             except Exception as exc:
                 if self.verbose:
@@ -152,41 +226,36 @@ class SimCameraCapture:
         try:
             bgr, depth = self._frame_queue.get(timeout=self.timeout_sec)
             elapsed_ms = (time.perf_counter() - start) * 1000.0
-            self._last_frame_meta = {
-                "success":    True,
-                "wait_ms":    float(elapsed_ms),
-                "timeout_ms": int(timeout_ms),
-                "error":      None,
-            }
+            self._last_frame_meta["success"] = True
+            self._last_frame_meta["wait_ms"] = float(elapsed_ms)
+            self._last_frame_meta["error"] = None
             return bgr, [depth], False, None
         except queue.Empty:
             elapsed_ms = (time.perf_counter() - start) * 1000.0
-            self._last_frame_meta = {
-                "success":    False,
-                "wait_ms":    float(elapsed_ms),
-                "timeout_ms": int(timeout_ms),
-                "error":      "timeout_waiting_for_isaac_frame",
-            }
+            self._last_frame_meta["success"] = False
+            self._last_frame_meta["wait_ms"] = float(elapsed_ms)
+            self._last_frame_meta["error"] = "timeout_waiting_for_isaac_frame"
             if self.verbose:
                 print("[SimCameraCapture] Timeout -- is isaac_env.py running?")
             return None, None, False, None
 
-    def get_intrinsics(self) -> dict:
+    def get_intrinsics(self) -> SimIntrinsics:
         """
-        Approximate intrinsics for the default Isaac Sim camera.
-        Isaac Sim uses a 90-degree horizontal FOV by default.
-        fx = W / (2 * tan(fov_h / 2))
+        Calculates exact pixel focal lengths based on physical D435 camera sensor properties:
+        26.0mm focal length, 36.0mm width, 20.25mm height.
         """
-        import math
-        w       = float(self.width)
-        h       = float(self.height)
-        fov_h   = math.radians(90.0)
-        fx = fy = w / (2.0 * math.tan(fov_h / 2.0))
-        return {
-            "fx": fx, "fy": fy,
-            "cx": w / 2.0, "cy": h / 2.0,
-            "width": int(w), "height": int(h),
-        }
+        w = float(self.width)
+        h = float(self.height)
+        fx = w * 26.0 / 36.0
+        fy = h * 26.0 / 20.25
+        return SimIntrinsics(
+            fx=fx,
+            fy=fy,
+            cx=w / 2.0,
+            cy=h / 2.0,
+            width=w,
+            height=h
+        )
 
     def get_last_frame_meta(self) -> dict:
         return dict(self._last_frame_meta)

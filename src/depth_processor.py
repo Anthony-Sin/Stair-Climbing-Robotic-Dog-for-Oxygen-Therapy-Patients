@@ -396,7 +396,7 @@ class DepthProcessor:
         return interpolated
 
     @staticmethod
-    def foreground_depth_bimodal(depth_image: np.ndarray, bbox: Tuple[int, int, int, int],
+    def foreground_depth_bimodal(depth_image, bbox: Tuple[int, int, int, int],
                                  depth_min: float = 100.0, depth_max: float = 10000.0,
                                  num_bins: int = 50,
                                  return_histogram: bool = False) -> Union[Optional[float], Tuple[Optional[float], Optional[Dict[str, Any]]]]:
@@ -434,6 +434,7 @@ class DepthProcessor:
         y2 = int(np.ceil(y2))
         
         # Clamp to image bounds (allow x2/y2 to equal w/h)
+        if hasattr(depth_image, "get_data"): depth_image = depth_image.get_data()
         h, w = depth_image.shape[:2]
         x1 = max(0, min(x1, w - 1))
         y1 = max(0, min(y1, h - 1))

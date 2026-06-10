@@ -26,6 +26,21 @@ config = builder.create_builder_config()
 config.set_flag(trt.BuilderFlag.FP16)
 config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 30)
 
+input_tensor = network.get_input(0)
+input_shape = tuple(input_tensor.shape)
+if any(dim < 0 for dim in input_shape):
+    profile = builder.create_optimization_profile()
+    profile.set_shape(
+        input_tensor.name,
+        min=(1, 3, 256, 128),
+        opt=(8, 3, 256, 128),
+        max=(16, 3, 256, 128),
+    )
+    config.add_optimization_profile(profile)
+    print(f'Added dynamic batch profile for {input_tensor.name}: min=1 opt=8 max=16')
+else:
+    print(f'Using static ReID input shape from ONNX: {input_shape}')
+
 print('Building ReID engine...')
 engine_bytes = builder.build_serialized_network(network, config)
 

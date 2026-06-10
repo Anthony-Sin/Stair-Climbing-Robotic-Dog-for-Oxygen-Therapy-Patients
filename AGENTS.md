@@ -76,14 +76,11 @@ Do NOT include:
 - Anything discoverable from reading the repository
 - Long explanations
 
-Keep this file short (<300 lines, ideally <100).
+Keep this file short (<600 lines, ideally <500).
 
 ## 7. Special rules
-- This repository targets a **live remote robot system running on NVIDIA Jetson Orin**.
+- This repository targets a **live remote robot system running on NVIDIA Jetson Orin**.  right now we are working in the sim version
 - Operational commands for model export/conversion/inference must be run on the **robot**, inside the robot's **Docker container** used for runtime, unless the developer explicitly says otherwise.
-
-- Do NOT attempt to execute Python files or run tests in the local development environment. 
-  The system depends on Jetson-specific hardware, drivers, and environment configuration and will not function locally.
 
 - Path mapping rule for command guidance:
   - Host repo `src/` is mounted as container working root `/workspace`.

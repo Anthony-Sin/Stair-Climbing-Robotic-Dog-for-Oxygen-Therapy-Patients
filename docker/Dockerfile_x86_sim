@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y \
     libssl-dev libffi-dev cmake git wget unzip ffmpeg \
     x11-apps \
     libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+    libglib2.0-0 libsm6 libxrender1 libxext6 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 RUN pip3 install --no-cache-dir \
@@ -17,15 +18,17 @@ RUN pip3 install --no-cache-dir \
     tqdm \
     onnx \
     ecs-logging \
-    kornia
+    kornia \
+    matplotlib \
+    pillow
 
 RUN pip3 install --no-cache-dir \
-    torch torchvision \
+    torch==2.6.0 torchvision==0.21.0 \
     --index-url https://download.pytorch.org/whl/cu126
 
 RUN git clone https://github.com/ifzhang/ByteTrack.git /opt/bytetrack && \
     pip3 install --no-cache-dir --no-deps -e /opt/bytetrack && \
-    pip3 install --no-cache-dir loguru lap cython_bbox
+    pip3 install --no-cache-dir loguru lap cython_bbox thop
 
 RUN pip3 install --no-cache-dir ultralytics --no-deps && \
     pip3 install --no-cache-dir pyyaml pandas psutil requests
@@ -46,9 +49,13 @@ RUN git clone https://github.com/unitreerobotics/unitree_sdk2_python.git /opt/un
 
 ENV PYTHONPATH="/opt/unitree_sdk2_python"
 
-WORKDIR /workspace
-CMD ["bash"]
-
+# Nvidia's specific server for TensorRT
 RUN pip3 install --no-cache-dir \
     tensorrt==10.6.0 \
-    --index-url https://pypi.nvidia.com
+    --extra-index-url https://pypi.nvidia.com
+
+# Standard Python server for PyCUDA
+RUN pip3 install --no-cache-dir pycuda
+
+WORKDIR /workspace
+CMD ["bash"]

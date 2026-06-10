@@ -37,6 +37,10 @@ class ReIDTRTInference:
 
         self.input_dtype = trt.nptype(self.engine.get_tensor_dtype(self.input_name))
         self.output_dtype = trt.nptype(self.engine.get_tensor_dtype(self.output_name))
+        self.engine_input_shape = tuple(self.engine.get_tensor_shape(self.input_name))
+        self.static_batch_size = None
+        if self.engine_input_shape and int(self.engine_input_shape[0]) > 0:
+            self.static_batch_size = int(self.engine_input_shape[0])
 
         self.stream = cuda.Stream()
         
@@ -110,13 +114,9 @@ class ReIDTRTInference:
 
         return output_shape
 
-    def infer_embeddings(self, batch: np.ndarray) -> np.ndarray:
+    def _infer_embeddings_once(self, batch: np.ndarray) -> np.ndarray:
         if batch.ndim != 4:
             raise ValueError(f"Expected NCHW input, got shape={batch.shape}")
-
-        if batch.shape[0] == 0:
-            dim = self.embedding_dim or 0
-            return np.empty((0, dim), dtype=np.float32)
 
         input_tensor = np.ascontiguousarray(batch.astype(self.input_dtype, copy=False))
         output_shape = self._ensure_buffers(tuple(input_tensor.shape))
@@ -129,6 +129,30 @@ class ReIDTRTInference:
         self.stream.synchronize()
 
         return host_output.astype(np.float32, copy=False)
+
+    def infer_embeddings(self, batch: np.ndarray) -> np.ndarray:
+        if batch.ndim != 4:
+            raise ValueError(f"Expected NCHW input, got shape={batch.shape}")
+
+        if batch.shape[0] == 0:
+            dim = self.embedding_dim or 0
+            return np.empty((0, dim), dtype=np.float32)
+
+        if self.static_batch_size and batch.shape[0] != self.static_batch_size:
+            outputs: List[np.ndarray] = []
+            batch_size = self.static_batch_size
+            for start in range(0, batch.shape[0], batch_size):
+                chunk = batch[start:start + batch_size]
+                actual = chunk.shape[0]
+                if actual < batch_size:
+                    pad_shape = (batch_size - actual,) + tuple(chunk.shape[1:])
+                    padding = np.zeros(pad_shape, dtype=chunk.dtype)
+                    chunk = np.concatenate([chunk, padding], axis=0)
+                output = self._infer_embeddings_once(chunk)
+                outputs.append(output[:actual])
+            return np.concatenate(outputs, axis=0)
+
+        return self._infer_embeddings_once(batch)
 
     def infer_crops(self, crops: Iterable[np.ndarray]) -> np.ndarray:
         batch = self.preprocess_bgr_crops(crops)

@@ -9,6 +9,7 @@ SIDECAR_IMAGE="${SIDECAR_IMAGE:-go2-nav2-sidecar:latest}"
 VISION_CONTAINER_NAME="${VISION_CONTAINER_NAME:-go2-follow-vision}"
 SIDECAR_CONTAINER_NAME="${SIDECAR_CONTAINER_NAME:-go2-follow-sidecar}"
 SIDECAR_ENABLE_LIDAR_MAPPING="${SIDECAR_ENABLE_LIDAR_MAPPING:-0}"
+SIM_OBSTACLES="${SIM_OBSTACLES:-false}"
 
 TARGET_DISTANCE="${TARGET_DISTANCE:-0.35}"
 TARGET_EXPORT_HOST="${TARGET_EXPORT_HOST:-0.0.0.0}"
@@ -283,7 +284,8 @@ start_sidecar() {
         log_follow:=${SIDECAR_LOG_FOLLOW} \
         log_bridge:=${SIDECAR_LOG_BRIDGE} \
         ecs_log_dir:=/debug_logs/sidecar/ecs \
-        debug_trace_dir:=/debug_logs/sidecar/debug_trace
+        debug_trace_dir:=/debug_logs/sidecar/debug_trace \
+        sim_obstacles:=${SIM_OBSTACLES}
     " > /dev/null
 
   echo "Started sidecar container: $SIDECAR_CONTAINER_NAME"

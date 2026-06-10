@@ -72,7 +72,7 @@ def _build_robot_controller(args):
         from sim_robot_controller import SimRobotController
         print("[main] Sim mode: using SimRobotController")
         ctrl = SimRobotController(
-            cmd_host='192.168.1.91',
+            cmd_host=args.cmd_host,
             cmd_port=args.cmd_port,
         )
         ctrl.initialize()
@@ -551,6 +551,11 @@ def main():
             debug_info['motion_lock_streak']  = motion_lock_streak
             debug_info['motion_lock_frames']  = motion_lock_frames
             debug_info['reacquire_active']    = reacquire_active
+
+            if "gt_patient" in frame_meta:
+                debug_info["gt_patient"] = frame_meta["gt_patient"]
+            if "gt_distractor" in frame_meta:
+                debug_info["gt_distractor"] = frame_meta["gt_distractor"]
 
             export_debug_info = debug_info
             target_track_id   = None if main_person is None else main_person.get("track_id")

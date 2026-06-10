@@ -88,6 +88,7 @@ class Go2NavBridge(Node):
         self.declare_parameter("enable_ecs_logging", False)
         # DEBUG-TRACE REMOVE-ME: bridge structured trace folder.
         self.declare_parameter("debug_trace_dir", "")
+        self.declare_parameter("sim_obstacles", False)
 
         self._network_interface = normalize_network_interface(
             self.get_parameter("network_interface").value
@@ -152,6 +153,12 @@ class Go2NavBridge(Node):
             self._on_target_valid,
             TARGET_VALID_QOS,
         )
+
+        self._sim_obstacles = bool(self.get_parameter("sim_obstacles").value)
+        if self._sim_obstacles:
+            from sensor_msgs.msg import PointCloud2
+            self._sim_lidar_pub = self.create_publisher(PointCloud2, "/xt16/lidar_points", 10)
+            self.create_timer(0.1, self._publish_sim_obstacles)
 
         if self._ecs_log_path is not None:
             self.get_logger().info(f"ECS analytics log: {self._ecs_log_path}")
@@ -562,6 +569,90 @@ class Go2NavBridge(Node):
         tf_msg.transform.rotation.z = qz
         tf_msg.transform.rotation.w = qw
         self._tf_broadcaster.sendTransform(tf_msg)
+
+    def _publish_sim_obstacles(self) -> None:
+        with self._state_lock:
+            state = self._latest_state
+            
+        if state is None:
+            return
+            
+        rx, ry, rz, r_yaw = state.x, state.y, state.z, state.yaw
+        cos_yaw = math.cos(r_yaw)
+        sin_yaw = math.sin(r_yaw)
+        
+        points = []
+        
+        # 1. Left and Right corridor walls (Y = 1.05 and Y = -1.05)
+        # Sample X at 0.15m intervals around the robot
+        x_min = max(0.0, rx - 4.5)
+        x_max = min(8.0, rx + 4.5)
+        
+        x_steps = int((x_max - x_min) / 0.15) + 1
+        for i in range(x_steps):
+            wx = x_min + i * 0.15
+            for wy in [1.05, -1.05]:
+                dx = wx - rx
+                dy = wy - ry
+                dist = math.sqrt(dx**2 + dy**2)
+                if dist > 4.5:
+                    continue
+                # Transform to base_link local frame
+                lx = dx * cos_yaw + dy * sin_yaw
+                ly = -dx * sin_yaw + dy * cos_yaw
+                for wz in [0.1, 0.4, 0.7, 1.0]:
+                    lz = wz - rz
+                    # Pre-flip coordinates so they are flipped back to normal by the ROS2 C++ filter node
+                    points.append([-lx, -ly, -lz])
+                    
+        # 2. Door partitions (X = 4.25, Y in [0.4, 1.0] and Y in [-1.0, -0.4])
+        if abs(rx - 4.25) < 4.5:
+            dx = 4.25 - rx
+            # Left partition (Y from 0.4 to 1.0)
+            y_steps = int((1.0 - 0.4) / 0.05) + 1
+            for i in range(y_steps):
+                wy = 0.4 + i * 0.05
+                dy = wy - ry
+                dist = math.sqrt(dx**2 + dy**2)
+                if dist > 4.5:
+                    continue
+                lx = dx * cos_yaw + dy * sin_yaw
+                ly = -dx * sin_yaw + dy * cos_yaw
+                for wz in [0.4, 0.7, 1.0]:
+                    lz = wz - rz
+                    points.append([-lx, -ly, -lz])
+            # Right partition (Y from -1.0 to -0.4)
+            for i in range(y_steps):
+                wy = -1.0 + i * 0.05
+                dy = wy - ry
+                dist = math.sqrt(dx**2 + dy**2)
+                if dist > 4.5:
+                    continue
+                lx = dx * cos_yaw + dy * sin_yaw
+                ly = -dx * sin_yaw + dy * cos_yaw
+                for wz in [0.4, 0.7, 1.0]:
+                    lz = wz - rz
+                    points.append([-lx, -ly, -lz])
+                    
+        if not points:
+            points = [[999.0, 999.0, -999.0]]
+            
+        from sensor_msgs.msg import PointField
+        from sensor_msgs_py import point_cloud2
+        from std_msgs.msg import Header
+        
+        header = Header()
+        header.stamp = self.get_clock().now().to_msg()
+        header.frame_id = self._base_frame_id
+        
+        fields = [
+            PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+            PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+            PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
+        ]
+        
+        pc2_msg = point_cloud2.create_cloud(header, fields, points)
+        self._sim_lidar_pub.publish(pc2_msg)
 
     def destroy_node(self) -> bool:
         try:
