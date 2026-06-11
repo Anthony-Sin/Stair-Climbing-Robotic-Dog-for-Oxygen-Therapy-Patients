@@ -37,12 +37,18 @@ Write-ConsoleLog "Isaac Sim launcher"
 Write-ConsoleLog "  Raw Kit output:      $RawLog"
 Write-ConsoleLog "  Filtered console:    $ConsoleLog"
 Write-ConsoleLog "  Isaac JSONL events:  $(Join-Path $RunLogDir 'isaac_env.jsonl')"
+Write-ConsoleLog "  Isaac Sim dir:       $IsaacSimDir"
 Write-ConsoleLog "  Frame target:        ${FrameHost}:${FramePort}"
 Write-ConsoleLog "  Command receiver:    0.0.0.0:${CmdPort}"
 Write-ConsoleLog ""
 
 if (-not (Test-Path -LiteralPath $IsaacSimDir)) {
     Write-ConsoleLog "ERROR: Isaac Sim directory does not exist: $IsaacSimDir"
+    exit 1
+}
+$IsaacBat = Join-Path $IsaacSimDir "python.bat"
+if (-not (Test-Path -LiteralPath $IsaacBat)) {
+    Write-ConsoleLog "ERROR: Missing Isaac Sim launcher: $IsaacBat"
     exit 1
 }
 if (-not (Test-Path -LiteralPath $IsaacEnv)) {
@@ -53,21 +59,38 @@ if (-not (Test-Path -LiteralPath $IsaacEnv)) {
 Set-Location -LiteralPath $IsaacSimDir
 $env:PYTHONUNBUFFERED = "1"
 
-& ".\python.bat" $IsaacEnv `
-    --person-move `
-    --frame-host $FrameHost `
-    --frame-port $FramePort `
-    --cmd-port $CmdPort `
-    --log-dir $RunLogDir `
-    2>&1 | ForEach-Object {
-        $line = [string]$_
-        Add-Content -LiteralPath $RawLog -Encoding UTF8 -Value $line
+# Initialize RawLog file first
+New-Item -ItemType File -Path $RawLog -Force | Out-Null
+
+$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" --person-move --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" > `"$RawLog`" 2>&1`""
+
+# Start the process with direct OS redirection to prevent pipeline blocking
+$process = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs -PassThru -NoNewWindow
+
+# Read and filter the log file in real-time
+$reader = New-Object System.IO.StreamReader([System.IO.File]::Open($RawLog, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite))
+try {
+    while (-not $process.HasExited) {
+        $line = $reader.ReadLine()
+        if ($line -ne $null) {
+            if (Should-ShowIsaacLine -Line $line) {
+                Write-ConsoleLog $line
+            }
+        } else {
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    # Read remaining lines
+    while (($line = $reader.ReadLine()) -ne $null) {
         if (Should-ShowIsaacLine -Line $line) {
             Write-ConsoleLog $line
         }
     }
+} finally {
+    $reader.Close()
+}
 
-$exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
+$exitCode = $process.ExitCode
 Write-ConsoleLog ""
 Write-ConsoleLog "Isaac process exited with code $exitCode"
 exit $exitCode

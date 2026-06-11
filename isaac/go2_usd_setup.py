@@ -10,8 +10,8 @@ import urllib.request
 ASSETS_DIR   = pathlib.Path(__file__).parent / "assets"
 GO2_USD      = ASSETS_DIR / "go2.usd"
 GO2_URDF_URL = (
-    "https://raw.githubusercontent.com/anujjain-dev/unitree-go2-ros2"
-    "/main/robots/description/go2_description/urdf/go2.urdf"
+    "https://raw.githubusercontent.com/unitreerobotics/unitree_ros/master"
+    "/robots/go2_description/urdf/go2_description.urdf"
 )
 LOCAL_URDF_CANDIDATES = [
     pathlib.Path(__file__).parent.parent
@@ -45,39 +45,76 @@ def download_urdf() -> pathlib.Path:
 
 def convert_urdf_to_usd(urdf_path: pathlib.Path) -> None:
     """Convert URDF to USD using Isaac Sim's built-in converter."""
-    print(f"[download_go2] Converting URDF → USD ...")
+    print(f"[download_go2] Converting URDF -> USD ...")
     try:
-        from omni.isaac.urdf import _urdf
-        urdf_interface = _urdf.acquire_urdf_interface()
-        import_config = _urdf.ImportConfig()
-        import_config.merge_fixed_joints   = False
-        import_config.fix_base             = False
-        import_config.import_inertia_tensor = True
-        import_config.distance_scale        = 1.0
-        import_config.make_instanceable     = False
-
-        result, prim_path = omni.kit.commands.execute(
-            "URDFParseAndImportFile",
-            urdf_path=str(urdf_path),
-            import_config=import_config,
-            dest_path=str(GO2_USD),
-        )
-        if result:
-            print(f"[download_go2] USD saved: {GO2_USD}")
-        else:
-            print(f"[download_go2] Conversion returned failure — check Isaac Sim logs.")
+        from isaacsim import SimulationApp
     except ImportError:
-        print(
-            "[download_go2] omni.isaac.urdf not available. "
-            "Run this script using Isaac Sim's python.sh, not system Python."
-        )
+        from omni.isaac.kit import SimulationApp
+
+    simulation_app = SimulationApp({"headless": True})
+
+    import omni.kit.app
+    ext_manager = omni.kit.app.get_app().get_extension_manager()
+    ext_manager.set_extension_enabled_immediate("isaacsim.asset.importer.urdf", True)
+
+    try:
+        try:
+            from isaacsim.asset.importer.urdf.impl import URDFImporter, URDFImporterConfig
+            print("[download_go2] Using Isaac Sim 6.0 URDFImporter API")
+            import_config = URDFImporterConfig()
+            import_config.urdf_path = str(urdf_path)
+            import_config.usd_path = str(GO2_USD.parent)
+            import_config.merge_fixed_joints = False
+            import_config.fix_base = False
+            
+            importer = URDFImporter(import_config)
+            output_usd = importer.import_urdf()
+            if output_usd:
+                print(f"[download_go2] USD saved: {output_usd}")
+            else:
+                raise RuntimeError("URDFImporter returned no output path")
+        except ImportError:
+            print("[download_go2] Using legacy URDFParseAndImportFile command API")
+            try:
+                from omni.urdf import acquire_urdf_interface
+                from omni.urdf import ImportConfig
+                urdf_interface = acquire_urdf_interface()
+                import_config = ImportConfig()
+            except ImportError:
+                from omni.isaac.urdf import _urdf
+                urdf_interface = _urdf.acquire_urdf_interface()
+                import_config = _urdf.ImportConfig()
+            import_config.merge_fixed_joints   = False
+            import_config.fix_base             = False
+            import_config.import_inertia_tensor = True
+            import_config.distance_scale        = 1.0
+            import_config.make_instanceable     = False
+
+            result, prim_path = omni.kit.commands.execute(
+                "URDFParseAndImportFile",
+                urdf_path=str(urdf_path),
+                import_config=import_config,
+                dest_path=str(GO2_USD),
+            )
+            if result:
+                print(f"[download_go2] USD saved: {GO2_USD}")
+            else:
+                raise RuntimeError("URDFParseAndImportFile command returned failure")
+    except Exception as exc:
+        print(f"[download_go2] Conversion failed: {exc}")
+        simulation_app.close()
         sys.exit(1)
+        
+    simulation_app.close()
 
 
 def try_nucleus(nucleus_path: str = "/Isaac/Robots/Unitree/Go2/go2.usd") -> bool:
     """Check if the Go2 USD exists on the connected Nucleus server."""
     try:
-        import omni.isaac.core.utils.nucleus as nucleus_utils
+        try:
+            import omni.isaac.core.utils.nucleus as nucleus_utils
+        except ModuleNotFoundError:
+            import isaacsim.storage.native as nucleus_utils
         root = nucleus_utils.get_assets_root_path()
         if root is None:
             return False
@@ -99,8 +136,8 @@ def main() -> None:
     ensure_assets_dir()
 
     if not pargs.urdf_only:
-        if try_nucleus():
-            return
+        # if try_nucleus():
+        #     return
 
         if GO2_USD.exists():
             print(f"[download_go2] Local USD already exists: {GO2_USD}")

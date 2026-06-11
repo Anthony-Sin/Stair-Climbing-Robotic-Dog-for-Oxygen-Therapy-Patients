@@ -225,7 +225,7 @@ Create `.vscode/launch.json` to run Isaac Sim scripts with F5:
                 "--frame-host", "192.168.1.91"
             ],
             "console": "integratedTerminal",
-            "pythonPath": "C:\\isaacsim\\IsaacSim-main\\_build\\windows-x86_64\\release\\python.bat"
+            "pythonPath": "C:\\isaac_sim_600\\isaac-sim.bat"
         },
         {
             "name": "Vision Pipeline: main.py (sim mode)",
@@ -266,12 +266,12 @@ Isaac Sim ships with its **own Python interpreter** bundled inside the installat
 ### 4.2 Isaac Sim's Python Interpreter Location
 
 ```
-C:\isaacsim\IsaacSim-main\_build\windows-x86_64\release\python.bat
+C:\isaac_sim_600\isaac-sim.bat
 ```
 
 This `.bat` file sets up all the environment variables Isaac Sim needs and then calls the real Python binary at:
 ```
-C:\isaacsim\IsaacSim-main\_build\windows-x86_64\release\kit\python\python.exe
+C:\isaac_sim_600\kit\python\python.exe
 ```
 
 ### 4.3 Register Isaac Sim Python in VS Code
@@ -280,7 +280,7 @@ To get IntelliSense for Isaac Sim packages in VS Code, add the Isaac Sim Python 
 
 1. Press `Ctrl+Shift+P` → **"Python: Select Interpreter"**
 2. Click **"Enter interpreter path..."**
-3. Paste: `C:\isaacsim\IsaacSim-main\_build\windows-x86_64\release\kit\python\python.exe`
+3. Paste: `C:\isaac_sim_600\kit\python\python.exe`
 
 You'll now get autocomplete for `from omni.isaac.core import World` etc.
 
@@ -759,7 +759,7 @@ This project uses **Isaac Sim 5.1** (released early 2025). The logs confirm:
 4. Go to the **Exchange** tab
 5. Search for **"Isaac Sim"**
 6. Click **Install** and choose your install directory
-   - Recommended: `C:\isaacsim\` (no spaces, short path)
+   - Recommended: `C:\isaac_sim_600\` (no spaces, short path)
    - **Avoid** `C:\Program Files\...` — permission issues
 7. Wait for the ~50 GB download
 
@@ -771,16 +771,16 @@ After install, launch once from the Launcher to verify it works, then close it.
 # In PowerShell:
 
 # Create install directory
-mkdir C:\isaacsim
+mkdir C:\isaac_sim_600
 
 # Go to: https://github.com/isaac-sim/IsaacSim/releases
 # Download the Windows zip for 5.1 (file will be ~50 GB)
-# Extract to C:\isaacsim\IsaacSim-main\
+# Extract to C:\isaac_sim_600\
 ```
 
 After extraction, your path should be:
 ```
-C:\isaacsim\IsaacSim-main\_build\windows-x86_64\release\python.bat
+C:\isaac_sim_600\isaac-sim.bat
 ```
 
 ### 7.4 Installation — Option C: Build from Source
@@ -789,8 +789,8 @@ Only recommended if you need to modify Isaac Sim internals:
 
 ```powershell
 # Prerequisites: Visual Studio 2022 Community, CMake 3.24+, Git LFS
-git clone https://github.com/isaac-sim/IsaacSim.git C:\isaacsim\IsaacSim-main
-cd C:\isaacsim\IsaacSim-main
+git clone https://github.com/isaac-sim/IsaacSim.git C:\isaac_sim_600
+cd C:\isaac_sim_600
 
 # This pulls prebuilt binaries (~40 GB) — uses Git LFS
 .\pull_binaries.bat
@@ -804,7 +804,7 @@ cd C:\isaacsim\IsaacSim-main
 ```cmd
 :: Open Command Prompt (not PowerShell)
 :: Run a minimal test — just print the Python version
-C:\isaacsim\IsaacSim-main\_build\windows-x86_64\release\python.bat -c "import isaacsim; print('Isaac Sim Python OK')"
+C:\isaac_sim_600\isaac-sim.bat -c "import isaacsim; print('Isaac Sim Python OK')"
 ```
 
 If you get a crash or missing DLL error, install:
@@ -833,10 +833,10 @@ Isaac Sim scripts **must** be run through the bundled `python.bat`, not system P
 
 ```cmd
 :: Syntax:
-C:\isaacsim\IsaacSim-main\_build\windows-x86_64\release\python.bat <script.py> [args]
+C:\isaac_sim_600\isaac-sim.bat <script.py> [args]
 
 :: Example: Run isaac_env.py
-C:\isaacsim\IsaacSim-main\_build\windows-x86_64\release\python.bat ^
+C:\isaac_sim_600\isaac-sim.bat ^
     C:\Users\antho\Downloads\...\isaac\isaac_env.py ^
     --person-move ^
     --frame-host 192.168.1.91
@@ -1287,7 +1287,7 @@ for /f "tokens=1" %%a in ("%WSL_IP%") do set WSL_IP=%%a
 echo WSL2 IP is: %WSL_IP%
 echo Starting Isaac Sim with --frame-host %WSL_IP%
 
-C:\isaacsim\IsaacSim-main\_build\windows-x86_64\release\python.bat ^
+C:\isaac_sim_600\isaac-sim.bat ^
     C:\Users\antho\Downloads\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\isaac\isaac_env.py ^
     --person-move ^
     --frame-host %WSL_IP%
@@ -1332,7 +1332,7 @@ Open **Command Prompt** (`cmd.exe`, not PowerShell — use Start menu → type `
 
 ```cmd
 :: Replace 192.168.1.91 with your actual WSL IP from the checklist above
-C:\isaacsim\IsaacSim-main\_build\windows-x86_64\release\python.bat ^
+C:\isaac_sim_600\isaac-sim.bat ^
     C:\Users\antho\Downloads\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\isaac\isaac_env.py ^
     --person-move ^
     --frame-host 192.168.1.91
@@ -1351,7 +1351,7 @@ At this point, the sim is running and sending camera frames.
 
 ```cmd
 :: Full command with all available flags and their defaults:
-C:\isaacsim\...\python.bat C:\...\isaac\isaac_env.py ^
+C:\isaac_sim_600\...\python.bat C:\...\isaac\isaac_env.py ^
     --frame-host 192.168.1.91 ^    [IP to send frames to — YOUR WSL IP]
     --frame-port 55002 ^           [UDP port for frames]
     --cmd-port 55001 ^             [UDP port for velocity commands]
@@ -1683,10 +1683,10 @@ docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu22.04 nvidia-smi
 
 :: Fix 3: Check the Kit log for the actual error
 :: Log location:
-:: C:\isaacsim\IsaacSim-main\_build\windows-x86_64\release\kit\logs\Kit\Isaac-Sim Python\5.1\kit_YYYYMMDD_HHMMSS.log
+:: C:\isaac_sim_600\kit\logs\Kit\Isaac-Sim Python\5.1\kit_YYYYMMDD_HHMMSS.log
 
 :: Fix 4: Run headless to bypass rendering bugs
-C:\isaacsim\...\python.bat C:\...\isaac_env.py --headless --frame-host 192.168.1.91
+C:\isaac_sim_600\...\python.bat C:\...\isaac_env.py --headless --frame-host 192.168.1.91
 ```
 
 ---
@@ -1862,7 +1862,7 @@ curl -I https://omniverse-content-production.s3-us-west-2.amazonaws.com/
 :: before launching Isaac Sim
 set HTTP_PROXY=http://your-proxy:port
 set HTTPS_PROXY=http://your-proxy:port
-C:\isaacsim\...\python.bat C:\...\isaac_env.py ...
+C:\isaac_sim_600\...\python.bat C:\...\isaac_env.py ...
 ```
 
 ---
@@ -2009,7 +2009,7 @@ hostname -I | awk '{print $1}'
 
 **Step 2 (Windows CMD): Start Isaac Sim**
 ```cmd
-C:\isaacsim\IsaacSim-main\_build\windows-x86_64\release\python.bat ^
+C:\isaac_sim_600\isaac-sim.bat ^
     C:\Users\antho\Downloads\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\isaac\isaac_env.py ^
     --person-move ^
     --frame-host YOUR_WSL_IP_HERE

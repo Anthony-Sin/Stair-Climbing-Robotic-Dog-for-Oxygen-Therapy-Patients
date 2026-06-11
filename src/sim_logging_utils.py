@@ -115,3 +115,8 @@ def log_event(
         },
         exc_info=exc_info,
     )
+    for handler in logger.handlers:
+        try:
+            handler.flush()
+        except Exception:
+            pass

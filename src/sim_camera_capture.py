@@ -16,6 +16,31 @@ class SimDepthFrame:
         self._data = depth_data
         self._units = units
 
+    @property
+    def shape(self):
+        return self._data.shape
+
+    @property
+    def dtype(self):
+        return self._data.dtype
+
+    @property
+    def ndim(self) -> int:
+        return self._data.ndim
+
+    @property
+    def size(self) -> int:
+        return self._data.size
+
+    def __array__(self, dtype=None):
+        return np.asarray(self._data, dtype=dtype)
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def astype(self, *args, **kwargs):
+        return self._data.astype(*args, **kwargs)
+
     def get_units(self) -> float:
         return self._units
 

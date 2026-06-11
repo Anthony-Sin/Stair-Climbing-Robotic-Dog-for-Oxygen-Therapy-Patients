@@ -7,7 +7,7 @@ set "PS_ARGS="
 
 if not exist "%LAUNCHER%" (
     echo ERROR: Missing launcher script: "%LAUNCHER%"
-    pause
+    if not "%NO_PAUSE%"=="1" pause
     exit /b 1
 )
 
@@ -34,6 +34,7 @@ if /I "%ARG%"=="--frame-port" set "ARG=-FramePort"
 if /I "%ARG%"=="--follow-backend" set "ARG=-FollowBackend"
 if /I "%ARG%"=="--trt-engine" set "ARG=-TrtEngine"
 if /I "%ARG%"=="--osnet-trt-engine" set "ARG=-OsnetTrtEngine"
+if /I "%ARG%"=="--sim-frame-timeout-exit-sec" set "ARG=-SimFrameTimeoutExitSec"
 if /I "%ARG%"=="--no-model-preflight" set "ARG=-NoModelPreflight"
 set "PS_ARGS=%PS_ARGS% "%ARG%""
 shift
@@ -49,5 +50,5 @@ if not "%RUN_SIM_EXIT%"=="0" (
 ) else (
     echo run_sim finished.
 )
-pause
+if not "%NO_PAUSE%"=="1" pause
 exit /b %RUN_SIM_EXIT%

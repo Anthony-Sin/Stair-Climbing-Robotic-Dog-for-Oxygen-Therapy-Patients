@@ -1,4 +1,4 @@
-FROM nvcr.io/nvidia/l4t-tensorflow:r35.3.1-tf2.11-py3
+FROM nvcr.io/nvidia/l4t-jetpack:r36.2.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -44,7 +44,7 @@ RUN mkdir build && cd build && \
     cmake -D CMAKE_BUILD_TYPE=RELEASE \
           -D CMAKE_INSTALL_PREFIX=/usr/local \
           -D WITH_CUDA=ON \
-          -D CUDA_ARCH_BIN="5.3,6.2,7.2,8.6,8.7" \
+          -D CUDA_ARCH_BIN="8.7,8.9,9.0" \
           -D CUDA_ARCH_PTX="" \
           -D WITH_CUBLAS=1 \
           -D WITH_CUFFT=ON \
@@ -83,7 +83,7 @@ RUN pip3 install --no-cache-dir \
     scipy \
     tqdm \
     onnx onnxruntime \
-    tensorrt
+    tensorrt==10.7.0 --extra-index-url https://pypi.nvidia.com
 
 # ----------------------
 # Clone and install Ultralytics (YOLOv11) with no OpenCV deps
@@ -108,28 +108,8 @@ RUN pip3 install --no-cache-dir \
     networkx==2.8.8 \
     --extra-index-url https://pypi.nvidia.com
 
-# Copy the local .whl into the Docker image
-COPY torch-2.0.0+nv23.05-cp38-cp38-linux_aarch64.whl /tmp/
-# Install from wheel
-RUN pip3 install --no-cache-dir /tmp/torch-2.0.0+nv23.05-cp38-cp38-linux_aarch64.whl
-RUN apt-get update && apt-get install -y libopenblas-base \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install dependencies for building torchvision
-RUN apt-get update && apt-get install -y \
-    libjpeg-dev zlib1g-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Build and install torchvision 0.15.1 with CUDA custom ops (includes torchvision::nms CUDA kernel)
-RUN git clone --branch v0.15.1 --depth 1 \
-      https://github.com/pytorch/vision.git /tmp/vision && \
-    cd /tmp/vision && \
-    export FORCE_CUDA=1 && \
-    export BUILD_CUSTOM_OPS=1 && \
-    export TORCH_CUDA_ARCH_LIST="8.7" && \
-    python3 setup.py install && \
-    rm -rf /tmp/vision
+# Install PyTorch and Torchvision directly from pip
+RUN pip3 install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu124
 
 RUN pip install --no-cache-dir numpy==1.23.5 --force-reinstall
 
@@ -195,8 +175,7 @@ RUN pip install --no-cache-dir kornia kornia-rs --no-deps
 RUN pip install --no-cache-dir ecs-logging
 
 # Clean up torch wheel and pip cache (safe final cleanup)
-RUN rm -f /tmp/torch-2.0.0+nv23.05-cp38-cp38-linux_aarch64.whl && \
-    rm -rf /root/.cache/pip
+RUN rm -rf /root/.cache/pip
 
 # Default to workspace directory
 WORKDIR /workspace

@@ -6,7 +6,7 @@ param(
     [switch]$PauseAfterIsaac,
     [switch]$NoIsaac,
     [switch]$NoDockerRun,
-    [string]$IsaacSimDir = $(if ($env:ISAACSIM_DIR) { $env:ISAACSIM_DIR } else { "C:\isaacsimweb" }),
+    [string]$IsaacSimDir = $(if ($env:ISAACSIM_DIR) { $env:ISAACSIM_DIR } else { "C:\isaac_sim_600" }),
     [string]$Image = "go2-pose-x86:latest",
     [string]$FrameHost = "",
     [string]$CmdHost = "",
@@ -15,6 +15,7 @@ param(
     [string]$FollowBackend = "pid",
     [string]$TrtEngine = "/models/yolo11n-pose-fp16.trt",
     [string]$OsnetTrtEngine = "/models/osnet_ain_x1_0.trt",
+    [double]$SimFrameTimeoutExitSec = 30.0,
     [switch]$VisionPreview,
     [switch]$NoModelPreflight,
     [switch]$NoIsaacReadyWait,
@@ -64,12 +65,14 @@ Set-Content -LiteralPath $SummaryLog -Encoding UTF8 -Value @(
     "  docker_build.log    Docker build output only",
     "  docker_run.log      robot controller container output only",
     "  vision/             logs written from inside the controller container",
+    "  vision/opencv_preview/opencv_preview.mp4 saved OpenCV preview video from the controller",
     "",
     "Fast diagnosis:",
     "  If isaac_wait is complete, Isaac emitted world_ready and scene loading finished.",
     "  Docker starts automatically after Isaac is ready; pass --pause-after-isaac to restore the manual gate.",
     "  Isaac now holds autonomous person/distractor motion until the controller sends its first command.",
     "  Docker will not command the robot until both TensorRT engine files exist in models/.",
+    "  OpenCV preview frames are saved even when GUI preview is disabled.",
     "  If build fails, docker_run.log will not exist because the controller never started.",
     "  Existing Docker images are reused automatically.",
     "  To force a rebuild, run: .\run_sim.bat --force-build",
@@ -268,6 +271,21 @@ function Write-DockerFailureDiagnosis {
         }
         return $true
     }
+    if ($text -match "Bind for 0\.0\.0\.0:(\d+) failed: port is already allocated") {
+        $blockedPort = $matches[1]
+        Write-Stage "docker_diag" "failed" "Docker could not bind the sim frame UDP port because another container or process already owns it" @{
+            log = $LogPath
+            command = "Stop the stale process using UDP $blockedPort, then rerun .\run_sim.bat"
+        }
+        return $true
+    }
+    if ($text -match "Sim camera did not receive Isaac frames") {
+        Write-Stage "docker_diag" "failed" "Docker started but did not receive Isaac camera frames" @{
+            log = $LogPath
+            command = "Check the frame_host/frame_port route; this launcher defaults Isaac frame_host to 127.0.0.1 for Docker Desktop UDP forwarding"
+        }
+        return $true
+    }
     if ($text -match "Static dimension mismatch.*Expected dimensions are \[1,3,256,128\]") {
         Write-Stage "docker_diag" "failed" "OSNet ReID TensorRT engine only accepts static batch 1" @{
             log = $LogPath
@@ -411,8 +429,33 @@ function Stop-DockerContainer {
         return $false
     }
 
-    $output = & wsl.exe -e docker rm -f $ContainerName 2>&1
-    if ($LASTEXITCODE -eq 0) {
+    $previousErrorActionPreference = $ErrorActionPreference
+    $previousNativeErrorPreference = $null
+    if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue) {
+        $previousNativeErrorPreference = $global:PSNativeCommandUseErrorActionPreference
+    }
+    try {
+        $ErrorActionPreference = "Continue"
+        if ($null -ne $previousNativeErrorPreference) {
+            $global:PSNativeCommandUseErrorActionPreference = $false
+        }
+        $output = & wsl.exe -e docker rm -f $ContainerName 2>&1
+        $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
+    } catch {
+        Write-Stage "docker" "warning" "Could not stop Docker container" @{
+            container = $ContainerName
+            reason = $Reason
+            error = ConvertTo-CleanText $_
+        }
+        return $false
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        if ($null -ne $previousNativeErrorPreference) {
+            $global:PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        }
+    }
+
+    if ($exitCode -eq 0) {
         Write-Stage "docker" "cleanup" "Stopped Docker container" @{
             container = $ContainerName
             reason = $Reason
@@ -420,6 +463,43 @@ function Stop-DockerContainer {
         return $true
     }
     return $false
+}
+
+function Stop-StaleSimContainers {
+    param(
+        [Parameter(Mandatory = $true)][string]$ImageName,
+        [Parameter(Mandatory = $true)][int]$PublishedUdpPort,
+        [string]$ExpectedContainerName = ""
+    )
+
+    if ($DryRun -or -not $ImageName -or $PublishedUdpPort -le 0) {
+        return
+    }
+
+    $filterImage = "ancestor=$ImageName"
+    $filterPort = "publish=$PublishedUdpPort/udp"
+    $raw = & wsl.exe -e docker ps --filter $filterImage --filter $filterPort --format "{{.Names}}" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Stage "docker" "warning" "Could not inspect stale sim containers before launch" @{
+            error = ConvertTo-CleanText $raw
+        }
+        return
+    }
+
+    $containers = @(
+        $raw |
+            ForEach-Object { ConvertTo-CleanText $_ } |
+            Where-Object { $_ -and $_ -ne $ExpectedContainerName }
+    )
+    if ($containers.Count -eq 0) {
+        return
+    }
+
+    foreach ($container in $containers) {
+        $null = Stop-DockerContainer `
+            -ContainerName $container `
+            -Reason "stale sim controller publishing UDP $PublishedUdpPort"
+    }
 }
 
 function Start-IsaacExitMonitorJob {
@@ -458,28 +538,101 @@ function Stop-IsaacProcess {
         [string]$Reason = "launcher cleanup"
     )
 
-    if ($DryRun -or -not $Process) {
+    if ($DryRun) {
         return $false
     }
 
+    $stopped = $false
+
     try {
-        if ($Process.HasExited) {
-            return $false
-        }
-        $pidText = [string][int]$Process.Id
-        & taskkill.exe /PID $pidText /T /F 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Stage "isaac" "cleanup" "Stopped Isaac process tree" @{
-                pid = [int]$Process.Id
-                reason = $Reason
+        if ($Process -and -not $Process.HasExited) {
+            $pidText = [string][int]$Process.Id
+            & taskkill.exe /PID $pidText /T /F 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Stage "isaac" "cleanup" "Stopped Isaac launcher process tree" @{
+                    pid = [int]$Process.Id
+                    reason = $Reason
+                }
+                $stopped = $true
             }
-            return $true
         }
     } catch {
-        Write-Stage "isaac" "warning" "Could not stop Isaac process tree" @{
-            pid = [int]$Process.Id
+        $pidValue = if ($Process) { [int]$Process.Id } else { 0 }
+        Write-Stage "isaac" "warning" "Could not stop Isaac launcher process tree" @{
+            pid = $pidValue
             error = ConvertTo-CleanText $_
         }
+    }
+
+    try {
+        $kitProcesses = @(
+            Get-CimInstance Win32_Process -Filter "Name = 'kit.exe'" -ErrorAction Stop |
+                Where-Object {
+                    $_.CommandLine -and
+                    $_.CommandLine.Contains("isaac_env.py") -and
+                    $_.CommandLine.Contains($RunLogDir)
+                }
+        )
+        foreach ($kitProcess in $kitProcesses) {
+            $kitPid = [string][int]$kitProcess.ProcessId
+            & taskkill.exe /PID $kitPid /T /F 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Stage "isaac" "cleanup" "Stopped Isaac Kit process" @{
+                    pid = [int]$kitProcess.ProcessId
+                    reason = $Reason
+                }
+                $stopped = $true
+            }
+        }
+    } catch {
+        Write-Stage "isaac" "warning" "Could not inspect Isaac Kit processes for cleanup" @{
+            reason = $Reason
+            error = ConvertTo-CleanText $_
+        }
+    }
+
+    return $stopped
+}
+
+function Write-IsaacFailureDiagnosis {
+    param(
+        [Parameter(Mandatory = $true)][string]$EventLogPath,
+        [string]$RawLogPath = ""
+    )
+
+    $eventText = ""
+    if (Test-Path -LiteralPath $EventLogPath) {
+        $eventText = Get-Content -LiteralPath $EventLogPath -Raw -ErrorAction SilentlyContinue
+    }
+    $rawText = ""
+    if ($RawLogPath -and (Test-Path -LiteralPath $RawLogPath)) {
+        $rawText = Get-Content -LiteralPath $RawLogPath -Raw -ErrorAction SilentlyContinue
+    }
+
+    if ($eventText -match "person_asset_missing") {
+        Write-Stage "isaac_diag" "failed" "Isaac could not find a real Isaac People character asset; install/configure the matching Isaac Sim Assets pack" @{
+            event_log = $EventLogPath
+            raw_log = $RawLogPath
+        }
+        return $true
+    }
+    if ($eventText -match "person_animation_not_ready" -or $eventText -match "registered_character_count=0") {
+        Write-Stage "isaac_diag" "failed" "Person AnimGraph did not register; refusing to run a sliding/fallback person animation" @{
+            event_log = $EventLogPath
+            raw_log = $RawLogPath
+        }
+        if ($rawText -match "Python import process in omni\.anim\.graph\.core failed") {
+            Write-Stage "isaac_diag" "failed" "Bundled omni.anim.graph.core Python node registration failed during Isaac startup" @{
+                raw_log = $RawLogPath
+            }
+        }
+        return $true
+    }
+    if ($rawText -match "Python import process in omni\.anim\.graph\.core failed") {
+        Write-Stage "isaac_diag" "failed" "Bundled omni.anim.graph.core Python node registration failed during Isaac startup" @{
+            raw_log = $RawLogPath
+        }
+        return $true
     }
     return $false
 }
@@ -513,6 +666,7 @@ function Wait-IsaacReady {
 
         try {
             if ($Process -and $Process.HasExited) {
+                $null = Write-IsaacFailureDiagnosis -EventLogPath $EventLogPath -RawLogPath $IsaacRawLog
                 Write-Stage "isaac_wait" "failed" "Isaac process exited before world_ready" @{
                     exit_code = [int]$Process.ExitCode
                     event_log = $EventLogPath
@@ -526,6 +680,7 @@ function Wait-IsaacReady {
         Start-Sleep -Seconds 2
     }
 
+    $null = Write-IsaacFailureDiagnosis -EventLogPath $EventLogPath -RawLogPath $IsaacRawLog
     Write-Stage "isaac_wait" "failed" "Timed out waiting for Isaac world_ready" @{
         event_log = $EventLogPath
         timeout_sec = [int]$TimeoutSec
@@ -585,6 +740,7 @@ Write-Stage "setup" "start" "Preparing run_sim launch" @{
     keep_run_logs = [int]$KeepRunLogs
     trt_engine = $TrtEngine
     osnet_trt_engine = $OsnetTrtEngine
+    sim_frame_timeout_exit_sec = [double]$SimFrameTimeoutExitSec
 }
 Write-Host "Read first: $SummaryLog"
 Prune-OldRunLogs -KeepCount $KeepRunLogs
@@ -606,10 +762,16 @@ if ($NoIsaac -and $NoDockerRun) {
     }
 } else {
     if (-not $FrameHost) {
-        $FrameHost = Get-WslHostnameIp
+        try {
+            $FrameHost = Get-WslHostnameIp
+            Write-Host "Resolved WSL2 IP for frame_host: $FrameHost"
+        } catch {
+            $FrameHost = "127.0.0.1"
+            Write-Host "Fallback to 127.0.0.1 for frame_host: $_"
+        }
     }
     if (-not $CmdHost) {
-        $CmdHost = Get-WslWindowsHostIp
+        $CmdHost = "host.docker.internal"
     }
 }
 
@@ -650,6 +812,7 @@ if ($NoIsaac) {
         $proc = Start-Process -FilePath "powershell.exe" -ArgumentList $isaacArgs -PassThru
         Write-Stage "isaac" "launched" "Opened Isaac Sim PowerShell window" @{
             pid = $proc.Id
+            isaac_sim_dir = $IsaacSimDir
             raw_log = $IsaacRawLog
             console_log = $IsaacFilteredLog
             event_log = $IsaacEventLog
@@ -715,6 +878,11 @@ if ($NoDockerRun) {
 if ($NoDockerRun) {
     Write-Stage "docker" "skipped" "Docker run skipped by --no-docker-run"
 } else {
+    Stop-StaleSimContainers `
+        -ImageName $Image `
+        -PublishedUdpPort $FramePort `
+        -ExpectedContainerName $DockerContainerName
+
     $dockerLog = Join-Path $RunLogDir "docker_run.log"
     $visionArgs = @(
         "python3 main.py",
@@ -726,8 +894,11 @@ if ($NoDockerRun) {
         "--frame-port $FramePort",
         "--trt-engine '$TrtEngine'",
         "--osnet-trt-engine '$OsnetTrtEngine'",
+        "--sim-frame-timeout-exit-sec $SimFrameTimeoutExitSec",
         "--ecs-log-dir /workspace/run_logs/ecs",
-        "--debug-trace-dir /workspace/run_logs/debug_trace"
+        "--debug-trace-dir /workspace/run_logs/debug_trace",
+        "--preview-save-dir /workspace/run_logs/opencv_preview",
+        "--preview-save-fps 2"
     )
     if (-not $VisionPreview) {
         $visionArgs += "--headless"

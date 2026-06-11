@@ -1,0 +1,662 @@
+#usda 1.0
+(
+    customLayerData = {
+        string creator = "URDF USD Converter v0.1.2"
+    }
+    defaultPrim = "go2_description"
+    doc = """Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\tmpzh46y1d_\\go2_description.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\urdf_import_go2_39o9y8pj\\usdex_go2\\go2_description.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\urdf_import_go2_39o9y8pj\\temp_go2\\go2.usd
+
+
+Generated from Composed Stage of root layer C:\\Users\\antho\\Downloads\\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\\isaac\\assets\\go2\\payloads\\base.usd
+"""
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    subLayers = [
+        @./physics.usda@
+    ]
+    upAxis = "Z"
+)
+
+over "go2_description"
+{
+    over "Physics"
+    {
+        def MjcActuator "FL_hip_joint_actuator"
+        {
+            uniform double mjc:forceRange:max = 23.700000762939453
+            uniform double mjc:forceRange:min = -23.700000762939453
+            custom rel mjc:target
+            prepend rel mjc:target = </go2_description/Physics/FL_hip_joint>
+        }
+
+        def MjcActuator "FL_thigh_joint_actuator"
+        {
+            uniform double mjc:forceRange:max = 23.700000762939453
+            uniform double mjc:forceRange:min = -23.700000762939453
+            custom rel mjc:target
+            prepend rel mjc:target = </go2_description/Physics/FL_thigh_joint>
+        }
+
+        def MjcActuator "FL_calf_joint_actuator"
+        {
+            uniform double mjc:forceRange:max = 45.43000030517578
+            uniform double mjc:forceRange:min = -45.43000030517578
+            custom rel mjc:target
+            prepend rel mjc:target = </go2_description/Physics/FL_calf_joint>
+        }
+
+        def MjcActuator "FR_hip_joint_actuator"
+        {
+            uniform double mjc:forceRange:max = 23.700000762939453
+            uniform double mjc:forceRange:min = -23.700000762939453
+            custom rel mjc:target
+            prepend rel mjc:target = </go2_description/Physics/FR_hip_joint>
+        }
+
+        def MjcActuator "FR_thigh_joint_actuator"
+        {
+            uniform double mjc:forceRange:max = 23.700000762939453
+            uniform double mjc:forceRange:min = -23.700000762939453
+            custom rel mjc:target
+            prepend rel mjc:target = </go2_description/Physics/FR_thigh_joint>
+        }
+
+        def MjcActuator "FR_calf_joint_actuator"
+        {
+            uniform double mjc:forceRange:max = 45.43000030517578
+            uniform double mjc:forceRange:min = -45.43000030517578
+            custom rel mjc:target
+            prepend rel mjc:target = </go2_description/Physics/FR_calf_joint>
+        }
+
+        def MjcActuator "RL_hip_joint_actuator"
+        {
+            uniform double mjc:forceRange:max = 23.700000762939453
+            uniform double mjc:forceRange:min = -23.700000762939453
+            custom rel mjc:target
+            prepend rel mjc:target = </go2_description/Physics/RL_hip_joint>
+        }
+
+        def MjcActuator "RL_thigh_joint_actuator"
+        {
+            uniform double mjc:forceRange:max = 23.700000762939453
+            uniform double mjc:forceRange:min = -23.700000762939453
+            custom rel mjc:target
+            prepend rel mjc:target = </go2_description/Physics/RL_thigh_joint>
+        }
+
+        def MjcActuator "RL_calf_joint_actuator"
+        {
+            uniform double mjc:forceRange:max = 45.43000030517578
+            uniform double mjc:forceRange:min = -45.43000030517578
+            custom rel mjc:target
+            prepend rel mjc:target = </go2_description/Physics/RL_calf_joint>
+        }
+
+        def MjcActuator "RR_hip_joint_actuator"
+        {
+            uniform double mjc:forceRange:max = 23.700000762939453
+            uniform double mjc:forceRange:min = -23.700000762939453
+            custom rel mjc:target
+            prepend rel mjc:target = </go2_description/Physics/RR_hip_joint>
+        }
+
+        def MjcActuator "RR_thigh_joint_actuator"
+        {
+            uniform double mjc:forceRange:max = 23.700000762939453
+            uniform double mjc:forceRange:min = -23.700000762939453
+            custom rel mjc:target
+            prepend rel mjc:target = </go2_description/Physics/RR_thigh_joint>
+        }
+
+        def MjcActuator "RR_calf_joint_actuator"
+        {
+            uniform double mjc:forceRange:max = 45.43000030517578
+            uniform double mjc:forceRange:min = -45.43000030517578
+            custom rel mjc:target
+            prepend rel mjc:target = </go2_description/Physics/RR_calf_joint>
+        }
+
+        over "Head_upper_joint"
+        {
+        }
+
+        over "Head_lower_joint"
+        {
+        }
+
+        over "FL_hip_joint" (
+            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "FL_hip_rotor_joint"
+        {
+        }
+
+        over "FL_thigh_joint" (
+            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "FL_thigh_rotor_joint"
+        {
+        }
+
+        over "FL_calf_joint" (
+            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "FL_calflower_joint"
+        {
+        }
+
+        over "FL_calflower1_joint"
+        {
+        }
+
+        over "FL_calf_rotor_joint"
+        {
+        }
+
+        over "FL_foot_joint"
+        {
+        }
+
+        over "FR_hip_joint" (
+            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "FR_hip_rotor_joint"
+        {
+        }
+
+        over "FR_thigh_joint" (
+            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "FR_thigh_rotor_joint"
+        {
+        }
+
+        over "FR_calf_joint" (
+            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "FR_calflower_joint"
+        {
+        }
+
+        over "FR_calflower1_joint"
+        {
+        }
+
+        over "FR_calf_rotor_joint"
+        {
+        }
+
+        over "FR_foot_joint"
+        {
+        }
+
+        over "RL_hip_joint" (
+            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "RL_hip_rotor_joint"
+        {
+        }
+
+        over "RL_thigh_joint" (
+            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "RL_thigh_rotor_joint"
+        {
+        }
+
+        over "RL_calf_joint" (
+            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "RL_calflower_joint"
+        {
+        }
+
+        over "RL_calflower1_joint"
+        {
+        }
+
+        over "RL_calf_rotor_joint"
+        {
+        }
+
+        over "RL_foot_joint"
+        {
+        }
+
+        over "RR_hip_joint" (
+            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "RR_hip_rotor_joint"
+        {
+        }
+
+        over "RR_thigh_joint" (
+            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "RR_thigh_rotor_joint"
+        {
+        }
+
+        over "RR_calf_joint" (
+            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "RR_calflower_joint"
+        {
+        }
+
+        over "RR_calflower1_joint"
+        {
+        }
+
+        over "RR_calf_rotor_joint"
+        {
+        }
+
+        over "RR_foot_joint"
+        {
+        }
+
+        over "imu_joint"
+        {
+        }
+
+        over "radar_joint"
+        {
+        }
+    }
+
+    over "Geometry"
+    {
+        over "base"
+        {
+            over "base"
+            {
+            }
+
+            over "FL_hip"
+            {
+                over "hip"
+                {
+                }
+
+                over "FL_thigh"
+                {
+                    over "thigh"
+                    {
+                    }
+
+                    over "FL_calf"
+                    {
+                        over "calf"
+                        {
+                        }
+
+                        over "FL_foot"
+                        {
+                            over "foot"
+                            {
+                            }
+
+                            over "sphere"
+                            {
+                            }
+                        }
+
+                        over "FL_calflower"
+                        {
+                            over "FL_calflower1"
+                            {
+                                over "cylinder"
+                                {
+                                }
+                            }
+
+                            over "cylinder"
+                            {
+                            }
+                        }
+
+                        over "cylinder"
+                        {
+                        }
+                    }
+
+                    over "FL_calf_rotor"
+                    {
+                    }
+
+                    over "box"
+                    {
+                    }
+                }
+
+                over "FL_thigh_rotor"
+                {
+                }
+
+                over "cylinder"
+                {
+                }
+            }
+
+            over "FR_hip"
+            {
+                over "hip"
+                {
+                }
+
+                over "FR_thigh"
+                {
+                    over "thigh_mirror"
+                    {
+                    }
+
+                    over "FR_calf"
+                    {
+                        over "calf_mirror"
+                        {
+                        }
+
+                        over "FR_foot"
+                        {
+                            over "foot"
+                            {
+                            }
+
+                            over "sphere"
+                            {
+                            }
+                        }
+
+                        over "FR_calflower"
+                        {
+                            over "FR_calflower1"
+                            {
+                                over "cylinder"
+                                {
+                                }
+                            }
+
+                            over "cylinder"
+                            {
+                            }
+                        }
+
+                        over "cylinder"
+                        {
+                        }
+                    }
+
+                    over "FR_calf_rotor"
+                    {
+                    }
+
+                    over "box"
+                    {
+                    }
+                }
+
+                over "FR_thigh_rotor"
+                {
+                }
+
+                over "cylinder"
+                {
+                }
+            }
+
+            over "RL_hip"
+            {
+                over "hip"
+                {
+                }
+
+                over "RL_thigh"
+                {
+                    over "thigh"
+                    {
+                    }
+
+                    over "RL_calf"
+                    {
+                        over "calf"
+                        {
+                        }
+
+                        over "RL_foot"
+                        {
+                            over "foot"
+                            {
+                            }
+
+                            over "sphere"
+                            {
+                            }
+                        }
+
+                        over "RL_calflower"
+                        {
+                            over "RL_calflower1"
+                            {
+                                over "cylinder"
+                                {
+                                }
+                            }
+
+                            over "cylinder"
+                            {
+                            }
+                        }
+
+                        over "cylinder"
+                        {
+                        }
+                    }
+
+                    over "RL_calf_rotor"
+                    {
+                    }
+
+                    over "box"
+                    {
+                    }
+                }
+
+                over "RL_thigh_rotor"
+                {
+                }
+
+                over "cylinder"
+                {
+                }
+            }
+
+            over "RR_hip"
+            {
+                over "hip"
+                {
+                }
+
+                over "RR_thigh"
+                {
+                    over "thigh_mirror"
+                    {
+                    }
+
+                    over "RR_calf"
+                    {
+                        over "calf_mirror"
+                        {
+                        }
+
+                        over "RR_foot"
+                        {
+                            over "foot"
+                            {
+                            }
+
+                            over "sphere"
+                            {
+                            }
+                        }
+
+                        over "RR_calflower"
+                        {
+                            over "RR_calflower1"
+                            {
+                                over "cylinder"
+                                {
+                                }
+                            }
+
+                            over "cylinder"
+                            {
+                            }
+                        }
+
+                        over "cylinder"
+                        {
+                        }
+                    }
+
+                    over "RR_calf_rotor"
+                    {
+                    }
+
+                    over "box"
+                    {
+                    }
+                }
+
+                over "RR_thigh_rotor"
+                {
+                }
+
+                over "cylinder"
+                {
+                }
+            }
+
+            over "Head_upper"
+            {
+                over "Head_lower"
+                {
+                    over "sphere"
+                    {
+                    }
+                }
+
+                over "cylinder"
+                {
+                }
+            }
+
+            over "FL_hip_rotor"
+            {
+            }
+
+            over "FR_hip_rotor"
+            {
+            }
+
+            over "RL_hip_rotor"
+            {
+            }
+
+            over "RR_hip_rotor"
+            {
+            }
+
+            over "imu"
+            {
+            }
+
+            over "radar"
+            {
+            }
+
+            over "front_camera"
+            {
+            }
+
+            over "box"
+            {
+            }
+        }
+    }
+
+    over "Materials"
+    {
+        over "tn___003effect_YFjrW8vyi0ami2gfo2"
+        {
+        }
+
+        over "tn__Materialeffect_WL"
+        {
+        }
+
+        over "tn__Material_009effect_zQ"
+        {
+        }
+
+        over "tn___005effect_YFhjx9jeBzwc1xw4"
+        {
+        }
+
+        over "tn___007effect_YFxgoBizOZye0fga1"
+        {
+        }
+
+        over "tn__Material_011effect_zQ"
+        {
+        }
+
+        over "tn___007effect_YFhjx9jeBzwc1xw4"
+        {
+        }
+    }
+}
+

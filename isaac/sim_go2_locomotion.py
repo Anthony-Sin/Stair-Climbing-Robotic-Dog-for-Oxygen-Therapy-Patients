@@ -5,7 +5,10 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from omni.isaac.core.utils.types import ArticulationAction
+try:
+    from omni.isaac.core.utils.types import ArticulationAction
+except ModuleNotFoundError:
+    from isaacsim.core.utils.types import ArticulationAction
 from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
 from sim_logging_utils import log_event
@@ -24,6 +27,9 @@ class Go2LocomotionState:
     rigid_body_path: str = ""
     rigid_body_logged: bool = False
     gait_logged: bool = False
+    stair_hold_logged: bool = False
+    procedural_gait_unavailable: bool = False
+    procedural_gait_failure_count: int = 0
     warning_times: Dict[str, float] = field(default_factory=dict)
     stable_hold_logged: bool = False
 
@@ -332,7 +338,11 @@ def _default_stand_pose(go2: Any, dof_names: List[str]) -> Optional[np.ndarray]:
     if not dof_names:
         return None
     try:
-        current = np.asarray(go2.get_joint_positions(), dtype=float)
+        try:
+            controller = go2.get_articulation_controller()
+            current = np.asarray(controller.get_joint_positions(), dtype=float)
+        except Exception:
+            current = np.asarray(go2.get_joint_positions(), dtype=float)
     except Exception:
         current = np.zeros(len(dof_names), dtype=float)
     if current.shape[0] != len(dof_names):
@@ -350,6 +360,28 @@ def _default_stand_pose(go2: Any, dof_names: List[str]) -> Optional[np.ndarray]:
     return stand
 
 
+def _command_joint_positions(go2: Any, positions: np.ndarray) -> None:
+    """Use the first Isaac articulation joint-position API available in this install."""
+    errors = []
+    for method_name in ("set_joint_position_targets", "set_joint_positions"):
+        method = getattr(go2, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            method(positions)
+            return
+        except Exception as exc:
+            errors.append(f"{method_name}: {exc}")
+
+    try:
+        go2.apply_action(ArticulationAction(joint_positions=positions))
+        return
+    except Exception as exc:
+        errors.append(f"apply_action: {exc}")
+
+    raise RuntimeError("; ".join(errors) if errors else "no joint position command API available")
+
+
 def _apply_procedural_gait(
     go2: Any,
     state: Go2LocomotionState,
@@ -360,6 +392,16 @@ def _apply_procedural_gait(
     dt: float,
     logger: Optional[logging.Logger],
 ) -> None:
+    command_speed = math.sqrt((vx * vx) + (vy * vy)) + (0.25 * abs(wz))
+    moving = command_speed > 0.03
+    if moving:
+        state.gait_time += dt
+    else:
+        state.gait_time = max(0.0, state.gait_time - (dt * 2.0))
+
+    if state.procedural_gait_unavailable:
+        return
+
     if state.stand_joint_positions is None:
         state.dof_names = _get_dof_names(go2)
         state.stand_joint_positions = _default_stand_pose(go2, state.dof_names)
@@ -372,8 +414,6 @@ def _apply_procedural_gait(
             )
             return
 
-    command_speed = math.sqrt((vx * vx) + (vy * vy)) + (0.25 * abs(wz))
-    moving = command_speed > 0.03
     positions = state.stand_joint_positions.copy()
 
     if moving:
@@ -395,7 +435,7 @@ def _apply_procedural_gait(
                 positions[index] -= 0.36 * swing * max(0.0, sin_phase)
 
     try:
-        go2.apply_action(ArticulationAction(joint_positions=positions))
+        _command_joint_positions(go2, positions)
         if moving and logger is not None and not state.gait_logged:
             state.gait_logged = True
             log_event(
@@ -406,11 +446,15 @@ def _apply_procedural_gait(
                 dof_count=len(state.dof_names),
             )
     except Exception as exc:
+        state.procedural_gait_failure_count += 1
+        state.procedural_gait_unavailable = True
         _warn_rate_limited(
             logger,
             state,
             "go2_gait_apply_failed",
-            "Go2 procedural gait command failed",
+            "Go2 procedural gait command failed; disabling joint animation and keeping stable body motion",
+            interval_sec=30.0,
+            failure_count=int(state.procedural_gait_failure_count),
             error=str(exc),
         )
 
@@ -423,12 +467,6 @@ def _get_analytical_terrain_height(x: float, y: float) -> float:
     if 2.0 <= x < 3.5:
         step_idx = int((x - 2.0) / 0.3)
         return min(0.40, (step_idx + 1) * 0.08)
-    # Landing: 3.5 to 5.0m
-    elif 3.5 <= x < 5.0:
-        return 0.40
-    # Ramp: 5.0 to 7.0m
-    elif 5.0 <= x < 7.0:
-        return 0.40 * (1.0 - (x - 5.0) / 2.0)
     # Flat ground
     return 0.0
 
@@ -507,10 +545,15 @@ def apply_go2_velocity(
                 # 2. Configure joint gains if not set
                 if not state.joint_gains_set and not state.joint_gains_unavailable:
                     try:
-                        dof_props = go2.get_dof_properties()
-                        dof_props["stiffness"] = 80.0
-                        dof_props["damping"] = 2.0
-                        go2.set_dof_properties(dof_props)
+                        try:
+                            controller = go2.get_articulation_controller()
+                            for i in range(go2.num_dof):
+                                controller.set_joint_drive_gains(i, stiffness=80.0, damping=2.0)
+                        except Exception:
+                            dof_props = go2.get_dof_properties()
+                            dof_props["stiffness"] = 80.0
+                            dof_props["damping"] = 2.0
+                            go2.set_dof_properties(dof_props)
                         state.joint_gains_set = True
                         if logger is not None:
                             log_event(
@@ -614,7 +657,11 @@ def apply_go2_velocity(
                 # 6. Generate joint targets
                 positions = np.zeros(len(state.dof_names))
                 try:
-                    current_positions = go2.get_joint_positions()
+                    try:
+                        controller = go2.get_articulation_controller()
+                        current_positions = controller.get_joint_positions()
+                    except Exception:
+                        current_positions = go2.get_joint_positions()
                     if current_positions is not None and len(current_positions) == len(positions):
                         positions = np.array(current_positions)
                 except Exception:
@@ -701,7 +748,7 @@ def apply_go2_velocity(
                     state.last_foot_positions[leg] = (x_target, y_target, z_target)
                     state.last_phases[leg] = phi
 
-                go2.apply_action(ArticulationAction(joint_positions=positions))
+                _command_joint_positions(go2, positions)
                 
                 # Log successful execution once
                 if not state.gait_logged and logger is not None:
@@ -733,17 +780,62 @@ def apply_go2_velocity(
         matrix = xform.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
         roll, pitch, yaw = _extract_roll_pitch_yaw(matrix)
         cos_y, sin_y = math.cos(yaw), math.sin(yaw)
-        wx = cos_y * vx - sin_y * vy
-        wy = sin_y * vx + cos_y * vy
         
         rx = float(matrix[3][0])
         ry = float(matrix[3][1])
         rz = float(matrix[3][2])
+        if rx >= 1.86 and vx > 0.0:
+            vx = 0.0
+            if logger is not None and not state.stair_hold_logged:
+                state.stair_hold_logged = True
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "go2_stair_hold_active",
+                    "Holding Go2 before the first stair because stair-climbing gait is not enabled yet",
+                    hold_x_m=float(rx),
+                )
+        wx = cos_y * vx - sin_y * vy
+        wy = sin_y * vx + cos_y * vy
         terrain_height = _query_terrain_height(rx, ry, rz)
         actual_height = rz - terrain_height
         
+        command_speed = math.sqrt((vx * vx) + (vy * vy)) + (0.25 * abs(wz))
+        gait_preapplied = False
+        if command_speed > 0.03 and not state.gait_logged:
+            _apply_procedural_gait(
+                go2,
+                state,
+                vx=vx,
+                vy=vy,
+                wz=wz,
+                dt=dt,
+                logger=logger,
+            )
+            gait_preapplied = True
+            if not state.gait_logged:
+                wx = 0.0
+                wy = 0.0
+                wz = 0.0
+                vx = 0.0
+                vy = 0.0
+                command_speed = 0.0
+                _warn_rate_limited(
+                    logger,
+                    state,
+                    "go2_motion_blocked_until_gait_ready",
+                    "Go2 body motion is blocked until joint gait animation is active",
+                    interval_sec=5.0,
+                )
+
+        walk_bob_m = 0.0
+        if command_speed > 0.03:
+            omega = 2.0 * math.pi / max(0.2, state.gait_period)
+            walk_bob_m = 0.012 * math.sin(2.0 * omega * state.gait_time)
+        desired_height_m = state.target_height_m + walk_bob_m
+
         vz = _clamp(
-            (state.target_height_m - actual_height) * state.height_kp,
+            (desired_height_m - actual_height) * state.height_kp,
             -state.max_vertical_speed_mps,
             state.max_vertical_speed_mps,
         )
@@ -780,19 +872,20 @@ def apply_go2_velocity(
         )
         _set_stable_kinematic_pose(
             go2,
-            vx=vx,
-            vy=vy,
-            wz=wz,
+            vx=vx if state.gait_logged else 0.0,
+            vy=vy if state.gait_logged else 0.0,
+            wz=wz if state.gait_logged else 0.0,
             dt=dt,
             target_height_m=state.target_height_m,
         )
 
-    _apply_procedural_gait(
-        go2,
-        state,
-        vx=vx,
-        vy=vy,
-        wz=wz,
-        dt=dt,
-        logger=logger,
-    )
+    if not locals().get("gait_preapplied", False):
+        _apply_procedural_gait(
+            go2,
+            state,
+            vx=vx,
+            vy=vy,
+            wz=wz,
+            dt=dt,
+            logger=logger,
+        )

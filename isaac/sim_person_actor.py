@@ -7,12 +7,17 @@ from typing import Any, Optional
 
 import numpy as np
 import omni
-from omni.isaac.core.objects import DynamicCapsule
-from omni.isaac.core.utils.prims import create_prim, is_prim_path_valid
-from omni.isaac.core.utils.stage import add_reference_to_stage
+try:
+    from omni.isaac.core.objects import DynamicCapsule
+    from omni.isaac.core.utils.prims import create_prim, is_prim_path_valid
+    from omni.isaac.core.utils.stage import add_reference_to_stage
+    import omni.isaac.core.utils.nucleus as nucleus_utils
+except ModuleNotFoundError:
+    from isaacsim.core.api.objects import DynamicCapsule
+    from isaacsim.core.utils.prims import create_prim, is_prim_path_valid
+    from isaacsim.core.utils.stage import add_reference_to_stage
+    import isaacsim.storage.native as nucleus_utils
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
-
-import omni.isaac.core.utils.nucleus as nucleus_utils
 from sim_logging_utils import log_event
 
 
@@ -20,11 +25,6 @@ CHARACTER_PARENT_PRIM = "/World/Characters"
 PERSON_VISUAL_PRIM = "/World/Characters/SimWalker"
 PERSON_COLLIDER_PRIM = "/World/PersonCollider"
 ANIMATED_CHARACTER_NAME = "F_Business_02"
-FALLBACK_CHARACTER_URL = (
-    "https://omniverse-content-production.s3-us-west-2.amazonaws.com/"
-    "Assets/Isaac/5.1/Isaac/People/Characters/"
-    "female_adult_police_01_new/female_adult_police_01_new.usd"
-)
 
 
 @dataclass
@@ -40,11 +40,12 @@ class SimPersonTarget:
     animation_attempt_count: int = 0
     animation_ready: bool = False
     agent_prim_path: str = ""
+    animation_warning_logged: bool = False
     last_collider_warning_time: float = 0.0
     suppressed_collider_warnings: int = 0
+    kinematic_fallback: bool = False
 
     def set_world_pose(self, position: np.ndarray, orientation: Optional[np.ndarray] = None) -> None:
-        del orientation
         position = np.asarray(position, dtype=float)
         if position.shape[0] < 3:
             position = np.array([float(position[0]), float(position[1]), 0.0], dtype=float)
@@ -58,15 +59,12 @@ class SimPersonTarget:
         else:
             distance = 0.0
 
-        visual_z = float(position[2])
-        if distance > 1e-4 and not self.animation_ready:
-            visual_z += 0.025 * abs(math.sin(self.walk_phase))
-
         _set_xform_pose(
             self.visual_prim_path,
-            np.array([float(position[0]), float(position[1]), visual_z], dtype=float),
+            np.array([float(position[0]), float(position[1]), float(position[2])], dtype=float),
             self.yaw_rad,
         )
+        self._update_animation_state(walking=distance > 1e-4)
         collider_center = np.array(
             [
                 float(position[0]),
@@ -105,12 +103,42 @@ class SimPersonTarget:
             return
         self.animation_setup_attempted = True
         self.animation_attempt_count += 1
-        self.animation_ready = _try_setup_people_animation(
+        agent_path = _try_setup_people_animation(
             world,
             visual_prim_path=self.visual_prim_path,
             logger=self.logger,
             attempt=self.animation_attempt_count,
         )
+        self.animation_ready = bool(agent_path)
+        if agent_path:
+            self.agent_prim_path = str(agent_path)
+
+    def _update_animation_state(self, *, walking: bool) -> None:
+        if self.kinematic_fallback or not self.animation_ready or not self.agent_prim_path:
+            return
+        try:
+            import omni.anim.graph.core as ag
+
+            character = ag.get_character(self.agent_prim_path)
+            if character is None:
+                raise RuntimeError(f"animation graph character unavailable for {self.agent_prim_path}")
+            if walking:
+                character.set_variable("Action", "Walk")
+                character.set_variable("Walk", 1.0)
+            else:
+                character.set_variable("Walk", 0.0)
+                character.set_variable("Action", "None")
+        except Exception as exc:
+            if self.logger is not None and not self.animation_warning_logged:
+                self.animation_warning_logged = True
+                log_event(
+                    self.logger,
+                    logging.WARNING,
+                    "person_animation_runtime_update_failed",
+                    "Person animation graph accepted setup but runtime variable update failed",
+                    agent_prim_path=self.agent_prim_path,
+                    error=str(exc),
+                )
 
 
 ANIMATED_CHARACTERS = [
@@ -127,15 +155,9 @@ ANIMATED_CHARACTERS = [
 
 
 def _resolve_character_usd(logger: Optional[logging.Logger]) -> str:
-    import random
     assets_root = nucleus_utils.get_assets_root_path()
-    
-    # Shuffle character pool for visual variation
-    pool = list(ANIMATED_CHARACTERS)
-    random.shuffle(pool)
-    
     if assets_root:
-        for char_name in pool:
+        for char_name in ANIMATED_CHARACTERS:
             candidate = f"{assets_root}/Isaac/People/Characters/{char_name}/{char_name}.usd"
             try:
                 if nucleus_utils.is_file(candidate):
@@ -144,7 +166,7 @@ def _resolve_character_usd(logger: Optional[logging.Logger]) -> str:
                             logger,
                             logging.INFO,
                             "person_asset_selected",
-                            f"Using randomized biped character: {char_name}",
+                            f"Using Isaac People animated character asset: {char_name}",
                             asset_path=candidate,
                         )
                     return candidate
@@ -154,15 +176,23 @@ def _resolve_character_usd(logger: Optional[logging.Logger]) -> str:
     if logger is not None:
         log_event(
             logger,
-            logging.WARNING,
-            "person_asset_fallback",
-            "Animated person asset was not found in Nucleus; using web fallback",
-            asset_path=FALLBACK_CHARACTER_URL,
+            logging.ERROR,
+            "person_asset_missing",
+            "No Isaac People character USD was found in the configured Isaac assets root",
+            assets_root=assets_root or "",
+            checked_characters=ANIMATED_CHARACTERS,
         )
-    return FALLBACK_CHARACTER_URL
+    raise RuntimeError("No Isaac People character USD was found; install/configure Isaac Sim Assets for animated people")
 
 
-def _set_xform_pose(prim_path: str, position: np.ndarray, yaw_rad: float) -> None:
+def _set_xform_pose(
+    prim_path: str,
+    position: np.ndarray,
+    yaw_rad: float,
+    *,
+    roll_rad: float = 0.0,
+    pitch_rad: float = 0.0,
+) -> None:
     stage = omni.usd.get_context().get_stage()
     prim = stage.GetPrimAtPath(prim_path)
     xformable = UsdGeom.Xformable(prim)
@@ -184,7 +214,13 @@ def _set_xform_pose(prim_path: str, position: np.ndarray, yaw_rad: float) -> Non
     translate_op.Set(Gf.Vec3d(float(position[0]), float(position[1]), float(position[2])))
 
     if rotate_op is not None:
-        rotate_op.Set(Gf.Vec3f(0.0, 0.0, math.degrees(yaw_rad)))
+        rotate_op.Set(
+            Gf.Vec3f(
+                math.degrees(roll_rad),
+                math.degrees(pitch_rad),
+                math.degrees(yaw_rad),
+            )
+        )
     elif orient_op is not None:
         orient_op.Set(_yaw_quat_for_orient_op(orient_op, yaw_rad))
     else:
@@ -214,17 +250,50 @@ def _yaw_quat_for_orient_op(orient_op: UsdGeom.XformOp, yaw_rad: float):
 
 def _enable_people_extensions(logger: Optional[logging.Logger]) -> bool:
     try:
-        from omni.isaac.core.utils import extensions
+        try:
+            from isaacsim.core.utils import extensions
+        except Exception:
+            from omni.isaac.core.utils import extensions
         import omni.kit.app
+
+        app = omni.kit.app.get_app()
+        manager = app.get_extension_manager()
+
+        # Check if omni.anim.people is available in the extension manager
+        has_people_ext = False
+        try:
+            for ext in manager.get_extensions():
+                if (ext.get("id", "") or "").startswith("omni.anim.people"):
+                    has_people_ext = True
+                    break
+        except Exception:
+            has_people_ext = True
+
+        if not has_people_ext:
+            if logger is not None:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "person_animation_extension_missing",
+                    "omni.anim.people extension is not available in the extension manager. Bypassing animation setup.",
+                )
+            return False
 
         app = omni.kit.app.get_app()
         manager = app.get_extension_manager()
         required_extensions = (
             "omni.anim.people",
+            "omni.anim.navigation.bundle",
+            "omni.anim.timeline",
             "omni.anim.graph.bundle",
+            "omni.anim.graph.core",
+            "omni.anim.retarget.bundle",
+            "omni.anim.retarget.core",
+            "omni.kit.scripting",
         )
         optional_extensions = (
-            "omni.kit.scripting",
+            "omni.anim.graph.ui",
+            "omni.anim.retarget.ui",
         )
 
         enabled = []
@@ -311,9 +380,31 @@ def _extension_script_path() -> Optional[str]:
         return None
 
 
+def _configure_people_settings(script_path: Optional[str]) -> None:
+    import carb
+    from omni.anim.people.settings import PeopleSettings
+
+    settings = carb.settings.get_settings()
+    settings.set(PeopleSettings.CHARACTER_PRIM_PATH, CHARACTER_PARENT_PRIM)
+    settings.set(PeopleSettings.NUMBER_OF_LOOP, 0)
+    settings.set(PeopleSettings.NAVMESH_ENABLED, False)
+    settings.set(PeopleSettings.DYNAMIC_AVOIDANCE_ENABLED, False)
+    settings.set(PeopleSettings.CACHE_ACTION_METADATA, True)
+    settings.set(PeopleSettings.CHARACTER_FINAL_TARGET_DISTANCE, 0.12)
+    if script_path:
+        settings.set(PeopleSettings.BEHAVIOR_SCRIPT_PATH, script_path)
+
+
 def _ensure_biped_setup(world: Any, logger: Optional[logging.Logger]) -> Optional[Any]:
     assets_root = nucleus_utils.get_assets_root_path()
     if not assets_root:
+        if logger is not None:
+            log_event(
+                logger,
+                logging.ERROR,
+                "person_biped_setup_missing",
+                "Isaac assets root is unavailable; cannot load Biped_Setup animation graph",
+            )
         return None
     biped_prim_path = f"{CHARACTER_PARENT_PRIM}/Biped_Setup"
     if not is_prim_path_valid(biped_prim_path):
@@ -344,14 +435,15 @@ def _try_setup_people_animation(
     visual_prim_path: str,
     logger: Optional[logging.Logger],
     attempt: int,
-) -> bool:
+) -> Optional[str]:
     if not _enable_people_extensions(logger):
-        return False
+        return None
 
     try:
+        import AnimGraphSchema
         import omni.kit.commands
-        from omni.anim.people.scripts.character_behavior import CharacterBehavior
-        from omni.anim.people.scripts.global_agent_manager import GlobalAgentManager
+        import omni.timeline
+        import omni.anim.graph.core as ag
 
         skel_root = _find_first_skel_root(world.stage, visual_prim_path)
         if skel_root is None:
@@ -364,59 +456,120 @@ def _try_setup_people_animation(
                     visual_prim_path=visual_prim_path,
                     attempt=int(attempt),
                 )
-            return False
+            return None
 
         skel_path = str(skel_root.GetPath())
         script_path = _extension_script_path()
-        if script_path:
-            omni.kit.commands.execute("ApplyScriptingAPICommand", paths=[Sdf.Path(skel_path)])
-            skel_root.GetAttribute("omni:scripting:scripts").Set(Sdf.AssetPathArray([script_path]))
-        elif logger is not None:
-            log_event(
-                logger,
-                logging.WARNING,
-                "person_animation_script_missing",
-                "Character behavior script path was not found; trying animation graph only",
-                attempt=int(attempt),
-            )
+        _configure_people_settings(script_path)
 
         animation_graph = _ensure_biped_setup(world, logger)
         if animation_graph is not None and animation_graph.IsValid():
-            omni.kit.commands.execute(
-                "ApplyAnimationGraphAPICommand",
-                paths=[Sdf.Path(skel_path)],
-                animation_graph_path=Sdf.Path(animation_graph.GetPrimPath()),
-            )
+            animation_graph_path = Sdf.Path(animation_graph.GetPrimPath())
+            try:
+                from omni.anim.graph import setup_animation_graph
+                setup_animation_graph(skel_path, str(animation_graph_path))
+            except Exception:
+                omni.kit.commands.execute(
+                    "ApplyAnimationGraphAPICommand",
+                    paths=[Sdf.Path(skel_path)],
+                    animation_graph_path=animation_graph_path,
+                )
+                anim_graph_api = AnimGraphSchema.AnimationGraphAPI.Apply(skel_root)
+                anim_graph_api.GetAnimationGraphRel().SetTargets([animation_graph_path])
+                inputs_pose_rel = skel_root.GetRelationship("inputs:pose")
+                if not inputs_pose_rel:
+                    inputs_pose_rel = skel_root.CreateRelationship("inputs:pose", custom=True)
+                inputs_pose_rel.ClearTargets(False)
+        else:
+            raise RuntimeError("Biped_Setup animation graph is unavailable")
 
-        agent_manager = GlobalAgentManager()
-        agent = CharacterBehavior(prim_path=Sdf.Path(skel_path))
-        agent.init_character()
-        agent_manager.add_agent(agent_prim_path=skel_path, agent_object=agent)
+        if script_path:
+            try:
+                omni.kit.commands.execute("ApplyScriptingAPICommand", paths=[Sdf.Path(skel_path)])
+            except Exception:
+                pass
+            scripts_attr = skel_root.GetAttribute("omni:scripting:scripts")
+            if scripts_attr:
+                scripts_attr.Set(Sdf.AssetPathArray([script_path]))
+
+        for attr_name, value_type, value in (
+            ("anim:graph:variable:Action", Sdf.ValueTypeNames.String, "None"),
+            ("anim:graph:variable:lookAround", Sdf.ValueTypeNames.Float, 0.0),
+            ("anim:graph:variable:Walk", Sdf.ValueTypeNames.Float, 0.0),
+            ("anim:graph:variable:SitWeight", Sdf.ValueTypeNames.Float, 0.0),
+            ("anim:graph:variable:path_points_new", Sdf.ValueTypeNames.Float3Array, []),
+            ("anim:graph:variable:PathPoints", Sdf.ValueTypeNames.Float3Array, []),
+        ):
+            attr = skel_root.GetAttribute(attr_name)
+            if not attr:
+                attr = skel_root.CreateAttribute(attr_name, value_type, custom=True)
+            attr.Set(value)
+
+        timeline = omni.timeline.get_timeline_interface()
+        if not timeline.is_playing():
+            timeline.play()
+
+        try:
+            import omni.kit.app
+            for _ in range(8):
+                try:
+                    world.step(render=False)
+                except Exception:
+                    pass
+                omni.kit.app.get_app().update()
+        except Exception:
+            pass
+
+        character = ag.get_character(skel_path)
+        if character is None:
+            try:
+                character_count = ag.get_character_count()
+            except Exception:
+                character_count = None
+            raise RuntimeError(
+                f"animation graph character did not register for {skel_path}; "
+                f"registered_character_count={character_count}"
+            )
+        character.set_variable("Action", "None")
+        character.set_variable("Walk", 0.0)
 
         if logger is not None:
             log_event(
                 logger,
                 logging.INFO,
                 "person_animation_ready",
-                "Animated person behavior and animation graph are ready",
+                "Animated person animation graph is ready",
                 skel_root_path=skel_path,
+                behavior_script_path=script_path or "",
                 attempt=int(attempt),
             )
-        return True
+        return skel_path
     except Exception as exc:
         if logger is not None:
             log_event(
                 logger,
                 logging.WARNING,
                 "person_animation_setup_failed",
-                "Animated person setup failed; keeping kinematic collider and visual target",
+                "Animated person setup failed",
                 attempt=int(attempt),
                 error=str(exc),
             )
-        return False
+        return None
 
 
 def spawn_sim_person(world: Any, x: float, y: float, logger: Optional[logging.Logger]) -> SimPersonTarget:
+    people_enabled = _enable_people_extensions(logger)
+    if people_enabled:
+        _configure_people_settings(_extension_script_path())
+    else:
+        if logger is not None:
+            log_event(
+                logger,
+                logging.WARNING,
+                "person_animation_disabled",
+                "Omni.Anim.People extensions are not available. Spawning person in kinematic fallback mode.",
+            )
+
     if not is_prim_path_valid(CHARACTER_PARENT_PRIM):
         create_prim(CHARACTER_PARENT_PRIM, "Xform")
 
@@ -445,6 +598,8 @@ def spawn_sim_person(world: Any, x: float, y: float, logger: Optional[logging.Lo
         collider_height_m=collider_height_m,
         logger=logger,
         last_position=np.array([x, y, 0.0], dtype=float),
+        kinematic_fallback=not people_enabled,
+        animation_ready=not people_enabled,
     )
     if logger is not None:
         log_event(

@@ -49,6 +49,10 @@ def parse_args():
         '--cmd-port', type=int, default=55001,
         help='UDP port isaac_env.py listens on for velocity commands'
     )
+    sim_group.add_argument(
+        '--sim-frame-timeout-exit-sec', type=float, default=30.0,
+        help='Exit sim mode if no Isaac camera frame arrives for this many seconds; 0 disables'
+    )
  
     # -----------------------------------------------------------------------
     # Inference
@@ -108,6 +112,14 @@ def parse_args():
     )
     parser.add_argument('--preview-fps', type=float, default=6.0,
                         help='Maximum preview refresh rate in Hz')
+    parser.add_argument('--preview-save-dir', type=str, default='',
+                        help='Directory for OpenCV preview output; cleaned at startup when enabled')
+    parser.add_argument('--preview-save-fps', type=float, default=0.0,
+                        help='Maximum saved OpenCV preview frame rate; 0 uses --preview-fps')
+    parser.add_argument('--preview-save-images', action='store_true',
+                        help='Also save individual OpenCV preview JPEG frames')
+    parser.add_argument('--preview-video-path', type=str, default='',
+                        help='MP4 path for saved OpenCV preview video; empty uses preview-save-dir/opencv_preview.mp4')
     parser.add_argument('--headless', action='store_true',
                         help='Disable OpenCV preview windows')
     parser.add_argument('--rotation-debug', action='store_true',
@@ -181,5 +193,7 @@ def parse_args():
     args = parser.parse_args()
     args.log_components = _normalize_log_components(parser, args.log_components)
     args.debug_trace_every_n_frames = max(1, int(args.debug_trace_every_n_frames))
+    args.sim_frame_timeout_exit_sec = max(0.0, float(args.sim_frame_timeout_exit_sec))
+    args.preview_save_fps = max(0.0, float(args.preview_save_fps))
     return args
  

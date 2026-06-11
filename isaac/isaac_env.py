@@ -30,7 +30,7 @@ parser.add_argument("--physics-hz", type=int, default=60,
                     help="Physics simulation rate in Hz")
 parser.add_argument("--render-every", type=int, default=2,
                     help="Publish a camera frame every N physics steps")
-parser.add_argument("--person-x", type=float, default=2.5,
+parser.add_argument("--person-x", type=float, default=1.0,
                     help="Initial X position of the person target")
 parser.add_argument("--person-y", type=float, default=0.0,
                     help="Initial Y position of the person target")
@@ -88,16 +88,27 @@ simulation_app = SimulationApp({
 # ---------------------------------------------------------------------------
 import carb
 import numpy as np
-import omni.isaac.core.utils.nucleus as nucleus_utils
-from omni.isaac.core import World
-from omni.isaac.core.articulations import Articulation
-from omni.isaac.core.objects import DynamicCapsule, GroundPlane
-from omni.isaac.core.utils.prims import is_prim_path_valid
-from omni.isaac.core.utils.stage import add_reference_to_stage
-from omni.isaac.core.utils.types import ArticulationAction
-from omni.isaac.sensor import Camera
+
+try:
+    import omni.isaac.core.utils.nucleus as nucleus_utils
+    from omni.isaac.core import World
+    from omni.isaac.core.articulations import Articulation
+    from omni.isaac.core.objects import DynamicCapsule, GroundPlane
+    from omni.isaac.core.utils.prims import is_prim_path_valid
+    from omni.isaac.core.utils.stage import add_reference_to_stage
+    from omni.isaac.core.utils.types import ArticulationAction
+    from omni.isaac.core.prims import GeometryPrim
+except ModuleNotFoundError:
+    import isaacsim.storage.native as nucleus_utils
+    from isaacsim.core.api import World
+    from isaacsim.core.prims import SingleArticulation as Articulation, SingleGeometryPrim as GeometryPrim
+    from isaacsim.core.api.objects import DynamicCapsule, GroundPlane
+    from isaacsim.core.utils.prims import is_prim_path_valid
+    from isaacsim.core.utils.stage import add_reference_to_stage
+    from isaacsim.core.utils.types import ArticulationAction
+
+from isaacsim.sensors.camera import Camera
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
-from omni.isaac.core.prims import GeometryPrim
 
 from sim_go2_locomotion import Go2LocomotionState, apply_go2_velocity, hold_go2_stable
 from sim_person_actor import spawn_sim_person
@@ -106,16 +117,17 @@ from sim_person_actor import spawn_sim_person
 # Constants
 # ---------------------------------------------------------------------------
 GO2_USD_PATH   = "/World/Go2"
-CAMERA_PRIM    = "/World/Go2/trunk/front_camera"
+CAMERA_PRIM    = "/World/Sensors/Go2FrontCamera"
 VIEW_CAMERA_PRIM = "/World/View/Go2FollowCamera"
 PERSON_PRIM    = "/World/Person"
 NUCLEUS_GO2    = "/Isaac/Robots/Unitree/Go2/go2.usd"
 LOCAL_GO2      = str((
-    __import__("pathlib").Path(__file__).parent / "assets" / "go2.usd"
+    __import__("pathlib").Path(__file__).parent / "assets" / "go2" / "go2.usda"
 ).resolve())
 
-# Go2 base link name inside the articulation (adjust if your USD differs)
-BASE_LINK_NAME = "trunk"
+# Go2 moving body link inside the Isaac USD. Some Go2 assets expose "base",
+# while older notes/scripts called it "trunk".
+BASE_LINK_NAME = "base"
 
 _go2_locomotion_state = Go2LocomotionState(target_height_m=0.32)
 
@@ -228,6 +240,18 @@ def build_world(physics_hz: int) -> World:
 
 def _resolve_go2_usd() -> str:
     """Return the best available USD path for Go2."""
+    import pathlib
+    local = pathlib.Path(LOCAL_GO2)
+    if local.exists():
+        log_event(
+            LOGGER,
+            logging.INFO,
+            "go2_asset_selected",
+            "Using local Go2 asset",
+            asset_path=LOCAL_GO2,
+        )
+        return str(local)
+
     nucleus_server = nucleus_utils.get_assets_root_path()
     if nucleus_server:
         candidate = nucleus_server + NUCLEUS_GO2
@@ -244,18 +268,6 @@ def _resolve_go2_usd() -> str:
         except Exception:
             pass
 
-    import pathlib
-    local = pathlib.Path(LOCAL_GO2)
-    if local.exists():
-        log_event(
-            LOGGER,
-            logging.INFO,
-            "go2_asset_selected",
-            "Using local Go2 asset",
-            asset_path=LOCAL_GO2,
-        )
-        return LOCAL_GO2
-
     raise FileNotFoundError(
         "Go2 USD not found in Nucleus or isaac/assets/go2.usd.\n"
         "Run:  python isaac/go2_usd_setup.py"
@@ -269,31 +281,147 @@ def load_go2(world: World) -> Articulation:
         Articulation(
             prim_path=GO2_USD_PATH, 
             name="go2",
-            position=np.array([0.0, 0.0, 0.4])  # <--- Spawns dog 40cm in the air
+            position=np.array([0.0, 0.0, 0.32])
         )
     )
-    try:
-        import omni.usd
-        stage = omni.usd.get_context().get_stage()
-        attach_robot_o2_tank(stage, GO2_USD_PATH + "/trunk")
-    except Exception as exc:
-        log_event(LOGGER, logging.WARNING, "o2_tank_mount_failed", "Failed to retrieve USD stage for mounting tank", error=str(exc))
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "robot_o2_mount_skipped",
+        "Skipping robot-mounted O2 props for a clean stairs-and-walls sim scene",
+    )
     return go2
 
 
-def add_camera(resolution: tuple = (1280, 720)) -> Camera:
-    """Mount a front-facing RGB-D camera on the Go2 trunk."""
+def resolve_go2_body_prim_path(stage) -> str:
+    """Return the Go2 prim that follows root motion in this Isaac asset."""
+    for child_name in (BASE_LINK_NAME, "base", "trunk", "base_link"):
+        candidate = f"{GO2_USD_PATH}/{child_name}"
+        try:
+            prim = stage.GetPrimAtPath(candidate)
+            if prim and prim.IsValid():
+                return candidate
+        except Exception:
+            pass
+    return GO2_USD_PATH
+
+
+def _quat_xyzw_from_rpy(roll_rad: float, pitch_rad: float, yaw_rad: float) -> np.ndarray:
+    cr = math.cos(roll_rad * 0.5)
+    sr = math.sin(roll_rad * 0.5)
+    cp = math.cos(pitch_rad * 0.5)
+    sp = math.sin(pitch_rad * 0.5)
+    cy = math.cos(yaw_rad * 0.5)
+    sy = math.sin(yaw_rad * 0.5)
+    return np.array(
+        [
+            cr * cp * cy + sr * sp * sy,
+            sr * cp * cy - cr * sp * sy,
+            cr * sp * cy + sr * cp * sy,
+            cr * cp * sy - sr * sp * cy,
+        ],
+        dtype=float,
+    )
+
+
+def set_front_camera_local_pose(camera, *, stage=None, gait_time: float = 0.0, moving: bool = False) -> None:
+    """Keep the simulated D435 visually mounted to Go2 without parenting inside the articulation."""
+    dx = dy = dz = 0.0
+    roll_shake = pitch_shake = yaw_shake = 0.0
+    if moving:
+        omega = 2.0 * math.pi / max(0.2, _go2_locomotion_state.gait_period)
+        dx = 0.004 * math.sin(omega * gait_time)
+        dy = 0.008 * math.cos(omega * gait_time)
+        dz = 0.012 * math.sin(2.0 * omega * gait_time)
+        pitch_shake = 0.022 * math.sin(2.0 * omega * gait_time)
+        yaw_shake = 0.014 * math.cos(omega * gait_time)
+        roll_shake = 0.008 * math.sin(omega * gait_time)
+    else:
+        t_idle = time.monotonic()
+        dx = 0.0008 * math.sin(10.0 * t_idle)
+        dy = 0.0008 * math.cos(10.0 * t_idle)
+        dz = 0.0008 * math.sin(15.0 * t_idle)
+        pitch_shake = 0.0015 * math.sin(8.0 * t_idle)
+        yaw_shake = 0.0015 * math.cos(8.0 * t_idle)
+
+    if stage is None:
+        stage = omni.usd.get_context().get_stage()
+    body_path = resolve_go2_body_prim_path(stage)
+    body_prim = stage.GetPrimAtPath(body_path)
+    if not body_prim or not body_prim.IsValid():
+        raise RuntimeError(f"Go2 camera body prim is unavailable: {body_path}")
+
+    matrix = UsdGeom.Xformable(body_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    yaw = math.atan2(float(matrix[0][1]), float(matrix[0][0]))
+    cos_y = math.cos(yaw)
+    sin_y = math.sin(yaw)
+    local_x = 0.31 + dx
+    local_y = dy
+    world_position = np.array(
+        [
+            float(matrix[3][0]) + (cos_y * local_x - sin_y * local_y),
+            float(matrix[3][1]) + (sin_y * local_x + cos_y * local_y),
+            float(matrix[3][2]) + 0.16 + dz,
+        ],
+        dtype=float,
+    )
+    orientation = _quat_xyzw_from_rpy(roll_shake, pitch_shake, yaw + yaw_shake)
+
+    try:
+        camera.set_world_pose(position=world_position, orientation=orientation)
+    except Exception:
+        prim = stage.GetPrimAtPath(str(camera.prim.GetPath()))
+        xform = UsdGeom.Xformable(prim)
+        xform.ClearXformOpOrder()
+        xform.AddTranslateOp().Set(Gf.Vec3d(float(world_position[0]), float(world_position[1]), float(world_position[2])))
+        xform.AddOrientOp().Set(
+            Gf.Quatf(
+                float(orientation[0]),
+                float(orientation[1]),
+                float(orientation[2]),
+                float(orientation[3]),
+            )
+        )
+
+
+def add_camera(stage, resolution: tuple = (1280, 720)) -> Camera:
+    """Create a front-facing RGB-D camera that tracks the Go2 body."""
+    log_event(LOGGER, logging.INFO, "camera_stage_ready", "Using existing USD stage for front camera")
+    if not stage.GetPrimAtPath("/World/Sensors").IsValid():
+        log_event(LOGGER, logging.INFO, "camera_sensor_parent_define_start", "Defining /World/Sensors camera parent prim")
+        stage.DefinePrim("/World/Sensors", "Xform")
+        log_event(LOGGER, logging.INFO, "camera_sensor_parent_define_complete", "Defined /World/Sensors camera parent prim")
+    parent_path = resolve_go2_body_prim_path(stage)
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "camera_parent_ready",
+        "Resolved front camera tracking parent",
+        camera_path=CAMERA_PRIM,
+        tracked_body_prim=parent_path,
+    )
+    if not stage.GetPrimAtPath(CAMERA_PRIM).IsValid():
+        log_event(LOGGER, logging.INFO, "camera_usd_prim_define_start", "Defining USD camera prim")
+        UsdGeom.Camera.Define(stage, CAMERA_PRIM)
+        log_event(LOGGER, logging.INFO, "camera_usd_prim_define_complete", "Defined USD camera prim")
+    log_event(LOGGER, logging.INFO, "camera_constructor_start", "Constructing Isaac front camera sensor")
     camera = Camera(
         prim_path=CAMERA_PRIM,
         name="front_camera",
         resolution=resolution,
-        # 25 cm forward, 10 cm up from trunk origin, facing forward
-        position=np.array([0.25, 0.0, 0.1]),
-        orientation=np.array([0.0, 0.0, 0.0, 1.0]),
     )
-    camera.initialize()
-    # Gives metric depth (meters) aligned to color image
-    camera.add_distance_to_image_plane_to_frame()
+    log_event(LOGGER, logging.INFO, "camera_constructor_complete", "Isaac front camera sensor constructed")
+    log_event(LOGGER, logging.INFO, "camera_pose_seed_start", "Seeding front camera mount pose")
+    set_front_camera_local_pose(camera, stage=stage)
+    log_event(LOGGER, logging.INFO, "camera_pose_seed_complete", "Seeded front camera mount pose")
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "camera_attached_to_go2",
+        "Front perception camera tracks the Go2 moving body prim from a safe sensor prim",
+        camera_path=CAMERA_PRIM,
+        tracked_body_prim=parent_path,
+    )
 
     # Configure physical camera sensor properties to match RealSense D435
     # 36mm horizontal sensor, 26mm focal length -> ~69.4 deg hFOV
@@ -309,6 +437,19 @@ def add_camera(resolution: tuple = (1280, 720)) -> Camera:
     return camera
 
 
+def initialize_camera_streams(camera: Camera) -> None:
+    """Initialize render products and annotators after world.reset()."""
+    log_event(LOGGER, logging.INFO, "camera_initialize_start", "Initializing Isaac front camera sensor")
+    camera.initialize()
+    log_event(LOGGER, logging.INFO, "camera_initialize_complete", "Isaac front camera sensor initialized")
+    
+    # In Isaac Sim 6.0, we must explicitly enable the streams on the Camera sensor frame
+    log_event(LOGGER, logging.INFO, "camera_streams_enable_start", "Enabling RGB and Depth streams on camera frame")
+    camera.add_rgb_to_frame()
+    camera.add_distance_to_image_plane_to_frame()
+    log_event(LOGGER, logging.INFO, "camera_depth_stream_complete", "RGB and Depth streams are active and available on initialized camera")
+
+
 def get_terrain_height(x: float, y: float) -> float:
     """Return the exact terrain height at coordinate (x, y) based on spawned geometry."""
     if not (-1.05 <= y <= 1.05):
@@ -317,21 +458,21 @@ def get_terrain_height(x: float, y: float) -> float:
     if 2.0 <= x < 3.5:
         step_idx = int((x - 2.0) / 0.3)
         return min(0.40, (step_idx + 1) * 0.08)
-    # Landing: 3.5 to 5.0m
-    elif 3.5 <= x < 5.0:
-        return 0.40
-    # Ramp: 5.0 to 7.0m
-    elif 5.0 <= x < 7.0:
-        return 0.40 * (1.0 - (x - 5.0) / 2.0)
     # Flat ground
     return 0.0
 
 
 def _add_visual_box(world: World, prim_path: str, name: str, position, scale, color, orientation=None) -> bool:
     try:
-        from omni.isaac.core.objects import VisualCuboid as CuboidClass
+        try:
+            from omni.isaac.core.objects import VisualCuboid as CuboidClass
+        except ModuleNotFoundError:
+            from isaacsim.core.api.objects import VisualCuboid as CuboidClass
     except Exception:
-        from omni.isaac.core.objects import FixedCuboid as CuboidClass
+        try:
+            from omni.isaac.core.objects import FixedCuboid as CuboidClass
+        except ModuleNotFoundError:
+            from isaacsim.core.api.objects import FixedCuboid as CuboidClass
 
     try:
         kwargs = {
@@ -441,98 +582,21 @@ def update_scene_lighting(stage, elapsed_sec: float) -> None:
 
 
 def spawn_scene_visual_details(world: World) -> None:
-    prop_count = 0
-
-    # Colored path bands make the route readable from the follow camera.
-    for side_y, color, name in (
-        (-0.78, (0.12, 0.28, 0.38), "right_route_band"),
-        (0.78, (0.10, 0.34, 0.28), "left_route_band"),
-    ):
-        if _add_visual_box(
-            world,
-            f"/World/Environment/{name}",
-            name,
-            (4.15, side_y, 0.011),
-            (8.4, 0.045, 0.012),
-            color,
-        ):
-            prop_count += 1
-
-    for idx, x_pos in enumerate(np.linspace(0.6, 8.2, 13)):
-        z_pos = get_terrain_height(float(x_pos), 0.0) + 0.016
-        if _add_visual_box(
-            world,
-            f"/World/Environment/centerline_{idx:02d}",
-            f"centerline_{idx:02d}",
-            (float(x_pos), 0.0, z_pos),
-            (0.24, 0.026, 0.014),
-            (1.0, 0.82, 0.25),
-        ):
-            prop_count += 1
-
-    for idx in range(5):
-        x_pos = 2.0 + idx * 0.3 + 0.02
-        z_pos = (idx + 1) * 0.08 + 0.018
-        if _add_visual_box(
-            world,
-            f"/World/Environment/stair_nosing_{idx}",
-            f"stair_nosing_{idx}",
-            (x_pos, 0.0, z_pos),
-            (0.035, 1.68, 0.018),
-            (1.0, 0.72, 0.18),
-        ):
-            prop_count += 1
-
-    for side_y in (-0.92, 0.92):
-        if _add_visual_box(
-            world,
-            f"/World/Environment/ramp_rail_{'right' if side_y < 0 else 'left'}",
-            f"ramp_rail_{'right' if side_y < 0 else 'left'}",
-            (6.0, side_y, 0.72),
-            (2.3, 0.035, 0.04),
-            (0.78, 0.86, 0.90),
-        ):
-            prop_count += 1
-        for post_idx, x_pos in enumerate((5.15, 5.75, 6.35, 6.9)):
-            z_pos = get_terrain_height(float(x_pos), side_y) + 0.38
-            if _add_visual_box(
-                world,
-                f"/World/Environment/ramp_post_{'r' if side_y < 0 else 'l'}_{post_idx}",
-                f"ramp_post_{'r' if side_y < 0 else 'l'}_{post_idx}",
-                (x_pos, side_y, z_pos),
-                (0.035, 0.035, 0.55),
-                (0.64, 0.72, 0.78),
-            ):
-                prop_count += 1
-
-    for marker_name, x_pos, y_pos, color in (
-        ("start_pad", 0.75, 0.0, (0.22, 0.55, 0.35)),
-        ("stair_warning_pad", 2.0, 0.0, (0.92, 0.56, 0.18)),
-        ("doorway_focus_pad", 4.25, 0.0, (0.26, 0.46, 0.74)),
-        ("finish_pad", 8.15, 0.0, (0.35, 0.45, 0.58)),
-    ):
-        if _add_visual_box(
-            world,
-            f"/World/Environment/{marker_name}",
-            marker_name,
-            (x_pos, y_pos, get_terrain_height(x_pos, y_pos) + 0.014),
-            (0.42, 0.42, 0.014),
-            color,
-        ):
-            prop_count += 1
-
     log_event(
         LOGGER,
         logging.INFO,
-        "scene_visual_details_spawned",
-        "Spawned route bands, stair nosing, rails, posts, and testing pads",
-        prop_count=int(prop_count),
+        "scene_visual_details_skipped",
+        "Skipping extra visual props; scene contains only stairs, walls, ground, robot, and person",
+        prop_count=0,
     )
 
 
 def spawn_obstacles(world: World) -> None:
-    """Spawn static obstacles including stairs, landing platform, ramp, walls, and doorway."""
-    from omni.isaac.core.objects import FixedCuboid
+    """Spawn the clean test environment: stairs and corridor walls only."""
+    try:
+        from omni.isaac.core.objects import FixedCuboid
+    except ModuleNotFoundError:
+        from isaacsim.core.api.objects import FixedCuboid
     
     # 1. Spawn Stairs (5 steps: 2.0 to 3.5m along X, 2.0m wide along Y, step height 0.08m)
     for i in range(5):
@@ -551,43 +615,14 @@ def spawn_obstacles(world: World) -> None:
         except Exception as exc:
             log_event(LOGGER, logging.WARNING, "obstacle_spawn_failed", f"Failed to spawn step_{i}", error=str(exc))
 
-    # 2. Spawn Landing Platform (3.5 to 5.0m along X, 2.0m wide along Y, height 0.40m)
-    try:
-        world.scene.add(
-            FixedCuboid(
-                prim_path="/World/Environment/landing",
-                name="landing",
-                position=np.array([4.25, 0.0, 0.20]),
-                scale=np.array([1.5, 2.0, 0.40]),
-                color=np.array([0.4, 0.4, 0.4])
-            )
-        )
-    except Exception as exc:
-        log_event(LOGGER, logging.WARNING, "obstacle_spawn_failed", "Failed to spawn landing", error=str(exc))
-
-    # 3. Spawn Ramp (5.0 to 7.0m along X, 2.0m wide, slope down from 0.40m to 0.0m)
-    try:
-        world.scene.add(
-            FixedCuboid(
-                prim_path="/World/Environment/ramp",
-                name="ramp",
-                position=np.array([6.0, 0.0, 0.20]),
-                orientation=np.array([0.9951, 0.0, -0.0985, 0.0]),
-                scale=np.array([2.04, 2.0, 0.05]),
-                color=np.array([0.45, 0.45, 0.45])
-            )
-        )
-    except Exception as exc:
-        log_event(LOGGER, logging.WARNING, "obstacle_spawn_failed", "Failed to spawn ramp", error=str(exc))
-
-    # 4. Spawn Corridor Walls (Left at Y=1.05, Right at Y=-1.05, Height=1.2m, X from 0.0 to 8.0)
+    # 2. Spawn Corridor Walls (Left at Y=1.05, Right at Y=-1.05, Height=1.2m, X from 0.0 to 3.8)
     try:
         world.scene.add(
             FixedCuboid(
                 prim_path="/World/Environment/wall_left",
                 name="wall_left",
-                position=np.array([4.0, 1.05, 0.60]),
-                scale=np.array([8.0, 0.1, 1.20]),
+                position=np.array([1.9, 1.05, 0.60]),
+                scale=np.array([3.8, 0.1, 1.20]),
                 color=np.array([0.7, 0.6, 0.5])
             )
         )
@@ -595,37 +630,14 @@ def spawn_obstacles(world: World) -> None:
             FixedCuboid(
                 prim_path="/World/Environment/wall_right",
                 name="wall_right",
-                position=np.array([4.0, -1.05, 0.60]),
-                scale=np.array([8.0, 0.1, 1.20]),
+                position=np.array([1.9, -1.05, 0.60]),
+                scale=np.array([3.8, 0.1, 1.20]),
                 color=np.array([0.7, 0.6, 0.5])
             )
         )
+        log_event(LOGGER, logging.INFO, "environment_spawned", "Clean stairs-and-walls environment successfully spawned")
     except Exception as exc:
         log_event(LOGGER, logging.WARNING, "obstacle_spawn_failed", "Failed to spawn corridor walls", error=str(exc))
-
-    # 5. Spawn Doorway at landing (X=4.25, leaving a 0.8m opening in the center)
-    try:
-        world.scene.add(
-            FixedCuboid(
-                prim_path="/World/Environment/door_partition_left",
-                name="door_partition_left",
-                position=np.array([4.25, 0.70, 0.80]),
-                scale=np.array([0.1, 0.6, 0.80]),
-                color=np.array([0.7, 0.6, 0.5])
-            )
-        )
-        world.scene.add(
-            FixedCuboid(
-                prim_path="/World/Environment/door_partition_right",
-                name="door_partition_right",
-                position=np.array([4.25, -0.70, 0.80]),
-                scale=np.array([0.1, 0.6, 0.80]),
-                color=np.array([0.7, 0.6, 0.5])
-            )
-        )
-        log_event(LOGGER, logging.INFO, "environment_spawned", "Stair-climbing corridor and doorway environment successfully spawned")
-    except Exception as exc:
-        log_event(LOGGER, logging.WARNING, "obstacle_spawn_failed", "Failed to spawn door partitions", error=str(exc))
 
 
 def apply_realsense_depth_noise(depth_mm: np.ndarray, noise_multiplier: float = 1.0) -> np.ndarray:
@@ -694,11 +706,7 @@ def attach_robot_o2_tank(stage, trunk_prim_path: str):
                 LiDAR center is approximately at X = 0.05. Rails extend backward,
                 so we place it at X = -0.15 relative to trunk origin.
     """
-    from pxr import UsdGeom, Gf, UsdPhysics, Sdf
-
-    def _set_fixed_joint_bodies(joint, body0_path: str, body1_path: str) -> None:
-        joint.CreateBody0Rel().SetTargets([Sdf.Path(body0_path)])
-        joint.CreateBody1Rel().SetTargets([Sdf.Path(body1_path)])
+    from pxr import UsdGeom, Gf, UsdPhysics
     
     try:
         # Create holder prim
@@ -712,16 +720,6 @@ def attach_robot_o2_tank(stage, trunk_prim_path: str):
         holder_mass = UsdPhysics.MassAPI.Apply(holder_geom.GetPrim())
         holder_mass.CreateMassAttr(0.136)
         UsdPhysics.CollisionAPI.Apply(holder_geom.GetPrim())
-        UsdPhysics.RigidBodyAPI.Apply(holder_geom.GetPrim())
-        
-        # Weld holder to trunk
-        holder_joint_path = f"{trunk_prim_path}/o2_holder_joint"
-        holder_joint = UsdPhysics.FixedJoint.Define(stage, holder_joint_path)
-        _set_fixed_joint_bodies(holder_joint, trunk_prim_path, holder_path)
-        holder_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(-0.15, 0.0, 0.08))
-        holder_joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
-        holder_joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
-        holder_joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
         
         # Create tank prim
         tank_path = f"{trunk_prim_path}/o2_tank"
@@ -734,92 +732,67 @@ def attach_robot_o2_tank(stage, trunk_prim_path: str):
         tank_mass = UsdPhysics.MassAPI.Apply(tank_geom.GetPrim())
         tank_mass.CreateMassAttr(2.086)
         UsdPhysics.CollisionAPI.Apply(tank_geom.GetPrim())
-        UsdPhysics.RigidBodyAPI.Apply(tank_geom.GetPrim())
         
-        # Weld tank to trunk
-        tank_joint_path = f"{trunk_prim_path}/o2_tank_joint"
-        tank_joint = UsdPhysics.FixedJoint.Define(stage, tank_joint_path)
-        _set_fixed_joint_bodies(tank_joint, trunk_prim_path, tank_path)
-        tank_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(-0.15, 0.0, 0.17))
-        tank_joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
-        tank_joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
-        tank_joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
-        
-        log_event(LOGGER, logging.INFO, "o2_tank_attached", "Physically attached P2-E6 oxygen concentrator (4.6 lbs) and printed holder (0.3 lbs) to Go2 trunk rails via FixedJoints")
+        log_event(
+            LOGGER,
+            logging.INFO,
+            "o2_tank_attached",
+            "Parented P2-E6 oxygen concentrator and printed holder to the moving Go2 body",
+            parent_prim=trunk_prim_path,
+            tank_prim=tank_path,
+            holder_prim=holder_path,
+        )
     except Exception as exc:
         log_event(LOGGER, logging.WARNING, "o2_tank_attachment_failed", f"Failed to attach oxygen tank to USD Go2 model: {exc}")
 
 
 class PatientLocomotionState:
     def __init__(self):
-        self.x = 2.5
+        self.x = 1.0
         self.y = 0.0
         self.direction = 1.0  # +1 for forward through waypoints, -1 for backward
         self.stop_timer = 0.0
         self.turn_timer = 0.0
         self.gait_time = 0.0
-        self.has_paused_at_door = False
+        self.elapsed_time = 0.0
+        self.stair_phase_started = False
+        self.stair_phase_logged = False
         self.o2_sat = 98.0  # Oxygen saturation %
-        # 2D Waypoints list: (X, Y)
+        self.ground_follow_delay_sec = 15.0
+        # 2D waypoints: start on flat ground, wait near the stair base,
+        # then walk naturally up the existing stair blocks.
         self.waypoints = [
-            (1.0, 0.0),    # Start point
-            (2.2, 0.0),    # Before stairs
-            (3.2, 0.2),    # On stairs (slightly off-center)
-            (4.25, 0.0),   # At doorway
-            (5.5, -0.4),   # On ramp (off-center left)
-            (6.5, 0.4),    # Off ramp (off-center right)
-            (8.0, 0.0)     # End point
+            (1.0, 0.0),
+            (1.82, 0.0),
+            (2.14, 0.0),
+            (2.44, 0.0),
+            (2.74, 0.0),
+            (3.04, 0.0),
+            (3.34, 0.0),
         ]
         self.current_wp_idx = 1
-        self.wp_direction = 1  # 1 for forward, -1 for backward
+        self.wp_direction = 1
 
 
 _patient_state = None
 _last_gt_patient_pose = None
 _last_gt_distractor_pose = None
+_camera_mount_update_warned = False
 
 
-def spawn_person(world, x: float = 2.5, y: float = 0.0):
+def spawn_person(world, x: float = 1.0, y: float = 0.0):
     global _patient_state
     _patient_state = PatientLocomotionState()
     _patient_state.x = x
     _patient_state.y = y
     
     person = spawn_sim_person(world, x=x, y=y, logger=LOGGER)
-    
-    # Spawn patient's portable oxygen tank on a trolley (physically enabled kinematic cylinder + handle)
-    from omni.isaac.core.objects import DynamicCylinder, DynamicCuboid
-    try:
-        tank = world.scene.add(
-            DynamicCylinder(
-                prim_path="/World/Environment/patient_o2_tank",
-                name="patient_o2_tank",
-                position=np.array([x + 0.45, y, 0.25]),
-                radius=0.08,
-                height=0.45,
-                color=np.array([0.2, 0.7, 0.2])
-            )
-        )
-        rb_tank = UsdPhysics.RigidBodyAPI.Apply(tank.prim)
-        rb_tank.CreateKinematicEnabledAttr(True)
-        UsdPhysics.CollisionAPI.Apply(tank.prim)
-        
-        handle = world.scene.add(
-            DynamicCuboid(
-                prim_path="/World/Environment/patient_o2_handle",
-                name="patient_o2_handle",
-                position=np.array([x + 0.40, y, 0.55]),
-                scale=np.array([0.02, 0.15, 0.02]),
-                color=np.array([0.6, 0.6, 0.6])
-            )
-        )
-        rb_handle = UsdPhysics.RigidBodyAPI.Apply(handle.prim)
-        rb_handle.CreateKinematicEnabledAttr(True)
-        UsdPhysics.CollisionAPI.Apply(handle.prim)
-        
-        log_event(LOGGER, logging.INFO, "patient_o2_spawned", "Spawned patient portable oxygen tank trolley with physical kinematic colliders")
-    except Exception as exc:
-        log_event(LOGGER, logging.WARNING, "patient_o2_spawn_failed", "Failed to spawn patient O2 tank trolley with colliders", error=str(exc))
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "patient_o2_spawn_skipped",
+        "Skipping patient cart/O2 props for a clean stairs-and-walls sim scene",
+    )
         
     return person
 
@@ -827,7 +800,10 @@ def spawn_person(world, x: float = 2.5, y: float = 0.0):
 def spawn_distractor_person(world, x: float, y: float):
     """Spawn a secondary distractor pedestrian crossing the hallway to create ReID occlusion."""
     try:
-        from omni.isaac.core.utils.stage import add_reference_to_stage
+        try:
+            from omni.isaac.core.utils.stage import add_reference_to_stage
+        except ModuleNotFoundError:
+            from isaacsim.core.utils.stage import add_reference_to_stage
         import sim_person_actor
         
         assets_root = nucleus_utils.get_assets_root_path()
@@ -842,7 +818,7 @@ def spawn_distractor_person(world, x: float, y: float):
                 distractor_usd = None
                 
         if not distractor_usd:
-            distractor_usd = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/People/Characters/male_adult_police_01_new/male_adult_police_01_new.usd"
+            distractor_usd = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.0/Isaac/People/Characters/male_adult_police_01_new/male_adult_police_01_new.usd"
             
         prim_path = "/World/Characters/DistractorWalker"
         add_reference_to_stage(usd_path=distractor_usd, prim_path=prim_path)
@@ -889,18 +865,29 @@ def update_person_patrol(person, dt: float) -> None:
         return
         
     state = _patient_state
+    state.elapsed_time += dt
+    if (not state.stair_phase_started) and state.elapsed_time >= state.ground_follow_delay_sec:
+        state.stair_phase_started = True
+        state.current_wp_idx = max(2, state.current_wp_idx)
+        if not state.stair_phase_logged:
+            state.stair_phase_logged = True
+            log_event(
+                LOGGER,
+                logging.INFO,
+                "patient_stair_phase_started",
+                "Patient finished the ground-follow lead-in and is starting the stairs",
+                delay_sec=float(state.ground_follow_delay_sec),
+            )
     
     # 0. Clinical Exertion & Oxygen Saturation updates
     if state.stop_timer > 0.0 or state.turn_timer > 0.0:
         # Recover O2 saturation while resting
         state.o2_sat = min(98.0, state.o2_sat + 0.8 * dt)
     else:
-        # Higher exertion climbing stairs/ramps drops O2 faster
+        # Higher exertion climbing stairs drops O2 faster.
         px = state.x
         if 2.0 <= px < 3.5:
             state.o2_sat -= 0.18 * dt
-        elif 5.0 <= px < 7.0:
-            state.o2_sat -= 0.12 * dt
         else:
             state.o2_sat -= 0.05 * dt
             
@@ -942,7 +929,7 @@ def update_person_patrol(person, dt: float) -> None:
         px = state.x
         py_pos = state.y
         bob_amp = 0.035 if is_stumbling else 0.015
-        pz = get_terrain_height(px, py_pos) + bob_amp * math.sin(6.0 * state.gait_time)
+        pz = get_terrain_height(px, py_pos) + max(0.0, bob_amp * math.sin(6.0 * state.gait_time))
         yaw = 0.0 if state.wp_direction > 0 else math.pi
     elif state.turn_timer > 0.0:
         state.turn_timer -= dt
@@ -959,41 +946,32 @@ def update_person_patrol(person, dt: float) -> None:
     else:
         # 2. Determine patient speed based on terrain section
         px = state.x
-        if 2.0 <= px < 3.5:
-            speed = 0.18
-            unsteady_amp = 0.15 if is_stumbling else 0.07  # massive sway when stumbling
-        elif 5.0 <= px < 7.0:
-            speed = 0.22
-            unsteady_amp = 0.12 if is_stumbling else 0.06
+        if not state.stair_phase_started:
+            speed = 0.28 if px < 1.78 else 0.0
+            unsteady_amp = 0.015
+        elif 2.0 <= px < 3.5:
+            speed = 0.16
+            unsteady_amp = 0.025 if is_stumbling else 0.012
         else:
-            speed = 0.35
-            unsteady_amp = 0.10 if is_stumbling else 0.04
+            speed = 0.28
+            unsteady_amp = 0.018 if is_stumbling else 0.008
             
         if is_stumbling:
             speed *= 0.5  # stagger slowly
             
-        # 3. Doorway Rest Stop Logic: pause near the doorway (X = 4.25m) to catch breath
-        if abs(px - 4.25) < 0.15 and not state.has_paused_at_door and state.stop_timer <= 0.0:
-            state.stop_timer = 3.0
-            state.has_paused_at_door = True
-            log_event(LOGGER, logging.INFO, "patient_doorway_rest", "Patient paused near doorway to catch breath")
-            return
-            
-        # Reset doorway pause flag when far from doorway
-        if abs(px - 4.25) > 1.0:
-            state.has_paused_at_door = False
-            
         # 4. Locomotion step towards waypoint
         step_dist = speed * dt
-        if dist <= step_dist:
+        if speed <= 1e-5:
+            px = state.x
+            py_pos = state.y
+            pz = get_terrain_height(px, py_pos)
+        elif dist <= step_dist:
             state.x = tx
             state.y = ty
             state.current_wp_idx += state.wp_direction
             if state.current_wp_idx >= len(state.waypoints):
-                state.current_wp_idx = len(state.waypoints) - 2
-                state.wp_direction = -1
-                state.turn_timer = 2.0
-                return
+                state.current_wp_idx = len(state.waypoints) - 1
+                state.stop_timer = 1.0
             elif state.current_wp_idx < 0:
                 state.current_wp_idx = 1
                 state.wp_direction = 1
@@ -1015,11 +993,9 @@ def update_person_patrol(person, dt: float) -> None:
             
         py_pos += sway_y
         
-        # Gait bobbing (up and down)
-        bob_amp = 0.04 if is_stumbling else 0.02
-        bob_freq = 12.0 if is_stumbling else 9.0
-        bob_z = bob_amp * math.cos(bob_freq * state.gait_time)
-        pz = get_terrain_height(px, py_pos) + bob_z
+        # Keep the person root and collider on the terrain; the People animation
+        # graph owns the actual walking pose.
+        pz = get_terrain_height(px, py_pos)
         
     # Convert yaw to quaternion
     qw = math.cos(yaw * 0.5)
@@ -1035,22 +1011,6 @@ def update_person_patrol(person, dt: float) -> None:
     # Store ground truth pose for evaluations
     _last_gt_patient_pose = (px, py_pos, pz)
     
-    # 6. Move the physical O2 tank trolley in front of the patient
-    try:
-        import omni.usd
-        stage = omni.usd.get_context().get_stage()
-        
-        for path_suffix, offset_x, offset_z in [("patient_o2_tank", 0.45, 0.225), ("patient_o2_handle", 0.40, 0.55)]:
-            prim_path = f"/World/Environment/{path_suffix}"
-            prim = stage.GetPrimAtPath(prim_path)
-            if prim.IsValid():
-                # Face direction of waypoint target
-                ptx = px + math.cos(yaw) * offset_x
-                pty = py_pos + math.sin(yaw) * offset_x
-                ptz = get_terrain_height(ptx, pty) + offset_z
-                _set_xform_ops(prim, translate=(ptx, pty, ptz))
-    except Exception:
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -1354,7 +1314,14 @@ class ViewFollowCameraRig:
         try:
             import omni.kit.viewport.utility as viewport_utility
 
-            viewport = viewport_utility.get_active_viewport()
+            viewport = None
+            try:
+                viewport = viewport_utility.get_viewport_by_name("Viewport")
+            except Exception:
+                pass
+            if viewport is None:
+                viewport = viewport_utility.get_active_viewport()
+
             if viewport is not None:
                 viewport.camera_path = self.path
                 log_event(
@@ -1481,18 +1448,18 @@ def ensure_person_animation_loaded(world: World, person, *, render: bool, attemp
 
     log_event(
         LOGGER,
-        logging.WARNING,
+        logging.ERROR,
         "person_animation_not_ready",
-        "Person animation did not become ready; keeping kinematic walking fallback",
+        "Person animation did not become ready; refusing to run without the real animation graph",
         attempts=int(getattr(person, "animation_attempt_count", attempts)),
     )
-    return False
+    raise RuntimeError("Person animation graph did not become ready in strict animation mode")
 
 # ---------------------------------------------------------------------------
 # Main simulation loop
 # ---------------------------------------------------------------------------
 def main() -> None:
-    global _running
+    global _running, _camera_mount_update_warned
 
     log_event(LOGGER, logging.INFO, "world_build_start", "Building Isaac world")
     world = build_world(args.physics_hz)
@@ -1507,8 +1474,6 @@ def main() -> None:
         stage = omni.usd.get_context().get_stage()
         setup_scene_lighting(stage)
         step_paths = [f"/World/Environment/step_{i}" for i in range(5)]
-        step_paths.append("/World/Environment/landing")
-        step_paths.append("/World/Environment/ramp")
         step_paths.append("/World/defaultGroundPlane")
         create_and_bind_friction_material(stage, step_paths)
     except Exception as exc:
@@ -1526,19 +1491,20 @@ def main() -> None:
             side_offset_m=args.view_camera_side_offset,
         )
 
+    if stage is None:
+        raise RuntimeError("USD stage is unavailable; cannot create the Go2 front camera")
+
     log_event(LOGGER, logging.INFO, "camera_add_start", "Adding front camera")
-    camera = add_camera()
+    camera = add_camera(stage)
 
     log_event(LOGGER, logging.INFO, "person_spawn_start", "Spawning person target")
     person = spawn_person(world, x=args.person_x, y=args.person_y)
 
     distractor_prim = None
-    if args.person_move:
-        # Spawn distractor walking Y-axis crossing at X = 3.0 to test ReID occlusion
-        distractor_prim = spawn_distractor_person(world, x=3.0, y=-1.0)
 
     world.reset()
-    animation_ready = ensure_person_animation_loaded(world, person, render=not args.headless)
+    initialize_camera_streams(camera)
+    animation_ready = ensure_person_animation_loaded(world, person, render=not args.headless, attempts=4)
 
     log_event(
         LOGGER,
@@ -1591,13 +1557,14 @@ def main() -> None:
                     vy = _cmd_vel["vy"]
                     wz = _cmd_vel["wz"]
                     command_fresh = True
-            controller_ready = active_count > 0
+            controller_stream_seen = active_count > 0
             nonzero_command_fresh = (
                 command_fresh
                 and ((abs(vx) > 0.01) or (abs(vy) > 0.01) or (abs(wz) > 0.01))
             )
-            scene_motion_allowed = (not args.hold_motion_until_command) or controller_ready
-            if args.hold_motion_until_command and not controller_ready and not motion_wait_logged:
+            controller_ready = controller_stream_seen and command_fresh
+            scene_motion_allowed = (not args.hold_motion_until_command) or controller_stream_seen
+            if args.hold_motion_until_command and not controller_stream_seen and not motion_wait_logged:
                 motion_wait_logged = True
                 log_event(
                     LOGGER,
@@ -1612,7 +1579,7 @@ def main() -> None:
                     LOGGER,
                     logging.INFO,
                     "scene_motion_started",
-                    "Autonomous scene motion released after a nonzero controller command was observed",
+                    "Autonomous scene motion released after the controller command stream was observed",
                     command_count=cmd_count,
                     active_command_count=active_count,
                 )
@@ -1624,61 +1591,26 @@ def main() -> None:
             if view_camera is not None:
                 view_camera.update(go2, dt)
 
-            # 2. Camera vibration / bobbing based on gait state
             try:
-                state = _go2_locomotion_state
-                t_gait = state.gait_time
-                if t_gait > 0.0:
-                    omega = 2.0 * math.pi / state.gait_period
-                    # Z-bobbing (1.5cm amplitude)
-                    dz = 0.015 * math.sin(2.0 * omega * t_gait)
-                    # Lateral sway (1.0cm amplitude)
-                    dy = 0.010 * math.cos(omega * t_gait)
-                    # Longitudinal shake (0.5cm)
-                    dx = 0.005 * math.sin(omega * t_gait)
-                    
-                    # Rotational shake (pitch, yaw, roll in radians)
-                    pitch_shake = 0.03 * math.sin(2.0 * omega * t_gait)
-                    yaw_shake = 0.02 * math.cos(omega * t_gait)
-                    roll_shake = 0.01 * math.sin(omega * t_gait)
-                else:
-                    t_idle = time.monotonic()
-                    dx = 0.001 * math.sin(10.0 * t_idle)
-                    dy = 0.001 * math.cos(10.0 * t_idle)
-                    dz = 0.001 * math.sin(15.0 * t_idle)
-                    pitch_shake = 0.002 * math.sin(8.0 * t_idle)
-                    yaw_shake = 0.002 * math.cos(8.0 * t_idle)
-                    roll_shake = 0.0
-                    
-                # Add random high-frequency jitter
-                dx += np.random.uniform(-0.002, 0.002)
-                dy += np.random.uniform(-0.002, 0.002)
-                dz += np.random.uniform(-0.002, 0.002)
-                
-                # Convert Euler angles to quaternion (qw, qx, qy, qz)
-                cr = math.cos(roll_shake * 0.5)
-                sr = math.sin(roll_shake * 0.5)
-                cp = math.cos(pitch_shake * 0.5)
-                sp = math.sin(pitch_shake * 0.5)
-                cy = math.cos(yaw_shake * 0.5)
-                sy = math.sin(yaw_shake * 0.5)
-                
-                qw = cr * cp * cy + sr * sp * sy
-                qx = sr * cp * cy - cr * sp * sy
-                qy = cr * sp * cy + sr * cp * sy
-                qz = cr * cp * sy - sr * sp * cy
-                
-                camera.set_local_pose(
-                    translation=np.array([0.25 + dx, dy, 0.1 + dz]),
-                    orientation=np.array([qw, qx, qy, qz])
+                set_front_camera_local_pose(
+                    camera,
+                    stage=stage,
+                    gait_time=_go2_locomotion_state.gait_time,
+                    moving=bool(controller_ready and nonzero_command_fresh),
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                if not _camera_mount_update_warned:
+                    _camera_mount_update_warned = True
+                    log_event(
+                        LOGGER,
+                        logging.WARNING,
+                        "camera_mount_update_failed",
+                        "Mounted camera local pose update failed",
+                        error=str(exc),
+                    )
 
             if args.person_move and scene_motion_allowed:
                 update_person_patrol(person, dt)
-                if distractor_prim:
-                    update_distractor(distractor_prim, dt)
 
             # Publish camera frame at reduced rate
             if step_count % args.render_every == 0:
@@ -1693,7 +1625,7 @@ def main() -> None:
                         
                         # Get ground truth coordinates
                         gt_patient = _last_gt_patient_pose
-                        gt_distractor = _last_gt_distractor_pose if args.person_move else None
+                        gt_distractor = None
                         
                         publisher.send(rgb_data, depth_mm, vx, vy, wz, gt_patient, gt_distractor)
                 except Exception as exc:

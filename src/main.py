@@ -15,6 +15,7 @@ import cv2
 import numpy as np
 import os
 import queue
+import shutil
 import threading
 from yolo_pose_inference import YoloPoseInference
 from trt_inference import TRTInference
@@ -201,6 +202,8 @@ def main():
         sim_mode=bool(args.sim),
         follow_backend=args.follow_backend,
         preview_fps=float(args.preview_fps),
+        preview_save_dir=args.preview_save_dir,
+        preview_save_fps=float(args.preview_save_fps),
         headless=bool(args.headless),
         rotation_debug=bool(args.rotation_debug),
         preprocess_backend=args.preprocess_backend,
@@ -359,10 +362,31 @@ def main():
         show_rotation_debug=bool(args.rotation_debug),
     )
     preview_worker.start()
-    preview_period        = 1.0 / max(1e-3, float(args.preview_fps))
+    preview_output_enabled = bool(args.preview_save_dir or args.preview_video_path)
+    preview_save_images    = bool(args.preview_save_images and args.preview_save_dir)
+    preview_video_path     = args.preview_video_path
+    if args.preview_save_dir:
+        if os.path.isdir(args.preview_save_dir):
+            shutil.rmtree(args.preview_save_dir)
+        os.makedirs(args.preview_save_dir, exist_ok=True)
+        if not preview_video_path:
+            preview_video_path = os.path.join(args.preview_save_dir, "opencv_preview.mp4")
+    elif preview_video_path:
+        video_dir = os.path.dirname(preview_video_path)
+        if video_dir:
+            os.makedirs(video_dir, exist_ok=True)
+    preview_video_writer = None
+    preview_rate_hz       = (
+        float(args.preview_save_fps)
+        if args.headless and preview_output_enabled and args.preview_save_fps > 0.0
+        else float(args.preview_fps)
+    )
+    preview_period        = 1.0 / max(1e-3, preview_rate_hz)
     last_preview_render_ts = 0.0
     preview_fps           = 0.0
+    preview_save_count    = 0
     frame_idx             = 0
+    sim_frame_failure_since: Optional[float] = None
 
     try:
         while True:
@@ -377,6 +401,7 @@ def main():
             capture_wait_ms  = float(frame_meta.get("wait_ms", stage_ms["capture"]))
 
             if img is None or depths is None:
+                now = time.perf_counter()
                 debug_trace.log(
                     "frame_capture_failed",
                     frame_index=int(frame_idx),
@@ -395,9 +420,35 @@ def main():
                     target_exporter.maybe_send(None, None, valid=False, force=True)
                 motion_start_ts     = None
                 last_motion_allowed = False
+                if args.sim and args.sim_frame_timeout_exit_sec > 0.0:
+                    if sim_frame_failure_since is None:
+                        sim_frame_failure_since = now
+                    elapsed = now - sim_frame_failure_since
+                    if elapsed >= args.sim_frame_timeout_exit_sec:
+                        message = (
+                            "Sim camera did not receive Isaac frames for "
+                            f"{elapsed:.1f}s on UDP port {args.frame_port}"
+                        )
+                        debug_trace.log(
+                            "sim_frame_timeout_exit",
+                            frame_index=int(frame_idx),
+                            elapsed_sec=float(elapsed),
+                            frame_port=int(args.frame_port),
+                            frame_meta=frame_meta,
+                        )
+                        logger.error(
+                            message,
+                            extra=build_ecs_extra(
+                                component="vision.main",
+                                action="sim_frame_timeout_exit",
+                            ),
+                        )
+                        print(f"[main] {message}", flush=True)
+                        raise SystemExit(2)
                 time.sleep(0.01)
                 continue
 
+            sim_frame_failure_since = None
             depth_img = depths[0]
 
             preprocess_start_ts = time.perf_counter()
@@ -701,7 +752,7 @@ def main():
                 break
 
             current_time   = time.perf_counter()
-            preview_due    = (not args.headless) and (
+            preview_due    = ((not args.headless) or preview_output_enabled) and (
                 (current_time - last_preview_render_ts) >= preview_period
             )
             render_start_ts = time.perf_counter()
@@ -733,13 +784,70 @@ def main():
                     combined, debug_info, preparation_mode,
                     reacquire_active, args.camera_mode, is_stitched,
                 )
-                preview_worker.submit(
-                    frame=combined,
-                    rotation_error_deg=float(debug_info.get('rotation_error_deg', 0.0)),
-                    rotation_cmd=float(rotation_cmd),
-                    rotation_tolerance=float(person_follower.config.rotation_tolerance),
-                    edge_penalty=float(debug_info.get('edge_penalty', 0.0)),
-                )
+                if not args.headless:
+                    preview_worker.submit(
+                        frame=combined,
+                        rotation_error_deg=float(debug_info.get('rotation_error_deg', 0.0)),
+                        rotation_cmd=float(rotation_cmd),
+                        rotation_tolerance=float(person_follower.config.rotation_tolerance),
+                        edge_penalty=float(debug_info.get('edge_penalty', 0.0)),
+                    )
+                if preview_output_enabled:
+                    try:
+                        if preview_video_path:
+                            if preview_video_writer is None:
+                                video_dir = os.path.dirname(preview_video_path)
+                                if video_dir:
+                                    os.makedirs(video_dir, exist_ok=True)
+                                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                                frame_h, frame_w = combined.shape[:2]
+                                preview_video_writer = cv2.VideoWriter(
+                                    preview_video_path,
+                                    fourcc,
+                                    max(1.0, preview_rate_hz),
+                                    (int(frame_w), int(frame_h)),
+                                )
+                                if not preview_video_writer.isOpened():
+                                    raise RuntimeError(f"could not open preview video writer: {preview_video_path}")
+                                debug_trace.log(
+                                    "opencv_preview_video_started",
+                                    path=preview_video_path,
+                                    fps=float(preview_rate_hz),
+                                    frame_shape=list(combined.shape),
+                                )
+                            preview_video_writer.write(combined)
+                        preview_path = ""
+                        if preview_save_images:
+                            preview_path = os.path.join(
+                                args.preview_save_dir,
+                                f"opencv_preview_{frame_idx:06d}.jpg",
+                            )
+                            cv2.imwrite(preview_path, combined)
+                        preview_save_count += 1
+                        if preview_save_count == 1:
+                            debug_trace.log(
+                                "opencv_preview_output_saved",
+                                frame_index=int(frame_idx),
+                                path=preview_path,
+                                video_path=preview_video_path,
+                                images_enabled=bool(preview_save_images),
+                                frame_shape=list(combined.shape),
+                            )
+                            logger.info(
+                                "OpenCV preview output is being saved",
+                                extra=build_ecs_extra(
+                                    component="vision.main",
+                                    action="opencv_preview_output_saved",
+                                    cable={"follow": {"preview_path": preview_path, "preview_video_path": preview_video_path}},
+                                ),
+                            )
+                    except Exception as exc:
+                        debug_trace.log(
+                            "opencv_preview_save_failed",
+                            frame_index=int(frame_idx),
+                            path=preview_path,
+                            error=str(exc),
+                        )
             stage_ms["render"] = (time.perf_counter() - render_start_ts) * 1000.0
 
             total_loop_ms   = (time.perf_counter() - loop_start_ts) * 1000.0
@@ -761,10 +869,16 @@ def main():
                     sim_mode=bool(args.sim),
                     stall_suspected=bool(stall_suspected),
                     frame_meta=frame_meta,
+                    preview_save_enabled=bool(preview_output_enabled),
+                    preview_save_images=bool(preview_save_images),
+                    preview_video_path=preview_video_path,
+                    preview_save_count=int(preview_save_count),
                 )
 
     finally:
         preview_worker.stop()
+        if preview_video_writer is not None:
+            preview_video_writer.release()
         debug_trace.close()
         logger.info(
             "Vision follow session end",
