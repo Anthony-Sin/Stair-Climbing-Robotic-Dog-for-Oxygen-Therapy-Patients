@@ -61,12 +61,26 @@ def convert_urdf_to_usd(urdf_path: pathlib.Path) -> None:
         try:
             from isaacsim.asset.importer.urdf.impl import URDFImporter, URDFImporterConfig
             print("[download_go2] Using Isaac Sim 6.0 URDFImporter API")
+
+            # Ensure target is exactly .usd to match what the environment expects
+            target_usd_path = str(GO2_USD)
+            if target_usd_path.endswith(".usda"):
+                target_usd_path = target_usd_path.replace(".usda", ".usd")
+
+            # Nuke the old cache files so the importer is FORCED to run
+            for ext in [".usd", ".usda"]:
+                cache_file = target_usd_path.replace(".usd", ext)
+                if os.path.exists(cache_file):
+                    os.remove(cache_file)
+                    print(f"[download_go2] Deleted stale cache: {cache_file}")
+
             import_config = URDFImporterConfig()
             import_config.urdf_path = str(urdf_path)
-            import_config.usd_path = str(GO2_USD.parent)
+            import_config.usd_path = target_usd_path
             import_config.merge_fixed_joints = False
             import_config.fix_base = False
-            
+            import_config.make_default_prim = True
+
             importer = URDFImporter(import_config)
             output_usd = importer.import_urdf()
             if output_usd:

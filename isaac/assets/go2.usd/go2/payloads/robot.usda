@@ -4,13 +4,13 @@
         string creator = "URDF USD Converter v0.1.2"
     }
     defaultPrim = "go2_description"
-    doc = """Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\tmpklz33y8s\\go2_description.usdc
+    doc = """Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\tmpct304xfn\\go2_description.usdc
 
 
-Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\urdf_import_go2_g_ak4ys_\\usdex_go2\\go2_description.usdc
+Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\urdf_import_go2_tzpuww4y\\usdex_go2\\go2_description.usdc
 
 
-Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\urdf_import_go2_g_ak4ys_\\temp_go2\\go2.usd
+Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\urdf_import_go2_tzpuww4y\\temp_go2\\go2.usd
 """
     kilogramsPerUnit = 1
     metersPerUnit = 1

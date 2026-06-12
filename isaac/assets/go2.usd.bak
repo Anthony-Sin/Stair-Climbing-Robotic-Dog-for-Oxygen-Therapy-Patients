@@ -4,16 +4,16 @@
         string creator = "URDF USD Converter v0.1.2"
     }
     defaultPrim = "go2_description"
-    doc = """Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\tmpzh46y1d_\\go2_description.usdc
+    doc = """Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\tmpklz33y8s\\go2_description.usdc
 
 
-Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\urdf_import_go2_39o9y8pj\\usdex_go2\\go2_description.usdc
+Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\urdf_import_go2_g_ak4ys_\\usdex_go2\\go2_description.usdc
 
 
-Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\urdf_import_go2_39o9y8pj\\temp_go2\\go2.usd
+Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\urdf_import_go2_g_ak4ys_\\temp_go2\\go2.usd
 
 
-Generated from Composed Stage of root layer C:\\Users\\antho\\Downloads\\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\\isaac\\assets\\go2\\payloads\\base.usd
+Generated from Composed Stage of root layer C:\\Users\\antho\\Downloads\\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\\isaac\\assets\\go2_1\\payloads\\base.usd
 """
     kilogramsPerUnit = 1
     metersPerUnit = 1

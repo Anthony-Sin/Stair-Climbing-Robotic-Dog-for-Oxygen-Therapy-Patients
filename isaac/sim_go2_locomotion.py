@@ -148,6 +148,18 @@ def _prim_has_rigid_body(prim: Any) -> bool:
         return False
 
 
+def _prim_is_kinematic(prim: Any) -> bool:
+    """Return True if the prim's RigidBody is set to kinematic mode."""
+    try:
+        rb_api = UsdPhysics.RigidBodyAPI(prim)
+        attr = rb_api.GetKinematicEnabledAttr()
+        if attr and attr.IsValid():
+            return bool(attr.Get())
+    except Exception:
+        pass
+    return False
+
+
 def _candidate_rigid_body_prims(go2: Any, base_link_name: str) -> List[Any]:
     root_prim = getattr(go2, "prim", None)
     if root_prim is None:
@@ -175,10 +187,19 @@ def _candidate_rigid_body_prims(go2: Any, base_link_name: str) -> List[Any]:
 
 
 def _find_rigid_body_api(go2: Any, base_link_name: str) -> Tuple[Optional[Any], Optional[Any]]:
+    """Find the base link prim and its RigidBodyAPI.
+
+    For kinematic bodies (used with xform-based locomotion) we return the prim
+    without trying to create/use velocity attributes — PhysX rejects velocity
+    calls on kinematic bodies with a hard error.
+    """
     for prim in _candidate_rigid_body_prims(go2, base_link_name):
         if not _prim_has_rigid_body(prim):
             continue
         rb_api = UsdPhysics.RigidBodyAPI(prim)
+        # Kinematic bodies: return directly — the caller uses xform for position control.
+        if _prim_is_kinematic(prim):
+            return prim, rb_api
         vel_attr = rb_api.GetVelocityAttr()
         angular_attr = rb_api.GetAngularVelocityAttr()
         if not _attr_is_valid(vel_attr):
@@ -195,6 +216,8 @@ def _find_rigid_body_api(go2: Any, base_link_name: str) -> Tuple[Optional[Any], 
             name = prim.GetName().lower()
             if name == base_link_name.lower() or name == "trunk":
                 rb_api = UsdPhysics.RigidBodyAPI.Apply(prim)
+                if _prim_is_kinematic(prim):
+                    return prim, rb_api
                 vel_attr = rb_api.GetVelocityAttr()
                 angular_attr = rb_api.GetAngularVelocityAttr()
                 if not _attr_is_valid(vel_attr):
@@ -202,7 +225,7 @@ def _find_rigid_body_api(go2: Any, base_link_name: str) -> Tuple[Optional[Any], 
                 if not _attr_is_valid(angular_attr):
                     rb_api.CreateAngularVelocityAttr()
                 return prim, rb_api
-                
+
     return None, None
 
 
@@ -833,6 +856,27 @@ def apply_go2_velocity(
             omega = 2.0 * math.pi / max(0.2, state.gait_period)
             walk_bob_m = 0.012 * math.sin(2.0 * omega * state.gait_time)
         desired_height_m = state.target_height_m + walk_bob_m
+
+        if _prim_is_kinematic(rb_prim):
+            _set_stable_kinematic_pose(
+                go2,
+                vx=vx,
+                vy=vy,
+                wz=wz,
+                dt=dt,
+                target_height_m=desired_height_m,
+            )
+            if not gait_preapplied:
+                _apply_procedural_gait(
+                    go2,
+                    state,
+                    vx=vx,
+                    vy=vy,
+                    wz=wz,
+                    dt=dt,
+                    logger=logger,
+                )
+            return
 
         vz = _clamp(
             (desired_height_m - actual_height) * state.height_kp,

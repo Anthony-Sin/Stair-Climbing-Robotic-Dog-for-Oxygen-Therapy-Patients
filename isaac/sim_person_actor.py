@@ -109,12 +109,32 @@ class SimPersonTarget:
             logger=self.logger,
             attempt=self.animation_attempt_count,
         )
-        self.animation_ready = bool(agent_path)
         if agent_path:
             self.agent_prim_path = str(agent_path)
+            self.animation_ready = True
+        else:
+            self.kinematic_fallback = True
+            self.animation_ready = True
+            import sys
+            sys.stderr.write("\n" + "="*80 + "\n")
+            sys.stderr.write("WARNING: ANIMATION GRAPH SETUP FAILED (Biped_Setup.usd may be missing from S3).\n")
+            sys.stderr.write("FALLING BACK TO PROCEDURAL KINEMATIC ANIMATION FOR THE PERSON ACTOR.\n")
+            sys.stderr.write("="*80 + "\n\n")
+            sys.stderr.flush()
+            if self.logger is not None:
+                log_event(
+                    self.logger,
+                    logging.WARNING,
+                    "person_animation_graph_setup_failed_fallback",
+                    "Animation graph setup failed. Falling back to procedural kinematic animation.",
+                )
 
     def _update_animation_state(self, *, walking: bool) -> None:
-        if self.kinematic_fallback or not self.animation_ready or not self.agent_prim_path:
+        if self.kinematic_fallback:
+            self._update_fallback_animation(walking=walking)
+            return
+
+        if not self.animation_ready or not self.agent_prim_path:
             return
         try:
             import omni.anim.graph.core as ag
@@ -129,14 +149,141 @@ class SimPersonTarget:
                 character.set_variable("Walk", 0.0)
                 character.set_variable("Action", "None")
         except Exception as exc:
+            # Fall back to kinematic fallback animation dynamically if the graph updates fail
+            self._update_fallback_animation(walking=walking)
             if self.logger is not None and not self.animation_warning_logged:
                 self.animation_warning_logged = True
                 log_event(
                     self.logger,
                     logging.WARNING,
-                    "person_animation_runtime_update_failed",
-                    "Person animation graph accepted setup but runtime variable update failed",
+                    "person_animation_runtime_fallback",
+                    "Person animation graph runtime update failed; falling back to manual joint kinematic animation",
                     agent_prim_path=self.agent_prim_path,
+                    error=str(exc),
+                )
+
+    def _update_fallback_animation(self, *, walking: bool) -> None:
+        try:
+            from pxr import UsdSkel, Gf
+            import omni.usd
+            import math
+
+            if not hasattr(self, "_skel_initialized") or not self._skel_initialized:
+                self._skel_initialized = True
+                self._skel_prim = None
+                self._joint_indices = {}
+                self._orig_rest_transforms = None
+
+                # Find Skeleton prim
+                stage = omni.usd.get_context().get_stage()
+                from pxr import Usd
+                for prim in stage.Traverse(Usd.TraverseInstanceProxies()):
+                    if prim.IsA(UsdSkel.Skeleton) and str(prim.GetPath()).startswith(self.visual_prim_path):
+                        self._skel_prim = prim
+                        break
+
+                if self._skel_prim:
+                    skel = UsdSkel.Skeleton(self._skel_prim)
+                    joints_attr = skel.GetJointsAttr()
+                    if joints_attr.IsValid():
+                        joints = list(joints_attr.Get())
+                        # Find indices for relevant joints
+                        for idx, joint in enumerate(joints):
+                            name_lower = joint.lower()
+                            if "l_thigh" in name_lower and "twist" not in name_lower:
+                                self._joint_indices["l_thigh"] = idx
+                            elif "r_thigh" in name_lower and "twist" not in name_lower:
+                                self._joint_indices["r_thigh"] = idx
+                            elif "l_calf" in name_lower and "twist" not in name_lower:
+                                self._joint_indices["l_calf"] = idx
+                            elif "r_calf" in name_lower and "twist" not in name_lower:
+                                self._joint_indices["r_calf"] = idx
+                            elif "l_upperarm" in name_lower and "twist" not in name_lower:
+                                self._joint_indices["l_upperarm"] = idx
+                            elif "r_upperarm" in name_lower and "twist" not in name_lower:
+                                self._joint_indices["r_upperarm"] = idx
+
+                        transforms_attr = skel.GetRestTransformsAttr()
+                        if transforms_attr.IsValid():
+                            self._orig_rest_transforms = list(transforms_attr.Get())
+
+            if not self._skel_prim or not self._orig_rest_transforms:
+                return
+
+            skel = UsdSkel.Skeleton(self._skel_prim)
+            transforms_attr = skel.GetRestTransformsAttr()
+
+            # Start with original rest pose
+            new_transforms = list(self._orig_rest_transforms)
+
+            # Base standing rotations for arms to make them hang down naturally
+            # Mixamo skeleton arms standard pose is T-pose (arms along X axis).
+            arm_hang_l = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(0, 0, 1), math.radians(-75.0)))
+            arm_hang_r = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(0, 0, 1), math.radians(75.0)))
+
+            # Swing angle for legs and arms
+            phase = self.walk_phase
+            swing_thigh_l = 0.0
+            swing_thigh_r = 0.0
+            bend_calf_l = 0.0
+            bend_calf_r = 0.0
+            swing_arm_l = 0.0
+            swing_arm_r = 0.0
+
+            if walking:
+                # Swing thighs forward/backward
+                swing_thigh_l = 0.45 * math.sin(phase)
+                swing_thigh_r = -0.45 * math.sin(phase)
+
+                # Calf bending (knees bend backward/inward relative to thigh)
+                bend_calf_l = 0.35 * (math.sin(phase - 1.5) + 1.0)
+                bend_calf_r = 0.35 * (math.sin(phase + 1.5) + 1.0)
+
+                # Arm swinging (opposite to thigh swing)
+                swing_arm_l = -0.35 * math.sin(phase)
+                swing_arm_r = 0.35 * math.sin(phase)
+            else:
+                # Stand idle: very subtle breathing sway
+                t_idle = time.monotonic()
+                swing_arm_l = 0.02 * math.sin(2.0 * t_idle)
+                swing_arm_r = -0.02 * math.sin(2.0 * t_idle)
+
+            # Apply rotations to the joint matrices
+            for joint_key, idx in self._joint_indices.items():
+                orig_mat = self._orig_rest_transforms[idx]
+                mat = Gf.Matrix4d(orig_mat)
+
+                if joint_key == "l_thigh":
+                    rot = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(1, 0, 0), swing_thigh_l))
+                    mat = rot * mat
+                elif joint_key == "r_thigh":
+                    rot = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(1, 0, 0), swing_thigh_r))
+                    mat = rot * mat
+                elif joint_key == "l_calf":
+                    rot = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(1, 0, 0), bend_calf_l))
+                    mat = rot * mat
+                elif joint_key == "r_calf":
+                    rot = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(1, 0, 0), bend_calf_r))
+                    mat = rot * mat
+                elif joint_key == "l_upperarm":
+                    rot_swing = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(1, 0, 0), swing_arm_l))
+                    mat = rot_swing * arm_hang_l * mat
+                elif joint_key == "r_upperarm":
+                    rot_swing = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(1, 0, 0), swing_arm_r))
+                    mat = rot_swing * arm_hang_r * mat
+
+                new_transforms[idx] = Gf.Matrix4f(mat) if isinstance(orig_mat, Gf.Matrix4f) else mat
+
+            transforms_attr.Set(new_transforms)
+
+        except Exception as exc:
+            if self.logger is not None and not getattr(self, "_fallback_anim_err_logged", False):
+                self._fallback_anim_err_logged = True
+                log_event(
+                    self.logger,
+                    logging.WARNING,
+                    "person_fallback_animation_failed",
+                    "Procedural fallback animation update failed",
                     error=str(exc),
                 )
 
@@ -248,7 +395,16 @@ def _yaw_quat_for_orient_op(orient_op: UsdGeom.XformOp, yaw_rad: float):
     return Gf.Quatd(real, 0.0, 0.0, z_imag)
 
 
-def _enable_people_extensions(logger: Optional[logging.Logger]) -> bool:
+_PEOPLE_EXTENSION_ENABLED = False
+_GRAPH_CORE_ENABLED = False
+_EXTENSION_CHECK_DONE = False
+
+def _initialize_extensions(logger: Optional[logging.Logger]) -> None:
+    global _PEOPLE_EXTENSION_ENABLED, _GRAPH_CORE_ENABLED, _EXTENSION_CHECK_DONE
+    if _EXTENSION_CHECK_DONE:
+        return
+    _EXTENSION_CHECK_DONE = True
+
     try:
         try:
             from isaacsim.core.utils import extensions
@@ -259,7 +415,7 @@ def _enable_people_extensions(logger: Optional[logging.Logger]) -> bool:
         app = omni.kit.app.get_app()
         manager = app.get_extension_manager()
 
-        # Check if omni.anim.people is available in the extension manager
+        # Check if omni.anim.people is available in the extension manager registry
         has_people_ext = False
         try:
             for ext in manager.get_extensions():
@@ -269,19 +425,8 @@ def _enable_people_extensions(logger: Optional[logging.Logger]) -> bool:
         except Exception:
             has_people_ext = True
 
-        if not has_people_ext:
-            if logger is not None:
-                log_event(
-                    logger,
-                    logging.WARNING,
-                    "person_animation_extension_missing",
-                    "omni.anim.people extension is not available in the extension manager. Bypassing animation setup.",
-                )
-            return False
-
-        app = omni.kit.app.get_app()
-        manager = app.get_extension_manager()
-        required_extensions = (
+        # Try to enable omni.anim.people and all navigation/retarget dependencies
+        people_extensions = [
             "omni.anim.people",
             "omni.anim.navigation.bundle",
             "omni.anim.timeline",
@@ -290,69 +435,118 @@ def _enable_people_extensions(logger: Optional[logging.Logger]) -> bool:
             "omni.anim.retarget.bundle",
             "omni.anim.retarget.core",
             "omni.kit.scripting",
-        )
-        optional_extensions = (
-            "omni.anim.graph.ui",
-            "omni.anim.retarget.ui",
-        )
+        ]
+        
+        # Core graph extensions needed for basic USD animation graph playback (without people extension)
+        core_graph_extensions = [
+            "omni.anim.timeline",
+            "omni.anim.graph.bundle",
+            "omni.anim.graph.core",
+            "omni.kit.scripting",
+        ]
 
-        enabled = []
-        missing_required = []
-        for ext_name in required_extensions + optional_extensions:
-            try:
-                extensions.enable_extension(ext_name)
-                for _ in range(2):
-                    app.update()
-                ext_id = manager.get_enabled_extension_id(ext_name)
-                if ext_id:
-                    enabled.append(ext_name)
-                elif ext_name in required_extensions:
-                    missing_required.append(ext_name)
-            except Exception as ext_exc:
-                if ext_name in required_extensions:
-                    missing_required.append(ext_name)
+        if has_people_ext:
+            # Let's try to enable the full people suite
+            all_succeeded = True
+            for ext_name in people_extensions:
+                try:
+                    extensions.enable_extension(ext_name)
+                    for _ in range(2):
+                        app.update()
+                    if not manager.get_enabled_extension_id(ext_name):
+                        all_succeeded = False
+                except Exception:
+                    all_succeeded = False
+            
+            if all_succeeded:
+                _PEOPLE_EXTENSION_ENABLED = True
+                _GRAPH_CORE_ENABLED = True
                 if logger is not None:
                     log_event(
                         logger,
-                        logging.WARNING,
-                        "person_animation_extension_enable_failed",
-                        "Could not enable a person animation extension",
-                        extension=ext_name,
-                        required=bool(ext_name in required_extensions),
-                        error=str(ext_exc),
+                        logging.INFO,
+                        "person_animation_extensions_ready",
+                        "Omni.Anim.People and all animation extensions are enabled.",
                     )
+                return
 
-        if missing_required:
-            if logger is not None:
-                log_event(
-                    logger,
-                    logging.WARNING,
-                    "person_animation_extensions_failed",
-                    "Required Omni.Anim.People extensions did not enable",
-                    missing_required=missing_required,
-                    enabled=enabled,
-                )
-            return False
-
-        if logger is not None:
-            log_event(
-                logger,
-                logging.INFO,
-                "person_animation_extensions_ready",
-                "Omni.Anim.People extensions are enabled",
-                enabled=enabled,
-            )
-        return True
-    except Exception as exc:
+        # Fallback path if omni.anim.people is not available or failed to load
+        import sys
+        sys.stderr.write("\n" + "="*80 + "\n")
+        sys.stderr.write("WARNING: Omni.Anim.People extension is not available or failed to enable.\n")
+        sys.stderr.write("Falling back to omni.anim.graph.core for animation playback.\n")
+        sys.stderr.write("="*80 + "\n\n")
+        sys.stderr.flush()
         if logger is not None:
             log_event(
                 logger,
                 logging.WARNING,
-                "person_animation_extensions_failed",
-                "Could not enable Omni.Anim.People extensions",
+                "person_animation_people_fallback",
+                "Omni.Anim.People extension is not available or failed to enable. Falling back to omni.anim.graph.core for animation playback.",
+            )
+
+        # Try to enable the core graph extensions
+        core_succeeded = True
+        for ext_name in core_graph_extensions:
+            try:
+                extensions.enable_extension(ext_name)
+                for _ in range(2):
+                    app.update()
+                if not manager.get_enabled_extension_id(ext_name):
+                    core_succeeded = False
+            except Exception as e:
+                core_succeeded = False
+                if logger is not None:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "person_animation_core_ext_failed",
+                        f"Could not enable core animation extension {ext_name}",
+                        error=str(e),
+                    )
+
+        if core_succeeded:
+            _GRAPH_CORE_ENABLED = True
+            if logger is not None:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "person_animation_core_ready",
+                    "Core animation graph extensions (omni.anim.graph.core) are successfully enabled.",
+                )
+        else:
+            import sys
+            sys.stderr.write("\n" + "="*80 + "\n")
+            sys.stderr.write("WARNING: CORE ANIMATION GRAPH EXTENSIONS FAILED TO LOAD.\n")
+            sys.stderr.write("SPAWNING PERSON IN MANUAL KINEMATIC JOINT ROTATION MODE.\n")
+            sys.stderr.write("="*80 + "\n\n")
+            sys.stderr.flush()
+            if logger is not None:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "person_animation_graph_core_failed",
+                    "Core animation graph extensions failed to load. Spawning person in manual kinematic joint rotation mode.",
+                )
+    except Exception as exc:
+        import sys
+        sys.stderr.write("\n" + "="*80 + "\n")
+        sys.stderr.write(f"WARNING: FAILED TO INITIALIZE ANIMATION EXTENSIONS: {exc}\n")
+        sys.stderr.write("="*80 + "\n\n")
+        sys.stderr.flush()
+        if logger is not None:
+            log_event(
+                logger,
+                logging.WARNING,
+                "person_animation_extensions_init_failed",
+                "Failed to initialize animation extensions",
                 error=str(exc),
             )
-        return False
+
+
+def _enable_people_extensions(logger: Optional[logging.Logger]) -> bool:
+    _initialize_extensions(logger)
+    return _PEOPLE_EXTENSION_ENABLED
 
 
 def _find_first_skel_root(stage: Any, parent_path: str) -> Optional[Any]:
@@ -436,7 +630,8 @@ def _try_setup_people_animation(
     logger: Optional[logging.Logger],
     attempt: int,
 ) -> Optional[str]:
-    if not _enable_people_extensions(logger):
+    _initialize_extensions(logger)
+    if not _GRAPH_CORE_ENABLED:
         return None
 
     try:
@@ -459,8 +654,22 @@ def _try_setup_people_animation(
             return None
 
         skel_path = str(skel_root.GetPath())
-        script_path = _extension_script_path()
-        _configure_people_settings(script_path)
+        
+        if _PEOPLE_EXTENSION_ENABLED:
+            script_path = _extension_script_path()
+            try:
+                _configure_people_settings(script_path)
+            except Exception as exc:
+                if logger is not None:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "person_settings_failed",
+                        "Failed to configure PeopleSettings",
+                        error=str(exc),
+                    )
+        else:
+            script_path = None
 
         animation_graph = _ensure_biped_setup(world, logger)
         if animation_graph is not None and animation_graph.IsValid():
@@ -483,7 +692,7 @@ def _try_setup_people_animation(
         else:
             raise RuntimeError("Biped_Setup animation graph is unavailable")
 
-        if script_path:
+        if _PEOPLE_EXTENSION_ENABLED and script_path:
             try:
                 omni.kit.commands.execute("ApplyScriptingAPICommand", paths=[Sdf.Path(skel_path)])
             except Exception:
@@ -520,25 +729,26 @@ def _try_setup_people_animation(
         except Exception:
             pass
 
-        character = ag.get_character(skel_path)
-        if character is None:
-            try:
-                character_count = ag.get_character_count()
-            except Exception:
-                character_count = None
-            raise RuntimeError(
-                f"animation graph character did not register for {skel_path}; "
-                f"registered_character_count={character_count}"
-            )
-        character.set_variable("Action", "None")
-        character.set_variable("Walk", 0.0)
+        if _PEOPLE_EXTENSION_ENABLED:
+            character = ag.get_character(skel_path)
+            if character is None:
+                try:
+                    character_count = ag.get_character_count()
+                except Exception:
+                    character_count = None
+                raise RuntimeError(
+                    f"animation graph character did not register for {skel_path}; "
+                    f"registered_character_count={character_count}"
+                )
+            character.set_variable("Action", "None")
+            character.set_variable("Walk", 0.0)
 
         if logger is not None:
             log_event(
                 logger,
                 logging.INFO,
                 "person_animation_ready",
-                "Animated person animation graph is ready",
+                f"Animated person animation graph is ready (people_enabled={_PEOPLE_EXTENSION_ENABLED})",
                 skel_root_path=skel_path,
                 behavior_script_path=script_path or "",
                 attempt=int(attempt),
@@ -558,18 +768,8 @@ def _try_setup_people_animation(
 
 
 def spawn_sim_person(world: Any, x: float, y: float, logger: Optional[logging.Logger]) -> SimPersonTarget:
-    people_enabled = _enable_people_extensions(logger)
-    if people_enabled:
-        _configure_people_settings(_extension_script_path())
-    else:
-        if logger is not None:
-            log_event(
-                logger,
-                logging.WARNING,
-                "person_animation_disabled",
-                "Omni.Anim.People extensions are not available. Spawning person in kinematic fallback mode.",
-            )
-
+    _initialize_extensions(logger)
+    
     if not is_prim_path_valid(CHARACTER_PARENT_PRIM):
         create_prim(CHARACTER_PARENT_PRIM, "Xform")
 
@@ -592,14 +792,16 @@ def spawn_sim_person(world: Any, x: float, y: float, logger: Optional[logging.Lo
     UsdPhysics.CollisionAPI.Apply(collider.prim)
     UsdGeom.Imageable(collider.prim).MakeInvisible()
 
+    use_fallback = not _GRAPH_CORE_ENABLED
+
     target = SimPersonTarget(
         visual_prim_path=PERSON_VISUAL_PRIM,
         collider=collider,
         collider_height_m=collider_height_m,
         logger=logger,
         last_position=np.array([x, y, 0.0], dtype=float),
-        kinematic_fallback=not people_enabled,
-        animation_ready=not people_enabled,
+        kinematic_fallback=use_fallback,
+        animation_ready=use_fallback,
     )
     if logger is not None:
         log_event(
@@ -610,5 +812,6 @@ def spawn_sim_person(world: Any, x: float, y: float, logger: Optional[logging.Lo
             visual_prim_path=PERSON_VISUAL_PRIM,
             collider_prim_path=PERSON_COLLIDER_PRIM,
             character_asset=character_usd,
+            kinematic_fallback=use_fallback,
         )
     return target

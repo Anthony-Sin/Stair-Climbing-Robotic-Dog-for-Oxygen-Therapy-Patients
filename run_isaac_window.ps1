@@ -62,7 +62,7 @@ $env:PYTHONUNBUFFERED = "1"
 # Initialize RawLog file first
 New-Item -ItemType File -Path $RawLog -Force | Out-Null
 
-$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" --person-move --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" > `"$RawLog`" 2>&1`""
+$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" --person-move --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera > `"$RawLog`" 2>&1`""
 
 # Start the process with direct OS redirection to prevent pipeline blocking
 $process = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs -PassThru -NoNewWindow

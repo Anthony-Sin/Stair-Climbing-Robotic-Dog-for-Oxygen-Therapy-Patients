@@ -53,6 +53,10 @@ parser.add_argument("--view-camera-height", type=float, default=1.45,
                     help="Viewport follow camera height above the route")
 parser.add_argument("--view-camera-side-offset", type=float, default=-0.85,
                     help="Viewport follow camera side offset relative to the Go2 heading")
+parser.add_argument("--verification-image", type=str, default="",
+                    help="Write a wide scene verification PNG showing robot, person, and stairs")
+parser.add_argument("--exit-after-verification", action="store_true",
+                    help="Exit after writing --verification-image")
 args = parser.parse_args()
 
 # Setup logger
@@ -119,11 +123,16 @@ from sim_person_actor import spawn_sim_person
 GO2_USD_PATH   = "/World/Go2"
 CAMERA_PRIM    = "/World/Sensors/Go2FrontCamera"
 VIEW_CAMERA_PRIM = "/World/View/Go2FollowCamera"
+VERIFICATION_CAMERA_PRIM = "/World/View/SceneVerificationCamera"
 PERSON_PRIM    = "/World/Person"
+# Official Isaac Sim 6.0 Go2 asset on Nucleus CDN (mesh-based, preferred)
 NUCLEUS_GO2    = "/Isaac/Robots/Unitree/Go2/go2.usd"
-LOCAL_GO2      = str((
-    __import__("pathlib").Path(__file__).parent / "assets" / "go2" / "go2.usda"
-).resolve())
+# Local fallback candidates (URDF-imported, primitive-shape geometry)
+LOCAL_GO2_CANDIDATES = (
+    REPO_ROOT / "isaac" / "assets" / "go2.usd" / "go2" / "go2.usda",
+    REPO_ROOT / "isaac" / "assets" / "go2_1_files" / "go2.usda",
+    REPO_ROOT / "isaac" / "assets" / "go2" / "go2.usda",
+)
 
 # Go2 moving body link inside the Isaac USD. Some Go2 assets expose "base",
 # while older notes/scripts called it "trunk".
@@ -238,52 +247,196 @@ def build_world(physics_hz: int) -> World:
     return world
 
 
-def _resolve_go2_usd() -> str:
-    """Return the best available USD path for Go2."""
-    import pathlib
-    local = pathlib.Path(LOCAL_GO2)
-    if local.exists():
-        log_event(
-            LOGGER,
-            logging.INFO,
-            "go2_asset_selected",
-            "Using local Go2 asset",
-            asset_path=LOCAL_GO2,
-        )
-        return str(local)
+class Go2SceneHandle:
+    """Minimal robot handle for USDs that render but do not expose a PhysX articulation."""
 
+    def __init__(self, prim) -> None:
+        self.prim = prim
+        self.name = "go2"
+        self.dof_names = []
+        self.joint_names = []
+        self.num_dof = 0
+
+
+def _resolve_go2_usd() -> str:
+    """Return the best available USD path for Go2.
+
+    Priority order:
+    1. Official Nucleus CDN asset (mesh-based, proper 3D geometry)
+    2. Local URDF-imported fallback (primitive-shape geometry)
+    """
+    # --- Try Nucleus first (official Isaac Sim mesh-based asset) ---
     nucleus_server = nucleus_utils.get_assets_root_path()
     if nucleus_server:
         candidate = nucleus_server + NUCLEUS_GO2
         try:
-            nucleus_utils.is_file(candidate)
-            log_event(
-                LOGGER,
-                logging.INFO,
-                "go2_asset_selected",
-                "Using Go2 Nucleus asset",
-                asset_path=candidate,
-            )
-            return candidate
+            if nucleus_utils.is_file(candidate):
+                log_event(
+                    LOGGER,
+                    logging.INFO,
+                    "go2_asset_selected",
+                    "Using official Isaac Sim Go2 Nucleus asset (mesh geometry)",
+                    asset_path=candidate,
+                )
+                return candidate
         except Exception:
             pass
 
+    # --- Fall back to local URDF-imported asset ---
+    for local in LOCAL_GO2_CANDIDATES:
+        if local.exists():
+            resolved = str(local.resolve())
+            import sys
+            sys.stderr.write("\n" + "="*80 + "\n")
+            sys.stderr.write("WARNING: Nucleus server or official Go2 asset unavailable.\n")
+            sys.stderr.write("FALLING BACK TO LOCAL URDF-IMPORTED GO2 ASSET (primitive geometry).\n")
+            sys.stderr.write("="*80 + "\n\n")
+            sys.stderr.flush()
+            log_event(
+                LOGGER,
+                logging.WARNING,
+                "go2_asset_fallback",
+                "Nucleus unavailable; using local URDF-imported Go2 asset (primitive geometry)",
+                asset_path=resolved,
+            )
+            return resolved
+
     raise FileNotFoundError(
-        "Go2 USD not found in Nucleus or isaac/assets/go2.usd.\n"
-        "Run:  python isaac/go2_usd_setup.py"
+        "Go2 USD not found in Isaac assets or local isaac/assets.\n"
+        "Run with Isaac Python: C:\\isaac_sim_600\\python.bat isaac\\go2_usd_setup.py"
     )
 
 
-def load_go2(world: World) -> Articulation:
+def load_go2(world: World):
     usd_path = _resolve_go2_usd()
     add_reference_to_stage(usd_path=usd_path, prim_path=GO2_USD_PATH)
-    go2 = world.scene.add(
-        Articulation(
-            prim_path=GO2_USD_PATH, 
-            name="go2",
-            position=np.array([0.0, 0.0, 0.32])
+
+    import omni.usd
+    import math as _math
+    from pxr import Usd, UsdPhysics, UsdGeom, PhysxSchema, Sdf
+    stage = omni.usd.get_context().get_stage()
+
+    go2_prim = stage.GetPrimAtPath(GO2_USD_PATH)
+    if not go2_prim or not go2_prim.IsValid():
+        raise RuntimeError(f"Go2 reference did not create a valid prim at {GO2_USD_PATH}")
+
+    # Select all relevant variant sets to activate the full mesh-based model
+    vsets = go2_prim.GetVariantSets()
+    if "Physics" in vsets.GetNames():
+        vsets.GetVariantSet("Physics").SetVariantSelection("physx")
+    if "Robot" in vsets.GetNames():
+        vsets.GetVariantSet("Robot").SetVariantSelection("Robot")
+    if "Sensor" in vsets.GetNames():
+        vsets.GetVariantSet("Sensor").SetVariantSelection("Sensors")
+    # Load all payloads (physics + visual)
+    stage.Load(GO2_USD_PATH)
+
+    # Spawn the robot at proper standing height.
+    # The Nucleus Go2 base link is at local [0,0,0]; the feet reach ~0.33 m below.
+    # Spawn at 0.5 m so the feet land on the ground cleanly after world.reset().
+    _set_xform_ops(go2_prim, translate=(0.0, 0.0, 0.50), rotate_xyz=(0.0, 0.0, 0.0))
+
+    # For URDF-imported local assets the visual geometry has purpose='guide'.
+    # Fix that so the camera can render the primitives.  On the official Nucleus
+    # asset the geometry lives in USD prototype prims (instanceable) so this
+    # loop finds nothing and is harmless.
+    changed_count = 0
+    for prim in Usd.PrimRange(go2_prim):
+        geom_prim = UsdGeom.Imageable(prim)
+        if geom_prim:
+            purpose = geom_prim.GetPurposeAttr().Get()
+            if purpose == "guide":
+                geom_prim.GetPurposeAttr().Set("default")
+                changed_count += 1
+    if changed_count > 0:
+        print(f"[load_go2] Changed purpose to 'default' on {changed_count} prims (local URDF asset).")
+
+    # Go2 default standing joint positions (in radians, from Isaac Lab training config).
+    # hip=0, thigh=0.9 rad (~51.6°), calf=-1.8 rad (~-103°)
+    # These are set on every joint so the robot starts in a stable standing pose
+    # rather than fully extended (which causes immediate collapse).
+    STANDING_POSE_RAD = {
+        "hip":   0.0,
+        "thigh": 0.9,
+        "calf":  -1.8,
+    }
+
+    art_path = ""
+    if go2_prim and go2_prim.IsValid():
+        # Remove any stray RigidBodyAPI from the root xform to prevent PhysX velocity warnings
+        if go2_prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            go2_prim.RemoveAPI(UsdPhysics.RigidBodyAPI)
+
+        for prim in Usd.PrimRange(go2_prim):
+            if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
+                art_path = str(prim.GetPath())
+                break
+
+        # The base link of a PhysX Reduced Coordinate Articulation MUST be dynamic (non-kinematic).
+        # Otherwise, PhysX rejects the articulation root. We set it to False.
+        base_link_path = resolve_go2_body_prim_path(stage)
+        base_link_prim = stage.GetPrimAtPath(base_link_path)
+        if base_link_prim and base_link_prim.IsValid():
+            rb_api = UsdPhysics.RigidBodyAPI.Apply(base_link_prim)
+            rb_api.CreateKinematicEnabledAttr(False)
+            log_event(
+                LOGGER,
+                logging.INFO,
+                "go2_base_dynamic",
+                "Go2 base link set to dynamic (non-kinematic) for PhysX articulation support",
+                base_link_path=base_link_path,
+            )
+
+        # Apply joint drives and set initial standing joint positions in USD.
+        # USD Physics angular drive targets are in degrees.
+        for prim in Usd.PrimRange(go2_prim):
+            if prim.IsA(UsdPhysics.RevoluteJoint):
+                joint_name = prim.GetName().lower()
+                target_deg = 0.0
+                for part, rad in STANDING_POSE_RAD.items():
+                    if part in joint_name:
+                        target_deg = _math.degrees(rad)
+                        break
+
+                # Position drive with stiffness/damping
+                drive_api = UsdPhysics.DriveAPI.Apply(prim, "angular")
+                drive_api.CreateStiffnessAttr(800.0)
+                drive_api.CreateDampingAttr(40.0)
+                drive_api.CreateTargetPositionAttr(target_deg)
+                drive_api.CreateMaxForceAttr(1000.0)
+
+                # Set initial joint state so PhysX starts from the standing pose
+                try:
+                    prim.CreateAttribute("state:angular:physics:position", Sdf.ValueTypeNames.Float).Set(target_deg)
+                except Exception:
+                    pass
+
+    if art_path:
+        go2 = world.scene.add(
+            Articulation(
+                prim_path=art_path,
+                name="go2",
+                position=np.array([0.0, 0.0, 0.50])
+            )
         )
-    )
+        log_event(
+            LOGGER,
+            logging.INFO,
+            "go2_articulation_ready",
+            "Go2 PhysX articulation was registered with the Isaac world",
+            prim_path=art_path,
+        )
+    else:
+        go2 = Go2SceneHandle(go2_prim)
+        log_event(
+            LOGGER,
+            logging.WARNING,
+            "go2_articulation_missing",
+            "Go2 USD loaded as a visible scene prim, but no PhysX articulation root was found; using kinematic scene handle",
+            prim_path=GO2_USD_PATH,
+            asset_path=str(usd_path),
+        )
+
     log_event(
         LOGGER,
         logging.INFO,
@@ -293,16 +446,27 @@ def load_go2(world: World) -> Articulation:
     return go2
 
 
+
 def resolve_go2_body_prim_path(stage) -> str:
     """Return the Go2 prim that follows root motion in this Isaac asset."""
-    for child_name in (BASE_LINK_NAME, "base", "trunk", "base_link"):
-        candidate = f"{GO2_USD_PATH}/{child_name}"
-        try:
-            prim = stage.GetPrimAtPath(candidate)
-            if prim and prim.IsValid():
-                return candidate
-        except Exception:
-            pass
+    search_paths = [GO2_USD_PATH]
+
+    # Include the nested child paths generated by the 6.0 URDF Importer
+    go2_prim = stage.GetPrimAtPath(GO2_USD_PATH)
+    if go2_prim and go2_prim.IsValid():
+        for child in go2_prim.GetChildren():
+            search_paths.append(str(child.GetPath()))
+
+    for root_path in search_paths:
+        for child_name in (BASE_LINK_NAME, "base", "trunk", "base_link"):
+            candidate = f"{root_path}/{child_name}"
+            try:
+                prim = stage.GetPrimAtPath(candidate)
+                if prim and prim.IsValid():
+                    return candidate
+            except Exception:
+                pass
+
     return GO2_USD_PATH
 
 
@@ -435,6 +599,111 @@ def add_camera(stage, resolution: tuple = (1280, 720)) -> Camera:
         log_event(LOGGER, logging.WARNING, "camera_intrinsics_failed", f"Failed to set camera intrinsics on USD prim: {e}")
 
     return camera
+
+
+def add_verification_camera(stage, resolution: tuple = (1280, 720)) -> Camera:
+    """Create a wide overview camera for scene-load verification screenshots."""
+    if not stage.GetPrimAtPath("/World/View").IsValid():
+        stage.DefinePrim("/World/View", "Xform")
+
+    camera_prim = UsdGeom.Camera.Define(stage, VERIFICATION_CAMERA_PRIM).GetPrim()
+    UsdGeom.Camera(camera_prim).CreateFocalLengthAttr().Set(14.0)
+    xform = UsdGeom.Xformable(camera_prim)
+    xform.ClearXformOpOrder()
+    transform_op = xform.AddTransformOp()
+
+    eye = Gf.Vec3d(-3.0, -3.5, 2.5)
+    target = Gf.Vec3d(0.8, 0.0, 0.3)
+    view_matrix = Gf.Matrix4d(1.0)
+    view_matrix.SetLookAt(eye, target, Gf.Vec3d(0.0, 0.0, 1.0))
+    transform_op.Set(view_matrix.GetInverse())
+
+    camera = Camera(
+        prim_path=VERIFICATION_CAMERA_PRIM,
+        name="scene_verification_camera",
+        resolution=resolution,
+    )
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "verification_camera_created",
+        "Created wide scene verification camera",
+        camera_path=VERIFICATION_CAMERA_PRIM,
+        output_path=args.verification_image,
+    )
+    return camera
+
+
+def capture_verification_image(world: World, camera: Camera, output_path: str, go2=None, person=None) -> None:
+    """Render and save a PNG from the wide scene verification camera."""
+    out_path = Path(output_path).expanduser()
+    if not out_path.is_absolute():
+        out_path = (REPO_ROOT / out_path).resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    camera.initialize()
+    camera.add_rgb_to_frame()
+    rgb_data = None
+    # Step extra frames so Nucleus textures have time to stream before capture
+    dt = 1.0 / 60.0
+    for _ in range(50):
+        if go2 is not None:
+            try:
+                hold_go2_stable(go2, _go2_locomotion_state, dt, logger=None)
+            except Exception:
+                pass
+        if person is not None:
+            try:
+                if getattr(person, "kinematic_fallback", False):
+                    person._update_fallback_animation(walking=False)
+            except Exception:
+                pass
+        world.step(render=True)
+    for _ in range(20):
+        if go2 is not None:
+            try:
+                hold_go2_stable(go2, _go2_locomotion_state, dt, logger=None)
+            except Exception:
+                pass
+        if person is not None:
+            try:
+                if getattr(person, "kinematic_fallback", False):
+                    person._update_fallback_animation(walking=False)
+            except Exception:
+                pass
+        world.step(render=True)
+        rgb_data = camera.get_rgb()
+        if rgb_data is not None:
+            break
+
+    if rgb_data is None:
+        raise RuntimeError("Verification camera did not produce an RGB frame")
+
+    image = np.asarray(rgb_data)
+    if image.ndim == 3 and image.shape[2] == 4:
+        image = image[:, :, :3]
+    image = image.astype(np.uint8)
+
+    try:
+        import cv2
+
+        ok = cv2.imwrite(str(out_path), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+        if not ok:
+            raise RuntimeError("cv2.imwrite returned false")
+    except Exception:
+        from PIL import Image
+
+        Image.fromarray(image).save(str(out_path))
+
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "verification_image_saved",
+        "Saved wide scene verification image",
+        output_path=str(out_path),
+        width=int(image.shape[1]),
+        height=int(image.shape[0]),
+    )
 
 
 def initialize_camera_streams(camera: Camera) -> None:
@@ -758,12 +1027,12 @@ class PatientLocomotionState:
         self.stair_phase_started = False
         self.stair_phase_logged = False
         self.o2_sat = 98.0  # Oxygen saturation %
-        self.ground_follow_delay_sec = 15.0
+        self.ground_follow_delay_sec = 20.0
         # 2D waypoints: start on flat ground, wait near the stair base,
         # then walk naturally up the existing stair blocks.
         self.waypoints = [
-            (1.0, 0.0),
-            (1.82, 0.0),
+            (0.6, 0.0),
+            (1.8, 0.0),
             (2.14, 0.0),
             (2.44, 0.0),
             (2.74, 0.0),
@@ -947,7 +1216,7 @@ def update_person_patrol(person, dt: float) -> None:
         # 2. Determine patient speed based on terrain section
         px = state.x
         if not state.stair_phase_started:
-            speed = 0.28 if px < 1.78 else 0.0
+            speed = 0.28
             unsteady_amp = 0.015
         elif 2.0 <= px < 3.5:
             speed = 0.16
@@ -968,15 +1237,26 @@ def update_person_patrol(person, dt: float) -> None:
         elif dist <= step_dist:
             state.x = tx
             state.y = ty
-            state.current_wp_idx += state.wp_direction
-            if state.current_wp_idx >= len(state.waypoints):
-                state.current_wp_idx = len(state.waypoints) - 1
-                state.stop_timer = 1.0
-            elif state.current_wp_idx < 0:
-                state.current_wp_idx = 1
-                state.wp_direction = 1
-                state.turn_timer = 2.0
-                return
+            if not state.stair_phase_started:
+                # Ping-pong between index 0 and 1 on flat ground
+                if state.current_wp_idx == 1 and state.wp_direction == 1:
+                    state.wp_direction = -1
+                    state.current_wp_idx = 0
+                    state.turn_timer = 2.0
+                elif state.current_wp_idx == 0 and state.wp_direction == -1:
+                    state.wp_direction = 1
+                    state.current_wp_idx = 1
+                    state.turn_timer = 2.0
+            else:
+                state.current_wp_idx += state.wp_direction
+                if state.current_wp_idx >= len(state.waypoints):
+                    state.current_wp_idx = len(state.waypoints) - 1
+                    state.stop_timer = 1.0
+                elif state.current_wp_idx < 0:
+                    state.current_wp_idx = 1
+                    state.wp_direction = 1
+                    state.turn_timer = 2.0
+                    return
         else:
             state.x += (dx / dist) * step_dist
             state.y += (dy / dist) * step_dist
@@ -1456,6 +1736,76 @@ def ensure_person_animation_loaded(world: World, person, *, render: bool, attemp
     raise RuntimeError("Person animation graph did not become ready in strict animation mode")
 
 # ---------------------------------------------------------------------------
+# Go2 standing pose initialisation (called after world.reset())
+# ---------------------------------------------------------------------------
+def _init_go2_standing_pose(go2) -> None:
+    """Set Go2 joint positions to the standing pose immediately after world.reset().
+
+    This prevents the robot from collapsing on the first simulation step.
+    Joint order for the Nucleus Go2:
+      FL_hip, FL_thigh, FL_calf, FR_hip, FR_thigh, FR_calf,
+      RL_hip, RL_thigh, RL_calf, RR_hip, RR_thigh, RR_calf
+    """
+    import math as _math
+    # Standing pose in radians (Isaac Lab training defaults)
+    HIP_RAD   = 0.0
+    THIGH_RAD = 0.9     # ~51.6°
+    CALF_RAD  = -1.8    # ~-103°
+
+    standing_rad = np.array([
+        HIP_RAD, THIGH_RAD, CALF_RAD,   # FL
+        HIP_RAD, THIGH_RAD, CALF_RAD,   # FR
+        HIP_RAD, THIGH_RAD, CALF_RAD,   # RL
+        HIP_RAD, THIGH_RAD, CALF_RAD,   # RR
+    ], dtype=float)
+
+    try:
+        go2.initialize()
+    except Exception:
+        pass  # may already be initialised
+
+    # Try to set joint positions via the articulation API
+    for method_name in ("set_joint_positions", "set_joint_position_targets"):
+        method = getattr(go2, method_name, None)
+        if callable(method):
+            try:
+                # Try with matching DOF count
+                n_dof = getattr(go2, "num_dof", None)
+                if n_dof is not None and int(n_dof) > 0:
+                    n = int(n_dof)
+                    padded = np.tile(
+                        standing_rad, int(n / len(standing_rad)) + 1
+                    )[:n]
+                    method(padded)
+                else:
+                    method(standing_rad)
+                log_event(
+                    LOGGER,
+                    logging.INFO,
+                    "go2_standing_pose_set",
+                    f"Go2 standing joint pose applied via {method_name}",
+                )
+                break
+            except Exception as exc:
+                log_event(
+                    LOGGER,
+                    logging.DEBUG,
+                    "go2_standing_pose_attempt",
+                    f"{method_name} failed: {exc}",
+                )
+
+    # Also set the xform to the correct standing height
+    try:
+        import omni.usd
+        stage = omni.usd.get_context().get_stage()
+        go2_prim = stage.GetPrimAtPath(GO2_USD_PATH)
+        if go2_prim and go2_prim.IsValid():
+            _set_xform_ops(go2_prim, translate=(0.0, 0.0, 0.50), rotate_xyz=(0.0, 0.0, 0.0))
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Main simulation loop
 # ---------------------------------------------------------------------------
 def main() -> None:
@@ -1496,6 +1846,7 @@ def main() -> None:
 
     log_event(LOGGER, logging.INFO, "camera_add_start", "Adding front camera")
     camera = add_camera(stage)
+    verification_camera = add_verification_camera(stage) if args.verification_image else None
 
     log_event(LOGGER, logging.INFO, "person_spawn_start", "Spawning person target")
     person = spawn_person(world, x=args.person_x, y=args.person_y)
@@ -1504,7 +1855,34 @@ def main() -> None:
 
     world.reset()
     initialize_camera_streams(camera)
+
+    # After world.reset() the articulation is fully initialised; set the Go2
+    # joints to the standing pose so the robot doesn't collapse.
+    _init_go2_standing_pose(go2)
+
     animation_ready = ensure_person_animation_loaded(world, person, render=not args.headless, attempts=4)
+
+    if verification_camera is not None:
+        capture_verification_image(world, verification_camera, args.verification_image, go2=go2, person=person)
+        if args.exit_after_verification:
+            log_event(
+                LOGGER,
+                logging.INFO,
+                "verification_exit",
+                "Exiting after verification image capture",
+                output_path=args.verification_image,
+            )
+            simulation_app.close()
+            return
+
+    try:
+        import omni.timeline
+        timeline = omni.timeline.get_timeline_interface()
+        if not timeline.is_playing():
+            timeline.play()
+        log_event(LOGGER, logging.INFO, "timeline_play_started", "Simulation timeline started playing successfully")
+    except Exception as exc:
+        log_event(LOGGER, logging.WARNING, "timeline_play_failed", "Failed to start simulation timeline", error=str(exc))
 
     log_event(
         LOGGER,
