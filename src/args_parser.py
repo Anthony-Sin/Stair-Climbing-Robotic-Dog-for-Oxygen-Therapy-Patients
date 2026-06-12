@@ -110,7 +110,7 @@ def parse_args():
         '--log-components', type=str, default='none',
         help='Comma-separated vision ECS log allowlist: none, all, vision.main, vision.exporter',
     )
-    parser.add_argument('--preview-fps', type=float, default=6.0,
+    parser.add_argument('--preview-fps', type=float, default=30.0,
                         help='Maximum preview refresh rate in Hz')
     parser.add_argument('--preview-save-dir', type=str, default='',
                         help='Directory for OpenCV preview output; cleaned at startup when enabled')

@@ -178,8 +178,10 @@ class RotationDebugWindow:
 
 def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any], 
                         preparation_mode: bool, reacquire_active: bool,
-                        camera_mode: str, is_stitched: bool):
-    """Draw status overlays on the combined frame.
+                        camera_mode: str, is_stitched: bool = False,
+                        frame_meta: dict = None,
+                        trans_x_cmd: float = 0.0, rotation_cmd: float = 0.0):
+    """Draw status overlays and HUD dashboard on the combined frame.
     
     Args:
         combined: The image to draw on (modified in-place)
@@ -188,6 +190,9 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
         reacquire_active: Whether ReID reacquire mode is active
         camera_mode: Runtime camera mode (currently single only).
         is_stitched: Reserved for backward compatibility (unused).
+        frame_meta: Optional metadata dict containing swing_legs, etc.
+        trans_x_cmd: Linear velocity command sent to the robot.
+        rotation_cmd: Angular velocity command sent to the robot.
     """
     _ = is_stitched
 
@@ -241,6 +246,113 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
                  (cx_int + 5, combined.shape[0] // 2), (255, 255, 0), 2)
         cv2.line(combined, (cx_int, (combined.shape[0] // 2) - 5), 
                  (cx_int, (combined.shape[0] // 2) + 5), (255, 255, 0), 2)
+
+    # -----------------------------------------------------------------------
+    # Left HUD Card (Tracking & Control)
+    # -----------------------------------------------------------------------
+    left_x = 20
+    left_y = 100
+    left_w = 280
+    left_h = 180
+    
+    # Draw semi-transparent background for Left Card
+    sub_left = combined[left_y:left_y+left_h, left_x:left_x+left_w]
+    rect_left = np.zeros_like(sub_left)
+    rect_left[:] = 25  # Dark overlay
+    cv2.addWeighted(sub_left, 0.4, rect_left, 0.6, 0, sub_left)
+    cv2.rectangle(combined, (left_x, left_y), (left_x + left_w, left_y + left_h), (120, 120, 120), 1)
+    
+    # Title
+    cv2.putText(combined, "TRACKING & CONTROL", (left_x + 12, left_y + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 245, 150), 2)
+    cv2.line(combined, (left_x + 10, left_y + 35), (left_x + left_w - 10, left_y + 35), (100, 100, 100), 1)
+    
+    # Extract telemetry info
+    target_dist = debug_info.get('depth_distance_m')
+    target_bear = debug_info.get('rotation_error_deg')
+    
+    # Status
+    if debug_info.get('matched_visual_lock', False):
+        lock_status = "LOCKED"
+        lock_color = (0, 255, 0)  # Green
+    elif reacquire_active:
+        lock_status = "REACQUIRING"
+        lock_color = (0, 165, 255)  # Orange/Amber
+    else:
+        lock_status = "LOST"
+        lock_color = (0, 0, 255)  # Red
+        
+    lines = [
+        ("Target Lock:", lock_status, lock_color),
+        ("Distance:", f"{target_dist:.2f} m" if target_dist is not None else "N/A", (255, 255, 255)),
+        ("Bearing:", f"{target_bear:+.1f} deg" if target_bear is not None else "N/A", (255, 255, 255)),
+        ("Cmd Speed:", f"{trans_x_cmd:.2f} m/s", (255, 255, 0)),
+        ("Cmd Yaw Rate:", f"{rotation_cmd:+.2f} rad/s", (255, 255, 0)),
+    ]
+    
+    curr_y = left_y + 60
+    for line_title, val, val_color in lines:
+        cv2.putText(combined, line_title, (left_x + 12, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
+        cv2.putText(combined, str(val), (left_x + 150, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, val_color, 2)
+        curr_y += 24
+
+    # -----------------------------------------------------------------------
+    # Right HUD Card (Gait Chassis)
+    # -----------------------------------------------------------------------
+    right_x = combined.shape[1] - 300
+    right_y = 100
+    right_w = 280
+    right_h = 180
+    
+    # Draw semi-transparent background for Right Card
+    sub_right = combined[right_y:right_y+right_h, right_x:right_x+right_w]
+    rect_right = np.zeros_like(sub_right)
+    rect_right[:] = 25  # Dark overlay
+    cv2.addWeighted(sub_right, 0.4, rect_right, 0.6, 0, sub_right)
+    cv2.rectangle(combined, (right_x, right_y), (right_x + right_w, right_y + right_h), (120, 120, 120), 1)
+    
+    # Title
+    cv2.putText(combined, "ROBOT GAIT CHASSIS", (right_x + 12, right_y + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 245, 150), 2)
+    cv2.line(combined, (right_x + 10, right_y + 35), (right_x + right_w - 10, right_y + 35), (100, 100, 100), 1)
+    
+    # Draw 2D Robot Chassis
+    cx = right_x + 140
+    cy = right_y + 115
+    
+    # Draw dog torso body outline
+    cv2.rectangle(combined, (cx - 25, cy - 40), (cx + 25, cy + 40), (80, 80, 80), 2)
+    # Draw a center node
+    cv2.circle(combined, (cx, cy), 4, (100, 100, 100), -1)
+    
+    # Get swing legs
+    swing_list = []
+    if frame_meta is not None:
+        swing_list = [leg.upper() for leg in frame_meta.get("swing_legs", [])]
+        
+    # Feet positions relative to cx, cy
+    feet = {
+        "FL": (cx - 45, cy - 35),
+        "FR": (cx + 45, cy - 35),
+        "RL": (cx - 45, cy + 35),
+        "RR": (cx + 45, cy + 35),
+    }
+    
+    for leg, (fx, fy) in feet.items():
+        is_swing = leg in swing_list
+        color = (255, 255, 0) if is_swing else (70, 70, 70)  # Bright Cyan for Swing, Dark Gray for Stance
+        # Draw leg connector line
+        cv2.line(combined, (cx, cy), (fx, fy), (120, 120, 120), 1)
+        # Draw foot circle
+        cv2.circle(combined, (fx, fy), 15, color, -1)
+        cv2.circle(combined, (fx, fy), 15, (200, 200, 200), 1)
+        
+        # Label inside foot circle
+        text_color = (0, 0, 0) if is_swing else (255, 255, 255)
+        cv2.putText(combined, leg, (fx - 8, fy + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, text_color, 2)
+        
+    # Draw small legend on the bottom of card
+    status_text = "SWINGING" if len(swing_list) > 0 else "STATIONARY"
+    status_color = (255, 255, 0) if len(swing_list) > 0 else (120, 120, 120)
+    cv2.putText(combined, f"Gait Status: {status_text}", (right_x + 12, right_y + 170), cv2.FONT_HERSHEY_SIMPLEX, 0.4, status_color, 1)
 
 
 class BimodalDepthHistogramWindow:

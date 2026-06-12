@@ -191,10 +191,10 @@ class SimCameraCapture:
                 if bgr is None:
                     continue
 
-                # Upsample to requested output resolution using nearest-neighbor to preserve blockiness
+                # Upsample to requested output resolution using linear interpolation for a crisper view
                 if (bgr.shape[1], bgr.shape[0]) != (self.width, self.height):
                     bgr   = cv2.resize(bgr,   (self.width, self.height),
-                                    interpolation=cv2.INTER_NEAREST)
+                                    interpolation=cv2.INTER_LINEAR)
                 if (depth.shape[1], depth.shape[0]) != (self.width, self.height):
                     depth = cv2.resize(depth, (self.width, self.height),
                                     interpolation=cv2.INTER_NEAREST)
@@ -216,9 +216,10 @@ class SimCameraCapture:
 
                 self._frame_queue.put_nowait((bgr, depth_frame))
                 
-                # Store ground truth positions in frame metadata
+                # Store ground truth positions and swing legs in frame metadata
                 gt_patient = meta.get("gt_patient")
                 gt_distractor = meta.get("gt_distractor")
+                swing_legs = meta.get("swing_legs", [])
                 self._last_frame_meta = {
                     "success":    True,
                     "wait_ms":    0.0,
@@ -226,19 +227,16 @@ class SimCameraCapture:
                     "error":      None,
                     "gt_patient": gt_patient,
                     "gt_distractor": gt_distractor,
+                    "swing_legs": swing_legs,
                 }
                 if self.verbose:
                     print(f"[SimCameraCapture] Decoded frame, queue size {self._frame_queue.qsize()}", flush=True)
-
             except Exception as exc:
                 if self.verbose:
                     print(f"[SimCameraCapture] Frame decode error: {exc}", flush=True)
                     import traceback
                     traceback.print_exc()
         sock.close()
-    # ------------------------------------------------------------------
-    # Public API -- matches CameraCapture exactly
-    # ------------------------------------------------------------------
 
     def get_frame(self):
         """

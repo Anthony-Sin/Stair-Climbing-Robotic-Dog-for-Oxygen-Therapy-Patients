@@ -71,7 +71,7 @@ Set-Content -LiteralPath $SummaryLog -Encoding UTF8 -Value @(
     "Fast diagnosis:",
     "  If isaac_wait is complete, Isaac emitted world_ready and scene loading finished.",
     "  Docker starts automatically after Isaac is ready; pass --pause-after-isaac to restore the manual gate.",
-    "  Isaac now holds autonomous person/distractor motion until the controller sends its first command.",
+    "  Isaac now holds autonomous person/distractor motion until the controller sends a nonzero command.",
     "  Docker will not command the robot until both TensorRT engine files exist in models/.",
     "  OpenCV preview frames are saved even when GUI preview is disabled.",
     "  If build fails, docker_run.log will not exist because the controller never started.",
@@ -619,6 +619,16 @@ function Write-IsaacFailureDiagnosis {
 
     if ($eventText -match "person_asset_missing") {
         Write-Stage "isaac_diag" "failed" "Isaac could not find a real Isaac People character asset; install/configure the matching Isaac Sim Assets pack" @{
+            event_log = $EventLogPath
+            raw_log = $RawLogPath
+        }
+        return $true
+    }
+    if (
+        $rawText -match "Failed to prepare local modified Biped_Setup copy" -or
+        ($rawText -match "Biped_Setup_modified" -and $rawText -match "Access is denied")
+    ) {
+        Write-Stage "isaac_diag" "failed" "Isaac could not write the generated Biped_Setup person asset; a previous Isaac process may still be holding the file" @{
             event_log = $EventLogPath
             raw_log = $RawLogPath
         }

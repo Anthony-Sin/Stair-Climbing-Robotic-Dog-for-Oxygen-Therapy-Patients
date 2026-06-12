@@ -783,6 +783,9 @@ def main():
                 draw_frame_overlays(
                     combined, debug_info, preparation_mode,
                     reacquire_active, args.camera_mode, is_stitched,
+                    frame_meta=frame_meta,
+                    trans_x_cmd=trans_x_cmd if motion_allowed else 0.0,
+                    rotation_cmd=rotation_cmd if motion_allowed else 0.0,
                 )
                 if not args.headless:
                     preview_worker.submit(

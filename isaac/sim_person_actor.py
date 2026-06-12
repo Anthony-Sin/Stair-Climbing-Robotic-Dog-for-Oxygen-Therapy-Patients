@@ -47,6 +47,11 @@ BIPED_SETUP_PRIM = "/World/Characters/_BipedSetup"
 _BIPED_WALK_ANIM_SUBPATH = "CharacterAnimation/Animation/stand_walk_1_skelanim"
 _BIPED_IDLE_ANIM_SUBPATH = "CharacterAnimation/Animation/stand_idle_loop_skelanim"
 
+# The Biped_Setup mannequin's visual forward axis is rotated relative to the
+# sim route yaw. Keep this visual-only so collider/path metadata still use
+# world yaw directly.
+PERSON_VISUAL_FORWARD_YAW_OFFSET_RAD = math.pi / 2.0
+
 # Isaac 4.5 Biped_Setup is used because 6.0 Nucleus doesn't have it yet.
 _BIPED_SETUP_USD_CANDIDATES = [
     "{assets_root}/Isaac/People/Characters/Biped_Setup.usd",
@@ -79,21 +84,28 @@ class SimPersonTarget:
         if position.shape[0] < 3:
             position = np.array([float(position[0]), float(position[1]), 0.0], dtype=float)
 
+        if orientation is not None and len(orientation) >= 4:
+            qw, qx, qy, qz = orientation
+            self.yaw_rad = 2.0 * math.atan2(float(qz), float(qw))
+
         if self.last_position is not None:
             delta = position[:2] - self.last_position[:2]
             distance = float(np.linalg.norm(delta))
             if distance > 1e-4:
-                self.yaw_rad = math.atan2(float(delta[1]), float(delta[0]))
+                if orientation is None or len(orientation) < 4:
+                    self.yaw_rad = math.atan2(float(delta[1]), float(delta[0]))
                 self.walk_phase += distance * 10.0
         else:
             distance = 0.0
 
+        walking = distance > 5e-5
+
         _set_xform_pose(
             self.visual_prim_path,
             np.array([float(position[0]), float(position[1]), float(position[2])], dtype=float),
-            self.yaw_rad,
+            self.yaw_rad + PERSON_VISUAL_FORWARD_YAW_OFFSET_RAD,
         )
-        self._update_animation_state(walking=distance > 1e-4)
+        self._update_animation_state(walking=walking)
 
         collider_center = np.array(
             [
@@ -180,6 +192,15 @@ class SimPersonTarget:
             binding_api = UsdSkel.BindingAPI.Apply(skel_root_prim)
             binding_api.GetAnimationSourceRel().SetTargets([Sdf.Path(anim_prim_path)])
             self._anim_clip_state = target
+            if self.logger is not None:
+                log_event(
+                    self.logger,
+                    logging.INFO,
+                    "person_clip_switched",
+                    "Person SkelAnimation clip switched",
+                    target=target,
+                    anim_prim_path=anim_prim_path,
+                )
         except Exception as exc:
             if self.logger is not None and not getattr(self, "_clip_switch_err_logged", False):
                 self._clip_switch_err_logged = True
@@ -323,6 +344,108 @@ def _yaw_quat_for_orient_op(orient_op: UsdGeom.XformOp, yaw_rad: float):
     return Gf.Quatd(real, 0.0, 0.0, z_imag)
 
 
+def _is_zero_vec3(value: Any, *, tol: float = 1e-4) -> bool:
+    try:
+        return bool(Gf.IsClose(value, Gf.Vec3f(0.0, 0.0, 0.0), tol))
+    except Exception:
+        try:
+            return (
+                abs(float(value[0])) <= tol
+                and abs(float(value[1])) <= tol
+                and abs(float(value[2])) <= tol
+            )
+        except Exception:
+            return False
+
+
+def _zero_root_translation_channel(anim: Any, root_idx: int) -> bool:
+    trans_attr = anim.GetTranslationsAttr()
+    changed = False
+
+    time_samples = trans_attr.GetTimeSamples()
+    if time_samples:
+        for t in time_samples:
+            vals = trans_attr.Get(t)
+            if vals and len(vals) > root_idx and not _is_zero_vec3(vals[root_idx]):
+                vals_list = list(vals)
+                vals_list[root_idx] = Gf.Vec3f(0.0, 0.0, 0.0)
+                trans_attr.Set(vals_list, t)
+                changed = True
+    else:
+        val = trans_attr.Get()
+        if val and len(val) > root_idx and not _is_zero_vec3(val[root_idx]):
+            vals_list = list(val)
+            vals_list[root_idx] = Gf.Vec3f(0.0, 0.0, 0.0)
+            trans_attr.Set(vals_list)
+            changed = True
+
+    return changed
+
+
+def _identity_quat_like(value: Any) -> Any:
+    try:
+        if isinstance(value, Gf.Quatf):
+            return Gf.Quatf(1.0, 0.0, 0.0, 0.0)
+        if isinstance(value, Gf.Quath):
+            return Gf.Quath(1.0, 0.0, 0.0, 0.0)
+    except Exception:
+        pass
+    return Gf.Quatd(1.0, 0.0, 0.0, 0.0)
+
+
+def _zero_root_rotation_channel(anim: Any, root_idx: int) -> bool:
+    rotations_attr = anim.GetRotationsAttr()
+    changed = False
+
+    time_samples = rotations_attr.GetTimeSamples()
+    if time_samples:
+        for t in time_samples:
+            vals = rotations_attr.Get(t)
+            if vals and len(vals) > root_idx:
+                vals_list = list(vals)
+                vals_list[root_idx] = _identity_quat_like(vals_list[root_idx])
+                rotations_attr.Set(vals_list, t)
+                changed = True
+    else:
+        val = rotations_attr.Get()
+        if val and len(val) > root_idx:
+            vals_list = list(val)
+            vals_list[root_idx] = _identity_quat_like(vals_list[root_idx])
+            rotations_attr.Set(vals_list)
+            changed = True
+
+    return changed
+
+
+def _loop_animation_channels(anim: Any, loop_duration: float = 104.0) -> bool:
+    changed = False
+    for attr in [anim.GetTranslationsAttr(), anim.GetRotationsAttr(), anim.GetScalesAttr()]:
+        if not attr.IsValid():
+            continue
+        time_samples = attr.GetTimeSamples()
+        if not time_samples:
+            continue
+        
+        # Cache values for time samples <= loop_duration
+        cache = {}
+        for t in time_samples:
+            if t <= loop_duration:
+                cache[t] = attr.Get(t)
+                
+        if not cache:
+            continue
+            
+        # Fill in all time samples by repeating the cache
+        for t in time_samples:
+            t_looped = t % loop_duration
+            best_key = min(cache.keys(), key=lambda k: abs(k - t_looped))
+            val = cache[best_key]
+            attr.Set(val, t)
+            changed = True
+    return changed
+
+
+
 def _find_first_skel_root(stage: Any, parent_path: str) -> Optional[Any]:
     parent = stage.GetPrimAtPath(parent_path)
     if not parent or not parent.IsValid():
@@ -368,37 +491,90 @@ def _resolve_character_with_clips(
             "cannot spawn animated person."
         )
 
-    # Export and modify a local USD copy to strip the overriding animationGraph relationship
+    # Export and modify a local USD copy to strip the overriding animationGraph relationship.
+    # Use a per-process filename so an older Isaac process cannot lock this run's output.
     import os
     assets_dir = os.path.join(os.path.dirname(__file__), "assets")
     os.makedirs(assets_dir, exist_ok=True)
-    local_usd_path = os.path.join(assets_dir, "Biped_Setup_modified.usd").replace("\\", "/")
+    local_usd_path = os.path.join(
+        assets_dir,
+        f"Biped_Setup_modified_{os.getpid()}.usd",
+    ).replace("\\", "/")
 
-    if not os.path.exists(local_usd_path):
-        if logger is not None:
-            log_event(
-                logger,
-                logging.INFO,
-                "person_asset_local_copy",
-                "Creating local modified copy of Biped_Setup.usd",
-                source=selected_source,
-                destination=local_usd_path,
-            )
-        try:
-            remote_stage.Export(local_usd_path)
-            
-            # Remove animationGraph relationship so standard timeline UsdSkel playback drives the mannequin
-            from pxr import Usd
-            local_stage = Usd.Stage.Open(local_usd_path)
-            skel_root_prim = local_stage.GetPrimAtPath("/biped_demo_meters")
-            if skel_root_prim and skel_root_prim.IsValid():
-                if skel_root_prim.HasRelationship("animationGraph"):
-                    skel_root_prim.RemoveProperty("animationGraph")
+    if logger is not None:
+        log_event(
+            logger,
+            logging.INFO,
+            "person_asset_local_copy",
+            "Creating isolated local modified copy of Biped_Setup.usd",
+            source=selected_source,
+            destination=local_usd_path,
+        )
+    try:
+        remote_stage.Export(local_usd_path)
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to prepare local modified Biped_Setup copy: {e}"
+        ) from e
+
+    # Always verify and modify the local USD so animation root motion cannot move
+    # or yaw the actor root. Do not touch pelvis/hips/body joints; the walk clip
+    # owns those.
+    try:
+        from pxr import Usd, UsdSkel
+        local_stage = Usd.Stage.Open(local_usd_path)
+        modified = False
+
+        # 1. Remove animationGraph
+        skel_root_prim = local_stage.GetPrimAtPath("/biped_demo_meters")
+        if skel_root_prim and skel_root_prim.IsValid():
+            if skel_root_prim.HasRelationship("animationGraph"):
+                skel_root_prim.RemoveProperty("animationGraph")
+                modified = True
+
+        # 2. Zero out only the exact Root translation/rotation channels in SkelAnimation prims.
+        for prim in local_stage.Traverse():
+            if prim.IsA(UsdSkel.Animation):
+                anim = UsdSkel.Animation(prim)
+                joints = anim.GetJointsAttr().Get()
+                if joints:
+                    joints_list = list(joints)  # TokenArray has no .index(); convert first
+                    try:
+                        root_idx = joints_list.index("Root")
+                        if _zero_root_translation_channel(anim, root_idx):
+                            modified = True
+                        if _zero_root_rotation_channel(anim, root_idx):
+                            modified = True
+                    except ValueError:
+                        pass
+                    
+                    # Zero out any head or neck joint rotation to prevent the mannequin from turning its head
+                    for idx, j_name in enumerate(joints_list):
+                        j_name_lower = str(j_name).lower()
+                        if "head" in j_name_lower or "neck" in j_name_lower:
+                            if _zero_root_rotation_channel(anim, idx):
+                                modified = True
+
+                    # Loop the walk_1 animation clip to keep it walking straight
+                    prim_name = prim.GetName()
+                    if "walk_1" in prim_name:
+                        if _loop_animation_channels(anim, 104.0):
+                            modified = True
+
+        if modified:
             local_stage.Save()
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to prepare local modified Biped_Setup copy: {e}"
-            ) from e
+            if logger is not None:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "person_asset_local_modified",
+                    "Successfully removed animationGraph and zeroed Root translation/rotation in local copy",
+                    path=local_usd_path,
+                )
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to verify/modify local Biped_Setup copy: {e}"
+        ) from e
 
     if logger is not None:
         log_event(
@@ -527,7 +703,11 @@ def spawn_sim_person(world: Any, x: float, y: float, logger: Optional[logging.Lo
     character_usd: str = _char_usd_cache
 
     add_reference_to_stage(usd_path=character_usd, prim_path=PERSON_VISUAL_PRIM)
-    _set_xform_pose(PERSON_VISUAL_PRIM, np.array([x, y, 0.0], dtype=float), 0.0)
+    _set_xform_pose(
+        PERSON_VISUAL_PRIM,
+        np.array([x, y, 0.0], dtype=float),
+        PERSON_VISUAL_FORWARD_YAW_OFFSET_RAD,
+    )
 
     # ---- Apply walk SkelAnimation binding BEFORE any world.step() / Fabric sync ----
     # Fabric snapshots the scene graph on the first render pass; if we wait until
@@ -537,8 +717,8 @@ def spawn_sim_person(world: Any, x: float, y: float, logger: Optional[logging.Lo
     walk_anim = _walk_clip_cache
     idle_anim = _idle_clip_cache
 
-    if not walk_anim:
-        raise RuntimeError("Animated person setup failed: resolved walk animation clip path is empty.")
+    if not walk_anim or not idle_anim:
+        raise RuntimeError("Animated person setup failed: resolved walk or idle animation clip path is empty.")
 
     try:
         from pxr import UsdSkel
@@ -595,6 +775,9 @@ def spawn_sim_person(world: Any, x: float, y: float, logger: Optional[logging.Lo
         logger=logger,
         last_position=np.array([x, y, 0.0], dtype=float),
         _skel_root_path=_skel_root_path_cache.get("path", ""),
+        _walk_clip_path=walk_anim or "",
+        _idle_clip_path=idle_anim or "",
+        _anim_clip_state="walk",
     )
 
     if logger is not None:

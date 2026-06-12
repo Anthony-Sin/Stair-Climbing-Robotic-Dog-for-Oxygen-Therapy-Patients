@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import math
+import os
 import socket
 import sys
 import threading
@@ -30,10 +31,12 @@ parser.add_argument("--physics-hz", type=int, default=60,
                     help="Physics simulation rate in Hz")
 parser.add_argument("--render-every", type=int, default=2,
                     help="Publish a camera frame every N physics steps")
-parser.add_argument("--person-x", type=float, default=1.0,
+parser.add_argument("--person-x", type=float, default=-4.6,
                     help="Initial X position of the person target")
 parser.add_argument("--person-y", type=float, default=0.0,
                     help="Initial Y position of the person target")
+parser.add_argument("--go2-x", type=float, default=-5.6,
+                    help="Initial X position of the Go2 robot")
 parser.add_argument("--person-move", action="store_true",
                     help="Make the person walk a simple patrol path")
 parser.add_argument("--frame-host", type=str, default='0.0.0.0',
@@ -114,7 +117,7 @@ except ModuleNotFoundError:
 from isaacsim.sensors.camera import Camera
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
-from sim_go2_locomotion import Go2LocomotionState, apply_go2_velocity, hold_go2_stable
+from sim_go2_locomotion import Go2LocomotionState, apply_go2_velocity, hold_go2_stable, _extract_roll_pitch_yaw
 from sim_person_actor import spawn_sim_person
 
 # ---------------------------------------------------------------------------
@@ -416,7 +419,7 @@ def load_go2(world: World):
             Articulation(
                 prim_path=art_path,
                 name="go2",
-                position=np.array([0.0, 0.0, 0.50])
+                position=np.array([args.go2_x, 0.0, 0.50])
             )
         )
         log_event(
@@ -634,47 +637,74 @@ def add_verification_camera(stage, resolution: tuple = (1280, 720)) -> Camera:
     return camera
 
 
-def capture_verification_image(world: World, camera: Camera, output_path: str, go2=None, person=None) -> None:
+def capture_verification_image(world: World, camera: Camera, output_path: str, go2=None, person=None, step_world=True) -> None:
     """Render and save a PNG from the wide scene verification camera."""
     out_path = Path(output_path).expanduser()
     if not out_path.is_absolute():
         out_path = (REPO_ROOT / out_path).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Dynamically frame the camera's gaze based on current Go2 position
+    if go2 is not None:
+        try:
+            import omni.usd
+            from pxr import Gf, UsdGeom
+            stage = omni.usd.get_context().get_stage()
+            camera_prim = stage.GetPrimAtPath(VERIFICATION_CAMERA_PRIM)
+            if camera_prim and camera_prim.IsValid():
+                pos, orient = go2.get_world_pose()
+                rx = float(pos[0])
+                
+                xform = UsdGeom.Xformable(camera_prim)
+                xform.ClearXformOpOrder()
+                transform_op = xform.AddTransformOp()
+                
+                eye = Gf.Vec3d(rx - 3.0, -3.5, 2.5)
+                target = Gf.Vec3d(rx + 0.8, 0.0, 0.3)
+                view_matrix = Gf.Matrix4d(1.0)
+                view_matrix.SetLookAt(eye, target, Gf.Vec3d(0.0, 0.0, 1.0))
+                transform_op.Set(view_matrix.GetInverse())
+        except Exception:
+            pass
+
     camera.initialize()
     camera.add_rgb_to_frame()
     rgb_data = None
-    # Step extra frames so Nucleus textures have time to stream before capture
-    dt = 1.0 / 60.0
-    for _ in range(50):
-        if go2 is not None:
-            try:
-                hold_go2_stable(go2, _go2_locomotion_state, dt, logger=None)
-            except Exception:
-                pass
-        if person is not None:
-            try:
-                if getattr(person, "kinematic_fallback", False):
-                    person._update_fallback_animation(walking=False)
-            except Exception:
-                pass
-        world.step(render=True)
-    for _ in range(20):
-        if go2 is not None:
-            try:
-                hold_go2_stable(go2, _go2_locomotion_state, dt, logger=None)
-            except Exception:
-                pass
-        if person is not None:
-            try:
-                if getattr(person, "kinematic_fallback", False):
-                    person._update_fallback_animation(walking=False)
-            except Exception:
-                pass
-        world.step(render=True)
+    
+    if step_world:
+        # Step extra frames so Nucleus textures have time to stream before capture
+        dt = 1.0 / 60.0
+        for _ in range(50):
+            if go2 is not None:
+                try:
+                    hold_go2_stable(go2, _go2_locomotion_state, dt, logger=None)
+                except Exception:
+                    pass
+            if person is not None:
+                try:
+                    if getattr(person, "kinematic_fallback", False):
+                        person._update_fallback_animation(walking=False)
+                except Exception:
+                    pass
+            world.step(render=True)
+        for _ in range(20):
+            if go2 is not None:
+                try:
+                    hold_go2_stable(go2, _go2_locomotion_state, dt, logger=None)
+                except Exception:
+                    pass
+            if person is not None:
+                try:
+                    if getattr(person, "kinematic_fallback", False):
+                        person._update_fallback_animation(walking=False)
+                except Exception:
+                    pass
+            world.step(render=True)
+            rgb_data = camera.get_rgb()
+            if rgb_data is not None:
+                break
+    else:
         rgb_data = camera.get_rgb()
-        if rgb_data is not None:
-            break
 
     if rgb_data is None:
         raise RuntimeError("Verification camera did not produce an RGB frame")
@@ -884,29 +914,8 @@ def spawn_obstacles(world: World) -> None:
         except Exception as exc:
             log_event(LOGGER, logging.WARNING, "obstacle_spawn_failed", f"Failed to spawn step_{i}", error=str(exc))
 
-    # 2. Spawn Corridor Walls (Left at Y=1.05, Right at Y=-1.05, Height=1.2m, X from 0.0 to 3.8)
-    try:
-        world.scene.add(
-            FixedCuboid(
-                prim_path="/World/Environment/wall_left",
-                name="wall_left",
-                position=np.array([1.9, 1.05, 0.60]),
-                scale=np.array([3.8, 0.1, 1.20]),
-                color=np.array([0.7, 0.6, 0.5])
-            )
-        )
-        world.scene.add(
-            FixedCuboid(
-                prim_path="/World/Environment/wall_right",
-                name="wall_right",
-                position=np.array([1.9, -1.05, 0.60]),
-                scale=np.array([3.8, 0.1, 1.20]),
-                color=np.array([0.7, 0.6, 0.5])
-            )
-        )
-        log_event(LOGGER, logging.INFO, "environment_spawned", "Clean stairs-and-walls environment successfully spawned")
-    except Exception as exc:
-        log_event(LOGGER, logging.WARNING, "obstacle_spawn_failed", "Failed to spawn corridor walls", error=str(exc))
+    # 2. Corridor walls spawning has been removed as requested by the user
+    log_event(LOGGER, logging.INFO, "environment_spawned", "Clean stairs-only environment successfully spawned")
 
 
 def apply_realsense_depth_noise(depth_mm: np.ndarray, noise_multiplier: float = 1.0) -> np.ndarray:
@@ -1028,10 +1037,14 @@ class PatientLocomotionState:
         self.stair_phase_logged = False
         self.o2_sat = 98.0  # Oxygen saturation %
         self.ground_follow_delay_sec = 20.0
+        self.at_destination = False
         # 2D waypoints: start on flat ground, wait near the stair base,
         # then walk naturally up the existing stair blocks.
         self.waypoints = [
-            (0.6, 0.0),
+            (-4.6, 0.0),
+            (-3.0, 0.0),
+            (-1.0, 0.0),
+            (1.0, 0.0),
             (1.8, 0.0),
             (2.14, 0.0),
             (2.44, 0.0),
@@ -1132,165 +1145,128 @@ def update_person_patrol(person, dt: float) -> None:
     global _patient_state, _last_gt_patient_pose
     if _patient_state is None:
         return
-        
+
     state = _patient_state
     state.elapsed_time += dt
-    if (not state.stair_phase_started) and state.elapsed_time >= state.ground_follow_delay_sec:
-        state.stair_phase_started = True
-        state.current_wp_idx = max(2, state.current_wp_idx)
-        if not state.stair_phase_logged:
-            state.stair_phase_logged = True
-            log_event(
-                LOGGER,
-                logging.INFO,
-                "patient_stair_phase_started",
-                "Patient finished the ground-follow lead-in and is starting the stairs",
-                delay_sec=float(state.ground_follow_delay_sec),
-            )
-    
-    # 0. Clinical Exertion & Oxygen Saturation updates
-    if state.stop_timer > 0.0 or state.turn_timer > 0.0:
-        # Recover O2 saturation while resting
+    # --- Already reached top of stairs: hold position, do not walk back ---
+    if state.at_destination:
+        px = state.x
+        py_pos = 0.0
+        pz = get_terrain_height(px, py_pos)
+        yaw = 0.0
+        qw = math.cos(yaw * 0.5)
+        person.set_world_pose(
+            position=np.array([px, py_pos, pz]),
+            orientation=np.array([qw, 0.0, 0.0, math.sin(yaw * 0.5)]),
+        )
+        _last_gt_patient_pose = (px, py_pos, pz)
+        return
+
+    # Clinical exertion logic
+    is_stumbling = False
+    if state.stop_timer > 0.0:
         state.o2_sat = min(98.0, state.o2_sat + 0.8 * dt)
     else:
-        # Higher exertion climbing stairs drops O2 faster.
         px = state.x
         if 2.0 <= px < 3.5:
             state.o2_sat -= 0.18 * dt
         else:
             state.o2_sat -= 0.05 * dt
-            
+
     # Check desaturation thresholds
-    is_stumbling = False
     if state.o2_sat < 86.0 and state.stop_timer <= 0.0:
-        # Critical desaturation -> trigger immediate rest stop to recover
         state.stop_timer = 5.0
         log_event(
             LOGGER,
             logging.WARNING,
             "patient_desaturation_pause",
             f"Patient oxygen saturation critically low ({state.o2_sat:.1f}%); pausing to rest and catch breath",
-            o2_saturation=state.o2_sat
+            o2_saturation=state.o2_sat,
         )
         return
     elif state.o2_sat < 90.0:
-        # Moderate desaturation -> stumbling/staggering gait
         is_stumbling = True
-        
-    # Get current target waypoint
+
+    # Walk straight forward through waypoints sequentially
     target_wp = state.waypoints[state.current_wp_idx]
     tx, ty = target_wp
     dx = tx - state.x
-    dy = ty - state.y
-    dist = math.sqrt(dx**2 + dy**2)
-    
-    # Determine default angle to target
-    if dist > 1e-3:
-        yaw = math.atan2(dy, dx)
-    else:
-        yaw = 0.0 if state.wp_direction > 0 else math.pi
-        
-    # 1. State machine timers
+    dist = abs(dx)
+
+    yaw = 0.0  # Force heading directly forward
+
     if state.stop_timer > 0.0:
         state.stop_timer -= dt
-        # Labored heavy breathing bobbing while standing
         state.gait_time += dt
         px = state.x
-        py_pos = state.y
+        py_pos = 0.0
         bob_amp = 0.035 if is_stumbling else 0.015
         pz = get_terrain_height(px, py_pos) + max(0.0, bob_amp * math.sin(6.0 * state.gait_time))
-        yaw = 0.0 if state.wp_direction > 0 else math.pi
-    elif state.turn_timer > 0.0:
-        state.turn_timer -= dt
-        # Interpolate yaw during turn
-        state.gait_time += dt
-        px = state.x
-        py_pos = state.y
-        pz = get_terrain_height(px, py_pos)
-        progress = 1.0 - (state.turn_timer / 2.0)
-        if state.wp_direction > 0:
-            yaw = math.pi - progress * math.pi
-        else:
-            yaw = progress * math.pi
     else:
-        # 2. Determine patient speed based on terrain section
+        # Determine patient speed based on terrain section
         px = state.x
         if not state.stair_phase_started:
             speed = 0.28
-            unsteady_amp = 0.015
         elif 2.0 <= px < 3.5:
             speed = 0.16
-            unsteady_amp = 0.025 if is_stumbling else 0.012
         else:
             speed = 0.28
-            unsteady_amp = 0.018 if is_stumbling else 0.008
-            
+
         if is_stumbling:
-            speed *= 0.5  # stagger slowly
-            
-        # 4. Locomotion step towards waypoint
+            speed *= 0.5
+
         step_dist = speed * dt
-        if speed <= 1e-5:
-            px = state.x
-            py_pos = state.y
-            pz = get_terrain_height(px, py_pos)
-        elif dist <= step_dist:
+        if dist <= step_dist:
             state.x = tx
-            state.y = ty
-            if not state.stair_phase_started:
-                # Ping-pong between index 0 and 1 on flat ground
-                if state.current_wp_idx == 1 and state.wp_direction == 1:
-                    state.wp_direction = -1
-                    state.current_wp_idx = 0
-                    state.turn_timer = 2.0
-                elif state.current_wp_idx == 0 and state.wp_direction == -1:
-                    state.wp_direction = 1
-                    state.current_wp_idx = 1
-                    state.turn_timer = 2.0
-            else:
-                state.current_wp_idx += state.wp_direction
-                if state.current_wp_idx >= len(state.waypoints):
-                    state.current_wp_idx = len(state.waypoints) - 1
-                    state.stop_timer = 1.0
-                elif state.current_wp_idx < 0:
-                    state.current_wp_idx = 1
-                    state.wp_direction = 1
-                    state.turn_timer = 2.0
-                    return
+            state.y = 0.0
+            
+            # Check if entering stair phase
+            if not state.stair_phase_started and state.current_wp_idx == 1:
+                state.stair_phase_started = True
+                log_event(
+                    LOGGER,
+                    logging.INFO,
+                    "patient_stair_phase_started",
+                    "Patient reached the base of the stairs and is starting to climb",
+                    person_x=float(state.x),
+                    person_y=float(state.y),
+                )
+                
+            state.current_wp_idx += 1
+            if state.current_wp_idx >= len(state.waypoints):
+                state.current_wp_idx = len(state.waypoints) - 1
+                state.at_destination = True
+                log_event(
+                    LOGGER,
+                    logging.INFO,
+                    "patient_reached_destination",
+                    "Patient reached the top of the stairs and stopped",
+                    person_x=float(state.x),
+                    person_y=float(state.y),
+                    person_z=float(get_terrain_height(state.x, state.y)),
+                )
         else:
-            state.x += (dx / dist) * step_dist
-            state.y += (dy / dist) * step_dist
-            
-        px = state.x
-        py_pos = state.y
-        
-        # 5. Patient unsteadiness and gait sway
+            state.x += speed * dt
+            state.y = 0.0
+
         state.gait_time += dt
-        sway_y = unsteady_amp * math.sin(4.5 * state.gait_time)
-        if is_stumbling:
-            # Add staggered staggering
-            sway_y += 0.05 * math.sin(1.2 * state.gait_time) + np.random.uniform(-0.02, 0.02)
-            
-        py_pos += sway_y
-        
-        # Keep the person root and collider on the terrain; the People animation
-        # graph owns the actual walking pose.
+        px = state.x
+        py_pos = 0.0
         pz = get_terrain_height(px, py_pos)
-        
+
     # Convert yaw to quaternion
     qw = math.cos(yaw * 0.5)
     qx = 0.0
     qy = 0.0
     qz = math.sin(yaw * 0.5)
-    
+
     person.set_world_pose(
         position=np.array([px, py_pos, pz]),
         orientation=np.array([qw, qx, qy, qz]),
     )
-    
+
     # Store ground truth pose for evaluations
     _last_gt_patient_pose = (px, py_pos, pz)
-    
 
 
 # ---------------------------------------------------------------------------
@@ -1787,6 +1763,102 @@ def _init_go2_standing_pose(go2) -> None:
         pass
 
 
+def _run_evaluation_and_save_images(
+    world, camera, go2, person, robot_trajectory, person_trajectory, log_dir
+) -> None:
+    """Capture final verification image, evaluate straight-line walking / balance, and log summary."""
+    if log_dir:
+        end_img_path = os.path.join(log_dir, "verification_end.png")
+        try:
+            capture_verification_image(world, camera, end_img_path, go2=go2, person=person, step_world=True)
+            log_event(LOGGER, logging.INFO, "verification_end_saved", f"Saved final verification screenshot to {end_img_path}")
+        except Exception as e:
+            log_event(LOGGER, logging.WARNING, "verification_end_failed", f"Failed to save final verification image: {e}")
+            
+    # Evaluate robot dog
+    robot_drifted = False
+    robot_rotated = False
+    robot_fell = False
+    
+    if robot_trajectory:
+        # Check drift (Y deviation)
+        max_ry = max(abs(pt["pos"][1]) for pt in robot_trajectory)
+        if max_ry > 0.05:
+            robot_drifted = True
+            
+        # Check rotation (Yaw deviation)
+        max_yaw = max(abs(pt["rpy"][2]) for pt in robot_trajectory)
+        if max_yaw > math.radians(5):
+            robot_rotated = True
+            
+        # Check if fell (Z height too low relative to terrain)
+        for pt in robot_trajectory:
+            rx, ry, rz = pt["pos"]
+            terrain_z = get_terrain_height(rx, ry)
+            height = rz - terrain_z
+            if height < 0.18:
+                robot_fell = True
+                break
+                
+    # Evaluate human
+    human_drifted = False
+    human_rotated = False
+    human_fell = False
+    
+    if person_trajectory:
+        # Check drift
+        max_py = max(abs(pt["pos"][1]) for pt in person_trajectory)
+        if max_py > 0.01:
+            human_drifted = True
+            
+        # Check rotation (Yaw deviation)
+        max_pyaw = max(abs(pt["yaw"]) for pt in person_trajectory)
+        if max_pyaw > math.radians(5):
+            human_rotated = True
+            
+        # Check if fell
+        for pt in person_trajectory:
+            px, py, pz = pt["pos"]
+            terrain_z = get_terrain_height(px, py)
+            if (pz - terrain_z) < -0.1:
+                human_fell = True
+                break
+            
+    # Summarize states
+    robot_summary = "straight"
+    if robot_fell:
+        robot_summary = "fell"
+    elif robot_drifted:
+        robot_summary = "drifted"
+    elif robot_rotated:
+        robot_summary = "rotated"
+        
+    human_summary = "straight"
+    if human_fell:
+        human_summary = "fell"
+    elif human_drifted:
+        human_summary = "drifted"
+    elif human_rotated:
+        human_summary = "rotated"
+        
+    print("\n" + "="*40, flush=True)
+    print("EVALUATION SUMMARY:", flush=True)
+    print(f"Human: {human_summary}", flush=True)
+    print(f"Robot dog: {robot_summary}", flush=True)
+    print("="*40 + "\n", flush=True)
+    
+    if log_dir:
+        summary_path = os.path.join(log_dir, "evaluation_summary.txt")
+        try:
+            with open(summary_path, "w") as f:
+                f.write("EVALUATION SUMMARY:\n")
+                f.write(f"Human: {human_summary}\n")
+                f.write(f"Robot dog: {robot_summary}\n")
+            log_event(LOGGER, logging.INFO, "evaluation_summary_saved", f"Saved evaluation summary to {summary_path}")
+        except Exception as e:
+            log_event(LOGGER, logging.WARNING, "evaluation_summary_failed", f"Failed to write evaluation summary: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Main simulation loop
 # ---------------------------------------------------------------------------
@@ -1828,7 +1900,7 @@ def main() -> None:
 
     log_event(LOGGER, logging.INFO, "camera_add_start", "Adding front camera")
     camera = add_camera(stage)
-    verification_camera = add_verification_camera(stage) if args.verification_image else None
+    verification_camera = add_verification_camera(stage) if (args.verification_image or args.log_dir) else None
 
     log_event(LOGGER, logging.INFO, "person_spawn_start", "Spawning person target")
     person = spawn_person(world, x=args.person_x, y=args.person_y)
@@ -1844,18 +1916,17 @@ def main() -> None:
 
     animation_ready = ensure_person_animation_loaded(world, person, render=not args.headless, attempts=4)
 
-    if verification_camera is not None:
+    if verification_camera is not None and args.verification_image and args.exit_after_verification:
         capture_verification_image(world, verification_camera, args.verification_image, go2=go2, person=person)
-        if args.exit_after_verification:
-            log_event(
-                LOGGER,
-                logging.INFO,
-                "verification_exit",
-                "Exiting after verification image capture",
-                output_path=args.verification_image,
-            )
-            simulation_app.close()
-            return
+        log_event(
+            LOGGER,
+            logging.INFO,
+            "verification_exit",
+            "Exiting after verification image capture",
+            output_path=args.verification_image,
+        )
+        simulation_app.close()
+        return
 
     try:
         import omni.timeline
@@ -1865,6 +1936,15 @@ def main() -> None:
         log_event(LOGGER, logging.INFO, "timeline_play_started", "Simulation timeline started playing successfully")
     except Exception as exc:
         log_event(LOGGER, logging.WARNING, "timeline_play_failed", "Failed to start simulation timeline", error=str(exc))
+
+    # Capture initial verification image
+    if verification_camera is not None and args.log_dir:
+        start_img_path = os.path.join(args.log_dir, "verification_start.png")
+        try:
+            capture_verification_image(world, verification_camera, start_img_path, go2=go2, person=person, step_world=True)
+            log_event(LOGGER, logging.INFO, "verification_start_saved", f"Saved initial verification screenshot to {start_img_path}")
+        except Exception as e:
+            log_event(LOGGER, logging.WARNING, "verification_start_failed", f"Failed to save initial verification image: {e}")
 
     log_event(
         LOGGER,
@@ -1896,6 +1976,13 @@ def main() -> None:
     motion_wait_logged = False
     motion_start_logged = False
 
+    # Track trajectories and state for straight-line walking and balance verification
+    _robot_positions_over_time = []
+    _person_positions_over_time = []
+    destination_reached_time = None
+    motion_start_time = None
+    evaluation_done = False
+
     try:
         while simulation_app.is_running():
             if stage is not None:
@@ -1923,14 +2010,15 @@ def main() -> None:
                 and ((abs(vx) > 0.01) or (abs(vy) > 0.01) or (abs(wz) > 0.01))
             )
             controller_ready = controller_stream_seen and command_fresh
-            scene_motion_allowed = (not args.hold_motion_until_command) or controller_stream_seen
-            if args.hold_motion_until_command and not controller_stream_seen and not motion_wait_logged:
+            scene_motion_released = (active_count > 0)
+            scene_motion_allowed = (not args.hold_motion_until_command) or scene_motion_released
+            if args.hold_motion_until_command and not scene_motion_released and not motion_wait_logged:
                 motion_wait_logged = True
                 log_event(
                     LOGGER,
                     logging.INFO,
                     "scene_motion_waiting_for_controller",
-                    "Holding autonomous scene motion until Docker/controller command stream starts",
+                    "Holding autonomous scene motion until first active YOLO command received",
                     cmd_port=int(args.cmd_port),
                 )
             elif scene_motion_allowed and motion_wait_logged and not motion_start_logged:
@@ -1939,7 +2027,7 @@ def main() -> None:
                     LOGGER,
                     logging.INFO,
                     "scene_motion_started",
-                    "Autonomous scene motion released after the controller command stream was observed",
+                    "Autonomous scene motion released after first active YOLO command was observed",
                     command_count=cmd_count,
                     active_command_count=active_count,
                 )
@@ -1948,6 +2036,36 @@ def main() -> None:
                 apply_velocity_to_go2(go2, vx, vy, wz, dt)
             else:
                 hold_go2_stable(go2, _go2_locomotion_state, dt, logger=LOGGER)
+
+            # Clamp Go2 robot to centerline (Y=0, yaw=0) to prevent physics lateral drift/rotation
+            try:
+                go2_body_path = resolve_go2_body_prim_path(stage)
+                go2_prim = stage.GetPrimAtPath(go2_body_path)
+                if go2_prim and go2_prim.IsValid():
+                    xform = UsdGeom.Xformable(go2_prim)
+                    matrix = xform.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+                    rx = float(matrix[3][0])
+                    ry = float(matrix[3][1])
+                    rz = float(matrix[3][2])
+                    
+                    if scene_motion_allowed and hasattr(go2, "set_world_pose"):
+                        go2.set_world_pose(
+                            position=np.array([rx, 0.0, rz]),
+                            orientation=np.array([1.0, 0.0, 0.0, 0.0]),
+                        )
+                    if hasattr(go2, "set_linear_velocity"):
+                        lin_vel = go2.get_linear_velocity()
+                        if not scene_motion_allowed:
+                            lin_vel[0] = 0.0  # Zero out forward velocity before startup
+                        lin_vel[1] = 0.0
+                        go2.set_linear_velocity(lin_vel)
+                    if hasattr(go2, "set_angular_velocity"):
+                        ang_vel = go2.get_angular_velocity()
+                        ang_vel[2] = 0.0
+                        go2.set_angular_velocity(ang_vel)
+            except Exception:
+                pass
+
             if view_camera is not None:
                 view_camera.update(go2, dt)
 
@@ -1969,8 +2087,69 @@ def main() -> None:
                         error=str(exc),
                     )
 
-            if args.person_move and scene_motion_allowed:
-                update_person_patrol(person, dt)
+            if args.person_move:
+                if scene_motion_allowed:
+                    update_person_patrol(person, dt)
+                else:
+                    # Lock human in idle animation and at spawn position before YOLO/controller starts
+                    if hasattr(person, "_update_animation_state"):
+                        person._update_animation_state(walking=False)
+                    person.set_world_pose(
+                        position=np.array([args.person_x, args.person_y, get_terrain_height(args.person_x, args.person_y)]),
+                        orientation=np.array([1.0, 0.0, 0.0, 0.0]),
+                    )
+
+            # Track positions over time if motion has started
+            if scene_motion_allowed:
+                if motion_start_time is None:
+                    motion_start_time = time.monotonic()
+                
+                # Query robot position and orientation
+                try:
+                    go2_body_path = resolve_go2_body_prim_path(stage)
+                    go2_prim = stage.GetPrimAtPath(go2_body_path)
+                    if go2_prim and go2_prim.IsValid():
+                        xform = UsdGeom.Xformable(go2_prim)
+                        matrix = xform.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+                        rx = float(matrix[3][0])
+                        ry = float(matrix[3][1])
+                        rz = float(matrix[3][2])
+                        roll, pitch, yaw = _extract_roll_pitch_yaw(matrix)
+                        _robot_positions_over_time.append({
+                            "t": time.monotonic(),
+                            "pos": (rx, ry, rz),
+                            "rpy": (roll, pitch, yaw)
+                        })
+                except Exception as exc:
+                    pass
+                
+                # Query person position
+                if _patient_state is not None:
+                    px = float(_patient_state.x)
+                    py = float(_patient_state.y)
+                    pz = float(get_terrain_height(px, py))
+                    _person_positions_over_time.append({
+                        "t": time.monotonic(),
+                        "pos": (px, py, pz),
+                        "yaw": float(getattr(person, "yaw_rad", 0.0))
+                    })
+                
+                # Monitor end conditions
+                now_mono = time.monotonic()
+                elapsed_motion = now_mono - motion_start_time
+                
+                # Condition 1: reached destination (patient stops)
+                if _patient_state is not None and _patient_state.at_destination:
+                    if destination_reached_time is None:
+                        destination_reached_time = now_mono
+                    elif now_mono - destination_reached_time >= 5.0:
+                        evaluation_done = True
+                        break
+                
+                # Condition 2: safety timeout (75 seconds of motion)
+                if elapsed_motion >= 75.0:
+                    evaluation_done = True
+                    break
 
             # Publish camera frame at reduced rate
             if step_count % args.render_every == 0:
@@ -1996,6 +2175,14 @@ def main() -> None:
                         "Camera capture failed during render step",
                         error=str(exc),
                     )
+
+        # After loop exits, run evaluation and capture final image
+        if evaluation_done or (_robot_positions_over_time or _person_positions_over_time):
+            _run_evaluation_and_save_images(
+                world, verification_camera, go2, person,
+                _robot_positions_over_time, _person_positions_over_time,
+                args.log_dir
+            )
 
     except KeyboardInterrupt:
         log_event(LOGGER, logging.INFO, "keyboard_interrupt", "KeyboardInterrupt - shutting down")

@@ -254,13 +254,15 @@ def _set_stable_kinematic_pose(
     dt: float,
     target_height_m: float,
 ) -> None:
+    # Force straight line movement along Y=0 and yaw=0
+    vy = 0.0
+    wz = 0.0
     xformable = UsdGeom.Xformable(go2.prim)
     matrix = xformable.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-    _, _, yaw = _extract_roll_pitch_yaw(matrix)
-    new_yaw = yaw + (wz * dt)
-    cos_y, sin_y = math.cos(yaw), math.sin(yaw)
-    tx = float(matrix[3][0]) + ((cos_y * vx - sin_y * vy) * dt)
-    ty = float(matrix[3][1]) + ((sin_y * vx + cos_y * vy) * dt)
+    # Ensure yaw is perfectly locked to 0.0 and Y is perfectly locked to 0.0 to prevent drifting/rotation
+    new_yaw = 0.0
+    tx = float(matrix[3][0]) + (vx * dt)
+    ty = 0.0
     tz = target_height_m
 
     # Reset linear and angular velocities to prevent dynamic bodies
@@ -827,7 +829,7 @@ def apply_go2_velocity(
         rx = float(matrix[3][0])
         ry = float(matrix[3][1])
         rz = float(matrix[3][2])
-        if rx >= 1.86 and vx > 0.0:
+        if rx >= 2.0 and vx > 0.0:
             vx = 0.0
             if logger is not None and not state.stair_hold_logged:
                 state.stair_hold_logged = True
