@@ -138,7 +138,7 @@ LOCAL_GO2_CANDIDATES = (
 # while older notes/scripts called it "trunk".
 BASE_LINK_NAME = "base"
 
-_go2_locomotion_state = Go2LocomotionState(target_height_m=0.32)
+_go2_locomotion_state = Go2LocomotionState(target_height_m=0.32, use_physics_gait=True)
 
 # ---------------------------------------------------------------------------
 # Shared state between threads
@@ -1935,7 +1935,7 @@ def main() -> None:
                     vy = _cmd_vel["vy"]
                     wz = _cmd_vel["wz"]
                     command_fresh = True
-            controller_stream_seen = active_count > 0
+            controller_stream_seen = cmd_count > 0
             nonzero_command_fresh = (
                 command_fresh
                 and ((abs(vx) > 0.01) or (abs(vy) > 0.01) or (abs(wz) > 0.01))

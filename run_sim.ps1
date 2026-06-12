@@ -20,7 +20,8 @@ param(
     [switch]$NoModelPreflight,
     [switch]$NoIsaacReadyWait,
     [int]$IsaacReadyTimeoutSec = 420,
-    [int]$KeepRunLogs = 1
+    [int]$KeepRunLogs = 1,
+    [int]$MaxRunTimeSec = 230
 )
 
 $ErrorActionPreference = "Stop"
@@ -505,7 +506,8 @@ function Stop-StaleSimContainers {
 function Start-IsaacExitMonitorJob {
     param(
         $Process = $null,
-        [Parameter(Mandatory = $true)][string]$ContainerName
+        [Parameter(Mandatory = $true)][string]$ContainerName,
+        [int]$TimeoutSec = 0
     )
 
     if ($DryRun -or -not $Process -or -not $ContainerName) {
@@ -519,17 +521,23 @@ function Start-IsaacExitMonitorJob {
     }
 
     return Start-Job -ScriptBlock {
-        param([int]$WatchedPid, [string]$ContainerName)
+        param([int]$WatchedPid, [string]$ContainerName, [int]$TimeoutSec)
 
+        $elapsed = 0
         while ($true) {
             Start-Sleep -Seconds 1
+            $elapsed++
+            if ($TimeoutSec -gt 0 -and $elapsed -ge $TimeoutSec) {
+                & wsl.exe -e docker rm -f $ContainerName 2>$null | Out-Null
+                break
+            }
             $watched = Get-Process -Id $WatchedPid -ErrorAction SilentlyContinue
             if (-not $watched) {
                 & wsl.exe -e docker rm -f $ContainerName 2>$null | Out-Null
                 break
             }
         }
-    } -ArgumentList $watchedPid, $ContainerName
+    } -ArgumentList $watchedPid, $ContainerName, $TimeoutSec
 }
 
 function Stop-IsaacProcess {
@@ -762,13 +770,9 @@ if ($NoIsaac -and $NoDockerRun) {
     }
 } else {
     if (-not $FrameHost) {
-        try {
-            $FrameHost = Get-WslHostnameIp
-            Write-Host "Resolved WSL2 IP for frame_host: $FrameHost"
-        } catch {
-            $FrameHost = "127.0.0.1"
-            Write-Host "Fallback to 127.0.0.1 for frame_host: $_"
-        }
+        # Default to 127.0.0.1 for robust Docker Desktop UDP port forwarding
+        $FrameHost = "127.0.0.1"
+        Write-Host "Using default 127.0.0.1 for frame_host (Docker Desktop UDP forwarding)"
     }
     if (-not $CmdHost) {
         $CmdHost = "host.docker.internal"
@@ -938,12 +942,21 @@ if ($NoDockerRun) {
 
     $isaacMonitorJob = $null
     $isaacExitedDuringDocker = $false
+    $dockerStartTime = Get-Date
     try {
         if (-not $NoIsaac) {
-            $isaacMonitorJob = Start-IsaacExitMonitorJob -Process $proc -ContainerName $DockerContainerName
+            $isaacMonitorJob = Start-IsaacExitMonitorJob -Process $proc -ContainerName $DockerContainerName -TimeoutSec $MaxRunTimeSec
         }
         $dockerExit = Invoke-LoggedCommand -Stage "docker" -FilePath "wsl.exe" -Arguments $dockerArgs -LogPath $dockerLog
     } finally {
+        $dockerDuration = (New-TimeSpan -Start $dockerStartTime -End (Get-Date)).TotalSeconds
+        $isTimeout = ($MaxRunTimeSec -gt 0 -and $dockerDuration -ge ($MaxRunTimeSec - 5))
+        if ($isTimeout) {
+            Write-Stage "docker" "warning" "Docker run timed out after exceeding $MaxRunTimeSec seconds limit" @{
+                duration_sec = [math]::Round($dockerDuration, 1)
+                limit_sec = $MaxRunTimeSec
+            }
+        }
         try {
             $isaacExitedDuringDocker = (-not $NoIsaac -and $proc -and $proc.HasExited)
         } catch {

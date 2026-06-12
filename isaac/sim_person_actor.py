@@ -141,6 +141,17 @@ class SimPersonTarget:
 
             character = ag.get_character(self.agent_prim_path)
             if character is None:
+                # If omni.anim.people is not available, we can set variables directly via USD attributes on SkelRoot
+                import omni.usd
+                stage = omni.usd.get_context().get_stage()
+                skel_prim = stage.GetPrimAtPath(self.agent_prim_path)
+                if skel_prim and skel_prim.IsValid():
+                    walk_attr = skel_prim.GetAttribute("anim:graph:variable:Walk")
+                    action_attr = skel_prim.GetAttribute("anim:graph:variable:Action")
+                    if walk_attr and action_attr:
+                        walk_attr.Set(1.0 if walking else 0.0)
+                        action_attr.Set("Walk" if walking else "None")
+                        return
                 raise RuntimeError(f"animation graph character unavailable for {self.agent_prim_path}")
             if walking:
                 character.set_variable("Action", "Walk")
@@ -600,25 +611,110 @@ def _ensure_biped_setup(world: Any, logger: Optional[logging.Logger]) -> Optiona
                 "Isaac assets root is unavailable; cannot load Biped_Setup animation graph",
             )
         return None
+
     biped_prim_path = f"{CHARACTER_PARENT_PRIM}/Biped_Setup"
-    if not is_prim_path_valid(biped_prim_path):
-        create_prim(
-            biped_prim_path,
-            "Xform",
-            usd_path=f"{assets_root}/Isaac/People/Characters/Biped_Setup.usd",
-        )
-    prim = world.stage.GetPrimAtPath(biped_prim_path)
-    if prim and prim.IsValid():
-        visibility = prim.GetAttribute("visibility")
-        if visibility:
-            visibility.Set("invisible")
-        return world.stage.GetPrimAtPath(f"{biped_prim_path}/CharacterAnimation/AnimationGraph")
+    anim_graph_path = f"{biped_prim_path}/CharacterAnimation/AnimationGraph"
+
+    # If already loaded and valid, return it
+    anim_graph_prim = world.stage.GetPrimAtPath(anim_graph_path)
+    if anim_graph_prim and anim_graph_prim.IsValid():
+        prim = world.stage.GetPrimAtPath(biped_prim_path)
+        if prim and prim.IsValid():
+            visibility = prim.GetAttribute("visibility")
+            if visibility:
+                visibility.Set("invisible")
+        return anim_graph_prim
+
+    # Otherwise, clean up any existing invalid prim at biped_prim_path
+    parent_prim = world.stage.GetPrimAtPath(biped_prim_path)
+    if parent_prim and parent_prim.IsValid():
+        if logger is not None:
+            log_event(
+                logger,
+                logging.INFO,
+                "person_biped_setup_cleanup",
+                f"Removing invalid or incomplete prim at {biped_prim_path}",
+            )
+        world.stage.RemovePrim(Sdf.Path(biped_prim_path))
+
+    paths_to_try = []
+    # 1. Default resolved path
+    paths_to_try.append(f"{assets_root}/Isaac/People/Characters/Biped_Setup.usd")
+    
+    # 2. Version fallbacks based on assets_root
+    if "6.0" in assets_root:
+        for ver in ["4.5", "4.1", "4.0"]:
+            fallback_root = assets_root.replace("6.0", ver)
+            paths_to_try.append(f"{fallback_root}/Isaac/People/Characters/Biped_Setup.usd")
+
+    # 3. Direct S3 fallback URLs as absolute fallback
+    for ver in ["4.5", "4.1", "4.0"]:
+        paths_to_try.append(f"http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/{ver}/Isaac/People/Characters/Biped_Setup.usd")
+        paths_to_try.append(f"https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/{ver}/Isaac/People/Characters/Biped_Setup.usd")
+
+    # Remove duplicates while preserving order
+    seen_paths = set()
+    unique_paths = []
+    for p in paths_to_try:
+        if p not in seen_paths:
+            seen_paths.add(p)
+            unique_paths.append(p)
+
+    success_prim = None
+    for usd_path in unique_paths:
+        if logger is not None:
+            log_event(
+                logger,
+                logging.INFO,
+                "person_biped_setup_attempt",
+                f"Attempting to load Biped_Setup from: {usd_path}",
+            )
+        try:
+            create_prim(
+                biped_prim_path,
+                "Xform",
+                usd_path=usd_path,
+            )
+            # Check if animation graph loaded successfully
+            anim_graph_prim = world.stage.GetPrimAtPath(anim_graph_path)
+            if anim_graph_prim and anim_graph_prim.IsValid():
+                success_prim = anim_graph_prim
+                if logger is not None:
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "person_biped_setup_success",
+                        f"Successfully loaded Biped_Setup from: {usd_path}",
+                    )
+                break
+        except Exception as e:
+            if logger is not None:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "person_biped_setup_attempt_failed",
+                    f"Failed loading from {usd_path}: {e}",
+                )
+
+        # Clean up failed prim to prepare for next attempt
+        parent_prim = world.stage.GetPrimAtPath(biped_prim_path)
+        if parent_prim and parent_prim.IsValid():
+            world.stage.RemovePrim(Sdf.Path(biped_prim_path))
+
+    if success_prim is not None:
+        prim = world.stage.GetPrimAtPath(biped_prim_path)
+        if prim and prim.IsValid():
+            visibility = prim.GetAttribute("visibility")
+            if visibility:
+                visibility.Set("invisible")
+        return success_prim
+
     if logger is not None:
         log_event(
             logger,
             logging.WARNING,
             "person_biped_setup_missing",
-            "Could not load Biped_Setup animation graph for person",
+            "Could not load Biped_Setup animation graph for person from any of the attempted paths",
         )
     return None
 

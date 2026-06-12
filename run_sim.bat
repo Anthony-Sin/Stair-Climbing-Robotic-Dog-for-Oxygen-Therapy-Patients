@@ -36,6 +36,7 @@ if /I "%ARG%"=="--trt-engine" set "ARG=-TrtEngine"
 if /I "%ARG%"=="--osnet-trt-engine" set "ARG=-OsnetTrtEngine"
 if /I "%ARG%"=="--sim-frame-timeout-exit-sec" set "ARG=-SimFrameTimeoutExitSec"
 if /I "%ARG%"=="--no-model-preflight" set "ARG=-NoModelPreflight"
+if /I "%ARG%"=="--max-run-time-sec" set "ARG=-MaxRunTimeSec"
 set "PS_ARGS=%PS_ARGS% "%ARG%""
 shift
 goto parse_args

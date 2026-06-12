@@ -160,3 +160,21 @@ Check downstream velocity smoothing limits and accelerations whenever changing M
 
 WHY:
 The velocity smoother can silently clip controller outputs, making controller tuning appear broken or ignored.
+
+## 9. Testing it
+
+1. The Test Command
+We run the simulation using Isaac Sim’s bundled Python interpreter via a command line instruction. We pass two special arguments to the environment script:
+
+Headless Mode: This runs the simulation in the background without launching a full graphical user interface, which makes it fast and resource-efficient.
+Verification Image Path: We specify a target file path for a PNG image.
+Exit After Verification: This flag tells the script to capture the image and immediately close down the simulation app, so we don't leave the background process running forever.
+2. How the Verification Capture Works
+When the command runs, the simulation goes through the following sequence:
+
+World Building: The virtual ground plane, friction settings, stairs, and boundaries are constructed.
+Spawning the Actors: The robot dog and the person are imported and placed in the scene.
+Settling the Scene: Instead of taking a photo immediately, the simulation runs for 70 steps. During these steps:
+A stabilization loop continuously targets a stable standing posture for the robot dog, preventing it from collapsing under gravity.
+The animation updater sets the person target's posture so they are in a natural stance instead of their default flat T-pose.
+Saving the Image: The camera takes an RGB snapshot of the viewport and saves it directly to the designated PNG file path.

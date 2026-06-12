@@ -263,6 +263,26 @@ def _set_stable_kinematic_pose(
     ty = float(matrix[3][1]) + ((sin_y * vx + cos_y * vy) * dt)
     tz = target_height_m
 
+    # Reset linear and angular velocities to prevent dynamic bodies
+    # from accumulating gravity momentum while being teleported.
+    try:
+        if hasattr(go2, "set_linear_velocity"):
+            go2.set_linear_velocity(np.zeros(3))
+        if hasattr(go2, "set_angular_velocity"):
+            go2.set_angular_velocity(np.zeros(3))
+        if hasattr(go2, "set_world_pose"):
+            qw = math.cos(new_yaw * 0.5)
+            qx = 0.0
+            qy = 0.0
+            qz = math.sin(new_yaw * 0.5)
+            go2.set_world_pose(
+                position=np.array([tx, ty, tz]),
+                orientation=np.array([qw, qx, qy, qz]),
+            )
+            return
+    except Exception:
+        pass
+
     translate_op = None
     rotate_op = None
     orient_op = None
