@@ -1688,52 +1688,34 @@ def ensure_person_animation_loaded(world: World, person, *, render: bool, attemp
     if not hasattr(person, "ensure_animation_ready"):
         return False
 
-    for attempt_idx in range(max(1, attempts)):
-        try:
-            person.ensure_animation_ready(world, force_retry=attempt_idx > 0)
-            if getattr(person, "animation_ready", False):
-                log_event(
-                    LOGGER,
-                    logging.INFO,
-                    "person_animation_confirmed",
-                    "Person animation is loaded and ready",
-                    attempts=int(getattr(person, "animation_attempt_count", attempt_idx + 1)),
-                )
-                return True
-        except TypeError:
-            person.ensure_animation_ready(world)
-            return bool(getattr(person, "animation_ready", False))
-        except Exception as exc:
+    try:
+        person.ensure_animation_ready(world)
+        if getattr(person, "animation_ready", False):
             log_event(
                 LOGGER,
-                logging.WARNING,
-                "person_animation_retry_failed",
-                "Person animation readiness attempt failed",
-                attempt=int(attempt_idx + 1),
-                error=str(exc),
+                logging.INFO,
+                "person_animation_confirmed",
+                "Person animation is loaded and ready",
             )
-
-        if attempt_idx < attempts - 1:
-            for _ in range(3):
-                try:
-                    world.step(render=render)
-                except Exception:
-                    break
-            try:
-                import omni.kit.app
-
-                omni.kit.app.get_app().update()
-            except Exception:
-                pass
+            return True
+    except Exception as exc:
+        log_event(
+            LOGGER,
+            logging.ERROR,
+            "person_animation_failed_fatal",
+            "Person animation readiness failed fatally; exiting.",
+            error=str(exc),
+        )
+        raise
 
     log_event(
         LOGGER,
         logging.ERROR,
         "person_animation_not_ready",
         "Person animation did not become ready; refusing to run without the real animation graph",
-        attempts=int(getattr(person, "animation_attempt_count", attempts)),
     )
     raise RuntimeError("Person animation graph did not become ready in strict animation mode")
+
 
 # ---------------------------------------------------------------------------
 # Go2 standing pose initialisation (called after world.reset())

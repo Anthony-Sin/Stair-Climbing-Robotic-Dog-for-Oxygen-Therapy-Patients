@@ -1,9 +1,9 @@
 import logging
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import omni
@@ -24,7 +24,35 @@ from sim_logging_utils import log_event
 CHARACTER_PARENT_PRIM = "/World/Characters"
 PERSON_VISUAL_PRIM = "/World/Characters/SimWalker"
 PERSON_COLLIDER_PRIM = "/World/PersonCollider"
-ANIMATED_CHARACTER_NAME = "F_Business_02"
+
+ANIMATED_CHARACTERS = [
+    "female_adult_business_02",
+    "F_Business_02",
+    "female_adult_medical_01",
+    "male_adult_business_01",
+    "male_adult_medical_01",
+    "female_adult_police_01",
+    "male_adult_police_01",
+    "female_adult_construction_01",
+    "male_adult_construction_01",
+]
+
+# Biped_Setup USD is the authoritative source of Isaac People SkelAnimation data.
+# Standalone clip files don't exist for these characters — the animations live
+# inside Biped_Setup.usd as SkelAnimation prims that we can bind directly.
+BIPED_SETUP_PRIM = "/World/Characters/_BipedSetup"
+
+# SkelAnimation prim paths inside a loaded Biped_Setup.usd at BIPED_SETUP_PRIM.
+# These are the internal prim paths within the Biped_Setup reference.
+_BIPED_WALK_ANIM_SUBPATH = "CharacterAnimation/Animation/stand_walk_1_skelanim"
+_BIPED_IDLE_ANIM_SUBPATH = "CharacterAnimation/Animation/stand_idle_loop_skelanim"
+
+# Isaac 4.5 Biped_Setup is used because 6.0 Nucleus doesn't have it yet.
+_BIPED_SETUP_USD_CANDIDATES = [
+    "{assets_root}/Isaac/People/Characters/Biped_Setup.usd",
+    "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.5/Isaac/People/Characters/Biped_Setup.usd",
+    "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.1/Isaac/People/Characters/Biped_Setup.usd",
+]
 
 
 @dataclass
@@ -39,11 +67,12 @@ class SimPersonTarget:
     animation_setup_attempted: bool = False
     animation_attempt_count: int = 0
     animation_ready: bool = False
-    agent_prim_path: str = ""
-    animation_warning_logged: bool = False
+    _walk_clip_path: str = ""
+    _idle_clip_path: str = ""
+    _anim_clip_state: str = ""
+    _skel_root_path: str = ""
     last_collider_warning_time: float = 0.0
     suppressed_collider_warnings: int = 0
-    kinematic_fallback: bool = False
 
     def set_world_pose(self, position: np.ndarray, orientation: Optional[np.ndarray] = None) -> None:
         position = np.asarray(position, dtype=float)
@@ -65,6 +94,7 @@ class SimPersonTarget:
             self.yaw_rad,
         )
         self._update_animation_state(walking=distance > 1e-4)
+
         collider_center = np.array(
             [
                 float(position[0]),
@@ -80,7 +110,7 @@ class SimPersonTarget:
             if self.logger is not None:
                 now = time.monotonic()
                 if now - self.last_collider_warning_time >= 5.0:
-                    fields = {"error": str(exc)}
+                    fields: Dict[str, Any] = {"error": str(exc)}
                     if self.suppressed_collider_warnings:
                         fields["suppressed_count"] = int(self.suppressed_collider_warnings)
                     log_event(
@@ -103,244 +133,131 @@ class SimPersonTarget:
             return
         self.animation_setup_attempted = True
         self.animation_attempt_count += 1
-        agent_path = _try_setup_people_animation(
-            world,
-            visual_prim_path=self.visual_prim_path,
-            logger=self.logger,
-            attempt=self.animation_attempt_count,
-        )
-        if agent_path:
-            self.agent_prim_path = str(agent_path)
-            self.animation_ready = True
-        else:
-            self.kinematic_fallback = True
-            self.animation_ready = True
-            import sys
-            sys.stderr.write("\n" + "="*80 + "\n")
-            sys.stderr.write("WARNING: ANIMATION GRAPH SETUP FAILED (Biped_Setup.usd may be missing from S3).\n")
-            sys.stderr.write("FALLING BACK TO PROCEDURAL KINEMATIC ANIMATION FOR THE PERSON ACTOR.\n")
-            sys.stderr.write("="*80 + "\n\n")
-            sys.stderr.flush()
-            if self.logger is not None:
-                log_event(
-                    self.logger,
-                    logging.WARNING,
-                    "person_animation_graph_setup_failed_fallback",
-                    "Animation graph setup failed. Falling back to procedural kinematic animation.",
-                )
+
+        _start_timeline_and_pump(world, logger=self.logger, attempt=self.animation_attempt_count)
+        self._walk_clip_path = _walk_clip_cache or ""
+        self._idle_clip_path = _idle_clip_cache or ""
+
+        if not self._walk_clip_path or not self._idle_clip_path:
+            raise RuntimeError(
+                "Animated person setup failed: walk or idle animation clip path is empty."
+            )
+
+        self.animation_ready = True
+        if self.logger is not None:
+            log_event(
+                self.logger,
+                logging.INFO,
+                "person_animation_ready",
+                "Person animation ready via UsdSkel.BindingAPI + Biped_Setup SkelAnimation.",
+                skel_root_path=self._skel_root_path,
+                walk_anim=self._walk_clip_path,
+                idle_anim=self._idle_clip_path,
+                attempt=int(self.animation_attempt_count),
+            )
 
     def _update_animation_state(self, *, walking: bool) -> None:
-        if self.kinematic_fallback:
-            self._update_fallback_animation(walking=walking)
+        """Switch the active SkelAnimation by re-targeting the animationSource relationship."""
+        if not self.animation_ready or not self._skel_root_path:
             return
 
-        if not self.animation_ready or not self.agent_prim_path:
+        target = "walk" if walking else "idle"
+        if target == self._anim_clip_state:
             return
+
+        # Use walk or idle SkelAnimation prim path inside Biped_Setup
+        anim_prim_path = self._walk_clip_path if walking else self._idle_clip_path
+        if not anim_prim_path:
+            return
+
         try:
-            import omni.anim.graph.core as ag
-
-            character = ag.get_character(self.agent_prim_path)
-            if character is None:
-                # If omni.anim.people is not available, we can set variables directly via USD attributes on SkelRoot
-                import omni.usd
-                stage = omni.usd.get_context().get_stage()
-                skel_prim = stage.GetPrimAtPath(self.agent_prim_path)
-                if skel_prim and skel_prim.IsValid():
-                    walk_attr = skel_prim.GetAttribute("anim:graph:variable:Walk")
-                    action_attr = skel_prim.GetAttribute("anim:graph:variable:Action")
-                    if walk_attr and action_attr:
-                        walk_attr.Set(1.0 if walking else 0.0)
-                        action_attr.Set("Walk" if walking else "None")
-                        return
-                raise RuntimeError(f"animation graph character unavailable for {self.agent_prim_path}")
-            if walking:
-                character.set_variable("Action", "Walk")
-                character.set_variable("Walk", 1.0)
-            else:
-                character.set_variable("Walk", 0.0)
-                character.set_variable("Action", "None")
-        except Exception as exc:
-            # Fall back to kinematic fallback animation dynamically if the graph updates fail
-            self._update_fallback_animation(walking=walking)
-            if self.logger is not None and not self.animation_warning_logged:
-                self.animation_warning_logged = True
-                log_event(
-                    self.logger,
-                    logging.WARNING,
-                    "person_animation_runtime_fallback",
-                    "Person animation graph runtime update failed; falling back to manual joint kinematic animation",
-                    agent_prim_path=self.agent_prim_path,
-                    error=str(exc),
-                )
-
-    def _update_fallback_animation(self, *, walking: bool) -> None:
-        try:
-            from pxr import UsdSkel, Gf
-            import omni.usd
-            import math
-
-            if not hasattr(self, "_skel_initialized") or not self._skel_initialized:
-                self._skel_initialized = True
-                self._skel_prim = None
-                self._joint_indices = {}
-                self._orig_rest_transforms = None
-
-                # Find Skeleton prim
-                stage = omni.usd.get_context().get_stage()
-                from pxr import Usd
-                for prim in stage.Traverse(Usd.TraverseInstanceProxies()):
-                    if prim.IsA(UsdSkel.Skeleton) and str(prim.GetPath()).startswith(self.visual_prim_path):
-                        self._skel_prim = prim
-                        break
-
-                if self._skel_prim:
-                    skel = UsdSkel.Skeleton(self._skel_prim)
-                    joints_attr = skel.GetJointsAttr()
-                    if joints_attr.IsValid():
-                        joints = list(joints_attr.Get())
-                        # Find indices for relevant joints
-                        for idx, joint in enumerate(joints):
-                            name_lower = joint.lower()
-                            if "l_thigh" in name_lower and "twist" not in name_lower:
-                                self._joint_indices["l_thigh"] = idx
-                            elif "r_thigh" in name_lower and "twist" not in name_lower:
-                                self._joint_indices["r_thigh"] = idx
-                            elif "l_calf" in name_lower and "twist" not in name_lower:
-                                self._joint_indices["l_calf"] = idx
-                            elif "r_calf" in name_lower and "twist" not in name_lower:
-                                self._joint_indices["r_calf"] = idx
-                            elif "l_upperarm" in name_lower and "twist" not in name_lower:
-                                self._joint_indices["l_upperarm"] = idx
-                            elif "r_upperarm" in name_lower and "twist" not in name_lower:
-                                self._joint_indices["r_upperarm"] = idx
-
-                        transforms_attr = skel.GetRestTransformsAttr()
-                        if transforms_attr.IsValid():
-                            self._orig_rest_transforms = list(transforms_attr.Get())
-
-            if not self._skel_prim or not self._orig_rest_transforms:
+            from pxr import UsdSkel
+            stage = omni.usd.get_context().get_stage()
+            skel_root_prim = stage.GetPrimAtPath(self._skel_root_path)
+            if not skel_root_prim or not skel_root_prim.IsValid():
                 return
-
-            skel = UsdSkel.Skeleton(self._skel_prim)
-            transforms_attr = skel.GetRestTransformsAttr()
-
-            # Start with original rest pose
-            new_transforms = list(self._orig_rest_transforms)
-
-            # Base standing rotations for arms to make them hang down naturally
-            # Mixamo skeleton arms standard pose is T-pose (arms along X axis).
-            arm_hang_l = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(0, 0, 1), math.radians(-75.0)))
-            arm_hang_r = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(0, 0, 1), math.radians(75.0)))
-
-            # Swing angle for legs and arms
-            phase = self.walk_phase
-            swing_thigh_l = 0.0
-            swing_thigh_r = 0.0
-            bend_calf_l = 0.0
-            bend_calf_r = 0.0
-            swing_arm_l = 0.0
-            swing_arm_r = 0.0
-
-            if walking:
-                # Swing thighs forward/backward
-                swing_thigh_l = 0.45 * math.sin(phase)
-                swing_thigh_r = -0.45 * math.sin(phase)
-
-                # Calf bending (knees bend backward/inward relative to thigh)
-                bend_calf_l = 0.35 * (math.sin(phase - 1.5) + 1.0)
-                bend_calf_r = 0.35 * (math.sin(phase + 1.5) + 1.0)
-
-                # Arm swinging (opposite to thigh swing)
-                swing_arm_l = -0.35 * math.sin(phase)
-                swing_arm_r = 0.35 * math.sin(phase)
-            else:
-                # Stand idle: very subtle breathing sway
-                t_idle = time.monotonic()
-                swing_arm_l = 0.02 * math.sin(2.0 * t_idle)
-                swing_arm_r = -0.02 * math.sin(2.0 * t_idle)
-
-            # Apply rotations to the joint matrices
-            for joint_key, idx in self._joint_indices.items():
-                orig_mat = self._orig_rest_transforms[idx]
-                mat = Gf.Matrix4d(orig_mat)
-
-                if joint_key == "l_thigh":
-                    rot = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(1, 0, 0), swing_thigh_l))
-                    mat = rot * mat
-                elif joint_key == "r_thigh":
-                    rot = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(1, 0, 0), swing_thigh_r))
-                    mat = rot * mat
-                elif joint_key == "l_calf":
-                    rot = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(1, 0, 0), bend_calf_l))
-                    mat = rot * mat
-                elif joint_key == "r_calf":
-                    rot = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(1, 0, 0), bend_calf_r))
-                    mat = rot * mat
-                elif joint_key == "l_upperarm":
-                    rot_swing = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(1, 0, 0), swing_arm_l))
-                    mat = rot_swing * arm_hang_l * mat
-                elif joint_key == "r_upperarm":
-                    rot_swing = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(1, 0, 0), swing_arm_r))
-                    mat = rot_swing * arm_hang_r * mat
-
-                new_transforms[idx] = Gf.Matrix4f(mat) if isinstance(orig_mat, Gf.Matrix4f) else mat
-
-            transforms_attr.Set(new_transforms)
-
+            # Re-bind the animationSource on the SkelRoot to the new SkelAnimation prim
+            binding_api = UsdSkel.BindingAPI.Apply(skel_root_prim)
+            binding_api.GetAnimationSourceRel().SetTargets([Sdf.Path(anim_prim_path)])
+            self._anim_clip_state = target
         except Exception as exc:
-            if self.logger is not None and not getattr(self, "_fallback_anim_err_logged", False):
-                self._fallback_anim_err_logged = True
+            if self.logger is not None and not getattr(self, "_clip_switch_err_logged", False):
+                self._clip_switch_err_logged = True
                 log_event(
                     self.logger,
                     logging.WARNING,
-                    "person_fallback_animation_failed",
-                    "Procedural fallback animation update failed",
+                    "person_clip_switch_failed",
+                    "Failed to switch animation state",
+                    target=target,
+                    anim_prim_path=anim_prim_path,
                     error=str(exc),
                 )
 
 
-ANIMATED_CHARACTERS = [
-    "F_Business_02",
-    "female_adult_business_02",
-    "female_adult_medical_01",
-    "male_adult_business_01",
-    "male_adult_medical_01",
-    "female_adult_police_01",
-    "male_adult_police_01",
-    "female_adult_construction_01",
-    "male_adult_construction_01"
-]
+def _load_biped_setup(stage: Any, assets_root: str, logger: Optional[logging.Logger]) -> Tuple[str, str]:
+    """Load Biped_Setup.usd and return (walk_anim_path, idle_anim_path) on the stage.
 
+    The animation prims are referenced into BIPED_SETUP_PRIM and then addressed
+    by their full stage paths so UsdSkel.BindingAPI can reference them from any
+    SkelRoot in the scene.
 
-def _resolve_character_usd(logger: Optional[logging.Logger]) -> str:
-    assets_root = nucleus_utils.get_assets_root_path()
-    if assets_root:
-        for char_name in ANIMATED_CHARACTERS:
-            candidate = f"{assets_root}/Isaac/People/Characters/{char_name}/{char_name}.usd"
+    Returns ('', '') if Biped_Setup cannot be loaded.
+    """
+    # Already loaded?
+    existing = stage.GetPrimAtPath(BIPED_SETUP_PRIM)
+    if existing and existing.IsValid():
+        walk = f"{BIPED_SETUP_PRIM}/{_BIPED_WALK_ANIM_SUBPATH}"
+        idle = f"{BIPED_SETUP_PRIM}/{_BIPED_IDLE_ANIM_SUBPATH}"
+        if stage.GetPrimAtPath(walk).IsValid():
+            return walk, idle
+
+    candidates = [c.format(assets_root=assets_root) for c in _BIPED_SETUP_USD_CANDIDATES]
+
+    for usd_path in candidates:
+        try:
+            create_prim(BIPED_SETUP_PRIM, "Xform", usd_path=usd_path)
+            walk = f"{BIPED_SETUP_PRIM}/{_BIPED_WALK_ANIM_SUBPATH}"
+            idle = f"{BIPED_SETUP_PRIM}/{_BIPED_IDLE_ANIM_SUBPATH}"
+            walk_prim = stage.GetPrimAtPath(walk)
+            if walk_prim and walk_prim.IsValid():
+                if logger is not None:
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "person_biped_setup_loaded",
+                        f"Loaded Biped_Setup animations from {usd_path}",
+                        walk_anim=walk,
+                        idle_anim=idle,
+                    )
+                # Hide the Biped_Setup geometry
+                biped_prim = stage.GetPrimAtPath(BIPED_SETUP_PRIM)
+                if biped_prim and biped_prim.IsValid():
+                    UsdGeom.Imageable(biped_prim).MakeInvisible()
+                return walk, idle
+            else:
+                # Prims not there; clean up and try next candidate
+                stage.RemovePrim(Sdf.Path(BIPED_SETUP_PRIM))
+        except Exception as e:
+            if logger is not None:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "person_biped_setup_attempt_failed",
+                    f"Failed loading Biped_Setup from {usd_path}: {e}",
+                )
             try:
-                if nucleus_utils.is_file(candidate):
-                    if logger is not None:
-                        log_event(
-                            logger,
-                            logging.INFO,
-                            "person_asset_selected",
-                            f"Using Isaac People animated character asset: {char_name}",
-                            asset_path=candidate,
-                        )
-                    return candidate
+                stage.RemovePrim(Sdf.Path(BIPED_SETUP_PRIM))
             except Exception:
-                continue
+                pass
 
     if logger is not None:
         log_event(
             logger,
-            logging.ERROR,
-            "person_asset_missing",
-            "No Isaac People character USD was found in the configured Isaac assets root",
-            assets_root=assets_root or "",
-            checked_characters=ANIMATED_CHARACTERS,
+            logging.WARNING,
+            "person_biped_setup_missing",
+            "Could not load Biped_Setup; person will hold rest pose.",
         )
-    raise RuntimeError("No Isaac People character USD was found; install/configure Isaac Sim Assets for animated people")
+    return "", ""
 
 
 def _set_xform_pose(
@@ -406,12 +323,104 @@ def _yaw_quat_for_orient_op(orient_op: UsdGeom.XformOp, yaw_rad: float):
     return Gf.Quatd(real, 0.0, 0.0, z_imag)
 
 
-_PEOPLE_EXTENSION_ENABLED = False
-_GRAPH_CORE_ENABLED = False
+def _find_first_skel_root(stage: Any, parent_path: str) -> Optional[Any]:
+    parent = stage.GetPrimAtPath(parent_path)
+    if not parent or not parent.IsValid():
+        return None
+    for prim in Usd.PrimRange(parent):
+        if prim.GetTypeName() == "SkelRoot":
+            return prim
+    return None
+
+
+# (standalone USD clip probing removed — Isaac People characters embed animations
+#  inside Biped_Setup.usd, not as separate clip files)
+
+
+def _resolve_character_with_clips(
+    logger: Optional[logging.Logger],
+) -> Tuple[str, str, str, str]:
+    assets_root = nucleus_utils.get_assets_root_path()
+
+    candidates = [
+        "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.5/Isaac/People/Characters/Biped_Setup.usd",
+        "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.1/Isaac/People/Characters/Biped_Setup.usd",
+    ]
+    if assets_root:
+        candidates.insert(0, f"{assets_root}/Isaac/People/Characters/Biped_Setup.usd")
+
+    # Find the first valid candidate by trying to open its USD stage
+    selected_source = None
+    remote_stage = None
+    for usd_path in candidates:
+        try:
+            from pxr import Usd
+            remote_stage = Usd.Stage.Open(usd_path)
+            if remote_stage:
+                selected_source = usd_path
+                break
+        except Exception:
+            continue
+
+    if not selected_source or not remote_stage:
+        raise RuntimeError(
+            "Biped_Setup.usd was not found on Nucleus or CDN; "
+            "cannot spawn animated person."
+        )
+
+    # Export and modify a local USD copy to strip the overriding animationGraph relationship
+    import os
+    assets_dir = os.path.join(os.path.dirname(__file__), "assets")
+    os.makedirs(assets_dir, exist_ok=True)
+    local_usd_path = os.path.join(assets_dir, "Biped_Setup_modified.usd").replace("\\", "/")
+
+    if not os.path.exists(local_usd_path):
+        if logger is not None:
+            log_event(
+                logger,
+                logging.INFO,
+                "person_asset_local_copy",
+                "Creating local modified copy of Biped_Setup.usd",
+                source=selected_source,
+                destination=local_usd_path,
+            )
+        try:
+            remote_stage.Export(local_usd_path)
+            
+            # Remove animationGraph relationship so standard timeline UsdSkel playback drives the mannequin
+            from pxr import Usd
+            local_stage = Usd.Stage.Open(local_usd_path)
+            skel_root_prim = local_stage.GetPrimAtPath("/biped_demo_meters")
+            if skel_root_prim and skel_root_prim.IsValid():
+                if skel_root_prim.HasRelationship("animationGraph"):
+                    skel_root_prim.RemoveProperty("animationGraph")
+            local_stage.Save()
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to prepare local modified Biped_Setup copy: {e}"
+            ) from e
+
+    if logger is not None:
+        log_event(
+            logger,
+            logging.INFO,
+            "person_asset_selected",
+            "Using local modified Biped_Setup mannequin as the animated character asset",
+            asset_path=local_usd_path,
+        )
+
+    # Walk/idle clips will be referenced relative to SimWalker:
+    walk = f"{PERSON_VISUAL_PRIM}/{_BIPED_WALK_ANIM_SUBPATH}"
+    idle = f"{PERSON_VISUAL_PRIM}/{_BIPED_IDLE_ANIM_SUBPATH}"
+    return local_usd_path, "BipedMannequin", walk, idle
+
+
+_EXTENSIONS_READY = False
 _EXTENSION_CHECK_DONE = False
 
+
 def _initialize_extensions(logger: Optional[logging.Logger]) -> None:
-    global _PEOPLE_EXTENSION_ENABLED, _GRAPH_CORE_ENABLED, _EXTENSION_CHECK_DONE
+    global _EXTENSIONS_READY, _EXTENSION_CHECK_DONE
     if _EXTENSION_CHECK_DONE:
         return
     _EXTENSION_CHECK_DONE = True
@@ -426,469 +435,158 @@ def _initialize_extensions(logger: Optional[logging.Logger]) -> None:
         app = omni.kit.app.get_app()
         manager = app.get_extension_manager()
 
-        # Check if omni.anim.people is available in the extension manager registry
-        has_people_ext = False
-        try:
-            for ext in manager.get_extensions():
-                if (ext.get("id", "") or "").startswith("omni.anim.people"):
-                    has_people_ext = True
-                    break
-        except Exception:
-            has_people_ext = True
-
-        # Try to enable omni.anim.people and all navigation/retarget dependencies
-        people_extensions = [
-            "omni.anim.people",
-            "omni.anim.navigation.bundle",
+        needed = [
             "omni.anim.timeline",
-            "omni.anim.graph.bundle",
             "omni.anim.graph.core",
-            "omni.anim.retarget.bundle",
-            "omni.anim.retarget.core",
-            "omni.kit.scripting",
-        ]
-        
-        # Core graph extensions needed for basic USD animation graph playback (without people extension)
-        core_graph_extensions = [
-            "omni.anim.timeline",
-            "omni.anim.graph.bundle",
-            "omni.anim.graph.core",
-            "omni.kit.scripting",
         ]
 
-        if has_people_ext:
-            # Let's try to enable the full people suite
-            all_succeeded = True
-            for ext_name in people_extensions:
-                try:
-                    extensions.enable_extension(ext_name)
-                    for _ in range(2):
-                        app.update()
-                    if not manager.get_enabled_extension_id(ext_name):
-                        all_succeeded = False
-                except Exception:
-                    all_succeeded = False
-            
-            if all_succeeded:
-                _PEOPLE_EXTENSION_ENABLED = True
-                _GRAPH_CORE_ENABLED = True
-                if logger is not None:
-                    log_event(
-                        logger,
-                        logging.INFO,
-                        "person_animation_extensions_ready",
-                        "Omni.Anim.People and all animation extensions are enabled.",
-                    )
-                return
-
-        # Fallback path if omni.anim.people is not available or failed to load
-        import sys
-        sys.stderr.write("\n" + "="*80 + "\n")
-        sys.stderr.write("WARNING: Omni.Anim.People extension is not available or failed to enable.\n")
-        sys.stderr.write("Falling back to omni.anim.graph.core for animation playback.\n")
-        sys.stderr.write("="*80 + "\n\n")
-        sys.stderr.flush()
-        if logger is not None:
-            log_event(
-                logger,
-                logging.WARNING,
-                "person_animation_people_fallback",
-                "Omni.Anim.People extension is not available or failed to enable. Falling back to omni.anim.graph.core for animation playback.",
-            )
-
-        # Try to enable the core graph extensions
-        core_succeeded = True
-        for ext_name in core_graph_extensions:
+        for ext_name in needed:
             try:
                 extensions.enable_extension(ext_name)
-                for _ in range(2):
+                for _ in range(3):
                     app.update()
                 if not manager.get_enabled_extension_id(ext_name):
-                    core_succeeded = False
-            except Exception as e:
-                core_succeeded = False
-                if logger is not None:
-                    log_event(
-                        logger,
-                        logging.WARNING,
-                        "person_animation_core_ext_failed",
-                        f"Could not enable core animation extension {ext_name}",
-                        error=str(e),
+                    raise RuntimeError(
+                        f"Extension {ext_name} was not enabled successfully."
                     )
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to enable animation extension {ext_name}: {e}"
+                ) from e
 
-        if core_succeeded:
-            _GRAPH_CORE_ENABLED = True
-            if logger is not None:
-                log_event(
-                    logger,
-                    logging.INFO,
-                    "person_animation_core_ready",
-                    "Core animation graph extensions (omni.anim.graph.core) are successfully enabled.",
-                )
-        else:
-            import sys
-            sys.stderr.write("\n" + "="*80 + "\n")
-            sys.stderr.write("WARNING: CORE ANIMATION GRAPH EXTENSIONS FAILED TO LOAD.\n")
-            sys.stderr.write("SPAWNING PERSON IN MANUAL KINEMATIC JOINT ROTATION MODE.\n")
-            sys.stderr.write("="*80 + "\n\n")
-            sys.stderr.flush()
-            if logger is not None:
-                log_event(
-                    logger,
-                    logging.WARNING,
-                    "person_animation_graph_core_failed",
-                    "Core animation graph extensions failed to load. Spawning person in manual kinematic joint rotation mode.",
-                )
-    except Exception as exc:
-        import sys
-        sys.stderr.write("\n" + "="*80 + "\n")
-        sys.stderr.write(f"WARNING: FAILED TO INITIALIZE ANIMATION EXTENSIONS: {exc}\n")
-        sys.stderr.write("="*80 + "\n\n")
-        sys.stderr.flush()
+        for _ in range(5):
+            app.update()
+
+        _EXTENSIONS_READY = True
         if logger is not None:
             log_event(
                 logger,
-                logging.WARNING,
-                "person_animation_extensions_init_failed",
-                "Failed to initialize animation extensions",
-                error=str(exc),
+                logging.INFO,
+                "person_animation_extensions_ready",
+                "Animation timeline extensions ready (USD clip mode).",
             )
-
-
-def _enable_people_extensions(logger: Optional[logging.Logger]) -> bool:
-    _initialize_extensions(logger)
-    return _PEOPLE_EXTENSION_ENABLED
-
-
-def _find_first_skel_root(stage: Any, parent_path: str) -> Optional[Any]:
-    parent = stage.GetPrimAtPath(parent_path)
-    if not parent or not parent.IsValid():
-        return None
-    for prim in Usd.PrimRange(parent):
-        if prim.GetTypeName() == "SkelRoot":
-            return prim
-    return None
-
-
-def _extension_script_path() -> Optional[str]:
-    try:
-        import omni.kit.app
-
-        manager = omni.kit.app.get_app().get_extension_manager()
-        ext_id = manager.get_enabled_extension_id("omni.anim.people")
-        if not ext_id:
-            return None
-        ext_path = Path(manager.get_extension_path(ext_id))
-        script_path = ext_path / "omni" / "anim" / "people" / "scripts" / "character_behavior.py"
-        return str(script_path) if script_path.exists() else None
-    except Exception:
-        return None
-
-
-def _configure_people_settings(script_path: Optional[str]) -> None:
-    import carb
-    from omni.anim.people.settings import PeopleSettings
-
-    settings = carb.settings.get_settings()
-    settings.set(PeopleSettings.CHARACTER_PRIM_PATH, CHARACTER_PARENT_PRIM)
-    settings.set(PeopleSettings.NUMBER_OF_LOOP, 0)
-    settings.set(PeopleSettings.NAVMESH_ENABLED, False)
-    settings.set(PeopleSettings.DYNAMIC_AVOIDANCE_ENABLED, False)
-    settings.set(PeopleSettings.CACHE_ACTION_METADATA, True)
-    settings.set(PeopleSettings.CHARACTER_FINAL_TARGET_DISTANCE, 0.12)
-    if script_path:
-        settings.set(PeopleSettings.BEHAVIOR_SCRIPT_PATH, script_path)
-
-
-def _ensure_biped_setup(world: Any, logger: Optional[logging.Logger]) -> Optional[Any]:
-    assets_root = nucleus_utils.get_assets_root_path()
-    if not assets_root:
+    except Exception as exc:
         if logger is not None:
             log_event(
                 logger,
                 logging.ERROR,
-                "person_biped_setup_missing",
-                "Isaac assets root is unavailable; cannot load Biped_Setup animation graph",
-            )
-        return None
-
-    biped_prim_path = f"{CHARACTER_PARENT_PRIM}/Biped_Setup"
-    anim_graph_path = f"{biped_prim_path}/CharacterAnimation/AnimationGraph"
-
-    # If already loaded and valid, return it
-    anim_graph_prim = world.stage.GetPrimAtPath(anim_graph_path)
-    if anim_graph_prim and anim_graph_prim.IsValid():
-        prim = world.stage.GetPrimAtPath(biped_prim_path)
-        if prim and prim.IsValid():
-            visibility = prim.GetAttribute("visibility")
-            if visibility:
-                visibility.Set("invisible")
-        return anim_graph_prim
-
-    # Otherwise, clean up any existing invalid prim at biped_prim_path
-    parent_prim = world.stage.GetPrimAtPath(biped_prim_path)
-    if parent_prim and parent_prim.IsValid():
-        if logger is not None:
-            log_event(
-                logger,
-                logging.INFO,
-                "person_biped_setup_cleanup",
-                f"Removing invalid or incomplete prim at {biped_prim_path}",
-            )
-        world.stage.RemovePrim(Sdf.Path(biped_prim_path))
-
-    paths_to_try = []
-    # 1. Default resolved path
-    paths_to_try.append(f"{assets_root}/Isaac/People/Characters/Biped_Setup.usd")
-    
-    # 2. Version fallbacks based on assets_root
-    if "6.0" in assets_root:
-        for ver in ["4.5", "4.1", "4.0"]:
-            fallback_root = assets_root.replace("6.0", ver)
-            paths_to_try.append(f"{fallback_root}/Isaac/People/Characters/Biped_Setup.usd")
-
-    # 3. Direct S3 fallback URLs as absolute fallback
-    for ver in ["4.5", "4.1", "4.0"]:
-        paths_to_try.append(f"http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/{ver}/Isaac/People/Characters/Biped_Setup.usd")
-        paths_to_try.append(f"https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/{ver}/Isaac/People/Characters/Biped_Setup.usd")
-
-    # Remove duplicates while preserving order
-    seen_paths = set()
-    unique_paths = []
-    for p in paths_to_try:
-        if p not in seen_paths:
-            seen_paths.add(p)
-            unique_paths.append(p)
-
-    success_prim = None
-    for usd_path in unique_paths:
-        if logger is not None:
-            log_event(
-                logger,
-                logging.INFO,
-                "person_biped_setup_attempt",
-                f"Attempting to load Biped_Setup from: {usd_path}",
-            )
-        try:
-            create_prim(
-                biped_prim_path,
-                "Xform",
-                usd_path=usd_path,
-            )
-            # Check if animation graph loaded successfully
-            anim_graph_prim = world.stage.GetPrimAtPath(anim_graph_path)
-            if anim_graph_prim and anim_graph_prim.IsValid():
-                success_prim = anim_graph_prim
-                if logger is not None:
-                    log_event(
-                        logger,
-                        logging.INFO,
-                        "person_biped_setup_success",
-                        f"Successfully loaded Biped_Setup from: {usd_path}",
-                    )
-                break
-        except Exception as e:
-            if logger is not None:
-                log_event(
-                    logger,
-                    logging.WARNING,
-                    "person_biped_setup_attempt_failed",
-                    f"Failed loading from {usd_path}: {e}",
-                )
-
-        # Clean up failed prim to prepare for next attempt
-        parent_prim = world.stage.GetPrimAtPath(biped_prim_path)
-        if parent_prim and parent_prim.IsValid():
-            world.stage.RemovePrim(Sdf.Path(biped_prim_path))
-
-    if success_prim is not None:
-        prim = world.stage.GetPrimAtPath(biped_prim_path)
-        if prim and prim.IsValid():
-            visibility = prim.GetAttribute("visibility")
-            if visibility:
-                visibility.Set("invisible")
-        return success_prim
-
-    if logger is not None:
-        log_event(
-            logger,
-            logging.WARNING,
-            "person_biped_setup_missing",
-            "Could not load Biped_Setup animation graph for person from any of the attempted paths",
-        )
-    return None
-
-
-def _try_setup_people_animation(
-    world: Any,
-    *,
-    visual_prim_path: str,
-    logger: Optional[logging.Logger],
-    attempt: int,
-) -> Optional[str]:
-    _initialize_extensions(logger)
-    if not _GRAPH_CORE_ENABLED:
-        return None
-
-    try:
-        import AnimGraphSchema
-        import omni.kit.commands
-        import omni.timeline
-        import omni.anim.graph.core as ag
-
-        skel_root = _find_first_skel_root(world.stage, visual_prim_path)
-        if skel_root is None:
-            if logger is not None:
-                log_event(
-                    logger,
-                    logging.WARNING,
-                    "person_skel_root_missing",
-                    "Animated person asset loaded, but no SkelRoot was found",
-                    visual_prim_path=visual_prim_path,
-                    attempt=int(attempt),
-                )
-            return None
-
-        skel_path = str(skel_root.GetPath())
-        
-        if _PEOPLE_EXTENSION_ENABLED:
-            script_path = _extension_script_path()
-            try:
-                _configure_people_settings(script_path)
-            except Exception as exc:
-                if logger is not None:
-                    log_event(
-                        logger,
-                        logging.WARNING,
-                        "person_settings_failed",
-                        "Failed to configure PeopleSettings",
-                        error=str(exc),
-                    )
-        else:
-            script_path = None
-
-        animation_graph = _ensure_biped_setup(world, logger)
-        if animation_graph is not None and animation_graph.IsValid():
-            animation_graph_path = Sdf.Path(animation_graph.GetPrimPath())
-            try:
-                from omni.anim.graph import setup_animation_graph
-                setup_animation_graph(skel_path, str(animation_graph_path))
-            except Exception:
-                omni.kit.commands.execute(
-                    "ApplyAnimationGraphAPICommand",
-                    paths=[Sdf.Path(skel_path)],
-                    animation_graph_path=animation_graph_path,
-                )
-                anim_graph_api = AnimGraphSchema.AnimationGraphAPI.Apply(skel_root)
-                anim_graph_api.GetAnimationGraphRel().SetTargets([animation_graph_path])
-                inputs_pose_rel = skel_root.GetRelationship("inputs:pose")
-                if not inputs_pose_rel:
-                    inputs_pose_rel = skel_root.CreateRelationship("inputs:pose", custom=True)
-                inputs_pose_rel.ClearTargets(False)
-        else:
-            raise RuntimeError("Biped_Setup animation graph is unavailable")
-
-        if _PEOPLE_EXTENSION_ENABLED and script_path:
-            try:
-                omni.kit.commands.execute("ApplyScriptingAPICommand", paths=[Sdf.Path(skel_path)])
-            except Exception:
-                pass
-            scripts_attr = skel_root.GetAttribute("omni:scripting:scripts")
-            if scripts_attr:
-                scripts_attr.Set(Sdf.AssetPathArray([script_path]))
-
-        for attr_name, value_type, value in (
-            ("anim:graph:variable:Action", Sdf.ValueTypeNames.String, "None"),
-            ("anim:graph:variable:lookAround", Sdf.ValueTypeNames.Float, 0.0),
-            ("anim:graph:variable:Walk", Sdf.ValueTypeNames.Float, 0.0),
-            ("anim:graph:variable:SitWeight", Sdf.ValueTypeNames.Float, 0.0),
-            ("anim:graph:variable:path_points_new", Sdf.ValueTypeNames.Float3Array, []),
-            ("anim:graph:variable:PathPoints", Sdf.ValueTypeNames.Float3Array, []),
-        ):
-            attr = skel_root.GetAttribute(attr_name)
-            if not attr:
-                attr = skel_root.CreateAttribute(attr_name, value_type, custom=True)
-            attr.Set(value)
-
-        timeline = omni.timeline.get_timeline_interface()
-        if not timeline.is_playing():
-            timeline.play()
-
-        try:
-            import omni.kit.app
-            for _ in range(8):
-                try:
-                    world.step(render=False)
-                except Exception:
-                    pass
-                omni.kit.app.get_app().update()
-        except Exception:
-            pass
-
-        if _PEOPLE_EXTENSION_ENABLED:
-            character = ag.get_character(skel_path)
-            if character is None:
-                try:
-                    character_count = ag.get_character_count()
-                except Exception:
-                    character_count = None
-                raise RuntimeError(
-                    f"animation graph character did not register for {skel_path}; "
-                    f"registered_character_count={character_count}"
-                )
-            character.set_variable("Action", "None")
-            character.set_variable("Walk", 0.0)
-
-        if logger is not None:
-            log_event(
-                logger,
-                logging.INFO,
-                "person_animation_ready",
-                f"Animated person animation graph is ready (people_enabled={_PEOPLE_EXTENSION_ENABLED})",
-                skel_root_path=skel_path,
-                behavior_script_path=script_path or "",
-                attempt=int(attempt),
-            )
-        return skel_path
-    except Exception as exc:
-        if logger is not None:
-            log_event(
-                logger,
-                logging.WARNING,
-                "person_animation_setup_failed",
-                "Animated person setup failed",
-                attempt=int(attempt),
+                "person_animation_extensions_init_failed",
+                "Failed to initialize animation extensions",
                 error=str(exc),
             )
-        return None
+        raise RuntimeError(
+            f"Failed to initialize animation extensions: {exc}"
+        ) from exc
 
 
-def spawn_sim_person(world: Any, x: float, y: float, logger: Optional[logging.Logger]) -> SimPersonTarget:
+_char_usd_cache: Optional[str] = None
+_char_name_cache: Optional[str] = None
+_walk_clip_cache: Optional[str] = None
+_skel_root_path_cache: Dict[str, str] = {}  # {"path": skel_root_prim_path}
+_idle_clip_cache: Optional[str] = None
+
+
+def _start_timeline_and_pump(world: Any, *, logger: Optional[logging.Logger], attempt: int) -> None:
+    """Start the animation timeline and pump frames so UsdSkel evaluates the binding."""
+    try:
+        import omni.timeline
+        timeline = omni.timeline.get_timeline_interface()
+        if not timeline.is_playing():
+            timeline.set_looping(True)
+            timeline.play()
+    except Exception as e:
+        raise RuntimeError(f"Animated person setup failed: could not start animation timeline: {e}") from e
+
+    import omni.kit.app
+    for _ in range(20):
+        try:
+            world.step(render=False)
+        except Exception:
+            pass
+        omni.kit.app.get_app().update()
+
+
+def spawn_sim_person(world: Any, x: float, y: float, logger: Optional[logging.Logger]) -> "SimPersonTarget":
+    """Spawn the animated person character and immediately bind the walk SkelAnimation.
+
+    The UsdSkel.BindingAPI is applied BEFORE any world.step() / Fabric sync so
+    the animation source is visible to the GPU renderer from the very first frame.
+    """
+    global _char_usd_cache, _char_name_cache, _walk_clip_cache, _idle_clip_cache
+
     _initialize_extensions(logger)
-    
+
     if not is_prim_path_valid(CHARACTER_PARENT_PRIM):
         create_prim(CHARACTER_PARENT_PRIM, "Xform")
 
-    character_usd = _resolve_character_usd(logger)
+    if _char_usd_cache is None:
+        _char_usd_cache, _char_name_cache, _walk_clip_cache, _idle_clip_cache = (
+            _resolve_character_with_clips(logger)
+        )
+
+    character_usd: str = _char_usd_cache
+
     add_reference_to_stage(usd_path=character_usd, prim_path=PERSON_VISUAL_PRIM)
     _set_xform_pose(PERSON_VISUAL_PRIM, np.array([x, y, 0.0], dtype=float), 0.0)
 
-    collider_height_m = 1.70
-    collider = DynamicCapsule(
-        prim_path=PERSON_COLLIDER_PRIM,
-        name="person_collider",
-        position=np.array([x, y, collider_height_m * 0.5], dtype=float),
-        radius=0.24,
-        height=collider_height_m,
-        color=np.array([0.1, 0.7, 1.0]),
-    )
-    world.scene.add(collider)
-    rb_api = UsdPhysics.RigidBodyAPI.Apply(collider.prim)
-    rb_api.CreateKinematicEnabledAttr(True)
-    UsdPhysics.CollisionAPI.Apply(collider.prim)
-    UsdGeom.Imageable(collider.prim).MakeInvisible()
+    # ---- Apply walk SkelAnimation binding BEFORE any world.step() / Fabric sync ----
+    # Fabric snapshots the scene graph on the first render pass; if we wait until
+    # ensure_animation_ready(), Fabric has already been synced and won't see the
+    # newly-added animationSource relationship.
+    stage = omni.usd.get_context().get_stage()
+    walk_anim = _walk_clip_cache
+    idle_anim = _idle_clip_cache
 
-    use_fallback = not _GRAPH_CORE_ENABLED
+    if not walk_anim:
+        raise RuntimeError("Animated person setup failed: resolved walk animation clip path is empty.")
+
+    try:
+        from pxr import UsdSkel
+        skel_root = _find_first_skel_root(stage, PERSON_VISUAL_PRIM)
+        if skel_root is not None:
+            # Clear animationGraph targets locally as a redundant precaution
+            if skel_root.HasRelationship("animationGraph"):
+                skel_root.GetRelationship("animationGraph").ClearTargets(True)
+
+            binding_api = UsdSkel.BindingAPI.Apply(skel_root)
+            binding_api.GetAnimationSourceRel().SetTargets([Sdf.Path(walk_anim)])
+            skel_root_path = str(skel_root.GetPath())
+            print(f"[person_actor] Pre-Fabric walk binding: {skel_root_path} -> {walk_anim}")
+            # Store the SkelRoot path in module-level cache so ensure_animation_ready can use it
+            _skel_root_path_cache["path"] = skel_root_path
+        else:
+            raise RuntimeError("Animated person setup failed: SkelRoot not found under SimWalker visual prim.")
+    except Exception as e:
+        if logger is not None:
+            log_event(logger, logging.ERROR, "person_skel_binding_prefabric_failed",
+                      "Pre-Fabric SkelAnimation binding failed", error=str(e))
+        raise RuntimeError(f"Animated person setup failed: Pre-Fabric SkelAnimation binding failed: {e}") from e
+    # ------------------------------------------------------------------------------------
+
+    collider_height_m = 1.70
+
+    class KinematicColliderWrapper:
+        def __init__(self, prim: Any) -> None:
+            self.prim = prim
+
+    create_prim(
+        prim_path=PERSON_COLLIDER_PRIM,
+        prim_type="Capsule",
+        position=np.array([x, y, collider_height_m * 0.5], dtype=float),
+        attributes={
+            "radius": 0.24,
+            "height": collider_height_m - 2 * 0.24,
+            "axis": "Z",
+        },
+    )
+    collider_prim = world.stage.GetPrimAtPath(PERSON_COLLIDER_PRIM)
+
+    UsdPhysics.CollisionAPI.Apply(collider_prim)
+    rb_api = UsdPhysics.RigidBodyAPI.Apply(collider_prim)
+    rb_api.CreateKinematicEnabledAttr(True)
+    UsdGeom.Imageable(collider_prim).MakeInvisible()
+
+    collider = KinematicColliderWrapper(collider_prim)
 
     target = SimPersonTarget(
         visual_prim_path=PERSON_VISUAL_PRIM,
@@ -896,18 +594,19 @@ def spawn_sim_person(world: Any, x: float, y: float, logger: Optional[logging.Lo
         collider_height_m=collider_height_m,
         logger=logger,
         last_position=np.array([x, y, 0.0], dtype=float),
-        kinematic_fallback=use_fallback,
-        animation_ready=use_fallback,
+        _skel_root_path=_skel_root_path_cache.get("path", ""),
     )
+
     if logger is not None:
         log_event(
             logger,
             logging.INFO,
             "person_spawned",
-            "Spawned animated person visual with kinematic physics collider",
+            "Spawned animated person visual with kinematic physics collider.",
             visual_prim_path=PERSON_VISUAL_PRIM,
             collider_prim_path=PERSON_COLLIDER_PRIM,
             character_asset=character_usd,
-            kinematic_fallback=use_fallback,
+            walk_anim=walk_anim or "<none>",
+            idle_anim=idle_anim or "<none>",
         )
     return target

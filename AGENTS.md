@@ -19,7 +19,7 @@ If something is obvious from reading the codebase, it should NOT be here.
 3. Prefer minimal, surgical changes.
 4. Verify before destructive actions (overwrite, delete, replace).
 5. When uncertain, ask instead of guessing.
-
+6. do not create Fallbacks/safefials if not requested by the user try to fix the issue
 ---
 
 ## 3. The "Surprise Rule" (Mandatory)
@@ -161,6 +161,17 @@ Check downstream velocity smoothing limits and accelerations whenever changing M
 WHY:
 The velocity smoother can silently clip controller outputs, making controller tuning appear broken or ignored.
 
+---
+
+TRIGGER:
+Evaluating UsdSkel animations from a remote CDN/Nucleus path asynchronously in code-driven simulation scripts.
+
+LESSON:
+Always copy/export remote USD assets to a local directory (e.g., `assets/`) and modify/reference the local copies.
+
+WHY:
+USD resolves referenced and nested assets asynchronously. For standalone scripts that query or step skeleton transforms immediately, remote assets result in loading lag where the skeleton falls back to a rest/T-pose during the initial frames of the simulation.
+
 ## 9. Testing it
 
 1. The Test Command
@@ -169,6 +180,7 @@ We run the simulation using Isaac Sim’s bundled Python interpreter via a comma
 Headless Mode: This runs the simulation in the background without launching a full graphical user interface, which makes it fast and resource-efficient.
 Verification Image Path: We specify a target file path for a PNG image.
 Exit After Verification: This flag tells the script to capture the image and immediately close down the simulation app, so we don't leave the background process running forever.
+
 2. How the Verification Capture Works
 When the command runs, the simulation goes through the following sequence:
 
