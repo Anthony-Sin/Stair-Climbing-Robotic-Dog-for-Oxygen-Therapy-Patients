@@ -440,7 +440,9 @@ function Stop-DockerContainer {
         if ($null -ne $previousNativeErrorPreference) {
             $global:PSNativeCommandUseErrorActionPreference = $false
         }
-        $output = & wsl.exe -e docker rm -f $ContainerName 2>&1
+        # Send SIGTERM first (docker stop gives Python time to flush VideoWriter),
+        # then hard-remove. The --time flag sets seconds to wait before SIGKILL.
+        & wsl.exe -e bash -c "docker stop --time 8 '$ContainerName' 2>/dev/null; docker rm -f '$ContainerName' 2>/dev/null" 2>&1
         $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
     } catch {
         Write-Stage "docker" "warning" "Could not stop Docker container" @{
@@ -528,12 +530,14 @@ function Start-IsaacExitMonitorJob {
             Start-Sleep -Seconds 1
             $elapsed++
             if ($TimeoutSec -gt 0 -and $elapsed -ge $TimeoutSec) {
-                & wsl.exe -e docker rm -f $ContainerName 2>$null | Out-Null
+                # Send SIGTERM first so Python can flush VideoWriter before SIGKILL
+                & wsl.exe -e bash -c "docker stop --time 8 '$ContainerName' 2>/dev/null; docker rm -f '$ContainerName' 2>/dev/null" 2>$null | Out-Null
                 break
             }
             $watched = Get-Process -Id $WatchedPid -ErrorAction SilentlyContinue
             if (-not $watched) {
-                & wsl.exe -e docker rm -f $ContainerName 2>$null | Out-Null
+                # Send SIGTERM first so Python can flush VideoWriter before SIGKILL
+                & wsl.exe -e bash -c "docker stop --time 8 '$ContainerName' 2>/dev/null; docker rm -f '$ContainerName' 2>/dev/null" 2>$null | Out-Null
                 break
             }
         }
@@ -919,7 +923,7 @@ if ($NoDockerRun) {
     }
     $visionCommand = $visionArgs -join " "
     $byteTrackNumpyAliasFix = "find /opt/bytetrack -type f -name '*.py' -exec sed -i 's/np\.float\b/float/g; s/np\.int\b/int/g; s/np\.bool\b/bool/g' {} + 2>/dev/null"
-    $containerCommand = $byteTrackNumpyAliasFix + "; cd /workspace/src && " + $visionCommand
+    $containerCommand = $byteTrackNumpyAliasFix + "; cd /workspace/src && exec " + $visionCommand
 
     $dockerArgs = @(
         "-e",

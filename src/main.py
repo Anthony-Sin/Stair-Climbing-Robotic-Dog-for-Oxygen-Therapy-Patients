@@ -376,6 +376,30 @@ def main():
         if video_dir:
             os.makedirs(video_dir, exist_ok=True)
     preview_video_writer = None
+
+    # --- Graceful video-writer flush on SIGTERM (sent by `docker stop`) ---
+    # Docker sends SIGTERM, waits --time seconds, then sends SIGKILL.
+    # Without this handler the finally block is never reached and the MP4
+    # moov atom is never written, leaving a corrupt unplayable file.
+    import signal as _signal
+    import atexit as _atexit
+
+    def _flush_video_writer():
+        nonlocal preview_video_writer
+        if preview_video_writer is not None:
+            try:
+                preview_video_writer.release()
+            except Exception:
+                pass
+            preview_video_writer = None
+
+    def _sigterm_handler(signum, frame):
+        _flush_video_writer()
+        raise SystemExit(0)
+
+    _signal.signal(_signal.SIGTERM, _sigterm_handler)
+    _atexit.register(_flush_video_writer)
+    # -----------------------------------------------------------------------
     preview_rate_hz       = (
         float(args.preview_save_fps)
         if args.headless and preview_output_enabled and args.preview_save_fps > 0.0
@@ -802,16 +826,33 @@ def main():
                                 video_dir = os.path.dirname(preview_video_path)
                                 if video_dir:
                                     os.makedirs(video_dir, exist_ok=True)
-                                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
                                 frame_h, frame_w = combined.shape[:2]
-                                preview_video_writer = cv2.VideoWriter(
-                                    preview_video_path,
-                                    fourcc,
-                                    max(1.0, preview_rate_hz),
-                                    (int(frame_w), int(frame_h)),
-                                )
-                                if not preview_video_writer.isOpened():
+                                # On Linux (Docker/Jetson) the OpenCV build uses the
+                                # V4L2 hardware H.264 encoder which is unavailable in a
+                                # headless container — trying avc1/H264 produces noisy
+                                # errors.  Use mp4v (MPEG-4 Part 2) directly on Linux;
+                                # on Windows try avc1 first for WMP/Edge compatibility.
+                                import platform as _platform
+                                if _platform.system() == "Windows":
+                                    _codec_candidates = ("avc1", "mp4v")
+                                else:
+                                    _codec_candidates = ("mp4v",)
+                                _vw = None
+                                for _codec in _codec_candidates:
+                                    _fourcc = cv2.VideoWriter_fourcc(*_codec)
+                                    _vw = cv2.VideoWriter(
+                                        preview_video_path,
+                                        _fourcc,
+                                        max(1.0, preview_rate_hz),
+                                        (int(frame_w), int(frame_h)),
+                                    )
+                                    if _vw.isOpened():
+                                        break
+                                    _vw.release()
+                                    _vw = None
+                                if _vw is None or not _vw.isOpened():
                                     raise RuntimeError(f"could not open preview video writer: {preview_video_path}")
+                                preview_video_writer = _vw
                                 debug_trace.log(
                                     "opencv_preview_video_started",
                                     path=preview_video_path,

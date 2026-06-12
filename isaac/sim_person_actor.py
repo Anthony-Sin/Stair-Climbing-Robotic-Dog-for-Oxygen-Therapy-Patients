@@ -417,28 +417,47 @@ def _zero_root_rotation_channel(anim: Any, root_idx: int) -> bool:
     return changed
 
 
-def _loop_animation_channels(anim: Any, loop_duration: float = 104.0) -> bool:
+def _loop_animation_channels(anim: Any, loop_duration: float = 80.0, t_start: float = 186.0) -> bool:
+    """Re-tile all animation channels using a stable mid-clip walk cycle window.
+
+    Instead of looping from t=0 (which includes a startup transition / rest pose
+    that causes a visible freeze at every loop boundary), we extract the cycle
+    window [t_start, t_start + loop_duration) from a region where the walk is
+    already fully stabilised, normalise those time samples to [0, loop_duration),
+    then fill every time sample in the original clip by mapping it into that
+    normalised window.  The result is a seamlessly repeating mid-stride cycle
+    with no rest-pose pop at the seam.
+    """
     changed = False
+    t_end = t_start + loop_duration
     for attr in [anim.GetTranslationsAttr(), anim.GetRotationsAttr(), anim.GetScalesAttr()]:
         if not attr.IsValid():
             continue
         time_samples = attr.GetTimeSamples()
         if not time_samples:
             continue
-        
-        # Cache values for time samples <= loop_duration
-        cache = {}
+
+        # 1. Collect the stable window [t_start, t_end) and normalise to [0, loop_duration)
+        cache = {}  # normalised_t -> value
         for t in time_samples:
-            if t <= loop_duration:
-                cache[t] = attr.Get(t)
-                
+            if t_start <= t < t_end:
+                cache[t - t_start] = attr.Get(t)
+
+        # Fallback: if no samples found in window, use the original approach from t=0
         if not cache:
-            continue
-            
-        # Fill in all time samples by repeating the cache
+            for t in time_samples:
+                if t <= loop_duration:
+                    cache[t] = attr.Get(t)
+            if not cache:
+                continue
+
+        sorted_keys = sorted(cache.keys())
+
+        # 2. For every time sample in the original clip, map into [0, loop_duration)
+        #    and pick the nearest cached sample.
         for t in time_samples:
-            t_looped = t % loop_duration
-            best_key = min(cache.keys(), key=lambda k: abs(k - t_looped))
+            t_norm = t % loop_duration
+            best_key = min(sorted_keys, key=lambda k: abs(k - t_norm))
             val = cache[best_key]
             attr.Set(val, t)
             changed = True
@@ -555,10 +574,12 @@ def _resolve_character_with_clips(
                             if _zero_root_rotation_channel(anim, idx):
                                 modified = True
 
-                    # Loop the walk_1 animation clip to keep it walking straight
+                    # Loop the walk_1 animation clip using the stable mid-clip
+                    # window [186, 266) (period L=80) so the seam is always
+                    # mid-stride and never snaps back to a rest/stand pose.
                     prim_name = prim.GetName()
                     if "walk_1" in prim_name:
-                        if _loop_animation_channels(anim, 104.0):
+                        if _loop_animation_channels(anim, loop_duration=80.0, t_start=186.0):
                             modified = True
 
         if modified:

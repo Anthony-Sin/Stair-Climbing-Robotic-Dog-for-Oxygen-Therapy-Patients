@@ -508,10 +508,13 @@ def _get_analytical_terrain_height(x: float, y: float) -> float:
     """Return the exact terrain height at coordinate (x, y) based on spawned geometry."""
     if not (-1.05 <= y <= 1.05):
         return 0.0
-    # Stairs: 2.0 to 3.5m
-    if 2.0 <= x < 3.5:
+    # Stairs: 12 steps from 2.0m to 5.6m, each step 0.3m deep, 0.08m rise
+    if 2.0 <= x < 5.6:
         step_idx = int((x - 2.0) / 0.3)
-        return min(0.40, (step_idx + 1) * 0.08)
+        return min(0.96, (step_idx + 1) * 0.08)
+    # Top landing
+    if x >= 5.6:
+        return 0.96
     # Flat ground
     return 0.0
 

@@ -753,10 +753,13 @@ def get_terrain_height(x: float, y: float) -> float:
     """Return the exact terrain height at coordinate (x, y) based on spawned geometry."""
     if not (-1.05 <= y <= 1.05):
         return 0.0
-    # Stairs: 2.0 to 3.5m
-    if 2.0 <= x < 3.5:
+    # Stairs: 12 steps from 2.0m to 5.6m, each step 0.3m deep, 0.08m rise
+    if 2.0 <= x < 5.6:
         step_idx = int((x - 2.0) / 0.3)
-        return min(0.40, (step_idx + 1) * 0.08)
+        return min(0.96, (step_idx + 1) * 0.08)
+    # Top landing: hold at full stair height
+    if x >= 5.6:
+        return 0.96
     # Flat ground
     return 0.0
 
@@ -897,25 +900,43 @@ def spawn_obstacles(world: World) -> None:
     except ModuleNotFoundError:
         from isaacsim.core.api.objects import FixedCuboid
     
-    # 1. Spawn Stairs (5 steps: 2.0 to 3.5m along X, 2.0m wide along Y, step height 0.08m)
-    for i in range(5):
-        step_x = 2.0 + i * 0.3 + 0.15
-        step_z = (i + 1) * 0.08 / 2.0
+    # 1. Spawn Stairs (12 steps: 2.0 to 5.6m along X, 2.0m wide along Y,
+    #    step height 0.08m per step → top of step 12 is 0.96m above ground)
+    for i in range(12):
+        step_x = 2.0 + i * 0.3 + 0.15          # centre of each tread
+        step_height = (i + 1) * 0.08            # cumulative height of this step
+        step_z = step_height / 2.0              # centre of the cuboid in Z
         try:
             world.scene.add(
                 FixedCuboid(
                     prim_path=f"/World/Environment/step_{i}",
                     name=f"step_{i}",
                     position=np.array([step_x, 0.0, step_z]),
-                    scale=np.array([0.3, 2.0, (i + 1) * 0.08]),
+                    scale=np.array([0.3, 2.0, step_height]),
                     color=np.array([0.5, 0.5, 0.5])
                 )
             )
         except Exception as exc:
             log_event(LOGGER, logging.WARNING, "obstacle_spawn_failed", f"Failed to spawn step_{i}", error=str(exc))
 
-    # 2. Corridor walls spawning has been removed as requested by the user
-    log_event(LOGGER, logging.INFO, "environment_spawned", "Clean stairs-only environment successfully spawned")
+    # 2. Top landing platform (flat slab at full stair height)
+    try:
+        landing_x = 5.6 + 0.5          # 0.5 m past the last step
+        landing_height = 0.96
+        world.scene.add(
+            FixedCuboid(
+                prim_path="/World/Environment/top_landing",
+                name="top_landing",
+                position=np.array([landing_x, 0.0, landing_height / 2.0]),
+                scale=np.array([1.0, 2.0, landing_height]),
+                color=np.array([0.55, 0.55, 0.55])
+            )
+        )
+    except Exception as exc:
+        log_event(LOGGER, logging.WARNING, "obstacle_spawn_failed", "Failed to spawn top landing", error=str(exc))
+
+    # 3. Corridor walls spawning has been removed as requested by the user
+    log_event(LOGGER, logging.INFO, "environment_spawned", "Clean stairs-only environment (12 steps + landing) successfully spawned")
 
 
 def apply_realsense_depth_noise(depth_mm: np.ndarray, noise_multiplier: float = 1.0) -> np.ndarray:
@@ -1038,19 +1059,30 @@ class PatientLocomotionState:
         self.o2_sat = 98.0  # Oxygen saturation %
         self.ground_follow_delay_sec = 20.0
         self.at_destination = False
-        # 2D waypoints: start on flat ground, wait near the stair base,
-        # then walk naturally up the existing stair blocks.
+        # 2D waypoints: start on flat ground, walk to the stair base,
+        # then climb up each step of the extended 12-step staircase and
+        # stop on the top landing (~22 s of climbing at 0.16 m/s).
         self.waypoints = [
-            (-4.6, 0.0),
+            (-4.6, 0.0),   # spawn / start
             (-3.0, 0.0),
             (-1.0, 0.0),
-            (1.0, 0.0),
-            (1.8, 0.0),
+            (1.0,  0.0),
+            (1.8,  0.0),   # approach stair base
+            # --- stair treads (12 steps, one waypoint per step) ---
             (2.14, 0.0),
             (2.44, 0.0),
             (2.74, 0.0),
             (3.04, 0.0),
             (3.34, 0.0),
+            (3.64, 0.0),
+            (3.94, 0.0),
+            (4.24, 0.0),
+            (4.54, 0.0),
+            (4.84, 0.0),
+            (5.14, 0.0),
+            (5.44, 0.0),
+            # --- top landing ---
+            (5.8,  0.0),
         ]
         self.current_wp_idx = 1
         self.wp_direction = 1
@@ -1168,7 +1200,7 @@ def update_person_patrol(person, dt: float) -> None:
         state.o2_sat = min(98.0, state.o2_sat + 0.8 * dt)
     else:
         px = state.x
-        if 2.0 <= px < 3.5:
+        if 2.0 <= px < 5.6:
             state.o2_sat -= 0.18 * dt
         else:
             state.o2_sat -= 0.05 * dt
@@ -1207,7 +1239,7 @@ def update_person_patrol(person, dt: float) -> None:
         px = state.x
         if not state.stair_phase_started:
             speed = 0.28
-        elif 2.0 <= px < 3.5:
+        elif 2.0 <= px < 5.6:
             speed = 0.16
         else:
             speed = 0.28
