@@ -190,3 +190,22 @@ Settling the Scene: Instead of taking a photo immediately, the simulation runs f
 A stabilization loop continuously targets a stable standing posture for the robot dog, preventing it from collapsing under gravity.
 The animation updater sets the person target's posture so they are in a natural stance instead of their default flat T-pose.
 Saving the Image: The camera takes an RGB snapshot of the viewport and saves it directly to the designated PNG file path.
+
+---
+
+## 10. Delegating Tasks to Jules (@jules)
+
+### Core Integration Rules
+1. **Trigger**: Use `@jules` to delegate non-blocking, asynchronous tasks (e.g., bulk unit testing, minor bug fixes, code refactoring).
+2. **API Keys and Authentication**:
+   - Always load credentials from `.env` in the root repository folder.
+   - Support multiple API keys: `JULES_API_KEY_DEFAULT`, `JULES_API_KEY_DEV`, `JULES_API_KEY_PROD`, etc. 
+   - If a request fails due to quota/rate limits, automatically try the next available API key in the sequence.
+3. **Task Execution & Polling**:
+   - Do **NOT** block the active developer session or run infinite synchronous polling loops.
+   - Use the `jules remote list --session` command (or SDK calls) to monitor active jobs.
+   - To track completion, schedule a background check using the agent's `schedule` tool (e.g., polling every 5-10 minutes) rather than keeping the terminal busy.
+   - Once a task is complete, pull the changes using `jules remote pull --session <id>`.
+4. **Safety & Conflicts**:
+   - Ensure the current workspace is backed up or committed before pulling remote changes from a Jules session.
+   - If conflicts arise, reconcile them locally.

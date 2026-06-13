@@ -50,3 +50,7 @@ robot-dog-thing/src/person_following/src/xfeat_output/
 
 # Local dependency trees
 librealsense/
+
+# API keys and environment variables
+.env
+
