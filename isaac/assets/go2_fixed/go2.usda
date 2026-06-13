@@ -69,7 +69,7 @@ def Xform "go2_description" (
     )
     variantSet "Physics" = {
         "None" (
-            prepend references = @configuration/go2_description_base.usd@</go2_description>
+            prepend references = @./configuration/go2_description_base.usd@</go2_description>
         ) {
             over "joints" (
                 active = false
@@ -79,7 +79,7 @@ def Xform "go2_description" (
 
         }
         "physx" (
-            prepend payload = @configuration/go2_description_physics.usd@</go2_description>
+            prepend payload = @./configuration/go2_description_physics.usd@</go2_description>
         ) {
 
         }
@@ -89,7 +89,7 @@ def Xform "go2_description" (
 
         }
         "Sensors" (
-            prepend payload = @configuration/go2_description_sensor.usd@</go2_description>
+            prepend payload = @./configuration/go2_description_sensor.usd@</go2_description>
         ) {
 
         }
@@ -99,7 +99,7 @@ def Xform "go2_description" (
 
         }
         "Robot" (
-            prepend payload = @configuration/go2_description_robot.usd@</go2_description>
+            prepend payload = @./configuration/go2_description_robot.usd@</go2_description>
         ) {
 
         }

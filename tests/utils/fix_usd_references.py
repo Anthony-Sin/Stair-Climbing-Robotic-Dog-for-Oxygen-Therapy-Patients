@@ -35,9 +35,10 @@ def fix_layer_references(layer_path):
                 new_ref = Sdf.Reference(new_asset, ref.primPath, ref.layerOffset, ref.customData)
                 new_prepended.append(new_ref)
                 changed = True
-            elif ref.assetPath.startswith("configuration/") and (not ref.primPath or ref.primPath.pathString == ""):
-                print(f"  Fixing Reference at {prim_spec.path}: specifying explicit primPath /go2_description")
-                new_ref = Sdf.Reference(ref.assetPath, Sdf.Path("/go2_description"), ref.layerOffset, ref.customData)
+            elif ref.assetPath.startswith("configuration/"):
+                new_asset = "./" + ref.assetPath
+                print(f"  Fixing Reference at {prim_spec.path}: SdfReference('{ref.assetPath}', {ref.primPath}) -> SdfReference('{new_asset}')")
+                new_ref = Sdf.Reference(new_asset, ref.primPath or Sdf.Path("/go2_description"), ref.layerOffset, ref.customData)
                 new_prepended.append(new_ref)
                 changed = True
             else:
@@ -58,9 +59,10 @@ def fix_layer_references(layer_path):
                 new_pay = Sdf.Payload(new_asset, payload.primPath, payload.layerOffset)
                 new_payloads.append(new_pay)
                 changed_payload = True
-            elif payload.assetPath.startswith("configuration/") and (not payload.primPath or payload.primPath.pathString == ""):
-                print(f"  Fixing Payload at {prim_spec.path}: specifying explicit primPath /go2_description")
-                new_pay = Sdf.Payload(payload.assetPath, Sdf.Path("/go2_description"), payload.layerOffset)
+            elif payload.assetPath.startswith("configuration/"):
+                new_asset = "./" + payload.assetPath
+                print(f"  Fixing Payload at {prim_spec.path}: SdfPayload('{payload.assetPath}', {payload.primPath}) -> SdfPayload('{new_asset}')")
+                new_pay = Sdf.Payload(new_asset, payload.primPath or Sdf.Path("/go2_description"), payload.layerOffset)
                 new_payloads.append(new_pay)
                 changed_payload = True
             else:

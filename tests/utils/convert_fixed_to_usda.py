@@ -13,22 +13,17 @@ from pxr import Usd, Sdf
 
 def main():
     assets_dir = pathlib.Path(__file__).parent.parent.parent / "isaac" / "assets" / "go2_fixed"
-    fixed_usd_path = str(assets_dir / "go2.usd")
-    ascii_usd_path = str(assets_dir / "go2.usda")
     
-    if not os.path.exists(fixed_usd_path):
-        print(f"Error: {fixed_usd_path} does not exist.")
-        simulation_app.close()
-        return
-        
-    layer = Sdf.Layer.FindOrOpen(fixed_usd_path)
-    if not layer:
-        print(f"Failed to open layer {fixed_usd_path}")
-        simulation_app.close()
-        return
-        
-    layer.Export(ascii_usd_path)
-    print(f"Exported to {ascii_usd_path}")
+    files = [assets_dir / "go2.usd"] + list((assets_dir / "configuration").glob("*.usd"))
+    for fp in files:
+        if fp.suffix == ".usd":
+            usda_path = fp.with_suffix(".usda")
+            layer = Sdf.Layer.FindOrOpen(str(fp))
+            if layer:
+                layer.Export(str(usda_path))
+                print(f"Exported to {usda_path}")
+            else:
+                print(f"Failed to open {fp}")
     simulation_app.close()
 
 if __name__ == "__main__":
