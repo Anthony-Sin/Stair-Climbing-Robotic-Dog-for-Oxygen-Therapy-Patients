@@ -14,7 +14,6 @@ param(
     [int]$FramePort = 55002,
     [string]$FollowBackend = "pid",
     [string]$TrtEngine = "/models/yolo11n-pose-fp16.trt",
-    [string]$OsnetTrtEngine = "/models/osnet_ain_x1_0.trt",
     [double]$SimFrameTimeoutExitSec = 30.0,
     [switch]$VisionPreview,
     [switch]$NoModelPreflight,
@@ -206,8 +205,7 @@ function Test-ModelPreflight {
     }
 
     $checks = @(
-        @{ name = "YOLO pose TensorRT engine"; runtime = $TrtEngine },
-        @{ name = "OSNet ReID TensorRT engine"; runtime = $OsnetTrtEngine }
+        @{ name = "YOLO pose TensorRT engine"; runtime = $TrtEngine }
     )
     $missing = @()
     foreach ($check in $checks) {
@@ -287,10 +285,10 @@ function Write-DockerFailureDiagnosis {
         }
         return $true
     }
-    if ($text -match "Static dimension mismatch.*Expected dimensions are \[1,3,256,128\]") {
-        Write-Stage "docker_diag" "failed" "OSNet ReID TensorRT engine only accepts static batch 1" @{
+    if ($text -match "ReID reacquire timeout triggered safe exit") {
+        Write-Stage "docker_diag" "failed" "Docker exited from the old ReID reacquire timeout path before the stair demo finished" @{
             log = $LogPath
-            command = "Rerun with the patched ReID batching code, or rebuild /models/osnet_ain_x1_0.trt with a dynamic batch profile"
+            command = "Rerun with the current ReID-free controller path; the launcher no longer passes an OSNet engine"
         }
         return $true
     }
@@ -302,6 +300,67 @@ function Write-DockerFailureDiagnosis {
         return $true
     }
     return $false
+}
+
+function Get-IsaacLastAction {
+    param([Parameter(Mandatory = $true)][string]$EventLog)
+
+    if (-not (Test-Path -LiteralPath $EventLog)) {
+        return "event_log_missing"
+    }
+    try {
+        $matchInfo = Select-String -LiteralPath $EventLog -Pattern '"action":"([^"]+)"' | Select-Object -Last 1
+        if ($matchInfo -and $matchInfo.Line -match '"action":"([^"]+)"') {
+            return $matches[1]
+        }
+        return "not_found"
+    } catch {
+        return "event_log_unreadable"
+    }
+}
+
+function Test-PatientReachedTop {
+    param([Parameter(Mandatory = $true)][string]$EventLog)
+
+    if (-not (Test-Path -LiteralPath $EventLog)) {
+        return $false
+    }
+    try {
+        $matches = Select-String -LiteralPath $EventLog -Pattern '"action":"patient_reached_destination"' -Quiet
+        return [bool]$matches
+    } catch {
+        return $false
+    }
+}
+
+function Write-SimCompletionGateDiagnosis {
+    param(
+        [Parameter(Mandatory = $true)][string]$EventLog,
+        [Parameter(Mandatory = $true)][string]$DockerLog
+    )
+
+    if (Test-PatientReachedTop -EventLog $EventLog) {
+        return $false
+    }
+
+    $lastAction = Get-IsaacLastAction -EventLog $EventLog
+    $reason = "controller_exit_before_patient_top"
+    if (Test-Path -LiteralPath $DockerLog) {
+        $dockerText = Get-Content -LiteralPath $DockerLog -Raw -ErrorAction SilentlyContinue
+        if ($dockerText -match "ReID reacquire timeout triggered safe exit") {
+            $reason = "reid_timeout_before_patient_top"
+        } elseif ($dockerText -match "Sim camera did not receive Isaac frames") {
+            $reason = "sim_frame_timeout_before_patient_top"
+        }
+    }
+
+    Write-Stage "sim_gate" "failed" "Controller stopped before the patient reached the top of the stairs" @{
+        reason = $reason
+        last_isaac_action = $lastAction
+        event_log = $EventLog
+        docker_log = $DockerLog
+    }
+    return $true
 }
 
 function Prune-OldRunLogs {
@@ -761,7 +820,6 @@ Write-Stage "setup" "start" "Preparing run_sim launch" @{
     pause_after_isaac = [bool]$PauseAfterIsaac
     keep_run_logs = [int]$KeepRunLogs
     trt_engine = $TrtEngine
-    osnet_trt_engine = $OsnetTrtEngine
     sim_frame_timeout_exit_sec = [double]$SimFrameTimeoutExitSec
 }
 Write-Host "Read first: $SummaryLog"
@@ -911,12 +969,17 @@ if ($NoDockerRun) {
         "--cmd-port $CmdPort",
         "--frame-port $FramePort",
         "--trt-engine '$TrtEngine'",
-        "--osnet-trt-engine '$OsnetTrtEngine'",
         "--sim-frame-timeout-exit-sec $SimFrameTimeoutExitSec",
+        "--target-distance 0.45",
+        "--trans-x-max 0.85",
+        "--trans-x-tolerance 0.12",
+        "--trans-x-alpha 0.65",
+        "--kp 1.1",
+        "--kd 0.15",
         "--ecs-log-dir /workspace/run_logs/ecs",
         "--debug-trace-dir /workspace/run_logs/debug_trace",
         "--preview-save-dir /workspace/run_logs/opencv_preview",
-        "--preview-save-fps 2"
+        "--preview-save-fps 5"
     )
     if (-not $VisionPreview) {
         $visionArgs += "--headless"
@@ -995,6 +1058,14 @@ if ($NoDockerRun) {
     }
     if (Write-DockerFailureDiagnosis -LogPath $dockerLog) {
         Write-Stage "summary" "failed" "Docker run did not start main.py cleanly" @{ log = $dockerLog; container = $DockerContainerName }
+        exit 1
+    }
+    if ((-not $NoIsaac) -and (Write-SimCompletionGateDiagnosis -EventLog $IsaacEventLog -DockerLog $dockerLog)) {
+        Write-Stage "summary" "failed" "Simulation ended before the stair demo reached its required completion gate" @{
+            event_log = $IsaacEventLog
+            docker_log = $dockerLog
+            container = $DockerContainerName
+        }
         exit 1
     }
 }

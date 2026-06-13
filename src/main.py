@@ -25,8 +25,6 @@ from utils import draw_fps
 from single_person_tracker import SinglePersonTracker
 from person_follower import PersonFollower, PersonFollowingConfig
 from args_parser import parse_args
-from reid_trt_inference import ReIDTRTInference
-from reid_manager import ReIDConfig, ReIDManager
 from visualization import (
     RotationDebugWindow, draw_frame_overlays
 )
@@ -84,6 +82,57 @@ def _build_robot_controller(args):
     if not ctrl.initialize():
         return None
     return ctrl
+
+
+SIM_STAIR_STEP_DEPTH_M = 0.30
+SIM_STAIR_TARGET_GAP_STEPS = 3.0
+SIM_STAIR_TARGET_GAP_M = SIM_STAIR_STEP_DEPTH_M * SIM_STAIR_TARGET_GAP_STEPS
+
+
+def _apply_sim_stair_gap_control(args, trans_x_cmd: float, debug_info: Dict[str, Any]) -> float:
+    if not bool(args.sim):
+        return float(trans_x_cmd)
+
+    stair_demo = debug_info.get("stair_demo")
+    if not isinstance(stair_demo, dict):
+        return float(trans_x_cmd)
+    phase = str(stair_demo.get("phase", "unknown"))
+    if phase not in ("stair_approach", "staircase"):
+        return float(trans_x_cmd)
+
+    gt_patient = debug_info.get("gt_patient")
+    robot = stair_demo.get("robot", {})
+    if not isinstance(gt_patient, (list, tuple)) or len(gt_patient) < 1:
+        return float(trans_x_cmd)
+    if not isinstance(robot, dict) or robot.get("x_m") is None:
+        return float(trans_x_cmd)
+
+    try:
+        patient_x = float(gt_patient[0])
+        robot_x = float(robot.get("x_m"))
+    except Exception:
+        return float(trans_x_cmd)
+
+    gap_m = patient_x - robot_x
+    target_gap_m = SIM_STAIR_TARGET_GAP_M
+    max_speed = max(0.0, float(getattr(args, "trans_x_max", 0.85)))
+    original_cmd = float(trans_x_cmd)
+    stair_cmd = original_cmd
+
+    if gap_m > target_gap_m + 0.08:
+        stair_cmd = min(max_speed, 0.30 + ((gap_m - target_gap_m) * 0.95))
+        trans_x_cmd = max(original_cmd, stair_cmd)
+    elif gap_m < target_gap_m - 0.18:
+        stair_cmd = 0.10 if gap_m > (target_gap_m - 0.42) else 0.0
+        trans_x_cmd = min(original_cmd, stair_cmd)
+
+    debug_info["stair_follow_gap_m"] = float(gap_m)
+    debug_info["stair_follow_gap_steps"] = float(gap_m / SIM_STAIR_STEP_DEPTH_M)
+    debug_info["stair_follow_target_gap_m"] = float(target_gap_m)
+    debug_info["stair_follow_target_gap_steps"] = float(SIM_STAIR_TARGET_GAP_STEPS)
+    debug_info["stair_follow_override_active"] = abs(float(trans_x_cmd) - original_cmd) > 1e-4
+    debug_info["stair_follow_cmd_mps"] = float(trans_x_cmd)
+    return float(trans_x_cmd)
 
 
 class _AsyncPreviewWorker:
@@ -245,28 +294,12 @@ def main():
         verbose=args.debug,
     )
     trt_infer  = TRTInference(args.trt_engine, verbose=args.debug)
-    reid_infer = ReIDTRTInference(args.osnet_trt_engine)
-    reid_manager = ReIDManager(
-        reid_infer,
-        ReIDConfig(
-            gallery_size=args.reid_gallery_size,
-            update_interval_sec=args.reid_update_interval_sec,
-            dedupe_cos=args.reid_dedupe_cos,
-            seed_stable_sec=args.reid_seed_stable_sec,
-            seed_count=args.reid_seed_count,
-            lgpr_per_image=args.reid_lgpr_per_image,
-            match_thresh=args.reid_match_thresh,
-            match_margin=args.reid_match_margin,
-            nfc_k1=args.reid_nfc_k1,
-            nfc_k2=args.reid_nfc_k2,
-            reacquire_timeout_sec=args.reid_reacquire_timeout_sec,
-            search_pid_sec=args.reid_search_pid_sec,
-        ),
-    )
 
     tracker = SinglePersonTracker(
         debug=args.debug,
         allow_auto_reacquire=args.auto_reacquire,
+        max_lost_frames=45 if args.sim else 300,
+        reacquire_after_frames=6 if args.sim else 18,
     )
 
     use_pid_backend  = args.follow and args.follow_backend == 'pid'
@@ -317,7 +350,7 @@ def main():
     motion_start_ts      = None
     motion_slow_duration_sec = 3.0
     motion_slow_factor   = 0.5
-    visual_lock_hold_sec = 0.35
+    visual_lock_hold_sec = 0.75 if args.sim else 0.35
     last_matched_visual_ts: Optional[float] = None
     target_publish_hold_sec = 0.6
     last_valid_target_ts: Optional[float] = None
@@ -522,22 +555,6 @@ def main():
             tracked_dets, main_person = tracker.update(trt_dets_scaled, img.shape)
             stage_ms["track"] = (time.perf_counter() - track_start_ts) * 1000.0
 
-            reid_start_ts = time.perf_counter()
-            reid_result   = reid_manager.update(
-                frame_bgr=img,
-                tracked_dets=tracked_dets,
-                main_person=main_person,
-                main_track_id=tracker.main_track_id,
-            )
-            stage_ms["reid"] = (time.perf_counter() - reid_start_ts) * 1000.0
-
-            recovered_track_id = reid_result.get('recovered_track_id')
-            if recovered_track_id is not None:
-                tracker.set_main_track_id(recovered_track_id, reason='reid')
-                main_person = next(
-                    (d for d in tracked_dets if d['track_id'] == recovered_track_id), None
-                )
-
             matched_visual_lock = bool(
                 main_person is not None
                 and isinstance(main_person, dict)
@@ -547,7 +564,7 @@ def main():
                 last_matched_visual_ts = time.perf_counter()
 
             recent_visual_lock = bool(
-                use_mppi_backend
+                args.follow
                 and main_person is not None
                 and last_matched_visual_ts is not None
                 and (time.perf_counter() - last_matched_visual_ts) <= visual_lock_hold_sec
@@ -559,65 +576,27 @@ def main():
                 motion_lock_streak = 0
             motion_lock_ready = motion_lock_streak >= motion_lock_frames
 
-            reacquire_active = bool(reid_result.get('reacquire_active', False))
-            use_frozen_pid   = bool(reid_result.get('use_frozen_pid', False))
-            if reid_result.get('timeout_exit', False):
-                logger.error(
-                    "ReID reacquire timeout triggered safe exit",
-                    extra=build_ecs_extra(
-                        component="vision.main", action="reid_timeout_exit",
-                    ),
-                )
-                if robot_controller is not None and robot_controller.is_ready():
-                    robot_controller.stop()
-                break
+            reacquire_active = False
 
             current_time   = time.perf_counter()
             processing_fps = 1.0 / max(1e-6, current_time - prev_time)
             prev_time      = current_time
 
             follow_start_ts = time.perf_counter()
-            if reacquire_active:
-                if use_frozen_pid:
-                    trans_x_cmd, rotation_cmd, debug_info = \
-                        person_follower.update_from_frozen_errors(
-                            last_depth_error_m, last_rotation_error_deg
-                        )
-                    trans_x_cmd             = 0.0
-                    debug_info['trans_x_cmd'] = 0.0
-                    debug_info['reason']      = 'ReID reacquire (frozen rotation PID)'
-                else:
-                    trans_x_cmd, rotation_cmd = 0.0, 0.0
-                    debug_info = {
-                        'person_detected': main_person is not None,
-                        'depth_valid': False, 'depth_distance_m': None,
-                        'depth_method': 'reid_reacquire_stop',
-                        'trans_x_cmd': 0.0, 'rotation_cmd': 0.0,
-                        'trans_x_pid_state': person_follower.trans_x_pid_controller.get_state(),
-                        'rotation_pid_state': person_follower.rotation_pid_controller.get_state(),
-                        'using_prediction': False, 'predicted_position': None,
-                        'person_velocity': person_follower.person_velocity,
-                        'rotation_error_deg': last_rotation_error_deg,
-                        'edge_penalty': 0.0, 'size_penalty': 0.0,
-                        'size_ratio': 0.0, 'suppression': 0.0,
-                        'reason': 'ReID reacquire (motion stopped)',
-                        'center_x': None, 'bbox_center_x': None,
-                    }
-            else:
-                follow_input_person = (
-                    main_person if (matched_visual_lock or recent_visual_lock) else None
+            follow_input_person = (
+                main_person if (matched_visual_lock or recent_visual_lock) else None
+            )
+            trans_x_cmd, rotation_cmd, debug_info = person_follower.update(
+                follow_input_person, depth_img, (img.shape[0], img.shape[1])
+            )
+            depth_m = debug_info.get('depth_distance_m')
+            if depth_m is not None:
+                last_depth_error_m = float(depth_m) - float(
+                    person_follower.config.target_distance
                 )
-                trans_x_cmd, rotation_cmd, debug_info = person_follower.update(
-                    follow_input_person, depth_img, (img.shape[0], img.shape[1])
-                )
-                depth_m = debug_info.get('depth_distance_m')
-                if depth_m is not None:
-                    last_depth_error_m = float(depth_m) - float(
-                        person_follower.config.target_distance
-                    )
-                rot_err = debug_info.get('rotation_error_deg')
-                if rot_err is not None:
-                    last_rotation_error_deg = float(rot_err)
+            rot_err = debug_info.get('rotation_error_deg')
+            if rot_err is not None:
+                last_rotation_error_deg = float(rot_err)
             stage_ms["follower"] = (time.perf_counter() - follow_start_ts) * 1000.0
 
             debug_info['matched_visual_lock'] = matched_visual_lock
@@ -631,6 +610,10 @@ def main():
                 debug_info["gt_patient"] = frame_meta["gt_patient"]
             if "gt_distractor" in frame_meta:
                 debug_info["gt_distractor"] = frame_meta["gt_distractor"]
+            if "stair_demo" in frame_meta:
+                debug_info["stair_demo"] = frame_meta["stair_demo"]
+            trans_x_cmd = _apply_sim_stair_gap_control(args, trans_x_cmd, debug_info)
+            debug_info["trans_x_cmd"] = trans_x_cmd
 
             export_debug_info = debug_info
             target_track_id   = None if main_person is None else main_person.get("track_id")
@@ -645,8 +628,6 @@ def main():
                 target_block_reason = 'visual_lock_lost'
             elif not motion_lock_ready:
                 target_block_reason = 'motion_lock_unready'
-            elif reacquire_active:
-                target_block_reason = 'reacquire_active'
             elif not debug_info.get('depth_valid', False):
                 target_block_reason = 'depth_invalid'
 
@@ -675,7 +656,6 @@ def main():
                     and last_valid_target_debug is not None
                     and recent_visual_lock
                     and motion_lock_ready
-                    and (not reacquire_active)
                     and (current_time - last_valid_target_ts) <= target_publish_hold_sec
                 )
                 if last_valid_target_ts is not None:
@@ -731,9 +711,8 @@ def main():
                 and robot_controller is not None
                 and robot_controller.is_ready()
                 and not preparation_mode
-                and matched_visual_lock
+                and (matched_visual_lock or recent_visual_lock)
                 and motion_lock_ready
-                and (not reacquire_active)
             )
 
             controller = robot_controller
@@ -810,6 +789,7 @@ def main():
                     frame_meta=frame_meta,
                     trans_x_cmd=trans_x_cmd if motion_allowed else 0.0,
                     rotation_cmd=rotation_cmd if motion_allowed else 0.0,
+                    source_frame=img,
                 )
                 if not args.headless:
                     preview_worker.submit(

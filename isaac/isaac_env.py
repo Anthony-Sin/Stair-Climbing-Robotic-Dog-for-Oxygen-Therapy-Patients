@@ -31,11 +31,11 @@ parser.add_argument("--physics-hz", type=int, default=60,
                     help="Physics simulation rate in Hz")
 parser.add_argument("--render-every", type=int, default=2,
                     help="Publish a camera frame every N physics steps")
-parser.add_argument("--person-x", type=float, default=-4.6,
+parser.add_argument("--person-x", type=float, default=0.8,
                     help="Initial X position of the person target")
 parser.add_argument("--person-y", type=float, default=0.0,
                     help="Initial Y position of the person target")
-parser.add_argument("--go2-x", type=float, default=-5.6,
+parser.add_argument("--go2-x", type=float, default=-0.4,
                     help="Initial X position of the Go2 robot")
 parser.add_argument("--person-move", action="store_true",
                     help="Make the person walk a simple patrol path")
@@ -117,7 +117,13 @@ except ModuleNotFoundError:
 from isaacsim.sensors.camera import Camera
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
-from sim_go2_locomotion import Go2LocomotionState, apply_go2_velocity, hold_go2_stable, _extract_roll_pitch_yaw
+from sim_go2_locomotion import (
+    Go2LocomotionState,
+    apply_go2_velocity,
+    get_stair_demo_telemetry,
+    hold_go2_stable,
+    _extract_roll_pitch_yaw,
+)
 from sim_person_actor import spawn_sim_person
 
 # ---------------------------------------------------------------------------
@@ -157,6 +163,7 @@ _cmd_vel    = {
     "last_nonzero_ts": 0.0,
 }
 _running    = True
+_front_camera_smoothed_position = None
 
 # ---------------------------------------------------------------------------
 # UDP command receiver  (background thread)
@@ -493,16 +500,22 @@ def _quat_xyzw_from_rpy(roll_rad: float, pitch_rad: float, yaw_rad: float) -> np
 
 def set_front_camera_local_pose(camera, *, stage=None, gait_time: float = 0.0, moving: bool = False) -> None:
     """Keep the simulated D435 visually mounted to Go2 without parenting inside the articulation."""
+    global _front_camera_smoothed_position
+
     dx = dy = dz = 0.0
     roll_shake = pitch_shake = yaw_shake = 0.0
+    stair_demo = get_stair_demo_telemetry(_go2_locomotion_state)
+    stair_phase = str(stair_demo.get("phase", "flat_follow"))
+    on_stairs = stair_phase in {"stair_approach", "staircase", "top_landing"}
     if moving:
         omega = 2.0 * math.pi / max(0.2, _go2_locomotion_state.gait_period)
-        dx = 0.004 * math.sin(omega * gait_time)
-        dy = 0.008 * math.cos(omega * gait_time)
-        dz = 0.012 * math.sin(2.0 * omega * gait_time)
-        pitch_shake = 0.022 * math.sin(2.0 * omega * gait_time)
-        yaw_shake = 0.014 * math.cos(omega * gait_time)
-        roll_shake = 0.008 * math.sin(omega * gait_time)
+        shake_scale = 0.18 if on_stairs else 0.35
+        dx = (0.004 * shake_scale) * math.sin(omega * gait_time)
+        dy = (0.008 * shake_scale) * math.cos(omega * gait_time)
+        dz = (0.012 * shake_scale) * math.sin(2.0 * omega * gait_time)
+        pitch_shake = (0.022 * shake_scale) * math.sin(2.0 * omega * gait_time)
+        yaw_shake = (0.014 * shake_scale) * math.cos(omega * gait_time)
+        roll_shake = (0.008 * shake_scale) * math.sin(omega * gait_time)
     else:
         t_idle = time.monotonic()
         dx = 0.0008 * math.sin(10.0 * t_idle)
@@ -532,6 +545,16 @@ def set_front_camera_local_pose(camera, *, stage=None, gait_time: float = 0.0, m
         ],
         dtype=float,
     )
+    if _front_camera_smoothed_position is None:
+        _front_camera_smoothed_position = world_position.copy()
+    else:
+        delta = world_position - _front_camera_smoothed_position
+        if float(np.linalg.norm(delta)) > 0.75:
+            _front_camera_smoothed_position = world_position.copy()
+        else:
+            alpha = 0.12 if on_stairs else (0.18 if moving else 0.35)
+            _front_camera_smoothed_position = _front_camera_smoothed_position + (alpha * delta)
+    world_position = _front_camera_smoothed_position.copy()
     orientation = _quat_xyzw_from_rpy(roll_shake, pitch_shake, yaw + yaw_shake)
 
     try:
@@ -1046,9 +1069,9 @@ def attach_robot_o2_tank(stage, trunk_prim_path: str):
 
 
 class PatientLocomotionState:
-    def __init__(self):
-        self.x = 1.0
-        self.y = 0.0
+    def __init__(self, start_x: float = 0.8, start_y: float = 0.0):
+        self.x = float(start_x)
+        self.y = float(start_y)
         self.direction = 1.0  # +1 for forward through waypoints, -1 for backward
         self.stop_timer = 0.0
         self.turn_timer = 0.0
@@ -1059,15 +1082,16 @@ class PatientLocomotionState:
         self.o2_sat = 98.0  # Oxygen saturation %
         self.ground_follow_delay_sec = 20.0
         self.at_destination = False
-        # 2D waypoints: start on flat ground, walk to the stair base,
-        # then climb up each step of the extended 12-step staircase and
-        # stop on the top landing (~22 s of climbing at 0.16 m/s).
-        self.waypoints = [
-            (-4.6, 0.0),   # spawn / start
-            (-3.0, 0.0),
-            (-1.0, 0.0),
-            (1.0,  0.0),
-            (1.8,  0.0),   # approach stair base
+        # 2D waypoints: keep a short flat-ground follow before the stair base,
+        # then climb each step and stop on the top landing.
+        self.waypoints = [(self.x, 0.0)]
+        for waypoint_x in (1.2, 1.8):
+            if waypoint_x > self.x + 0.05:
+                self.waypoints.append((waypoint_x, 0.0))
+        if self.waypoints[-1][0] < 1.8:
+            self.waypoints.append((1.8, 0.0))
+        self.stair_base_wp_idx = len(self.waypoints) - 1
+        self.waypoints.extend([
             # --- stair treads (12 steps, one waypoint per step) ---
             (2.14, 0.0),
             (2.44, 0.0),
@@ -1083,8 +1107,8 @@ class PatientLocomotionState:
             (5.44, 0.0),
             # --- top landing ---
             (5.8,  0.0),
-        ]
-        self.current_wp_idx = 1
+        ])
+        self.current_wp_idx = min(1, len(self.waypoints) - 1)
         self.wp_direction = 1
 
 
@@ -1096,9 +1120,7 @@ _camera_mount_update_warned = False
 
 def spawn_person(world, x: float = 1.0, y: float = 0.0):
     global _patient_state
-    _patient_state = PatientLocomotionState()
-    _patient_state.x = x
-    _patient_state.y = y
+    _patient_state = PatientLocomotionState(start_x=x, start_y=y)
     
     person = spawn_sim_person(world, x=x, y=y, logger=LOGGER)
     log_event(
@@ -1112,7 +1134,7 @@ def spawn_person(world, x: float = 1.0, y: float = 0.0):
 
 
 def spawn_distractor_person(world, x: float, y: float):
-    """Spawn a secondary distractor pedestrian crossing the hallway to create ReID occlusion."""
+    """Spawn a secondary distractor pedestrian crossing the hallway for occlusion testing."""
     try:
         try:
             from omni.isaac.core.utils.stage import add_reference_to_stage
@@ -1138,7 +1160,7 @@ def spawn_distractor_person(world, x: float, y: float):
         add_reference_to_stage(usd_path=distractor_usd, prim_path=prim_path)
         
         sim_person_actor._set_xform_pose(prim_path, np.array([x, y, 0.0], dtype=float), 0.0)
-        log_event(LOGGER, logging.INFO, "distractor_spawned", f"Spawned distractor pedestrian for ReID occlusion testing: {prim_path}")
+        log_event(LOGGER, logging.INFO, "distractor_spawned", f"Spawned distractor pedestrian for occlusion testing: {prim_path}")
         return prim_path
     except Exception as exc:
         log_event(LOGGER, logging.WARNING, "distractor_spawn_failed", "Failed to spawn distractor pedestrian", error=str(exc))
@@ -1253,7 +1275,7 @@ def update_person_patrol(person, dt: float) -> None:
             state.y = 0.0
             
             # Check if entering stair phase
-            if not state.stair_phase_started and state.current_wp_idx == 1:
+            if not state.stair_phase_started and state.current_wp_idx == state.stair_base_wp_idx:
                 state.stair_phase_started = True
                 log_event(
                     LOGGER,
@@ -1355,8 +1377,8 @@ def apply_rgb_perception_noise(rgb: np.ndarray, vx: float, vy: float, wz: float)
     
     # 1. Motion blur based on robot velocity (linear & angular)
     vel_mag = math.sqrt(vx**2 + vy**2) + abs(wz)
-    if vel_mag > 0.08:
-        ksize = int(np.clip(vel_mag * 10.0, 3, 7))
+    if vel_mag > 0.15:
+        ksize = int(np.clip(vel_mag * 6.0, 3, 5))
         if ksize % 2 == 0:
             ksize += 1
             
@@ -1377,12 +1399,12 @@ def apply_rgb_perception_noise(rgb: np.ndarray, vx: float, vy: float, wz: float)
         
     # 2. Dynamic exposure fluctuation and ambient lighting variation
     t = time.monotonic()
-    exposure = 1.0 + 0.04 * math.sin(0.4 * t) + 0.015 * math.cos(3.5 * t)
-    flicker = np.random.normal(0, 1.0)
+    exposure = 1.0 + 0.025 * math.sin(0.4 * t) + 0.008 * math.cos(3.5 * t)
+    flicker = np.random.normal(0, 0.6)
     noisy_rgb = noisy_rgb * exposure + flicker
     
     # 3. Sensor pixel noise (Gaussian color noise)
-    noise = np.random.normal(0.0, 3.0, size=noisy_rgb.shape)
+    noise = np.random.normal(0.0, 1.4, size=noisy_rgb.shape)
     noisy_rgb += noise
     
     return np.clip(noisy_rgb, 0, 255).astype(np.uint8)
@@ -1396,6 +1418,10 @@ class FramePublisher:
 
     MAX_UDP_PAYLOAD_BYTES = 65000
     PUBLISH_ATTEMPTS = (
+        (640, 360, 320, 180, 58),
+        (512, 288, 256, 144, 66),
+        (448, 252, 224, 126, 70),
+        (384, 216, 192, 108, 74),
         (320, 180, 160, 90, 70),
         (256, 144, 128, 72, 60),
         (224, 126, 112, 63, 50),
@@ -1435,8 +1461,18 @@ class FramePublisher:
         self._warning_times[event] = now
         log_event(LOGGER, logging.WARNING, event, message, **fields)
 
-    def send(self, rgb: np.ndarray, depth: np.ndarray, vx: float = 0.0, vy: float = 0.0, wz: float = 0.0,
-             gt_patient: tuple = None, gt_distractor: tuple = None) -> None:
+    def send(
+        self,
+        rgb: np.ndarray,
+        depth: np.ndarray,
+        vx: float = 0.0,
+        vy: float = 0.0,
+        wz: float = 0.0,
+        gt_patient: tuple = None,
+        gt_distractor: tuple = None,
+        stair_demo: dict = None,
+        swing_legs: list = None,
+    ) -> None:
         import cv2, base64, zlib
 
         seq = self._seq
@@ -1476,6 +1512,8 @@ class FramePublisher:
                 "depth": depth_b64,
                 "gt_patient": gt_patient,
                 "gt_distractor": gt_distractor,
+                "stair_demo": stair_demo or {},
+                "swing_legs": swing_legs or [],
             }
             candidate_payload = json.dumps(meta).encode("utf-8")
             payload_meta = {
@@ -1796,7 +1834,17 @@ def _init_go2_standing_pose(go2) -> None:
 
 
 def _run_evaluation_and_save_images(
-    world, camera, go2, person, robot_trajectory, person_trajectory, log_dir
+    world,
+    camera,
+    go2,
+    person,
+    robot_trajectory,
+    person_trajectory,
+    log_dir,
+    *,
+    evaluation_exit_reason: str = "not_recorded",
+    motion_elapsed_sim_sec: float = 0.0,
+    robot_stair_phase_sim_sec: float = 0.0,
 ) -> None:
     """Capture final verification image, evaluate straight-line walking / balance, and log summary."""
     if log_dir:
@@ -1877,6 +1925,12 @@ def _run_evaluation_and_save_images(
     print("EVALUATION SUMMARY:", flush=True)
     print(f"Human: {human_summary}", flush=True)
     print(f"Robot dog: {robot_summary}", flush=True)
+    stair_demo = get_stair_demo_telemetry(_go2_locomotion_state)
+    stair_phase = stair_demo.get("phase", "not_reported")
+    stair_lidar = stair_demo.get("lidar", {})
+    stair_rl = stair_demo.get("blind_rl", {})
+    print(f"Stair demo data: synthetic ({stair_phase})", flush=True)
+    print(f"Exit reason: {evaluation_exit_reason}", flush=True)
     print("="*40 + "\n", flush=True)
     
     if log_dir:
@@ -1886,9 +1940,38 @@ def _run_evaluation_and_save_images(
                 f.write("EVALUATION SUMMARY:\n")
                 f.write(f"Human: {human_summary}\n")
                 f.write(f"Robot dog: {robot_summary}\n")
+                f.write(f"Exit reason: {evaluation_exit_reason}\n")
+                f.write(f"Sim motion elapsed: {float(motion_elapsed_sim_sec):.2f} s\n")
+                f.write(f"Robot stair-visible time: {float(robot_stair_phase_sim_sec):.2f} s\n")
+                f.write(f"Stair demo phase: {stair_phase}\n")
+                f.write("Stair data source: synthetic Isaac ground-truth raycast, not hardware LiDAR\n")
+                f.write(f"Synthetic LiDAR detected: {bool(stair_lidar.get('detected', False))}\n")
+                f.write(f"Synthetic blind-RL mode: {stair_rl.get('mode', 'not_reported')}\n")
             log_event(LOGGER, logging.INFO, "evaluation_summary_saved", f"Saved evaluation summary to {summary_path}")
         except Exception as e:
             log_event(LOGGER, logging.WARNING, "evaluation_summary_failed", f"Failed to write evaluation summary: {e}")
+
+        report_path = os.path.join(log_dir, "stair_demo_report.json")
+        try:
+            with open(report_path, "w") as f:
+                json.dump(
+                    {
+                        "human_summary": human_summary,
+                        "robot_summary": robot_summary,
+                        "exit_reason": evaluation_exit_reason,
+                        "motion_elapsed_sim_sec": round(float(motion_elapsed_sim_sec), 3),
+                        "robot_stair_phase_sim_sec": round(float(robot_stair_phase_sim_sec), 3),
+                        "data_statement": "Synthetic demo data generated from Isaac Sim stair geometry; values are geometry-exact for the scene and are not hardware LiDAR or trained RL output.",
+                        "physics_statement": "Stair collisions and contact physics remain enabled; the demo uses body-height assist plus the existing gait loop.",
+                        "stair_demo": stair_demo,
+                    },
+                    f,
+                    indent=2,
+                    sort_keys=True,
+                )
+            log_event(LOGGER, logging.INFO, "stair_demo_report_saved", f"Saved stair demo report to {report_path}")
+        except Exception as e:
+            log_event(LOGGER, logging.WARNING, "stair_demo_report_failed", f"Failed to write stair demo report: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -2012,8 +2095,16 @@ def main() -> None:
     _robot_positions_over_time = []
     _person_positions_over_time = []
     destination_reached_time = None
+    destination_reached_sim_sec = None
     motion_start_time = None
+    motion_elapsed_sim_sec = 0.0
+    robot_stair_phase_sim_sec = 0.0
+    robot_top_landing_seen = False
+    robot_stair_visibility_logged = False
+    evaluation_exit_reason = "not_recorded"
     evaluation_done = False
+    DEMO_SIM_TIMEOUT_SEC = 120.0
+    ROBOT_STAIR_VISIBLE_HOLD_SEC = 8.0
 
     try:
         while simulation_app.is_running():
@@ -2135,6 +2226,24 @@ def main() -> None:
             if scene_motion_allowed:
                 if motion_start_time is None:
                     motion_start_time = time.monotonic()
+                motion_elapsed_sim_sec += dt
+                stair_demo_now = get_stair_demo_telemetry(_go2_locomotion_state)
+                stair_phase_now = str(stair_demo_now.get("phase", "unknown"))
+                if stair_phase_now == "staircase":
+                    robot_stair_phase_sim_sec += dt
+                    if not robot_stair_visibility_logged:
+                        robot_stair_visibility_logged = True
+                        log_event(
+                            LOGGER,
+                            logging.INFO,
+                            "robot_stair_climb_visible",
+                            "Robot entered the staircase phase; keeping the run alive so the climb is visible",
+                            motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
+                            robot_stair_phase_sim_sec=round(float(robot_stair_phase_sim_sec), 3),
+                            stair_demo=stair_demo_now,
+                        )
+                elif stair_phase_now == "top_landing":
+                    robot_top_landing_seen = True
                 
                 # Query robot position and orientation
                 try:
@@ -2168,19 +2277,55 @@ def main() -> None:
                 
                 # Monitor end conditions
                 now_mono = time.monotonic()
-                elapsed_motion = now_mono - motion_start_time
+                elapsed_motion = motion_elapsed_sim_sec
                 
                 # Condition 1: reached destination (patient stops)
                 if _patient_state is not None and _patient_state.at_destination:
                     if destination_reached_time is None:
                         destination_reached_time = now_mono
-                    elif now_mono - destination_reached_time >= 5.0:
+                        destination_reached_sim_sec = motion_elapsed_sim_sec
+                    elif (
+                        destination_reached_sim_sec is not None
+                        and (motion_elapsed_sim_sec - destination_reached_sim_sec) >= 5.0
+                        and (
+                            robot_top_landing_seen
+                            or robot_stair_phase_sim_sec >= ROBOT_STAIR_VISIBLE_HOLD_SEC
+                        )
+                    ):
                         evaluation_done = True
+                        evaluation_exit_reason = (
+                            "patient_destination_and_robot_stair_climb_visible"
+                            if not robot_top_landing_seen
+                            else "patient_destination_and_robot_top_landing"
+                        )
+                        log_event(
+                            LOGGER,
+                            logging.INFO,
+                            "evaluation_exit",
+                            "Evaluation stop condition reached after stair climb visibility",
+                            reason=evaluation_exit_reason,
+                            motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
+                            robot_stair_phase_sim_sec=round(float(robot_stair_phase_sim_sec), 3),
+                            robot_top_landing_seen=bool(robot_top_landing_seen),
+                            stair_phase=stair_phase_now,
+                        )
                         break
                 
-                # Condition 2: safety timeout (75 seconds of motion)
-                if elapsed_motion >= 75.0:
+                # Condition 2: safety timeout in simulated motion time.
+                if elapsed_motion >= DEMO_SIM_TIMEOUT_SEC:
                     evaluation_done = True
+                    evaluation_exit_reason = "sim_motion_timeout"
+                    log_event(
+                        LOGGER,
+                        logging.WARNING,
+                        "evaluation_exit",
+                        "Evaluation stopped by simulated-time safety timeout",
+                        reason=evaluation_exit_reason,
+                        motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
+                        robot_stair_phase_sim_sec=round(float(robot_stair_phase_sim_sec), 3),
+                        robot_top_landing_seen=bool(robot_top_landing_seen),
+                        stair_phase=stair_phase_now,
+                    )
                     break
 
             # Publish camera frame at reduced rate
@@ -2197,8 +2342,10 @@ def main() -> None:
                         # Get ground truth coordinates
                         gt_patient = _last_gt_patient_pose
                         gt_distractor = None
+                        stair_demo = get_stair_demo_telemetry(_go2_locomotion_state)
+                        swing_legs = list(getattr(_go2_locomotion_state, "current_swing_legs", []))
                         
-                        publisher.send(rgb_data, depth_mm, vx, vy, wz, gt_patient, gt_distractor)
+                        publisher.send(rgb_data, depth_mm, vx, vy, wz, gt_patient, gt_distractor, stair_demo, swing_legs)
                 except Exception as exc:
                     log_event(
                         LOGGER,
@@ -2213,7 +2360,10 @@ def main() -> None:
             _run_evaluation_and_save_images(
                 world, verification_camera, go2, person,
                 _robot_positions_over_time, _person_positions_over_time,
-                args.log_dir
+                args.log_dir,
+                evaluation_exit_reason=evaluation_exit_reason,
+                motion_elapsed_sim_sec=motion_elapsed_sim_sec,
+                robot_stair_phase_sim_sec=robot_stair_phase_sim_sec,
             )
 
     except KeyboardInterrupt:

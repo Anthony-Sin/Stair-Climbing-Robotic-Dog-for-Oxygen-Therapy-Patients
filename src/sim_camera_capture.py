@@ -191,13 +191,19 @@ class SimCameraCapture:
                 if bgr is None:
                     continue
 
-                # Upsample to requested output resolution using linear interpolation for a crisper view
+                was_upscaled = (bgr.shape[1], bgr.shape[0]) != (self.width, self.height)
+                # Upsample with a high-quality filter; the Isaac bridge may publish
+                # smaller JPEGs to keep each frame in a single UDP packet.
                 if (bgr.shape[1], bgr.shape[0]) != (self.width, self.height):
                     bgr   = cv2.resize(bgr,   (self.width, self.height),
-                                    interpolation=cv2.INTER_LINEAR)
+                                    interpolation=cv2.INTER_LANCZOS4)
                 if (depth.shape[1], depth.shape[0]) != (self.width, self.height):
                     depth = cv2.resize(depth, (self.width, self.height),
                                     interpolation=cv2.INTER_NEAREST)
+                if was_upscaled:
+                    blur = cv2.GaussianBlur(bgr, (0, 0), 1.0)
+                    bgr = cv2.addWeighted(bgr, 1.35, blur, -0.35, 0)
+                    bgr = cv2.convertScaleAbs(bgr, alpha=1.04, beta=2)
 
                 if self.rotate in (90, 180, 270):
                     from utils import rotate_image
@@ -220,6 +226,7 @@ class SimCameraCapture:
                 gt_patient = meta.get("gt_patient")
                 gt_distractor = meta.get("gt_distractor")
                 swing_legs = meta.get("swing_legs", [])
+                stair_demo = meta.get("stair_demo", {})
                 self._last_frame_meta = {
                     "success":    True,
                     "wait_ms":    0.0,
@@ -228,6 +235,9 @@ class SimCameraCapture:
                     "gt_patient": gt_patient,
                     "gt_distractor": gt_distractor,
                     "swing_legs": swing_legs,
+                    "stair_demo": stair_demo,
+                    "published_resolution": [rgb_w, rgb_h],
+                    "output_resolution": [self.width, self.height],
                 }
                 if self.verbose:
                     print(f"[SimCameraCapture] Decoded frame, queue size {self._frame_queue.qsize()}", flush=True)

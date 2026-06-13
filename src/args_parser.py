@@ -59,8 +59,6 @@ def parse_args():
     # -----------------------------------------------------------------------
     parser.add_argument('--trt-engine', type=str, default='models/yolo11n-pose-fp16.trt',
                         help='TensorRT engine path for pose detection')
-    parser.add_argument('--osnet-trt-engine', type=str, default='models/osnet_ain_x1_0.trt',
-                        help='TensorRT engine path for OSNet-AIN ReID embeddings')
     parser.add_argument('--debug', action='store_true', help='Enable DEBUG messages')
  
     # -----------------------------------------------------------------------
@@ -173,22 +171,6 @@ def parse_args():
     # -----------------------------------------------------------------------
     parser.add_argument('--target-distance', type=float, default=0.8,
                         help='Target following distance in meters')
- 
-    # -----------------------------------------------------------------------
-    # ReID
-    # -----------------------------------------------------------------------
-    parser.add_argument('--reid-gallery-size', type=int, default=50)
-    parser.add_argument('--reid-update-interval-sec', type=float, default=2.0)
-    parser.add_argument('--reid-dedupe-cos', type=float, default=0.990)
-    parser.add_argument('--reid-seed-stable-sec', type=float, default=2.0)
-    parser.add_argument('--reid-seed-count', type=int, default=5)
-    parser.add_argument('--reid-lgpr-per-image', type=int, default=2)
-    parser.add_argument('--reid-match-thresh', type=float, default=0.85)
-    parser.add_argument('--reid-match-margin', type=float, default=0.20)
-    parser.add_argument('--reid-nfc-k1', type=int, default=2)
-    parser.add_argument('--reid-nfc-k2', type=int, default=2)
-    parser.add_argument('--reid-reacquire-timeout-sec', type=float, default=5.0)
-    parser.add_argument('--reid-search-pid-sec', type=float, default=2.0)
  
     args = parser.parse_args()
     args.log_components = _normalize_log_components(parser, args.log_components)

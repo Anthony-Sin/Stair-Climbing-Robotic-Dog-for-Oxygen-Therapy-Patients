@@ -35,18 +35,27 @@ default_cfg = {
 }
 
 class SinglePersonTracker:
-    def __init__(self, tracker_cfg=None, max_lost_frames=300, allow_auto_reacquire=True, debug=False):
+    def __init__(
+        self,
+        tracker_cfg=None,
+        max_lost_frames=300,
+        allow_auto_reacquire=True,
+        reacquire_after_frames=18,
+        debug=False,
+    ):
         cfg = tracker_cfg or default_cfg
         cfg = SimpleNamespace(**cfg)
         self.byte_tracker = BYTETracker(cfg)
         self.main_track_id = None
         self.lost_counter = 0
         self.max_lost_frames = max_lost_frames
+        self.reacquire_after_frames = max(1, int(reacquire_after_frames))
         self.allow_auto_reacquire = allow_auto_reacquire
         self.debug = debug
         self._tracking_initialized = False
         self._manual_reacquire_requested = False
         self.main_person_lost = False
+        self.main_unmatched_counter = 0
 
     def set_main_track_id(self, track_id, reason='reid'):
         """Externally force the current main track ID."""
@@ -56,6 +65,7 @@ class SinglePersonTracker:
 
         self.main_track_id = int(track_id)
         self.lost_counter = 0
+        self.main_unmatched_counter = 0
         self._tracking_initialized = True
         self._manual_reacquire_requested = False
         self.main_person_lost = False
@@ -66,18 +76,21 @@ class SinglePersonTracker:
         """Externally clear the main track selection."""
         self.main_track_id = None
         self.lost_counter = 0
+        self.main_unmatched_counter = 0
         self._manual_reacquire_requested = False
         self.main_person_lost = reason == 'lost'
         if self.debug:
             print(f"[Tracker] Main ID cleared ({reason})")
 
-    def _select_main_person(self, tracked_dets, image_shape):
+    def _select_main_person(self, tracked_dets, image_shape, *, force=False, reason='auto'):
         h, w = image_shape[:2]
         cx = w / 2
         best_score = float('inf')
         best_id = None
 
         for det in tracked_dets:
+            if not det.get('matched_detection', False):
+                continue
             x1, y1, x2, y2 = det['bbox']
             area = (x2 - x1) * (y2 - y1)
             center_x = (x1 + x2) / 2
@@ -89,19 +102,23 @@ class SinglePersonTracker:
                 best_id = det['track_id']
 
         if best_id is not None:
-            if self.main_track_id is None or self.lost_counter > self.max_lost_frames:
+            if force or self.main_track_id is None or self.lost_counter > self.max_lost_frames:
                 self.main_track_id = best_id
                 self.lost_counter = 0
+                self.main_unmatched_counter = 0
                 self._tracking_initialized = True
                 self._manual_reacquire_requested = False
                 self.main_person_lost = False
                 if self.debug:
-                    print(f"[Tracker] Selected main person: ID {best_id}")
+                    print(f"[Tracker] Selected main person: ID {best_id} ({reason})")
+                return True
+        return False
 
     def reset(self):
         """Clear tracking state and allow re-selection of the next person."""
         self.main_track_id = None
         self.lost_counter = 0
+        self.main_unmatched_counter = 0
         self._tracking_initialized = False
         self._manual_reacquire_requested = False
         self.main_person_lost = False
@@ -166,6 +183,7 @@ class SinglePersonTracker:
         """
         if not detections:
             self.lost_counter += 1
+            self.main_unmatched_counter += 1
             if self.lost_counter > self.max_lost_frames:
                 if self.debug and not self.main_person_lost:
                     print("[Tracker] Main person lost. Clearing ID.")
@@ -188,8 +206,7 @@ class SinglePersonTracker:
             det = detections[matched[ti]] if ti in matched else None
             det_score = float(det['score']) if det is not None else float(getattr(s, 'score', 0.0))
 
-            is_main = s.track_id == self.main_track_id
-            if is_main and det is not None:
+            if det is not None:
                 keypoints = det.get('keypoints')
                 visibility = det.get('visibility')
                 if visibility is None and keypoints is not None:
@@ -216,16 +233,56 @@ class SinglePersonTracker:
             )
         )
         if should_select:
-            self._select_main_person(tracked_dets, image_shape)
+            self._select_main_person(tracked_dets, image_shape, reason='initial_or_auto')
 
         main_person = None
         for det in tracked_dets:
             if det['track_id'] == self.main_track_id:
-                self.lost_counter = 0
+                if det.get('matched_detection', False):
+                    self.lost_counter = 0
+                    self.main_unmatched_counter = 0
+                else:
+                    self.main_unmatched_counter += 1
                 main_person = det
                 break
+
+        if (
+            main_person is not None
+            and self.allow_auto_reacquire
+            and self.main_unmatched_counter >= self.reacquire_after_frames
+        ):
+            previous_id = self.main_track_id
+            if self._select_main_person(
+                tracked_dets,
+                image_shape,
+                force=True,
+                reason='stale_main_detection',
+            ):
+                for det in tracked_dets:
+                    if det['track_id'] == self.main_track_id:
+                        main_person = det
+                        break
+                if self.debug and previous_id != self.main_track_id:
+                    print(f"[Tracker] Reacquired main ID {previous_id} -> {self.main_track_id}")
+
         if main_person is None:
             self.lost_counter += 1
+            self.main_unmatched_counter += 1
+            if (
+                tracked_dets
+                and self.allow_auto_reacquire
+                and self.lost_counter >= self.reacquire_after_frames
+            ):
+                if self._select_main_person(
+                    tracked_dets,
+                    image_shape,
+                    force=True,
+                    reason='lost_main_auto_reacquire',
+                ):
+                    for det in tracked_dets:
+                        if det['track_id'] == self.main_track_id:
+                            main_person = det
+                            break
             if self.lost_counter > self.max_lost_frames:
                 if self.debug and not self.main_person_lost:
                     print("[Tracker] Main person lost. Clearing ID.")
