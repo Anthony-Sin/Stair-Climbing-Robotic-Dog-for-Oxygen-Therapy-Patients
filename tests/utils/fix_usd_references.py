@@ -91,7 +91,7 @@ def fix_layer_references(layer_path):
         print("No changes needed.")
 
 def main():
-    assets_dir = pathlib.Path(__file__).parent.parent / "isaac" / "assets" / "go2_fixed"
+    assets_dir = pathlib.Path(__file__).parent.parent.parent / "isaac" / "assets" / "go2_fixed"
     config_dir = assets_dir / "configuration"
     
     # Fix go2.usd

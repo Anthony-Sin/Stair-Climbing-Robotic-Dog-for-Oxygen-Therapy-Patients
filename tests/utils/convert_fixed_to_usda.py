@@ -1,5 +1,6 @@
 import sys
 import os
+import pathlib
 
 try:
     from isaacsim import SimulationApp
@@ -11,8 +12,9 @@ simulation_app = SimulationApp({"headless": True})
 from pxr import Usd, Sdf
 
 def main():
-    fixed_usd_path = r"c:\Users\antho\Downloads\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\isaac\assets\go2_fixed\go2.usd"
-    ascii_usd_path = r"c:\Users\antho\Downloads\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\isaac\assets\go2_fixed\go2.usda"
+    assets_dir = pathlib.Path(__file__).parent.parent.parent / "isaac" / "assets" / "go2_fixed"
+    fixed_usd_path = str(assets_dir / "go2.usd")
+    ascii_usd_path = str(assets_dir / "go2.usda")
     
     if not os.path.exists(fixed_usd_path):
         print(f"Error: {fixed_usd_path} does not exist.")
