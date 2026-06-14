@@ -24,7 +24,7 @@ from isaacsim.sensors.camera import Camera
 
 def main():
     repo_root = pathlib.Path(__file__).parent.parent
-    fixed_go2_usd = repo_root / "isaac" / "assets" / "go2_fixed" / "go2.usd"
+    fixed_go2_usd = repo_root / "sim" / "isaac" / "assets" / "go2_fixed" / "go2.usd"
     
     print("\n================ Robot Simulation Test ================")
     

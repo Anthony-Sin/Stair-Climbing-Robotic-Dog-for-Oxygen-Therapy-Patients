@@ -12,7 +12,7 @@ simulation_app = SimulationApp({"headless": True})
 from pxr import Usd, Sdf
 
 def main():
-    assets_dir = pathlib.Path(__file__).parent.parent.parent / "isaac" / "assets" / "go2_fixed"
+    assets_dir = pathlib.Path(__file__).parent.parent.parent / "sim" / "isaac" / "assets" / "go2_fixed"
     
     files = [assets_dir / "go2.usd"] + list((assets_dir / "configuration").glob("*.usd"))
     for fp in files:

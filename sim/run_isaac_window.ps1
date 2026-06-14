@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = "Stop"
 $RawLog = Join-Path $RunLogDir "isaac_raw.log"
 $ConsoleLog = Join-Path $RunLogDir "isaac_console.log"
-$IsaacEnv = Join-Path $RepoRoot "isaac\isaac_env.py"
+$IsaacEnv = Join-Path $RepoRoot "sim\isaac\isaac_env.py"
 
 function Write-ConsoleLog {
     param([string]$Message)

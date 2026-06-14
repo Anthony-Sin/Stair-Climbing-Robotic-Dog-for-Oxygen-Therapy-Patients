@@ -184,8 +184,7 @@ start_vision() {
     --runtime nvidia
     --privileged
     --name "$VISION_CONTAINER_NAME"
-    -v "$REPO_ROOT/src:/workspace"
-    -v "$REPO_ROOT/models:/workspace/models"
+    -v "$REPO_ROOT:/workspace"
     -v "$DEBUG_LOG_RUN_DIR:/debug_logs"
     -w /workspace
     -e DISPLAY="${DISPLAY:-:0}"
@@ -217,7 +216,7 @@ start_vision() {
   fi
 
   docker run "${docker_args[@]}" "$VISION_IMAGE" bash -lc "
-    python3 main.py \
+    python3 real/main.py \
       --follow \
       --follow-backend mppi \
       --target-distance ${TARGET_DISTANCE} \

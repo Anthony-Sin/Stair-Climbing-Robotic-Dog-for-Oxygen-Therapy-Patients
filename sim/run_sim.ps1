@@ -24,7 +24,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $Stamp = Get-Date -Format "yyyyMMdd_HHmmss_fff"
 $RunLogDir = Join-Path $RepoRoot ("log\run_sim_" + $Stamp)
 $VisionLogDir = Join-Path $RunLogDir "vision"
@@ -861,7 +861,7 @@ Write-Stage "network" "ready" "Resolved sim network endpoints" @{
 if ($NoIsaac) {
     Write-Stage "isaac" "skipped" "Isaac launch skipped by --no-isaac"
 } else {
-    $IsaacWindowScript = Join-Path $RepoRoot "run_isaac_window.ps1"
+    $IsaacWindowScript = Join-Path $RepoRoot "sim\run_isaac_window.ps1"
     $IsaacRawLog = Join-Path $RunLogDir "isaac_raw.log"
     $IsaacFilteredLog = Join-Path $RunLogDir "isaac_console.log"
     $IsaacEventLog = Join-Path $RunLogDir "isaac_env.jsonl"
@@ -961,7 +961,7 @@ if ($NoDockerRun) {
 
     $dockerLog = Join-Path $RunLogDir "docker_run.log"
     $visionArgs = @(
-        "python3 main.py",
+        "python3 sim/main.py",
         "--sim",
         "--follow",
         "--follow-backend $FollowBackend",
@@ -986,7 +986,7 @@ if ($NoDockerRun) {
     }
     $visionCommand = $visionArgs -join " "
     $byteTrackNumpyAliasFix = "find /opt/bytetrack -type f -name '*.py' -exec sed -i 's/np\.float\b/float/g; s/np\.int\b/int/g; s/np\.bool\b/bool/g' {} + 2>/dev/null"
-    $containerCommand = $byteTrackNumpyAliasFix + "; cd /workspace/src && exec " + $visionCommand
+    $containerCommand = $byteTrackNumpyAliasFix + "; cd /workspace && exec " + $visionCommand
 
     $dockerArgs = @(
         "-e",
@@ -1002,7 +1002,7 @@ if ($NoDockerRun) {
         "-p",
         "${FramePort}:${FramePort}/udp",
         "-v",
-        "${WslRepoRoot}/src:/workspace/src",
+        "${WslRepoRoot}:/workspace",
         "-v",
         "${WslRepoRoot}/models:/models",
         "-v",
@@ -1060,7 +1060,7 @@ if ($NoDockerRun) {
         Write-Stage "summary" "failed" "Docker run did not start main.py cleanly" @{ log = $dockerLog; container = $DockerContainerName }
         exit 1
     }
-    if ((-not $NoIsaac) -and (Write-SimCompletionGateDiagnosis -EventLog $IsaacEventLog -DockerLog $dockerLog)) {
+    if (-not $DryRun -and (-not $NoIsaac) -and (Write-SimCompletionGateDiagnosis -EventLog $IsaacEventLog -DockerLog $dockerLog)) {
         Write-Stage "summary" "failed" "Simulation ended before the stair demo reached its required completion gate" @{
             event_log = $IsaacEventLog
             docker_log = $dockerLog

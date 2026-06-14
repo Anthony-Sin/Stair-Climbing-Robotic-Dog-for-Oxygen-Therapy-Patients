@@ -17,7 +17,7 @@ def download_file(url, dest):
 
 def main():
     base_url = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/Robots/Unitree/Go2/"
-    dest_dir = pathlib.Path(__file__).parent.parent.parent / "isaac" / "assets" / "go2_fixed"
+    dest_dir = pathlib.Path(__file__).parent.parent.parent / "sim" / "isaac" / "assets" / "go2_fixed"
     
     files = [
         "go2.usd",

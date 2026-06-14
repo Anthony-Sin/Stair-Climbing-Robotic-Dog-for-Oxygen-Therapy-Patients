@@ -14,10 +14,12 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 from isaacsim import SimulationApp
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SRC_DIR = REPO_ROOT / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SIM_BOT_DIR = REPO_ROOT / "sim" / "bot"
+CORE_DIR = REPO_ROOT / "core"
+for d in (SIM_BOT_DIR, CORE_DIR):
+    if str(d) not in sys.path:
+        sys.path.insert(0, str(d))
 
 from sim_logging_utils import configure_sim_logger, log_event
 
@@ -138,9 +140,9 @@ PERSON_PRIM    = "/World/Person"
 NUCLEUS_GO2    = "/Isaac/Robots/Unitree/Go2/go2.usd"
 # Local fallback candidates (URDF-imported, primitive-shape geometry)
 LOCAL_GO2_CANDIDATES = (
-    REPO_ROOT / "isaac" / "assets" / "go2.usd" / "go2" / "go2.usda",
-    REPO_ROOT / "isaac" / "assets" / "go2_1_files" / "go2.usda",
-    REPO_ROOT / "isaac" / "assets" / "go2" / "go2.usda",
+    REPO_ROOT / "sim" / "isaac" / "assets" / "go2.usd" / "go2" / "go2.usda",
+    REPO_ROOT / "sim" / "isaac" / "assets" / "go2_1_files" / "go2.usda",
+    REPO_ROOT / "sim" / "isaac" / "assets" / "go2" / "go2.usda",
 )
 
 # Go2 moving body link inside the Isaac USD. Some Go2 assets expose "base",
@@ -312,8 +314,8 @@ def _resolve_go2_usd() -> str:
             return resolved
 
     raise FileNotFoundError(
-        "Go2 USD not found in Isaac assets or local isaac/assets.\n"
-        "Run with Isaac Python: C:\\isaac_sim_600\\python.bat isaac\\go2_usd_setup.py"
+        "Go2 USD not found in Isaac assets or local sim/isaac/assets.\n"
+        "Run with Isaac Python: C:\\isaac_sim_600\\python.bat sim\\isaac\\go2_usd_setup.py"
     )
 
 

@@ -40,8 +40,8 @@ def count_meshes(stage, path):
 
 def main():
     repo_root = pathlib.Path(__file__).parent.parent
-    fixed_usd_path = repo_root / "isaac" / "assets" / "go2_fixed" / "go2.usd"
-    base_usd_path = repo_root / "isaac" / "assets" / "go2_fixed" / "configuration" / "go2_description_base.usd"
+    fixed_usd_path = repo_root / "sim" / "isaac" / "assets" / "go2_fixed" / "go2.usd"
+    base_usd_path = repo_root / "sim" / "isaac" / "assets" / "go2_fixed" / "configuration" / "go2_description_base.usd"
     
     print("\n================ USD Asset Validation ================")
     
@@ -49,9 +49,9 @@ def main():
     files_to_check = [
         fixed_usd_path,
         base_usd_path,
-        repo_root / "isaac" / "assets" / "go2_fixed" / "configuration" / "go2_description_physics.usd",
-        repo_root / "isaac" / "assets" / "go2_fixed" / "configuration" / "go2_description_sensor.usd",
-        repo_root / "isaac" / "assets" / "go2_fixed" / "configuration" / "go2_description_robot.usd"
+        repo_root / "sim" / "isaac" / "assets" / "go2_fixed" / "configuration" / "go2_description_physics.usd",
+        repo_root / "sim" / "isaac" / "assets" / "go2_fixed" / "configuration" / "go2_description_sensor.usd",
+        repo_root / "sim" / "isaac" / "assets" / "go2_fixed" / "configuration" / "go2_description_robot.usd"
     ]
     for fp in files_to_check:
         exists = fp.exists()

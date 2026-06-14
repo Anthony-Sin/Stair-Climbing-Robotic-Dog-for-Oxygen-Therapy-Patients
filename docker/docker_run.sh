@@ -25,8 +25,7 @@ DOCKER_RUN_COMMON=(
   --runtime nvidia
   --network host
   --privileged
-  -v "$PARENT_DIR"/src:/workspace
-  -v "$PARENT_DIR"/models:/workspace/models
+  -v "$PARENT_DIR":/workspace
   -w /workspace
   -e DISPLAY=${DISPLAY:-:0}
   -e XAUTHORITY=$XAUTHORITY
