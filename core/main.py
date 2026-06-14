@@ -295,6 +295,9 @@ def main():
     )
     trt_infer  = TRTInference(args.trt_engine, verbose=args.debug)
 
+    yolo_stairs = YoloStairsInference(verbose=args.debug)
+    yolo_stairs.initialize()
+
     tracker = SinglePersonTracker(
         debug=args.debug,
         allow_auto_reacquire=args.auto_reacquire,
@@ -507,6 +510,7 @@ def main():
 
             sim_frame_failure_since = None
             depth_img = depths[0]
+            yolo_stairs.update_frame(img)
 
             preprocess_start_ts = time.perf_counter()
             input_tensor_np, r, pad_top, pad_left = yolo.preprocess(img)
@@ -589,6 +593,11 @@ def main():
             trans_x_cmd, rotation_cmd, debug_info = person_follower.update(
                 follow_input_person, depth_img, (img.shape[0], img.shape[1])
             )
+            stairs_result = yolo_stairs.get_latest_result()
+            stairs_detected = bool(stairs_result.get("detected", False))
+            debug_info["stairs_detected"] = stairs_detected
+            debug_info["stairs_bbox"] = stairs_result.get("bbox")
+            debug_info["stairs_conf"] = stairs_result.get("conf", 0.0)
             depth_m = debug_info.get('depth_distance_m')
             if depth_m is not None:
                 last_depth_error_m = float(depth_m) - float(
@@ -612,7 +621,7 @@ def main():
                 debug_info["gt_distractor"] = frame_meta["gt_distractor"]
             if "stair_demo" in frame_meta:
                 debug_info["stair_demo"] = frame_meta["stair_demo"]
-            trans_x_cmd = _apply_sim_stair_gap_control(args, trans_x_cmd, debug_info)
+            # Removed hardcoded sim stair gap control override as requested by the user
             debug_info["trans_x_cmd"] = trans_x_cmd
 
             export_debug_info = debug_info
@@ -722,7 +731,8 @@ def main():
                 elapsed_motion = current_time - motion_start_ts
                 cmd_scale = motion_slow_factor if elapsed_motion < motion_slow_duration_sec else 1.0
                 controller.move(
-                    trans_x_cmd * cmd_scale, 0.0, rotation_cmd * cmd_scale
+                    trans_x_cmd * cmd_scale, 0.0, rotation_cmd * cmd_scale,
+                    stairs_detected=stairs_detected
                 )
             elif controller is not None and controller.is_ready():
                 controller.stop()
@@ -900,6 +910,7 @@ def main():
                 )
 
     finally:
+        yolo_stairs.stop()
         preview_worker.stop()
         if preview_video_writer is not None:
             preview_video_writer.release()

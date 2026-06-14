@@ -878,11 +878,11 @@ def _get_analytical_terrain_height(x: float, y: float) -> float:
 
 
 def _query_terrain_height(rx: float, ry: float, rz: float) -> float:
-    """Query terrain height at (rx, ry) via PhysX raycast or analytical fallback."""
+    """Query terrain height at (rx, ry) via PhysX raycast or local estimation fallback."""
     try:
         import omni.physx
         physx_interface = omni.physx.get_physx_interface()
-        # Raycast straight down from the robot's Z position.
+        # Talk to PhysX scene raycaster directly
         hit = physx_interface.raycast_closest((rx, ry, rz), (0.0, 0.0, -1.0), 1.5)
         if hit and hit[0]:
             hit_info = hit[1]
@@ -894,7 +894,7 @@ def _query_terrain_height(rx: float, ry: float, rz: float) -> float:
                 return float(hit_info[2])
     except Exception:
         pass
-    return _get_analytical_terrain_height(rx, ry)
+    return max(0.0, rz - 0.32)
 
 
 def apply_go2_velocity(
@@ -907,6 +907,7 @@ def apply_go2_velocity(
     state: Go2LocomotionState,
     base_link_name: str = "trunk",
     logger: Optional[logging.Logger] = None,
+    stairs_detected: bool = False,
 ) -> None:
     """Drive Go2 root motion through physics-driven trot gait or fallback kinematic mode."""
     root_prim = getattr(go2, "prim", None)
@@ -954,11 +955,11 @@ def apply_go2_velocity(
                         try:
                             controller = go2.get_articulation_controller()
                             for i in range(go2.num_dof):
-                                controller.set_joint_drive_gains(i, stiffness=80.0, damping=2.0)
+                                controller.set_joint_drive_gains(i, stiffness=450.0, damping=25.0)
                         except Exception:
                             dof_props = go2.get_dof_properties()
-                            dof_props["stiffness"] = 80.0
-                            dof_props["damping"] = 2.0
+                            dof_props["stiffness"] = 450.0
+                            dof_props["damping"] = 25.0
                             go2.set_dof_properties(dof_props)
                         state.joint_gains_set = True
                         if logger is not None:
@@ -966,7 +967,7 @@ def apply_go2_velocity(
                                 logger,
                                 logging.INFO,
                                 "go2_joint_gains_configured",
-                                "Go2 joint drive gains (stiffness=80, damping=2) have been applied",
+                                "Go2 joint drive gains (stiffness=450, damping=25) have been applied",
                             )
                     except Exception as exc:
                         state.joint_gains_unavailable = True
@@ -1008,25 +1009,13 @@ def apply_go2_velocity(
                 body_vx = cos_y * actual_vx + sin_y * actual_vy
                 body_vy = -sin_y * actual_vx + cos_y * actual_vy
 
-                phase_for_pose = _terrain_phase(rx, ry)
-                gait_mode = _gait_mode_for_terrain(phase_for_pose)
+                gait_mode = "stair_crawl" if stairs_detected else "flat_trot"
 
                 # 4. Gait phase scheduler
                 cmd_speed = math.sqrt(vx**2 + vy**2) + 0.25 * abs(wz)
                 is_moving = cmd_speed > 0.03
-                desired_world_z = _stair_assisted_world_z(
-                    rx,
-                    ry,
-                    yaw,
-                    vx,
-                    state,
-                    state.target_height_m,
-                )
-                vertical_assist_mps = _clamp(
-                    (desired_world_z - rz) * state.height_kp,
-                    -state.max_vertical_speed_mps,
-                    state.max_vertical_speed_mps,
-                )
+                desired_world_z = rz
+                vertical_assist_mps = 0.0
 
                 if is_moving:
                     state.gait_time += dt
@@ -1098,10 +1087,8 @@ def apply_go2_velocity(
                     "rl": 0.0955,
                     "rr": -0.0955,
                 }
-                if phase_for_pose == "staircase":
+                if stairs_detected:
                     swing_height_m = max(state.swing_height, _effective_swing_height_for_mode("stair_climb"))
-                elif phase_for_pose == "stair_approach":
-                    swing_height_m = max(state.swing_height, _effective_swing_height_for_mode("stair_approach"))
                 else:
                     swing_height_m = state.swing_height
 
@@ -1206,14 +1193,7 @@ def apply_go2_velocity(
                     state.last_phases[leg] = phi
 
                 _command_joint_positions(go2, positions)
-                rb_api.GetVelocityAttr().Set(Gf.Vec3f(float(wx), float(wy), float(vertical_assist_mps)))
-                rb_api.GetAngularVelocityAttr().Set(
-                    Gf.Vec3f(
-                        float(math.degrees(_clamp(-roll * state.attitude_kp, -state.max_attitude_rate_rps, state.max_attitude_rate_rps))),
-                        float(math.degrees(_clamp(-pitch * state.attitude_kp, -state.max_attitude_rate_rps, state.max_attitude_rate_rps))),
-                        float(math.degrees(wz)),
-                    )
-                )
+                # Removed root body velocity attributes overrides to rely purely on joint drive reactions and contact physics
                 _record_stair_demo_telemetry(
                     state,
                     logger,

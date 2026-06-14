@@ -191,11 +191,13 @@ def _cmd_receiver_thread(port: int) -> None:
             vx = float(payload.get("vx", 0.0))
             vy = float(payload.get("vy", 0.0))
             wz = float(payload.get("wz", 0.0))
+            stairs_detected = bool(payload.get("stairs_detected", False))
             is_nonzero_command = (abs(vx) > 0.01) or (abs(vy) > 0.01) or (abs(wz) > 0.01)
             with _cmd_lock:
                 _cmd_vel["vx"] = vx
                 _cmd_vel["vy"] = vy
                 _cmd_vel["wz"] = wz
+                _cmd_vel["stairs_detected"] = stairs_detected
                 _cmd_vel["ts"] = time.monotonic()
                 _cmd_vel["count"] = int(_cmd_vel.get("count", 0)) + 1
                 cmd_count = int(_cmd_vel["count"])
@@ -1563,8 +1565,8 @@ class FramePublisher:
         self._sock.close()
 
 
-def apply_velocity_to_go2(go2: Articulation, vx: float, vy: float, wz: float, dt: float) -> None:
-    apply_go2_velocity(go2, vx, vy, wz, dt, state=_go2_locomotion_state, base_link_name=BASE_LINK_NAME, logger=LOGGER)
+def apply_velocity_to_go2(go2: Articulation, vx: float, vy: float, wz: float, dt: float, stairs_detected: bool = False) -> None:
+    apply_go2_velocity(go2, vx, vy, wz, dt, state=_go2_locomotion_state, base_link_name=BASE_LINK_NAME, logger=LOGGER, stairs_detected=stairs_detected)
 
 
 def create_and_bind_friction_material(stage, prim_paths: list, material_path: str = "/World/PhysicsMaterials/HighFrictionMaterial"):
@@ -2123,11 +2125,13 @@ def main() -> None:
                 active_count = int(_cmd_vel.get("active_count", 0))
                 if age > CMD_TIMEOUT_SEC:
                     vx, vy, wz = 0.0, 0.0, 0.0
+                    stairs_detected = False
                     command_fresh = False
                 else:
                     vx = _cmd_vel["vx"]
                     vy = _cmd_vel["vy"]
                     wz = _cmd_vel["wz"]
+                    stairs_detected = _cmd_vel.get("stairs_detected", False)
                     command_fresh = True
             controller_stream_seen = cmd_count > 0
             nonzero_command_fresh = (
@@ -2156,38 +2160,20 @@ def main() -> None:
                     command_count=cmd_count,
                     active_command_count=active_count,
                 )
-
+ 
             if controller_ready and nonzero_command_fresh:
-                apply_velocity_to_go2(go2, vx, vy, wz, dt)
+                apply_velocity_to_go2(go2, vx, vy, wz, dt, stairs_detected=stairs_detected)
             else:
                 hold_go2_stable(go2, _go2_locomotion_state, dt, logger=LOGGER)
-
-            # Clamp Go2 robot to centerline (Y=0, yaw=0) to prevent physics lateral drift/rotation
+ 
+            # Centerline clamping removed to enable real physics and dynamic steering.
+            # We only zero out velocities to hold position until autonomous scene motion is released.
             try:
-                go2_body_path = resolve_go2_body_prim_path(stage)
-                go2_prim = stage.GetPrimAtPath(go2_body_path)
-                if go2_prim and go2_prim.IsValid():
-                    xform = UsdGeom.Xformable(go2_prim)
-                    matrix = xform.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-                    rx = float(matrix[3][0])
-                    ry = float(matrix[3][1])
-                    rz = float(matrix[3][2])
-                    
-                    if scene_motion_allowed and hasattr(go2, "set_world_pose"):
-                        go2.set_world_pose(
-                            position=np.array([rx, 0.0, rz]),
-                            orientation=np.array([1.0, 0.0, 0.0, 0.0]),
-                        )
+                if not scene_motion_allowed:
                     if hasattr(go2, "set_linear_velocity"):
-                        lin_vel = go2.get_linear_velocity()
-                        if not scene_motion_allowed:
-                            lin_vel[0] = 0.0  # Zero out forward velocity before startup
-                        lin_vel[1] = 0.0
-                        go2.set_linear_velocity(lin_vel)
+                        go2.set_linear_velocity(np.zeros(3))
                     if hasattr(go2, "set_angular_velocity"):
-                        ang_vel = go2.get_angular_velocity()
-                        ang_vel[2] = 0.0
-                        go2.set_angular_velocity(ang_vel)
+                        go2.set_angular_velocity(np.zeros(3))
             except Exception:
                 pass
 

@@ -9,6 +9,8 @@ import numpy as np
 from collections import deque
 from typing import Optional, Dict, Any, Deque, Tuple
 
+_yolo_conf_history = deque(maxlen=30)
+
 
 class EdgePenaltyChart:
     """Handles edge/size penalty visualization chart."""
@@ -194,10 +196,7 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(default)
 
 
-def _draw_stair_demo_panel(combined: np.ndarray, stair_demo: Dict[str, Any]) -> None:
-    if not stair_demo:
-        return
-
+def _draw_stair_demo_panel(combined: np.ndarray, debug_info: Dict[str, Any]) -> None:
     h, w = combined.shape[:2]
     panel_w = min(700, max(420, w - 40))
     panel_h = min(136, max(112, h - 40))
@@ -218,17 +217,19 @@ def _draw_stair_demo_panel(combined: np.ndarray, stair_demo: Dict[str, Any]) -> 
     cv2.addWeighted(sub, 0.35, shade, 0.65, 0, sub)
     cv2.rectangle(combined, (x, y), (x + panel_w, y + panel_h), (120, 120, 120), 1)
 
-    lidar = stair_demo.get("lidar", {}) if isinstance(stair_demo, dict) else {}
-    blind_rl = stair_demo.get("blind_rl", {}) if isinstance(stair_demo, dict) else {}
-    detected = bool(lidar.get("detected", False))
-    phase = str(stair_demo.get("phase", "unknown")).replace("_", " ").upper()
-    rl_mode = str(blind_rl.get("mode", "unknown")).replace("_", " ").upper()
-    badge_color = (0, 220, 80) if detected else (80, 160, 255)
+    stairs_detected = debug_info.get("stairs_detected", False) if debug_info else False
+    conf = debug_info.get("stairs_conf", 0.0) if debug_info else 0.0
+    bbox = debug_info.get("stairs_bbox") if debug_info else None
+    
+    # Update rolling confidence history
+    _yolo_conf_history.append(conf)
+
+    badge_color = (0, 220, 80) if stairs_detected else (80, 160, 255)
     title_color = (150, 245, 150)
 
     cv2.putText(
         combined,
-        "4D LIDAR / BLIND RL",
+        "YOLO-WORLD VISION STAIRS",
         (x + 12, y + 24),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.55,
@@ -238,7 +239,7 @@ def _draw_stair_demo_panel(combined: np.ndarray, stair_demo: Dict[str, Any]) -> 
     cv2.rectangle(combined, (x + panel_w - 176, y + 9), (x + panel_w - 12, y + 30), badge_color, -1)
     cv2.putText(
         combined,
-        "STAIRS DETECTED" if detected else "SCANNING",
+        "STAIRS DETECTED" if stairs_detected else "SCANNING",
         (x + panel_w - 166, y + 25),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.42,
@@ -246,17 +247,12 @@ def _draw_stair_demo_panel(combined: np.ndarray, stair_demo: Dict[str, Any]) -> 
         1,
     )
 
-    distance = _format_optional_m(lidar.get("distance_to_next_riser_m"))
-    step_height = _format_optional_m(lidar.get("step_height_m"))
-    confidence = lidar.get("confidence")
-    confidence_text = "N/A" if confidence is None else f"{float(confidence):.2f}"
-    body_target = _format_optional_m(blind_rl.get("body_height_target_m"))
-    lift = blind_rl.get("vertical_assist_mps")
-    lift_text = "N/A" if lift is None else f"{float(lift):+.2f} m/s"
+    conf_text = f"{conf * 100:.1f} %" if stairs_detected else "0.0 %"
+    bbox_text = f"[{int(bbox[0])}, {int(bbox[1])}, {int(bbox[2])}, {int(bbox[3])}]" if bbox else "N/A"
 
     cv2.putText(
         combined,
-        f"Phase: {phase}  Range: {distance}  Step: {step_height}",
+        "Model: yolov8s-worldv2.pt  Target: ['stairs', 'staircase']",
         (x + 12, y + 50),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.43,
@@ -265,7 +261,7 @@ def _draw_stair_demo_panel(combined: np.ndarray, stair_demo: Dict[str, Any]) -> 
     )
     cv2.putText(
         combined,
-        f"RL: {rl_mode}  Body Z: {body_target}  Lift: {lift_text}  Conf: {confidence_text}",
+        f"YOLO Conf: {conf_text}  BBox: {bbox_text}",
         (x + 12, y + 72),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.43,
@@ -274,7 +270,7 @@ def _draw_stair_demo_panel(combined: np.ndarray, stair_demo: Dict[str, Any]) -> 
     )
     cv2.putText(
         combined,
-        "Source: Isaac stair geometry  Contact physics: ON",
+        "Source: YOLO-World model inference  Contact physics: ON",
         (x + 12, y + panel_h - 12),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.38,
@@ -282,43 +278,25 @@ def _draw_stair_demo_panel(combined: np.ndarray, stair_demo: Dict[str, Any]) -> 
         1,
     )
 
-    samples = lidar.get("samples", [])
-    if not isinstance(samples, list) or len(samples) == 0:
-        return
-    if panel_w < 540:
-        return
-
+    # Plot YOLO Confidence History on the right side of the panel
     graph_x = x + panel_w - 188
-    graph_y = y + 48
+    graph_y = y + 42
     graph_w = 170
-    graph_h = max(38, panel_h - 72)
+    graph_h = max(38, panel_h - 60)
     baseline = graph_y + graph_h
+
     cv2.line(combined, (graph_x, baseline), (graph_x + graph_w, baseline), (90, 90, 90), 1)
-    cv2.putText(combined, "Elevation", (graph_x, graph_y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.34, (180, 180, 180), 1)
-    usable_samples = samples[:5]
-    bar_gap = 8
-    bar_w = max(12, int((graph_w - bar_gap * (len(usable_samples) - 1)) / max(1, len(usable_samples))))
-    for idx, sample in enumerate(usable_samples):
-        try:
-            elev = float(sample.get("elevation_m", 0.0))
-            rng = float(sample.get("range_m", 0.0))
-        except Exception:
-            continue
-        norm = max(0.0, min(1.0, elev / 0.96))
-        bar_h = int(norm * (graph_h - 4))
-        bx = graph_x + idx * (bar_w + bar_gap)
-        by = baseline - bar_h
-        color = (0, 220, 80) if elev > 0.0 else (90, 90, 90)
-        cv2.rectangle(combined, (bx, by), (bx + bar_w, baseline), color, -1)
-        cv2.putText(
-            combined,
-            f"{rng:.1f}",
-            (bx, min(h - 2, baseline + 12)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.28,
-            (180, 180, 180),
-            1,
-        )
+    cv2.putText(combined, "YOLO Confidence Hist", (graph_x, graph_y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (180, 180, 180), 1)
+
+    if len(_yolo_conf_history) > 1:
+        pts = []
+        for idx, val in enumerate(_yolo_conf_history):
+            bx = graph_x + int(idx * (graph_w - 10) / max(1, len(_yolo_conf_history) - 1)) + 5
+            norm = max(0.0, min(1.0, float(val)))
+            by = baseline - int(norm * (graph_h - 8)) - 4
+            pts.append((bx, by))
+        if len(pts) > 1:
+            cv2.polylines(combined, [np.array(pts, dtype=np.int32)], False, (147, 20, 255), 2)
 
 
 def _detect_stair_pixel_edges(source_frame: Optional[np.ndarray]) -> list:
@@ -420,83 +398,65 @@ def _detect_stair_pixel_edges(source_frame: Optional[np.ndarray]) -> list:
 
 def _draw_stair_boundary_overlay(
     combined: np.ndarray,
-    stair_demo: Dict[str, Any],
+    debug_info: Dict[str, Any],
     source_frame: Optional[np.ndarray] = None,
 ) -> None:
-    if not stair_demo:
+    if not debug_info:
         return
-    lidar = stair_demo.get("lidar", {}) if isinstance(stair_demo, dict) else {}
-    robot = stair_demo.get("robot", {}) if isinstance(stair_demo, dict) else {}
-    phase = str(stair_demo.get("phase", "unknown"))
-    detected = bool(lidar.get("detected", False))
-    distance_to_next = lidar.get("distance_to_next_riser_m")
-    if not detected and distance_to_next is None and phase not in ("stair_approach", "staircase", "top_landing"):
+
+    stairs_detected = debug_info.get("stairs_detected", False)
+    bbox = debug_info.get("stairs_bbox")
+    conf = debug_info.get("stairs_conf", 0.0)
+
+    if not stairs_detected or bbox is None:
         return
 
     h, w = combined.shape[:2]
-    stair_depth = 0.30
-    robot_x = _safe_float(robot.get("x_m"), 0.0)
+    x1, y1, x2, y2 = [int(v) for v in bbox]
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(w - 1, x2), min(h - 1, y2)
+
+    # Draw the YOLO-World detection bounding box
+    color_bbox = (147, 20, 255)  # Purple HSL color
+    cv2.rectangle(combined, (x1, y1), (x2, y2), color_bbox, 2)
+
+    # Label on the bounding box
+    cv2.putText(
+        combined,
+        f"STAIRS YOLO ({conf * 100:.1f}%)",
+        (x1, max(15, y1 - 8)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,
+        color_bbox,
+        2,
+    )
+
+    # Extract and draw real horizontal step edges inside the YOLO box
     step_edges = _detect_stair_pixel_edges(source_frame if source_frame is not None else combined)
     if not step_edges:
         return
 
-    distance = lidar.get("distance_to_next_riser_m")
-    next_label = "NEXT RISER"
-    if distance is not None:
-        next_label = f"NEXT RISER {_safe_float(distance):.2f}m"
+    # Filter step edges to only those that fall within the vertical and horizontal range of the bbox
+    filtered_edges = []
+    for ex1, ex2, ey in step_edges:
+        if y1 - 20 <= ey <= y2 + 20:
+            # Overlap in X
+            overlap_x1 = max(ex1, x1)
+            overlap_x2 = min(ex2, x2)
+            if overlap_x2 - overlap_x1 > 10:  # Valid overlap width
+                filtered_edges.append((ex1, ex2, ey))
 
-    current_step = max(0, int((robot_x - 2.0) / stair_depth))
-    highlight_idx = len(step_edges) - 1
-    if phase in ("stair_approach", "flat_follow"):
-        highlight_idx = len(step_edges) - 1
-    elif phase in ("staircase", "top_landing"):
-        highlight_idx = max(0, min(len(step_edges) - 1, len(step_edges) - 1 - min(3, current_step % 4)))
-
-    for idx, (x1, x2, y) in enumerate(step_edges):
-        is_next = idx == highlight_idx
-        color = (0, 255, 255) if is_next else (55, 205, 255)
-        thickness = 3 if is_next else 1
-        cv2.line(combined, (x1, y), (x2, y), color, thickness)
-        cv2.circle(combined, (x1, y), 4, color, -1)
-        cv2.circle(combined, (x2, y), 4, color, -1)
-        if is_next:
-            label_x = max(8, min(w - 180, x1 + 10))
-            label_y = max(22, y - 8)
-            cv2.putText(
-                combined,
-                next_label,
-                (label_x, label_y),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.43,
-                color,
-                2,
-            )
-
-    scan_edge = step_edges[highlight_idx]
-    x1, x2, y = scan_edge
-    scan_t = (robot_x * 2.7) % 1.0
-    scan_x = int(x1 + (x2 - x1) * scan_t)
-    cv2.circle(combined, (scan_x, y), 7, (255, 170, 40), -1)
-    cv2.line(combined, (scan_x, max(0, y - 26)), (scan_x, min(h - 1, y + 26)), (255, 170, 40), 1)
-
-    badge = "STAIR PIXEL SCAN"
-    badge_x = max(8, min(w - 196, step_edges[0][0] + 8))
-    badge_y = max(26, step_edges[0][2] - 28)
-    cv2.rectangle(combined, (badge_x - 6, badge_y - 18), (badge_x + 178, badge_y + 7), (0, 0, 0), -1)
-    cv2.putText(
-        combined,
-        badge,
-        (badge_x, badge_y),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.46,
-        (0, 255, 255),
-        1,
-    )
+    # Draw the real step edges
+    for ex1, ex2, ey in filtered_edges:
+        color_edge = (0, 255, 255)  # Bright cyan/yellow
+        cv2.line(combined, (ex1, ey), (ex2, ey), color_edge, 1)
+        cv2.circle(combined, (ex1, ey), 3, color_edge, -1)
+        cv2.circle(combined, (ex2, ey), 3, color_edge, -1)
 
 
 def _draw_leg_command_panel(
     combined: np.ndarray,
-    stair_demo: Dict[str, Any],
+    debug_info: Dict[str, Any],
     swing_list: list,
     trans_x_cmd: float,
     rotation_cmd: float,
@@ -519,11 +479,8 @@ def _draw_leg_command_panel(
     cv2.addWeighted(sub, 0.32, shade, 0.68, 0, sub)
     cv2.rectangle(combined, (x, y), (x + panel_w, y + panel_h), (120, 120, 120), 1)
 
-    blind_rl = stair_demo.get("blind_rl", {}) if isinstance(stair_demo, dict) else {}
-    leg_commands = blind_rl.get("leg_commands", {})
-    if not isinstance(leg_commands, dict):
-        leg_commands = {}
-    gait = str(blind_rl.get("gait_pattern", "tracking_gait")).replace("_", " ").upper()
+    stairs_detected = debug_info.get("stairs_detected", False) if debug_info else False
+    gait = "STAIR CRAWL" if stairs_detected else "FLAT TROT"
 
     cv2.putText(combined, "LEG COMMANDS", (x + 12, y + 24), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (150, 245, 150), 2)
     cv2.line(combined, (x + 10, y + 35), (x + panel_w - 10, y + 35), (100, 100, 100), 1)
@@ -536,21 +493,17 @@ def _draw_leg_command_panel(
         (255, 240, 120),
         1,
     )
-    cv2.putText(combined, gait[:28], (x + 12, y + 72), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (190, 210, 255), 1)
+    cv2.putText(combined, f"GAIT: {gait}", (x + 12, y + 72), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (190, 210, 255), 1)
 
     row_y = y + 96
     for leg in ("FL", "FR", "RL", "RR"):
-        cmd = leg_commands.get(leg, {})
-        if isinstance(cmd, dict):
-            action = str(cmd.get("action", "SWING" if leg in swing_list else "STANCE"))
-            lift_m = _safe_float(cmd.get("foot_lift_m"), 0.0)
-            drive_mps = _safe_float(cmd.get("drive_mps"), 0.0)
-            is_swing = str(cmd.get("state", "")).lower() == "swing"
-        else:
-            action = "SWING" if leg in swing_list else "STANCE"
-            lift_m = 0.06 if leg in swing_list else 0.0
-            drive_mps = abs(float(trans_x_cmd)) if leg in swing_list else 0.0
-            is_swing = leg in swing_list
+        is_swing = leg in swing_list
+        action = "SWING" if is_swing else "STANCE"
+        lift_m = 0.08 if is_swing else 0.0
+        if stairs_detected and is_swing:
+            lift_m = 0.22  # Dynamic stair crawl lift height
+        drive_mps = abs(float(trans_x_cmd)) if is_swing else 0.0
+
         color = (255, 255, 0) if is_swing else (170, 170, 170)
         cv2.putText(combined, leg, (x + 12, row_y), cv2.FONT_HERSHEY_SIMPLEX, 0.43, color, 2)
         cv2.putText(combined, action[:10], (x + 54, row_y), cv2.FONT_HERSHEY_SIMPLEX, 0.39, color, 1)
@@ -613,10 +566,7 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
     )
     cv2.putText(combined, mode_label, (text_x, text_y), font, scale, (0, 255, 0), thickness)
 
-    stair_demo = debug_info.get("stair_demo")
-    if not stair_demo and frame_meta is not None:
-        stair_demo = frame_meta.get("stair_demo")
-    _draw_stair_boundary_overlay(combined, stair_demo, source_frame=source_frame)
+    _draw_stair_boundary_overlay(combined, debug_info, source_frame=source_frame)
     
     # Draw frame center vertical line for reference
     frame_center_x = combined.shape[1] // 2
@@ -756,8 +706,8 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
     status_color = (255, 255, 0) if len(swing_list) > 0 else (120, 120, 120)
     cv2.putText(combined, f"Gait Status: {status_text}", (right_x + 12, right_y + 170), cv2.FONT_HERSHEY_SIMPLEX, 0.4, status_color, 1)
 
-    _draw_stair_demo_panel(combined, stair_demo)
-    _draw_leg_command_panel(combined, stair_demo, swing_list, trans_x_cmd, rotation_cmd)
+    _draw_stair_demo_panel(combined, debug_info)
+    _draw_leg_command_panel(combined, debug_info, swing_list, trans_x_cmd, rotation_cmd)
 
 
 class BimodalDepthHistogramWindow:

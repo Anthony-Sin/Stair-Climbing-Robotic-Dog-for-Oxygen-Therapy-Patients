@@ -38,12 +38,11 @@ class SimRobotController:
 
     def is_ready(self) -> bool:
         return self._ready
-
-    def move(self, vx: float, vy: float, wz: float) -> None:
-        self._send(vx, vy, wz)
+    def move(self, vx: float, vy: float, wz: float, stairs_detected: bool = False) -> None:
+        self._send(vx, vy, wz, stairs_detected)
 
     def stop(self) -> None:
-        self._send(0.0, 0.0, 0.0)
+        self._send(0.0, 0.0, 0.0, False)
 
     def shutdown(self) -> None:
         self.stop()
@@ -60,10 +59,10 @@ class SimRobotController:
             self._sock.close()
             self._sock = None
 
-    def _send(self, vx: float, vy: float, wz: float) -> None:
+    def _send(self, vx: float, vy: float, wz: float, stairs_detected: bool = False) -> None:
         if not self._sock:
             return
-        payload = json.dumps({"vx": vx, "vy": vy, "wz": wz}).encode()
+        payload = json.dumps({"vx": vx, "vy": vy, "wz": wz, "stairs_detected": stairs_detected}).encode()
         try:
             self._sock.sendto(payload, (self._host, self._port))
             self._total_sent += 1
@@ -71,10 +70,11 @@ class SimRobotController:
                 self._logger,
                 logging.DEBUG,
                 "command_sent",
-                f"Sent velocity command: vx={vx:.3f}, vy={vy:.3f}, wz={wz:.3f}",
+                f"Sent velocity command: vx={vx:.3f}, vy={vy:.3f}, wz={wz:.3f}, stairs_detected={stairs_detected}",
                 vx=float(vx),
                 vy=float(vy),
                 wz=float(wz),
+                stairs_detected=bool(stairs_detected),
             )
         except Exception as exc:
             self._failed_sent += 1
@@ -86,5 +86,6 @@ class SimRobotController:
                 vx=float(vx),
                 vy=float(vy),
                 wz=float(wz),
+                stairs_detected=bool(stairs_detected),
                 error=str(exc),
             )

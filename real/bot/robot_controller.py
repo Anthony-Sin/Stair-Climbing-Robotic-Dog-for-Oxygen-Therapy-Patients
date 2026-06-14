@@ -98,7 +98,7 @@ class RobotController:
             self.is_initialized = False
             return False
     
-    def move(self, trans_x: float, trans_y: float, rotation: float) -> bool:
+    def move(self, trans_x: float, trans_y: float, rotation: float, stairs_detected: bool = False) -> bool:
         """
         Send movement command to robot
         
