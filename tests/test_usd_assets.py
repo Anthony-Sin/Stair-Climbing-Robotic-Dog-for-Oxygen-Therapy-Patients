@@ -30,6 +30,12 @@ def count_meshes(stage, path):
         for p in Usd.PrimRange(prim):
             if p.GetTypeName() == "Mesh":
                 count += 1
+            if p.IsInstance():
+                proto = p.GetPrototype()
+                if proto:
+                    for proto_p in Usd.PrimRange(proto):
+                        if proto_p.GetTypeName() == "Mesh":
+                            count += 1
     return count
 
 def main():
