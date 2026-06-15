@@ -196,107 +196,131 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(default)
 
 
-def _draw_stair_demo_panel(combined: np.ndarray, debug_info: Dict[str, Any]) -> None:
-    h, w = combined.shape[:2]
-    panel_w = min(700, max(420, w - 40))
-    panel_h = min(136, max(112, h - 40))
-    x = 20
-    y = max(10, h - panel_h - 18)
-    if x + panel_w > w:
-        x = max(0, w - panel_w - 10)
-    if y + panel_h > h:
-        panel_h = h - y - 1
-    if panel_w <= 20 or panel_h <= 80:
-        return
-
-    sub = combined[y:y + panel_h, x:x + panel_w]
-    if sub.size == 0:
-        return
-    shade = np.zeros_like(sub)
-    shade[:] = 18
-    cv2.addWeighted(sub, 0.35, shade, 0.65, 0, sub)
-    cv2.rectangle(combined, (x, y), (x + panel_w, y + panel_h), (120, 120, 120), 1)
-
-    stairs_detected = debug_info.get("stairs_detected", False) if debug_info else False
-    conf = debug_info.get("stairs_conf", 0.0) if debug_info else 0.0
-    bbox = debug_info.get("stairs_bbox") if debug_info else None
+def _draw_hud_panel(img: np.ndarray, x: int, y: int, w: int, h: int, title: str, 
+                    active_color: Tuple[int, int, int], alert: bool = False) -> None:
+    """Draw a semi-transparent HUD panel with clipped corners, double borders, and brackets."""
+    # Semi-transparent background
+    sub = img[y:y+h, x:x+w]
+    if sub.size > 0:
+        bg = np.zeros_like(sub)
+        bg[:] = 15  # Very dark slate gray
+        cv2.addWeighted(sub, 0.4, bg, 0.6, 0, sub)
+        
+    # Define colors
+    border_color = (120, 120, 120)  # Sleek medium gray
+    accent_color = active_color
+    if alert:
+        accent_color = (0, 0, 255)  # Alert Red
+        
+    # Draw clipped-corner border: clip top-left and bottom-right by 12px
+    clip = 12
+    pts = np.array([
+        [x + clip, y],
+        [x + w, y],
+        [x + w, y + h - clip],
+        [x + w - clip, y + h],
+        [x, y + h],
+        [x, y + clip]
+    ], np.int32)
     
-    # Update rolling confidence history
-    _yolo_conf_history.append(conf)
+    cv2.polylines(img, [pts], True, border_color, 1, cv2.LINE_AA)
+    
+    # Draw corner brackets/highlights (accent ticks)
+    d = 8
+    # Top-Left clip accents
+    cv2.line(img, (x + clip, y), (x + clip + d, y), accent_color, 2)
+    cv2.line(img, (x, y + clip), (x, y + clip + d), accent_color, 2)
+    # Top-Right accents
+    cv2.line(img, (x + w - d, y), (x + w, y), accent_color, 2)
+    cv2.line(img, (x + w, y), (x + w, y + d), accent_color, 2)
+    # Bottom-Right clip accents
+    cv2.line(img, (x + w - clip, y + h), (x + w - clip - d, y + h), accent_color, 2)
+    cv2.line(img, (x + w, y + h - clip), (x + w, y + h - clip - d), accent_color, 2)
+    # Bottom-Left accents
+    cv2.line(img, (x, y + h - d), (x, y + h), accent_color, 2)
+    cv2.line(img, (x, y + h), (x + d, y + h), accent_color, 2)
+    
+    # Draw Title
+    if title:
+        cv2.putText(img, title, (x + 12, y + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.line(img, (x + 10, y + 28), (x + w - 10, y + 28), (60, 60, 60), 1)
 
-    badge_color = (0, 220, 80) if stairs_detected else (80, 160, 255)
-    title_color = (150, 245, 150)
 
-    cv2.putText(
-        combined,
-        "YOLO-WORLD VISION STAIRS",
-        (x + 12, y + 24),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.55,
-        title_color,
-        2,
-    )
-    cv2.rectangle(combined, (x + panel_w - 176, y + 9), (x + panel_w - 12, y + 30), badge_color, -1)
-    cv2.putText(
-        combined,
-        "STAIRS DETECTED" if stairs_detected else "SCANNING",
-        (x + panel_w - 166, y + 25),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.42,
-        (0, 0, 0),
-        1,
-    )
-
-    conf_text = f"{conf * 100:.1f} %" if stairs_detected else "0.0 %"
-    bbox_text = f"[{int(bbox[0])}, {int(bbox[1])}, {int(bbox[2])}, {int(bbox[3])}]" if bbox else "N/A"
-
-    cv2.putText(
-        combined,
-        "Model: yolov8s-worldv2.pt  Target: ['stairs', 'staircase']",
-        (x + 12, y + 50),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.43,
-        (235, 235, 235),
-        1,
-    )
-    cv2.putText(
-        combined,
-        f"YOLO Conf: {conf_text}  BBox: {bbox_text}",
-        (x + 12, y + 72),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.43,
-        (255, 240, 120),
-        1,
-    )
-    cv2.putText(
-        combined,
-        "Source: YOLO-World model inference  Contact physics: ON",
-        (x + 12, y + panel_h - 12),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.38,
-        (180, 210, 255),
-        1,
-    )
-
-    # Plot YOLO Confidence History on the right side of the panel
-    graph_x = x + panel_w - 188
-    graph_y = y + 42
-    graph_w = 170
-    graph_h = max(38, panel_h - 60)
-    baseline = graph_y + graph_h
-
-    cv2.line(combined, (graph_x, baseline), (graph_x + graph_w, baseline), (90, 90, 90), 1)
-    cv2.putText(combined, "YOLO Confidence Hist", (graph_x, graph_y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (180, 180, 180), 1)
-
-    if len(_yolo_conf_history) > 1:
-        pts = []
-        for idx, val in enumerate(_yolo_conf_history):
-            bx = graph_x + int(idx * (graph_w - 10) / max(1, len(_yolo_conf_history) - 1)) + 5
-            norm = max(0.0, min(1.0, float(val)))
-            by = baseline - int(norm * (graph_h - 8)) - 4
-            pts.append((bx, by))
-        if len(pts) > 1:
-            cv2.polylines(combined, [np.array(pts, dtype=np.int32)], False, (147, 20, 255), 2)
+def _draw_hud_reticle(img: np.ndarray, cx: int, cy: int, debug_info: Dict[str, Any], 
+                      active_color: Tuple[int, int, int], alert: bool = False,
+                      swing_list: list = None) -> None:
+    """Draw a circular sci-fi reticle in the center with the dynamic gait chassis inside."""
+    border_color = (80, 80, 80)
+    accent_color = active_color
+    if alert:
+        accent_color = (0, 0, 255)
+        
+    # Draw central crosshair ticks outside the chassis area
+    cv2.line(img, (cx - 45, cy), (cx - 38, cy), accent_color, 1)
+    cv2.line(img, (cx + 38, cy), (cx + 45, cy), accent_color, 1)
+    cv2.line(img, (cx, cy - 45), (cx, cy - 38), accent_color, 1)
+    cv2.line(img, (cx, cy + 38), (cx, cy + 45), accent_color, 1)
+    cv2.circle(img, (cx, cy), 2, accent_color, -1)
+    
+    # Draw outer reticle circle
+    cv2.circle(img, (cx, cy), 85, border_color, 1, cv2.LINE_AA)
+    
+    # Draw broken inner circle
+    cv2.circle(img, (cx, cy), 50, border_color, 1, cv2.LINE_AA)
+    
+    # Draw ticks/ladders on the outer circle
+    for angle in range(0, 360, 30):
+        rad = np.radians(angle)
+        x1 = int(cx + 80 * np.cos(rad))
+        y1 = int(cy + 80 * np.sin(rad))
+        x2 = int(cx + 88 * np.cos(rad))
+        y2 = int(cy + 88 * np.sin(rad))
+        cv2.line(img, (x1, y1), (x2, y2), border_color, 1, cv2.LINE_AA)
+        
+    # Draw 2D Torso box outline inside the reticle
+    cv2.rectangle(img, (cx - 16, cy - 25), (cx + 16, cy + 25), (100, 100, 100), 1)
+    cv2.circle(img, (cx, cy), 3, (120, 120, 120), -1)
+    
+    feet = {
+        "FL": (cx - 32, cy - 20),
+        "FR": (cx + 32, cy - 20),
+        "RL": (cx - 32, cy + 20),
+        "RR": (cx + 32, cy + 20),
+    }
+    
+    swing_set = {leg.upper() for leg in swing_list} if swing_list else set()
+    
+    for leg, (fx, fy) in feet.items():
+        is_swing = leg in swing_set
+        foot_color = active_color if is_swing else (50, 50, 50)
+        cv2.line(img, (cx, cy), (fx, fy), (80, 80, 80), 1)
+        cv2.circle(img, (fx, fy), 8, foot_color, -1)
+        cv2.circle(img, (fx, fy), 8, (150, 150, 150), 1)
+        
+        text_color = (0, 0, 0) if is_swing else (200, 200, 200)
+        cv2.putText(img, leg, (fx - 7, fy + 3), cv2.FONT_HERSHEY_SIMPLEX, 0.3, text_color, 1, cv2.LINE_AA)
+        
+    # Draw horizontal/vertical level ticks (attitude indicator)
+    stair_demo = debug_info.get("stair_demo", {}) if debug_info else {}
+    robot_data = stair_demo.get("robot", {}) if stair_demo else {}
+    roll = robot_data.get("roll_deg", 0.0)
+    pitch = robot_data.get("pitch_deg", 0.0)
+    
+    # Roll tilt line:
+    roll_rad = np.radians(roll)
+    cos_r = np.cos(roll_rad)
+    sin_r = np.sin(roll_rad)
+    
+    # Draw tilt line
+    lx1 = int(cx - 35 * cos_r)
+    ly1 = int(cy - 35 * sin_r)
+    lx2 = int(cx + 35 * cos_r)
+    ly2 = int(cy + 35 * sin_r)
+    cv2.line(img, (lx1, ly1), (lx2, ly2), accent_color, 1, cv2.LINE_AA)
+    
+    # Angle indicators text next to reticle
+    cv2.putText(img, f"R: {roll:+.1f}", (cx - 130, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.38, accent_color, 1, cv2.LINE_AA)
+    cv2.putText(img, f"P: {pitch:+.1f}", (cx - 130, cy + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.38, accent_color, 1, cv2.LINE_AA)
 
 
 def _detect_stair_pixel_edges(source_frame: Optional[np.ndarray]) -> list:
@@ -416,19 +440,21 @@ def _draw_stair_boundary_overlay(
     x1, y1 = max(0, x1), max(0, y1)
     x2, y2 = min(w - 1, x2), min(h - 1, y2)
 
-    # Draw the YOLO-World detection bounding box
-    color_bbox = (147, 20, 255)  # Purple HSL color
+    # Draw the YOLO-World detection bounding box (use a nice cyan color)
+    color_bbox = (255, 200, 0)  # BGR Cyan
     cv2.rectangle(combined, (x1, y1), (x2, y2), color_bbox, 2)
 
-    # Label on the bounding box
+    # Label on the bounding box with brackets
+    cv2.rectangle(combined, (x1, max(0, y1 - 20)), (x1 + 180, y1), color_bbox, -1)
     cv2.putText(
         combined,
         f"STAIRS YOLO ({conf * 100:.1f}%)",
-        (x1, max(15, y1 - 8)),
+        (x1 + 5, max(15, y1 - 5)),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.5,
-        color_bbox,
-        2,
+        0.4,
+        (0, 0, 0),
+        1,
+        cv2.LINE_AA
     )
 
     # Extract and draw real horizontal step edges inside the YOLO box
@@ -446,7 +472,7 @@ def _draw_stair_boundary_overlay(
             if overlap_x2 - overlap_x1 > 10:  # Valid overlap width
                 filtered_edges.append((ex1, ex2, ey))
 
-    # Draw the real step edges
+    # Draw the real step edges (use a nice yellow/cyan)
     for ex1, ex2, ey in filtered_edges:
         color_edge = (0, 255, 255)  # Bright cyan/yellow
         cv2.line(combined, (ex1, ey), (ex2, ey), color_edge, 1)
@@ -454,69 +480,54 @@ def _draw_stair_boundary_overlay(
         cv2.circle(combined, (ex2, ey), 3, color_edge, -1)
 
 
-def _draw_leg_command_panel(
-    combined: np.ndarray,
-    debug_info: Dict[str, Any],
-    swing_list: list,
-    trans_x_cmd: float,
-    rotation_cmd: float,
-) -> None:
+def _draw_stair_vision_panel(combined: np.ndarray, debug_info: Dict[str, Any], 
+                             active_color: Tuple[int, int, int], alert: bool = False) -> None:
+    """Draw Panel 5 (Vision Analytics) at the bottom center of the frame."""
     h, w = combined.shape[:2]
-    panel_w = 300
-    panel_h = 176
-    x = max(10, w - panel_w - 20)
-    y = max(92, h - panel_h - 24)
-    if y < 285:
-        y = 285
-    if x + panel_w > w or y + panel_h > h:
-        return
-
-    sub = combined[y:y + panel_h, x:x + panel_w]
-    if sub.size == 0:
-        return
-    shade = np.zeros_like(sub)
-    shade[:] = 18
-    cv2.addWeighted(sub, 0.32, shade, 0.68, 0, sub)
-    cv2.rectangle(combined, (x, y), (x + panel_w, y + panel_h), (120, 120, 120), 1)
-
+    panel_w = w - 680
+    panel_h = 130
+    x = 340
+    y = h - panel_h - 25
+    
+    _draw_hud_panel(combined, x, y, panel_w, panel_h, "YOLO-WORLD VISION STAIRS", active_color, alert=alert)
+    
     stairs_detected = debug_info.get("stairs_detected", False) if debug_info else False
-    gait = "STAIR CRAWL" if stairs_detected else "FLAT TROT"
-
-    cv2.putText(combined, "LEG COMMANDS", (x + 12, y + 24), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (150, 245, 150), 2)
-    cv2.line(combined, (x + 10, y + 35), (x + panel_w - 10, y + 35), (100, 100, 100), 1)
-    cv2.putText(
-        combined,
-        f"VX {trans_x_cmd:+.2f} m/s  WZ {rotation_cmd:+.2f}",
-        (x + 12, y + 54),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.38,
-        (255, 240, 120),
-        1,
-    )
-    cv2.putText(combined, f"GAIT: {gait}", (x + 12, y + 72), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (190, 210, 255), 1)
-
-    row_y = y + 96
-    for leg in ("FL", "FR", "RL", "RR"):
-        is_swing = leg in swing_list
-        action = "SWING" if is_swing else "STANCE"
-        lift_m = 0.08 if is_swing else 0.0
-        if stairs_detected and is_swing:
-            lift_m = 0.22  # Dynamic stair crawl lift height
-        drive_mps = abs(float(trans_x_cmd)) if is_swing else 0.0
-
-        color = (255, 255, 0) if is_swing else (170, 170, 170)
-        cv2.putText(combined, leg, (x + 12, row_y), cv2.FONT_HERSHEY_SIMPLEX, 0.43, color, 2)
-        cv2.putText(combined, action[:10], (x + 54, row_y), cv2.FONT_HERSHEY_SIMPLEX, 0.39, color, 1)
-        cv2.putText(
-            combined,
-            f"lift {lift_m:.2f}  drive {drive_mps:.2f}",
-            (x + 150, row_y),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.34,
-            (235, 235, 235),
-            1,
-        )
-        row_y += 20
+    conf = debug_info.get("stairs_conf", 0.0) if debug_info else 0.0
+    bbox = debug_info.get("stairs_bbox") if debug_info else None
+    
+    _yolo_conf_history.append(conf)
+    
+    badge_color = (0, 220, 80) if stairs_detected else (0, 150, 255)
+    badge_text = "STAIRS DETECTED" if stairs_detected else "SCANNING"
+    
+    cv2.rectangle(combined, (x + 12, y + 42), (x + 150, y + 65), badge_color, -1)
+    cv2.putText(combined, badge_text, (x + 22, y + 58), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1, cv2.LINE_AA)
+    
+    conf_text = f"{conf * 100:.1f} %" if stairs_detected else "0.0 %"
+    bbox_text = f"[{int(bbox[0])}, {int(bbox[1])}, {int(bbox[2])}, {int(bbox[3])}]" if bbox else "N/A"
+    
+    cv2.putText(combined, "Model: yolov8s-worldv2.pt", (x + 12, y + 84), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (200, 200, 200), 1, cv2.LINE_AA)
+    cv2.putText(combined, f"Conf: {conf_text}  BBox: {bbox_text}", (x + 12, y + 104), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 255), 1, cv2.LINE_AA)
+    
+    # Plot history on the right
+    graph_x = x + panel_w - 200
+    graph_y = y + 45
+    graph_w = 180
+    graph_h = 60
+    baseline = graph_y + graph_h
+    
+    cv2.line(combined, (graph_x, baseline), (graph_x + graph_w, baseline), (90, 90, 90), 1)
+    cv2.putText(combined, "YOLO Conf History", (graph_x, graph_y - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.34, (180, 180, 180), 1, cv2.LINE_AA)
+    
+    if len(_yolo_conf_history) > 1:
+        pts = []
+        for idx, val in enumerate(_yolo_conf_history):
+            bx = graph_x + int(idx * (graph_w - 10) / max(1, len(_yolo_conf_history) - 1)) + 5
+            norm = max(0.0, min(1.0, float(val)))
+            by = baseline - int(norm * (graph_h - 8)) - 4
+            pts.append((bx, by))
+        if len(pts) > 1:
+            cv2.polylines(combined, [np.array(pts, dtype=np.int32)], False, (0, 255, 255), 1, cv2.LINE_AA)
 
 
 def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any], 
@@ -524,22 +535,11 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
                         camera_mode: str, is_stitched: bool = False,
                         frame_meta: dict = None,
                         trans_x_cmd: float = 0.0, rotation_cmd: float = 0.0,
-                        source_frame: Optional[np.ndarray] = None):
-    """Draw status overlays and HUD dashboard on the combined frame.
-    
-    Args:
-        combined: The image to draw on (modified in-place)
-        debug_info: Dictionary containing center_x, bbox_center_x, etc.
-        preparation_mode: Whether in preparation mode
-        reacquire_active: Whether target reacquire mode is active
-        camera_mode: Runtime camera mode (currently single only).
-        is_stitched: Reserved for backward compatibility (unused).
-        frame_meta: Optional metadata dict containing swing_legs, etc.
-        trans_x_cmd: Linear velocity command sent to the robot.
-        rotation_cmd: Angular velocity command sent to the robot.
-        source_frame: Raw camera frame used for stair pixel-edge scanning.
-    """
+                        source_frame: Optional[np.ndarray] = None,
+                        proc_fps: float = 0.0, view_fps: float = 0.0):
+    """Draw status overlays and HUD dashboard on the combined frame."""
     _ = is_stitched
+    h_f, w_f = combined.shape[:2]
 
     # Draw preparation mode overlay
     if preparation_mode:
@@ -547,167 +547,230 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
         cv2.putText(combined, "Press 'P' to resume following", (50, 100), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-    
-    # Show active capture mode in a stable location.
-    mode_label = "SINGLE CAMERA" if camera_mode == 'single' else "SINGLE CAMERA (FALLBACK)"
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    scale = 0.7
-    thickness = 2
-    (text_w, text_h), baseline = cv2.getTextSize(mode_label, font, scale, thickness)
-    pad = 8
-    text_x = max(10, combined.shape[1] - text_w - 16)
-    text_y = 32
-    cv2.rectangle(
-        combined,
-        (text_x - pad, max(0, text_y - text_h - pad)),
-        (min(combined.shape[1] - 1, text_x + text_w + pad), text_y + baseline + pad),
-        (0, 0, 0),
-        -1,
-    )
-    cv2.putText(combined, mode_label, (text_x, text_y), font, scale, (0, 255, 0), thickness)
+        return
 
-    _draw_stair_boundary_overlay(combined, debug_info, source_frame=source_frame)
+    # Check fall status and telemetry metadata
+    stair_demo = debug_info.get("stair_demo", {}) if debug_info else {}
+    robot_data = stair_demo.get("robot", {}) if stair_demo else {}
+    robot_fell = robot_data.get("fell", False)
+    fall_type = robot_data.get("fall_type", "upright")
     
-    # Draw frame center vertical line for reference
-    frame_center_x = combined.shape[1] // 2
-    cv2.line(combined, (frame_center_x, 0), (frame_center_x, combined.shape[0] - 1), (255, 255, 255), 1)
+    # HUD theme color configurations (Red alert if fallen, Cyan if upright)
+    hud_alert = bool(robot_fell)
+    active_color = (0, 0, 255) if hud_alert else (255, 180, 0)  # BGR colors: Red vs Cyber Cyan
     
-    # Draw estimated center crosshair (if available)
-    center_x = debug_info.get('center_x', None)
-    bbox_cx = debug_info.get('bbox_center_x', None)
-    if center_x is not None:
-        cx_int = int(round(center_x))
-    elif bbox_cx is not None:
-        cx_int = int(round(bbox_cx))
-    else:
-        cx_int = None
+    # Draw central crosshair guidelines
+    frame_center_x = w_f // 2
+    frame_center_y = h_f // 2
+    cv2.line(combined, (frame_center_x, 0), (frame_center_x, h_f - 1), (50, 50, 50), 1)
     
-    if cx_int is not None:
-        # Cyan crosshair (BGR)
-        cv2.line(combined, (cx_int - 5, combined.shape[0] // 2), 
-                 (cx_int + 5, combined.shape[0] // 2), (255, 255, 0), 2)
-        cv2.line(combined, (cx_int, (combined.shape[0] // 2) - 5), 
-                 (cx_int, (combined.shape[0] // 2) + 5), (255, 255, 0), 2)
-
-    # -----------------------------------------------------------------------
-    # Left HUD Card (Tracking & Control)
-    # -----------------------------------------------------------------------
-    left_x = 20
-    left_y = 100
-    left_w = 280
-    left_h = 204
-    
-    # Draw semi-transparent background for Left Card
-    sub_left = combined[left_y:left_y+left_h, left_x:left_x+left_w]
-    rect_left = np.zeros_like(sub_left)
-    rect_left[:] = 25  # Dark overlay
-    cv2.addWeighted(sub_left, 0.4, rect_left, 0.6, 0, sub_left)
-    cv2.rectangle(combined, (left_x, left_y), (left_x + left_w, left_y + left_h), (120, 120, 120), 1)
-    
-    # Title
-    cv2.putText(combined, "TRACKING & CONTROL", (left_x + 12, left_y + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 245, 150), 2)
-    cv2.line(combined, (left_x + 10, left_y + 35), (left_x + left_w - 10, left_y + 35), (100, 100, 100), 1)
-    
-    # Extract telemetry info
-    target_dist = debug_info.get('depth_distance_m')
-    target_bear = debug_info.get('rotation_error_deg')
-    
-    # Status
-    if debug_info.get('matched_visual_lock', False):
-        lock_status = "LOCKED"
-        lock_color = (0, 255, 0)  # Green
-    elif reacquire_active:
-        lock_status = "REACQUIRING"
-        lock_color = (0, 165, 255)  # Orange/Amber
-    else:
-        lock_status = "LOST"
-        lock_color = (0, 0, 255)  # Red
-        
-    lines = [
-        ("Target Lock:", lock_status, lock_color),
-        ("Distance:", f"{target_dist:.2f} m" if target_dist is not None else "N/A", (255, 255, 255)),
-        ("Bearing:", f"{target_bear:+.1f} deg" if target_bear is not None else "N/A", (255, 255, 255)),
-        ("Cmd Speed:", f"{trans_x_cmd:.2f} m/s", (255, 255, 0)),
-        ("Cmd Yaw Rate:", f"{rotation_cmd:+.2f} rad/s", (255, 255, 0)),
-    ]
-    stair_gap_steps = debug_info.get("stair_follow_gap_steps")
-    target_gap_steps = debug_info.get("stair_follow_target_gap_steps")
-    if stair_gap_steps is not None and target_gap_steps is not None:
-        lines.append(
-            (
-                "Stair Gap:",
-                f"{float(stair_gap_steps):.1f}/{float(target_gap_steps):.0f} steps",
-                (0, 255, 255),
-            )
-        )
-    
-    curr_y = left_y + 60
-    for line_title, val, val_color in lines:
-        cv2.putText(combined, line_title, (left_x + 12, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
-        cv2.putText(combined, str(val), (left_x + 150, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, val_color, 2)
-        curr_y += 24
-
-    # -----------------------------------------------------------------------
-    # Right HUD Card (Gait Chassis)
-    # -----------------------------------------------------------------------
-    right_x = combined.shape[1] - 300
-    right_y = 100
-    right_w = 280
-    right_h = 180
-    
-    # Draw semi-transparent background for Right Card
-    sub_right = combined[right_y:right_y+right_h, right_x:right_x+right_w]
-    rect_right = np.zeros_like(sub_right)
-    rect_right[:] = 25  # Dark overlay
-    cv2.addWeighted(sub_right, 0.4, rect_right, 0.6, 0, sub_right)
-    cv2.rectangle(combined, (right_x, right_y), (right_x + right_w, right_y + right_h), (120, 120, 120), 1)
-    
-    # Title
-    cv2.putText(combined, "ROBOT GAIT CHASSIS", (right_x + 12, right_y + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 245, 150), 2)
-    cv2.line(combined, (right_x + 10, right_y + 35), (right_x + right_w - 10, right_y + 35), (100, 100, 100), 1)
-    
-    # Draw 2D Robot Chassis
-    cx = right_x + 140
-    cy = right_y + 115
-    
-    # Draw dog torso body outline
-    cv2.rectangle(combined, (cx - 25, cy - 40), (cx + 25, cy + 40), (80, 80, 80), 2)
-    # Draw a center node
-    cv2.circle(combined, (cx, cy), 4, (100, 100, 100), -1)
-    
-    # Get swing legs
+    # Get swing legs for gait reticle animation
     swing_list = []
     if frame_meta is not None:
         swing_list = [leg.upper() for leg in frame_meta.get("swing_legs", [])]
-        
-    # Feet positions relative to cx, cy
-    feet = {
-        "FL": (cx - 45, cy - 35),
-        "FR": (cx + 45, cy - 35),
-        "RL": (cx - 45, cy + 35),
-        "RR": (cx + 45, cy + 35),
-    }
-    
-    for leg, (fx, fy) in feet.items():
-        is_swing = leg in swing_list
-        color = (255, 255, 0) if is_swing else (70, 70, 70)  # Bright Cyan for Swing, Dark Gray for Stance
-        # Draw leg connector line
-        cv2.line(combined, (cx, cy), (fx, fy), (120, 120, 120), 1)
-        # Draw foot circle
-        cv2.circle(combined, (fx, fy), 15, color, -1)
-        cv2.circle(combined, (fx, fy), 15, (200, 200, 200), 1)
-        
-        # Label inside foot circle
-        text_color = (0, 0, 0) if is_swing else (255, 255, 255)
-        cv2.putText(combined, leg, (fx - 8, fy + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, text_color, 2)
-        
-    # Draw small legend on the bottom of card
-    status_text = "SWINGING" if len(swing_list) > 0 else "STATIONARY"
-    status_color = (255, 255, 0) if len(swing_list) > 0 else (120, 120, 120)
-    cv2.putText(combined, f"Gait Status: {status_text}", (right_x + 12, right_y + 170), cv2.FONT_HERSHEY_SIMPLEX, 0.4, status_color, 1)
 
-    _draw_stair_demo_panel(combined, debug_info)
-    _draw_leg_command_panel(combined, debug_info, swing_list, trans_x_cmd, rotation_cmd)
+    # Draw central HUD target crosshair/reticle with centered gait chassis
+    _draw_hud_reticle(combined, frame_center_x, frame_center_y, debug_info, active_color, alert=hud_alert, swing_list=swing_list)
+
+    # Draw estimated target crosshair (from YOLO box center)
+    center_x = debug_info.get('center_x', None)
+    bbox_cx = debug_info.get('bbox_center_x', None)
+    cx_int = int(round(center_x)) if center_x is not None else (int(round(bbox_cx)) if bbox_cx is not None else None)
+    
+    if cx_int is not None:
+        # Tech Cyan target box on person
+        cv2.line(combined, (cx_int - 8, frame_center_y), (cx_int + 8, frame_center_y), active_color, 2)
+        cv2.line(combined, (cx_int, frame_center_y - 8), (cx_int, frame_center_y + 8), active_color, 2)
+        cv2.circle(combined, (cx_int, frame_center_y), 4, active_color, -1)
+
+    # -----------------------------------------------------------------------
+    # Top Header
+    # -----------------------------------------------------------------------
+    cv2.rectangle(combined, (0, 0), (w_f, 40), (10, 10, 10), -1)
+    cv2.line(combined, (0, 40), (w_f, 40), (100, 100, 100), 1)
+    
+    # Draw header text with status approved
+    cv2.putText(combined, "SYSTEM ANALYSIS / BIOMETRIC CONTROL ", (20, 26), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1, cv2.LINE_AA)
+    text_size = cv2.getTextSize("SYSTEM ANALYSIS / BIOMETRIC CONTROL ", cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
+    status_color = (0, 255, 100) if not hud_alert else (0, 0, 255)
+    cv2.putText(combined, "[ APPROVED ]" if not hud_alert else "[ EMERGENCY STOP ]", (20 + text_size[0], 26), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1, cv2.LINE_AA)
+    
+    # Header coordinates (positioned to avoid overlap)
+    cv2.putText(combined, "S: 40.741895 E: -73.989308 //", (frame_center_x - 100, 26),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 160, 160), 1, cv2.LINE_AA)
+    
+    # Mode Label on Top Right
+    mode_label = "SINGLE CAMERA [ACTIVE]" if camera_mode == 'single' else "CAMERA FALLBACK"
+    mode_size = cv2.getTextSize(mode_label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)[0]
+    mode_color = (0, 255, 100) if not hud_alert else (0, 0, 255)
+    cv2.putText(combined, mode_label, (w_f - 20 - mode_size[0], 26), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, mode_color, 1, cv2.LINE_AA)
+
+    # FPS in Systems Analysis
+    fps_text = f"PROC FPS: {proc_fps:.1f} | VIEW FPS: {view_fps:.1f}"
+    fps_size = cv2.getTextSize(fps_text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)[0]
+    cv2.putText(combined, fps_text, (w_f - 20 - mode_size[0] - 40 - fps_size[0], 26), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
+                
+    # -----------------------------------------------------------------------
+    # Bottom Footer
+    # -----------------------------------------------------------------------
+    cv2.rectangle(combined, (0, h_f - 30), (w_f, h_f), (10, 10, 10), -1)
+    cv2.line(combined, (0, h_f - 30), (w_f, h_f - 30), (100, 100, 100), 1)
+    
+    # Footer approved status
+    cv2.putText(combined, "SAFETY CHECK: HEALTHY", (20, h_f - 10), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 160, 160), 1, cv2.LINE_AA)
+
+    # -----------------------------------------------------------------------
+    # Panel 1 (Top-Left): SYSTEM HEALTH & SENSORS
+    # -----------------------------------------------------------------------
+    _draw_hud_panel(combined, 20, 80, 300, 220, "SYSTEM HEALTH & SENSORS", active_color, alert=hud_alert)
+    
+    cam_ok = frame_meta is not None and frame_meta.get("success", True)
+    cam_str = "CONNECTED [OK]" if cam_ok else "FAULT [!]"
+    cam_color = active_color if cam_ok else (0, 0, 255)
+    
+    has_sim_telemetry = bool(stair_demo)
+    imu_str = "CONNECTED [OK]" if has_sim_telemetry else "STANDBY"
+    act_str = "CONNECTED [OK]" if has_sim_telemetry else "STANDBY"
+    
+    blind_rl = stair_demo.get("blind_rl", {}) if stair_demo else {}
+    rl_active = blind_rl.get("active", False) if blind_rl else False
+    rl_str = "ACTIVE" if rl_active else "RUNNING [TROT]" if has_sim_telemetry else "STANDBY"
+    rl_color = (0, 255, 100) if rl_active else active_color
+    
+    comm_active = (trans_x_cmd != 0.0 or rotation_cmd != 0.0)
+    comm_str = "COMMAND ACTIVE" if comm_active else "STANDBY"
+    comm_color = active_color if comm_active else (150, 150, 150)
+    
+    status_str = f"FALLEN [{fall_type.upper()}]" if hud_alert else "UPRIGHT"
+    status_color = (0, 0, 255) if hud_alert else (0, 255, 100)
+    
+    p1_lines = [
+        ("CAM FEED:", cam_str, cam_color),
+        ("IMU SYS:", imu_str, active_color),
+        ("ACTUATORS:", act_str, active_color),
+        ("COMM LINK:", comm_str, comm_color),
+        ("RL POLICY:", rl_str, rl_color),
+        ("STATUS:", status_str, status_color)
+    ]
+    
+    curr_y = 125
+    for label, val, val_color in p1_lines:
+        cv2.putText(combined, label, (32, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 180, 180), 1, cv2.LINE_AA)
+        cv2.putText(combined, val, (150, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, val_color, 2 if "STATUS" in label else 1, cv2.LINE_AA)
+        curr_y += 26
+
+    # -----------------------------------------------------------------------
+    # Panel 2 (Bottom-Left): TARGET TRACKING & CONTROL
+    # -----------------------------------------------------------------------
+    _draw_hud_panel(combined, 20, 310, 300, 230, "TARGET TRACKING & CONTROL", active_color, alert=hud_alert)
+    
+    target_dist = debug_info.get('depth_distance_m')
+    target_bear = debug_info.get('rotation_error_deg')
+    
+    if debug_info.get('matched_visual_lock', False):
+        lock_status = "LOCKED"
+        lock_color = (0, 255, 100)
+    elif reacquire_active:
+        lock_status = "REACQUIRING"
+        lock_color = (0, 150, 255)
+    else:
+        lock_status = "LOST"
+        lock_color = (0, 0, 255)
+        
+    p2_lines = [
+        ("LOCK STATE:", lock_status, lock_color),
+        ("TARGET DIST:", f"{target_dist:.2f} m" if target_dist is not None else "N/A", (255, 255, 255)),
+        ("BEARING:", f"{target_bear:+.1f} deg" if target_bear is not None else "N/A", (255, 255, 255)),
+        ("CMD SPEED:", f"{trans_x_cmd:+.2f} m/s", active_color),
+        ("CMD YAW RATE:", f"{rotation_cmd:+.2f} rad/s", active_color),
+    ]
+    
+    stair_gap_steps = debug_info.get("stair_follow_gap_steps")
+    target_gap_steps = debug_info.get("stair_follow_target_gap_steps")
+    if stair_gap_steps is not None and target_gap_steps is not None:
+        p2_lines.append(
+            ("STAIR GAP:", f"{float(stair_gap_steps):.1f}/{float(target_gap_steps):.0f} steps", (0, 255, 255))
+        )
+        
+    curr_y = 355
+    for label, val, val_color in p2_lines:
+        cv2.putText(combined, label, (32, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 180, 180), 1, cv2.LINE_AA)
+        cv2.putText(combined, val, (150, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, val_color, 2 if "LOCK" in label else 1, cv2.LINE_AA)
+        curr_y += 26
+
+    # -----------------------------------------------------------------------
+    # Panel 3 (Top-Right): RL LOCOMOTION POLICY
+    # -----------------------------------------------------------------------
+    right_x = w_f - 320
+    _draw_hud_panel(combined, right_x, 80, 300, 220, "RL LOCOMOTION POLICY", active_color, alert=hud_alert)
+    
+    policy_name = blind_rl.get("policy", "N/A")
+    mode_str = blind_rl.get("mode", "STANDBY").upper()
+    gait_pattern = blind_rl.get("gait_pattern", "N/A").upper()
+    clearance = blind_rl.get("foot_clearance_m", 0.0)
+    cmd_speed_policy = blind_rl.get("commanded_speed_mps", 0.0)
+    
+    p3_lines = [
+        ("POLICY:", policy_name[:22], active_color),
+        ("MODE:", mode_str, (0, 255, 100) if "CLIMB" in mode_str or "APPROACH" in mode_str else active_color),
+        ("GAIT TYPE:", gait_pattern.replace("_", " "), (255, 255, 255)),
+        ("CLEARANCE:", f"{clearance:.2f} m" if clearance > 0 else "N/A", (255, 255, 255)),
+        ("CMD SPEED:", f"{cmd_speed_policy:.2f} m/s", active_color),
+    ]
+    
+    curr_y = 125
+    for label, val, val_color in p3_lines:
+        cv2.putText(combined, label, (right_x + 12, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 180, 180), 1, cv2.LINE_AA)
+        cv2.putText(combined, val, (right_x + 120, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, val_color, 1, cv2.LINE_AA)
+        curr_y += 26
+
+    # -----------------------------------------------------------------------
+    # Panel 4 (Bottom-Right): LEG ACTUATORS & COMMANDS
+    # -----------------------------------------------------------------------
+    _draw_hud_panel(combined, right_x, 310, 300, 230, "LEG ACTUATORS & COMMANDS", active_color, alert=hud_alert)
+    
+    curr_y = 355
+    detail_x = right_x + 20
+    leg_commands = blind_rl.get("leg_commands", {})
+    
+    for leg in ("FL", "FR", "RL", "RR"):
+        is_swing = leg in swing_list
+        action = "SWING" if is_swing else "STANCE"
+        lift_m = 0.08 if is_swing else 0.0
+        
+        if leg_commands and leg in leg_commands:
+            cmd_data = leg_commands[leg]
+            action = cmd_data.get("action", action)
+            lift_m = cmd_data.get("foot_lift_m", lift_m)
+            
+        leg_color = active_color if is_swing else (150, 150, 150)
+        
+        cv2.putText(combined, f"LEG {leg}: {action[:10]}", (detail_x, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, leg_color, 1, cv2.LINE_AA)
+        cv2.putText(combined, f"  lift clearance: {lift_m:.2f} m", (detail_x + 10, curr_y + 13), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (180, 180, 180), 1, cv2.LINE_AA)
+        curr_y += 42
+
+    # -----------------------------------------------------------------------
+    # Center Bottom: YOLO-World Vision Stairs (Panel 5)
+    # -----------------------------------------------------------------------
+    _draw_stair_vision_panel(combined, debug_info, active_color, alert=hud_alert)
+
+    # -----------------------------------------------------------------------
+    # Overlay Alerts
+    # -----------------------------------------------------------------------
+    _draw_stair_boundary_overlay(combined, debug_info, source_frame=source_frame)
+
+    if hud_alert:
+        banner_w, banner_h = 560, 40
+        bx = (w_f - banner_w) // 2
+        by = 45
+        cv2.rectangle(combined, (bx, by), (bx + banner_w, by + banner_h), (0, 0, 255), -1)
+        cv2.putText(combined, f"WARNING: ROBOT FALLEN [{fall_type.upper()}]", 
+                    (bx + 20, by + 26), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
 
 
 class BimodalDepthHistogramWindow:

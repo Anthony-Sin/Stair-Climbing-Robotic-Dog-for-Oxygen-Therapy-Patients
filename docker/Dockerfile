@@ -92,6 +92,9 @@ RUN git clone https://github.com/ultralytics/ultralytics.git /workspace/ultralyt
 WORKDIR /workspace/ultralytics
 RUN pip3 install --no-cache-dir . --no-deps
 
+# Install CLIP for YOLO-World open-vocabulary classification
+RUN pip3 install --no-cache-dir git+https://github.com/ultralytics/CLIP.git
+
 # Manually install all Ultralytics dependencies except opencv-python
 RUN pip3 install --no-cache-dir \
     numpy \

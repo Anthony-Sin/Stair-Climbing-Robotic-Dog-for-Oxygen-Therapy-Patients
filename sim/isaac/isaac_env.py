@@ -887,7 +887,15 @@ def setup_scene_lighting(stage) -> None:
         )
 
 
+_last_light_update_time = 0.0
+
 def update_scene_lighting(stage, elapsed_sec: float) -> None:
+    global _last_light_update_time
+    now = time.monotonic()
+    if now - _last_light_update_time < 0.1:  # Limit to 10 Hz
+        return
+    _last_light_update_time = now
+
     from pxr import UsdLux
 
     try:
@@ -927,6 +935,25 @@ def spawn_obstacles(world: World) -> None:
     except ModuleNotFoundError:
         from isaacsim.core.api.objects import FixedCuboid
     
+    # Download texture if not present
+    texture_url = "https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/brick_diffuse.jpg"
+    assets_dir = os.path.join(os.path.dirname(__file__), "assets")
+    os.makedirs(assets_dir, exist_ok=True)
+    texture_local_path = os.path.join(assets_dir, "concrete.jpg")
+    
+    download_ok = False
+    if not os.path.exists(texture_local_path) or os.path.getsize(texture_local_path) == 0:
+        try:
+            import urllib.request
+            log_event(LOGGER, logging.INFO, "texture_download_start", f"Downloading seamless texture from {texture_url}")
+            urllib.request.urlretrieve(texture_url, texture_local_path)
+            download_ok = True
+            log_event(LOGGER, logging.INFO, "texture_download_complete", f"Saved texture to {texture_local_path}")
+        except Exception as exc:
+            log_event(LOGGER, logging.WARNING, "texture_download_failed", "Failed to download texture, fallback to plain color", error=str(exc))
+    else:
+        download_ok = True
+
     # 1. Spawn Stairs (12 steps: 2.0 to 5.6m along X, 2.0m wide along Y,
     #    step height 0.08m per step → top of step 12 is 0.96m above ground)
     for i in range(12):
@@ -962,9 +989,62 @@ def spawn_obstacles(world: World) -> None:
     except Exception as exc:
         log_event(LOGGER, logging.WARNING, "obstacle_spawn_failed", "Failed to spawn top landing", error=str(exc))
 
+    # Apply texture material to stairs and top landing
+    if download_ok:
+        try:
+            import omni.usd
+            from pxr import UsdShade, Sdf
+            stage = omni.usd.get_context().get_stage()
+            material_path = "/World/Environment/Looks/ConcreteMaterial"
+            
+            # Check if material already exists to avoid recreating it
+            if not stage.GetPrimAtPath(material_path).IsValid():
+                material_prim = UsdShade.Material.Define(stage, material_path)
+                shader = UsdShade.Shader.Define(stage, f"{material_path}/Shader")
+                shader.CreateIdAttr("UsdPreviewSurface")
+                
+                texture = UsdShade.Shader.Define(stage, f"{material_path}/Texture")
+                texture.CreateIdAttr("UsdUVTexture")
+                texture.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(texture_local_path))
+                
+                shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(texture.ConnectableAPI(), "rgb")
+                material_prim.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+            else:
+                material_prim = UsdShade.Material(stage.GetPrimAtPath(material_path))
+            
+            # Bind material to each step and landing
+            for i in range(12):
+                step_prim = stage.GetPrimAtPath(f"/World/Environment/step_{i}")
+                if step_prim.IsValid():
+                    material_api = UsdShade.MaterialBindingAPI(step_prim)
+                    material_api.Bind(material_prim, UsdShade.Tokens.strongerThanDescendants)
+            
+            landing_prim = stage.GetPrimAtPath("/World/Environment/top_landing")
+            if landing_prim.IsValid():
+                material_api = UsdShade.MaterialBindingAPI(landing_prim)
+                material_api.Bind(material_prim, UsdShade.Tokens.strongerThanDescendants)
+                
+            log_event(LOGGER, logging.INFO, "texture_binding_complete", "Successfully bound texture material to stairs and top landing")
+        except Exception as exc:
+            log_event(LOGGER, logging.WARNING, "texture_binding_failed", "Failed to bind texture material to stairs", error=str(exc))
+
     # 3. Corridor walls spawning has been removed as requested by the user
     log_event(LOGGER, logging.INFO, "environment_spawned", "Clean stairs-only environment (12 steps + landing) successfully spawned")
 
+
+_random_cache = {}
+
+def get_cached_random_normal(shape, mean=0.0, std=1.0, count=32):
+    key = ("normal", shape, mean, std)
+    if key not in _random_cache:
+        _random_cache[key] = [np.random.normal(mean, std, size=shape).astype(np.float32) for _ in range(count)]
+    return _random_cache[key]
+
+def get_cached_random_uniform(shape, count=32):
+    key = ("uniform", shape)
+    if key not in _random_cache:
+        _random_cache[key] = [np.random.random(size=shape).astype(np.float32) for _ in range(count)]
+    return _random_cache[key]
 
 def apply_realsense_depth_noise(depth_mm: np.ndarray, noise_multiplier: float = 1.0) -> np.ndarray:
     """
@@ -985,8 +1065,10 @@ def apply_realsense_depth_noise(depth_mm: np.ndarray, noise_multiplier: float = 
     alpha = 0.003 * noise_multiplier
     sigma = alpha * (depth_m ** 2) * 1000.0
     
-    # Add Gaussian noise
-    noise = np.random.normal(0.0, 1.0, size=noisy_depth.shape) * sigma
+    # Add Gaussian noise from pre-generated cache
+    noise_pool = get_cached_random_normal(noisy_depth.shape, 0.0, 1.0, count=32)
+    noise_idx = int(time.monotonic() * 100) % 32
+    noise = noise_pool[noise_idx] * sigma
     noisy_depth += noise
     
     # 2. Silhouette edge dropouts (stereo shadows)
@@ -1009,7 +1091,8 @@ def apply_realsense_depth_noise(depth_mm: np.ndarray, noise_multiplier: float = 
         
     # 3. Random dropouts / sensor holes (more likely at distance)
     dropout_prob = 0.01 + 0.08 * np.square(np.clip(depth_m / 4.0, 0.0, 1.0))
-    random_vals = np.random.random(size=noisy_depth.shape)
+    random_pool = get_cached_random_uniform(noisy_depth.shape, count=32)
+    random_vals = random_pool[noise_idx]
     dropout_mask = random_vals < dropout_prob
     noisy_depth[dropout_mask] = 0.0
     
@@ -1407,8 +1490,10 @@ def apply_rgb_perception_noise(rgb: np.ndarray, vx: float, vy: float, wz: float)
     flicker = np.random.normal(0, 0.6)
     noisy_rgb = noisy_rgb * exposure + flicker
     
-    # 3. Sensor pixel noise (Gaussian color noise)
-    noise = np.random.normal(0.0, 1.4, size=noisy_rgb.shape)
+    # 3. Sensor pixel noise (Gaussian color noise) from cache
+    noise_pool = get_cached_random_normal(noisy_rgb.shape, 0.0, 1.4, count=32)
+    noise_idx = int(time.monotonic() * 100) % 32
+    noise = noise_pool[noise_idx]
     noisy_rgb += noise
     
     return np.clip(noisy_rgb, 0, 255).astype(np.uint8)
@@ -1490,7 +1575,10 @@ class FramePublisher:
             small_rgb = apply_lens_distortion(small_rgb, is_depth=False)
             small_depth = apply_lens_distortion(small_depth, is_depth=True)
 
-            # 2. Apply camera sensor noise and motion blur to RGB
+            # 2. Apply realistic RealSense D435 sensor depth noise to the downsampled depth map
+            small_depth = apply_realsense_depth_noise(small_depth)
+
+            # 3. Apply camera sensor noise and motion blur to RGB
             small_rgb_bgr = apply_rgb_perception_noise(small_rgb, vx, vy, wz)
 
             ok, buf = cv2.imencode('.jpg', small_rgb_bgr, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
@@ -1863,6 +1951,8 @@ def _run_evaluation_and_save_images(
     robot_drifted = False
     robot_rotated = False
     robot_fell = False
+    robot_fall_type = "upright"
+    leg_details = []
     
     if robot_trajectory:
         # Check drift (Y deviation)
@@ -1875,14 +1965,49 @@ def _run_evaluation_and_save_images(
         if max_yaw > math.radians(5):
             robot_rotated = True
             
-        # Check if fell (Z height too low relative to terrain)
+        # Check if fell (Z height too low relative to terrain or flipped orientation)
         for pt in robot_trajectory:
             rx, ry, rz = pt["pos"]
+            roll, pitch, yaw = pt["rpy"]
             terrain_z = get_terrain_height(rx, ry)
             height = rz - terrain_z
+            if abs(roll) > 1.05 or abs(pitch) > 1.05:
+                robot_fell = True
+                robot_fall_type = "flipped over"
+                break
             if height < 0.18:
                 robot_fell = True
-                break
+                robot_fall_type = "collapsed"
+                
+        # Analyze final state details
+        last_pt = robot_trajectory[-1]
+        rx, ry, rz = last_pt["pos"]
+        roll, pitch, yaw = last_pt["rpy"]
+        terrain_z = get_terrain_height(rx, ry)
+        height = rz - terrain_z
+        
+        if robot_fell:
+            if abs(roll) > 1.05 or abs(pitch) > 1.05:
+                robot_fall_type = "flipped over"
+            else:
+                robot_fall_type = "collapsed"
+                
+        # Analyze leg heights in the last frame
+        legs = last_pt.get("legs", {})
+        for leg in ("fl", "fr", "rl", "rr"):
+            if leg in legs:
+                lx, ly, lz = legs[leg]
+                l_terrain_z = get_terrain_height(lx, ly)
+                l_height = lz - l_terrain_z
+                if l_height < 0.08:
+                    status = "ON_GROUND"
+                elif l_height >= 0.15:
+                    status = "IN_AIR"
+                else:
+                    status = "NORMAL_WALKING"
+                leg_details.append(f"  - {leg.upper()} leg: {status} (height above ground: {l_height:.3f} m)")
+            else:
+                leg_details.append(f"  - {leg.upper()} leg: NOT_TRACKED")
                 
     # Evaluate human
     human_drifted = False
@@ -1911,7 +2036,7 @@ def _run_evaluation_and_save_images(
     # Summarize states
     robot_summary = "straight"
     if robot_fell:
-        robot_summary = "fell"
+        robot_summary = f"fell ({robot_fall_type})"
     elif robot_drifted:
         robot_summary = "drifted"
     elif robot_rotated:
@@ -1929,6 +2054,8 @@ def _run_evaluation_and_save_images(
     print("EVALUATION SUMMARY:", flush=True)
     print(f"Human: {human_summary}", flush=True)
     print(f"Robot dog: {robot_summary}", flush=True)
+    for detail in leg_details:
+        print(detail, flush=True)
     stair_demo = get_stair_demo_telemetry(_go2_locomotion_state)
     stair_phase = stair_demo.get("phase", "not_reported")
     stair_lidar = stair_demo.get("lidar", {})
@@ -1944,6 +2071,8 @@ def _run_evaluation_and_save_images(
                 f.write("EVALUATION SUMMARY:\n")
                 f.write(f"Human: {human_summary}\n")
                 f.write(f"Robot dog: {robot_summary}\n")
+                for detail in leg_details:
+                    f.write(f"{detail}\n")
                 f.write(f"Exit reason: {evaluation_exit_reason}\n")
                 f.write(f"Sim motion elapsed: {float(motion_elapsed_sim_sec):.2f} s\n")
                 f.write(f"Robot stair-visible time: {float(robot_stair_phase_sim_sec):.2f} s\n")
@@ -2004,6 +2133,20 @@ def main() -> None:
 
     log_event(LOGGER, logging.INFO, "go2_load_start", "Loading Go2 robot")
     go2 = load_go2(world)
+
+    calf_prims = {}
+    try:
+        from pxr import Usd
+        go2_prim = stage.GetPrimAtPath(GO2_USD_PATH)
+        if go2_prim and go2_prim.IsValid():
+            for prim in Usd.PrimRange(go2_prim):
+                name = prim.GetName().lower()
+                if "calf" in name or "foot" in name:
+                    for leg in ("fl", "fr", "rl", "rr"):
+                        if leg in name:
+                            calf_prims[leg] = prim
+    except Exception as exc:
+        log_event(LOGGER, logging.WARNING, "calf_prims_cache_failed", "Failed to cache calf/foot prims", error=str(exc))
 
     view_camera = None
     if stage is not None and not args.headless and not args.no_view_follow_camera:
@@ -2180,23 +2323,7 @@ def main() -> None:
             if view_camera is not None:
                 view_camera.update(go2, dt)
 
-            try:
-                set_front_camera_local_pose(
-                    camera,
-                    stage=stage,
-                    gait_time=_go2_locomotion_state.gait_time,
-                    moving=bool(controller_ready and nonzero_command_fresh),
-                )
-            except Exception as exc:
-                if not _camera_mount_update_warned:
-                    _camera_mount_update_warned = True
-                    log_event(
-                        LOGGER,
-                        logging.WARNING,
-                        "camera_mount_update_failed",
-                        "Mounted camera local pose update failed",
-                        error=str(exc),
-                    )
+            # Camera pose update moved to render step below to avoid updating USD pose when frame is not captured
 
             if args.person_move:
                 if scene_motion_allowed:
@@ -2244,10 +2371,18 @@ def main() -> None:
                         ry = float(matrix[3][1])
                         rz = float(matrix[3][2])
                         roll, pitch, yaw = _extract_roll_pitch_yaw(matrix)
+                        leg_positions = {}
+                        for leg, leg_prim in calf_prims.items():
+                            try:
+                                m = UsdGeom.Xformable(leg_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+                                leg_positions[leg] = (float(m[3][0]), float(m[3][1]), float(m[3][2]))
+                            except Exception:
+                                pass
                         _robot_positions_over_time.append({
                             "t": time.monotonic(),
                             "pos": (rx, ry, rz),
-                            "rpy": (roll, pitch, yaw)
+                            "rpy": (roll, pitch, yaw),
+                            "legs": leg_positions
                         })
                 except Exception as exc:
                     pass
@@ -2319,13 +2454,28 @@ def main() -> None:
             # Publish camera frame at reduced rate
             if step_count % args.render_every == 0:
                 try:
+                    try:
+                        set_front_camera_local_pose(
+                            camera,
+                            stage=stage,
+                            gait_time=_go2_locomotion_state.gait_time,
+                            moving=bool(controller_ready and nonzero_command_fresh),
+                        )
+                    except Exception as exc:
+                        if not _camera_mount_update_warned:
+                            _camera_mount_update_warned = True
+                            log_event(
+                                LOGGER,
+                                logging.WARNING,
+                                "camera_mount_update_failed",
+                                "Mounted camera local pose update failed",
+                                error=str(exc),
+                            )
                     rgb_data   = camera.get_rgb()
                     depth_data = camera.get_depth()
                     if rgb_data is not None and depth_data is not None:
                         # depth_data is in metres; convert to uint16 millimetres
                         depth_mm = (depth_data * 1000.0).clip(0, 65535).astype(np.uint16)
-                        # Simulate realistic RealSense D435 sensor depth noise
-                        depth_mm = apply_realsense_depth_noise(depth_mm)
                         
                         # Get ground truth coordinates
                         gt_patient = _last_gt_patient_pose
@@ -2333,6 +2483,7 @@ def main() -> None:
                         stair_demo = get_stair_demo_telemetry(_go2_locomotion_state)
                         swing_legs = list(getattr(_go2_locomotion_state, "current_swing_legs", []))
                         
+                        # Depth noise is applied inside publisher.send after downsampling
                         publisher.send(rgb_data, depth_mm, vx, vy, wz, gt_patient, gt_distractor, stair_demo, swing_legs)
                 except Exception as exc:
                     log_event(

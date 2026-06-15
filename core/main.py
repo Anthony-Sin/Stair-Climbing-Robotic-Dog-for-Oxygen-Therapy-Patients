@@ -18,10 +18,10 @@ import queue
 import shutil
 import threading
 from yolo_pose_inference import YoloPoseInference
+from yolo_stairs_inference import YoloStairsInference
 from trt_inference import TRTInference
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
-from utils import draw_fps
 from single_person_tracker import SinglePersonTracker
 from person_follower import PersonFollower, PersonFollowingConfig
 from args_parser import parse_args
@@ -447,7 +447,8 @@ def main():
     preview_save_count    = 0
     frame_idx             = 0
     sim_frame_failure_since: Optional[float] = None
-
+    stair_latch_counter = 0
+ 
     try:
         while True:
             frame_idx += 1
@@ -594,7 +595,13 @@ def main():
                 follow_input_person, depth_img, (img.shape[0], img.shape[1])
             )
             stairs_result = yolo_stairs.get_latest_result()
-            stairs_detected = bool(stairs_result.get("detected", False))
+            if stairs_result.get("detected", False):
+                stair_latch_counter = 1200
+            
+            stairs_detected = stair_latch_counter > 0
+            if stair_latch_counter > 0:
+                stair_latch_counter -= 1
+                
             debug_info["stairs_detected"] = stairs_detected
             debug_info["stairs_bbox"] = stairs_result.get("bbox")
             debug_info["stairs_conf"] = stairs_result.get("conf", 0.0)
@@ -784,15 +791,6 @@ def main():
                     main_person=main_person,
                     main_annotation=export_debug_info,
                 )
-                draw_fps(combined, processing_fps, label='Proc FPS')
-                draw_fps(combined, preview_fps, position=(10, 60), label='View FPS')
-                # Label sim mode in overlay
-                if args.sim:
-                    cv2.putText(
-                        combined, "SIM MODE",
-                        (combined.shape[1] - 160, combined.shape[0] - 20),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2,
-                    )
                 draw_frame_overlays(
                     combined, debug_info, preparation_mode,
                     reacquire_active, args.camera_mode, is_stitched,
@@ -800,6 +798,8 @@ def main():
                     trans_x_cmd=trans_x_cmd if motion_allowed else 0.0,
                     rotation_cmd=rotation_cmd if motion_allowed else 0.0,
                     source_frame=img,
+                    proc_fps=processing_fps,
+                    view_fps=preview_fps
                 )
                 if not args.headless:
                     preview_worker.submit(
@@ -907,6 +907,7 @@ def main():
                     preview_save_images=bool(preview_save_images),
                     preview_video_path=preview_video_path,
                     preview_save_count=int(preview_save_count),
+                    debug_info=debug_info,
                 )
 
     finally:

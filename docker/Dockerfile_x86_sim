@@ -33,6 +33,14 @@ RUN git clone https://github.com/ifzhang/ByteTrack.git /opt/bytetrack && \
 RUN pip3 install --no-cache-dir ultralytics --no-deps && \
     pip3 install --no-cache-dir pyyaml pandas psutil requests
 
+# Install CLIP for YOLO-World open-vocabulary classification.
+# We upgrade pip and setuptools first so that PEP 621 (pyproject.toml project name/version)
+# metadata is read correctly and registers as 'clip' rather than 'UNKNOWN'.
+RUN pip3 install --no-cache-dir --upgrade pip setuptools && \
+    pip3 install --no-cache-dir ftfy regex && \
+    git clone --depth 1 https://github.com/ultralytics/CLIP.git /opt/clip && \
+    pip3 install --no-cache-dir --no-deps /opt/clip
+
 WORKDIR /opt
 RUN git clone https://github.com/eclipse-cyclonedds/cyclonedds.git -b releases/0.10.x && \
     cd cyclonedds && mkdir build install && cd build && \

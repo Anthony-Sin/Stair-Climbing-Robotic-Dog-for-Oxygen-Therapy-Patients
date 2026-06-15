@@ -513,12 +513,33 @@ def _resolve_character_with_clips(
     # Export and modify a local USD copy to strip the overriding animationGraph relationship.
     # Use a per-process filename so an older Isaac process cannot lock this run's output.
     import os
+    import glob
+    import atexit
     assets_dir = os.path.join(os.path.dirname(__file__), "assets")
     os.makedirs(assets_dir, exist_ok=True)
+
+    # Clean up old temporary Biped_Setup files from previous runs to release space and locks
+    for old_file in glob.glob(os.path.join(assets_dir, "Biped_Setup_modified_*")):
+        if f"Biped_Setup_modified_{os.getpid()}" not in old_file:
+            try:
+                os.remove(old_file)
+            except Exception:
+                pass
+
     local_usd_path = os.path.join(
         assets_dir,
         f"Biped_Setup_modified_{os.getpid()}.usd",
     ).replace("\\", "/")
+
+    # Clean up the USD copy created by this process on exit
+    def _cleanup_local_usd():
+        try:
+            # Clean up both the USD and any leftover temporary transaction files from USD exports
+            for f in glob.glob(os.path.join(assets_dir, f"Biped_Setup_modified_{os.getpid()}.*")):
+                os.remove(f)
+        except Exception:
+            pass
+    atexit.register(_cleanup_local_usd)
 
     if logger is not None:
         log_event(
@@ -529,12 +550,29 @@ def _resolve_character_with_clips(
             source=selected_source,
             destination=local_usd_path,
         )
-    try:
-        remote_stage.Export(local_usd_path)
-    except Exception as e:
+    import time
+    export_success = False
+    last_err = None
+    for attempt in range(5):
+        try:
+            remote_stage.Export(local_usd_path)
+            export_success = True
+            break
+        except Exception as e:
+            last_err = e
+            if logger is not None:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "person_asset_export_retry",
+                    f"Attempt {attempt + 1} to export Biped_Setup copy failed: {e}. Retrying in 1s...",
+                )
+            time.sleep(1.0)
+
+    if not export_success:
         raise RuntimeError(
-            f"Failed to prepare local modified Biped_Setup copy: {e}"
-        ) from e
+            f"Failed to prepare local modified Biped_Setup copy after 5 attempts: {last_err}"
+        ) from last_err
 
     # Always verify and modify the local USD so animation root motion cannot move
     # or yaw the actor root. Do not touch pelvis/hips/body joints; the walk clip

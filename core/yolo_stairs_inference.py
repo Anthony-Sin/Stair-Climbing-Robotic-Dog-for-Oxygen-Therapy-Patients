@@ -12,7 +12,7 @@ class YoloStairsInference:
     Handles parallel open-vocabulary stairs detection using YOLO-World.
     Runs predictions on a separate thread to maintain main loop speed.
     """
-    def __init__(self, model_path: str = "yolov8s-worldv2.pt", confidence: float = 0.25, verbose: bool = False):
+    def __init__(self, model_path: str = "yolov8x-worldv2.pt", confidence: float = 0.20, verbose: bool = False):
         self.verbose = verbose
         self.confidence = confidence
         self.model_path = model_path
@@ -34,10 +34,10 @@ class YoloStairsInference:
             
             self.model = YOLOWorld(self.model_path)
             # Define queries/classes dynamically
-            self.model.set_classes(["stairs", "staircase"])
+            self.model.set_classes(["stairs", "staircase", "steps", "brick stairs", "brick steps", "concrete stairs"])
             
             if self.verbose:
-                LOGGER.info("YOLO-World initialized and classes set to ['stairs', 'staircase']")
+                LOGGER.info("YOLO-World initialized and classes set to ['stairs', 'staircase', 'steps', 'brick stairs', 'brick steps', 'concrete stairs']")
             
             # Start background worker thread
             self._thread = threading.Thread(

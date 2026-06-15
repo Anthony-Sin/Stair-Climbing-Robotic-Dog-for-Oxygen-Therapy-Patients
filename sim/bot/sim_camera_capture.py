@@ -116,7 +116,7 @@ class SimCameraCapture:
         self.resolution   = (self.width, self.height)
         self.active_serial = "isaac_sim"
 
-        self._frame_queue: "queue.Queue[Tuple[np.ndarray, np.ndarray]]" = queue.Queue(maxsize=4)
+        self._frame_queue: "queue.Queue[Tuple[np.ndarray, np.ndarray]]" = queue.Queue(maxsize=1)
         self._stop_event  = threading.Event()
         self._seq_received = 0
         self._seq_dropped  = 0
@@ -192,18 +192,20 @@ class SimCameraCapture:
                     continue
 
                 was_upscaled = (bgr.shape[1], bgr.shape[0]) != (self.width, self.height)
-                # Upsample with a high-quality filter; the Isaac bridge may publish
-                # smaller JPEGs to keep each frame in a single UDP packet.
-                if (bgr.shape[1], bgr.shape[0]) != (self.width, self.height):
-                    bgr   = cv2.resize(bgr,   (self.width, self.height),
-                                    interpolation=cv2.INTER_LANCZOS4)
-                if (depth.shape[1], depth.shape[0]) != (self.width, self.height):
-                    depth = cv2.resize(depth, (self.width, self.height),
-                                    interpolation=cv2.INTER_NEAREST)
                 if was_upscaled:
+                    # [OPTIMIZATION] Perform Gaussian blur, unsharp mask, and scaling on the low-res image.
+                    # This processes 4x fewer pixels on CPU, yielding a massive performance speedup.
                     blur = cv2.GaussianBlur(bgr, (0, 0), 1.0)
                     bgr = cv2.addWeighted(bgr, 1.35, blur, -0.35, 0)
                     bgr = cv2.convertScaleAbs(bgr, alpha=1.04, beta=2)
+
+                    # Upscale using fast INTER_CUBIC instead of slow INTER_LANCZOS4
+                    bgr = cv2.resize(bgr, (self.width, self.height),
+                                     interpolation=cv2.INTER_CUBIC)
+
+                if (depth.shape[1], depth.shape[0]) != (self.width, self.height):
+                    depth = cv2.resize(depth, (self.width, self.height),
+                                    interpolation=cv2.INTER_NEAREST)
 
                 if self.rotate in (90, 180, 270):
                     from utils import rotate_image

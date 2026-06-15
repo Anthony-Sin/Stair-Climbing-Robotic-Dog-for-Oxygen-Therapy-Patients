@@ -20,7 +20,7 @@ param(
     [switch]$NoIsaacReadyWait,
     [int]$IsaacReadyTimeoutSec = 420,
     [int]$KeepRunLogs = 1,
-    [int]$MaxRunTimeSec = 230
+    [int]$MaxRunTimeSec = 450
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,6 +33,73 @@ $StatusLog = Join-Path $RunLogDir "status.jsonl"
 $SummaryLog = Join-Path $RunLogDir "00_READ_ME_FIRST.txt"
 $LatestRunFile = Join-Path (Join-Path $RepoRoot "log") "latest_run.txt"
 $DockerContainerName = "go2-pose-sim-" + ($Stamp -replace '[^A-Za-z0-9_.-]', '-')
+
+# Clear stale simulation runs (Docker containers and local processes) to release file locks
+Write-Host "Cleaning up stale Docker containers and Isaac processes..."
+if (-not $DryRun) {
+    # Stop and remove any Docker containers labeled com.cable.run_sim=true
+    try {
+        $staleContainers = & wsl.exe -e docker ps -a --filter "label=com.cable.run_sim=true" --format "{{.Names}}" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $staleContainers) {
+            foreach ($container in ($staleContainers -split "`n")) {
+                $container = $container.Trim()
+                if ($container) {
+                    Write-Host "Stopping stale Docker container: $container"
+                    & wsl.exe -e docker rm -f $container 2>$null | Out-Null
+                }
+            }
+        }
+    } catch {}
+
+    # Terminate any running local processes associated with the Isaac environment
+    try {
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.CommandLine -and $_.CommandLine.Contains("isaac_env.py")
+        } | ForEach-Object {
+            try {
+                Write-Host "Stopping stale Isaac process PID: $($_.ProcessId)"
+                Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            } catch {}
+        }
+    } catch {}
+
+    # Terminate any running Omniverse hub.exe processes that might hold file locks
+    try {
+        Get-Process -Name "hub" -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "Stopping Omniverse hub process PID: $($_.Id)"
+            Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+}
+
+# Clear the log folder at startup to prevent old runs from clashing
+$LogRoot = Join-Path $RepoRoot "log"
+if (Test-Path -LiteralPath $LogRoot) {
+    # Try deleting via WSL to bypass any WSL/Docker mount locks
+    try {
+        $wslLogRoot = ConvertTo-WslPath -WindowsPath $LogRoot
+        & wsl.exe -e rm -rf $wslLogRoot 2>$null
+    } catch {}
+
+    # Try deleting via Windows to clean up anything remaining
+    try {
+        Remove-Item -LiteralPath $LogRoot -Recurse -Force -ErrorAction SilentlyContinue
+    } catch {}
+
+    # Double-check: if it still exists, try to empty it
+    if (Test-Path -LiteralPath $LogRoot) {
+        Get-ChildItem -LiteralPath $LogRoot | ForEach-Object {
+            try {
+                Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            } catch {}
+        }
+    }
+}
+# Ensure the log folder exists
+if (-not (Test-Path -LiteralPath $LogRoot)) {
+    New-Item -ItemType Directory -Force -Path $LogRoot | Out-Null
+}
+
 
 New-Item -ItemType Directory -Force -Path $RunLogDir | Out-Null
 New-Item -ItemType Directory -Force -Path $VisionLogDir | Out-Null
@@ -401,6 +468,74 @@ function Prune-OldRunLogs {
     }
 }
 
+function Test-ConsoleLineQuiet {
+    param([string]$Line)
+
+    $Line = $Line.Trim()
+    if (-not $Line) { return $true }
+
+    # Convert to lowercase for easier matching
+    $lower = $Line.ToLower()
+
+    # Filter CUDA banner / NGC info
+    if ($Line -eq "===========" -or $Line -eq "== CUDA ==") { return $true }
+    if ($lower -like "*cuda version*") { return $true }
+    if ($lower -like "*nvidia corporation*") { return $true }
+    if ($lower -like "*governed by the nvidia deep learning*") { return $true }
+    if ($lower -like "*deep learning container license*") { return $true }
+    if ($lower -like "*by pulling and using the container*") { return $true }
+    if ($lower -like "*ngc-dl-container-license*") { return $true }
+
+    # Filter CMake / Make compile / install noise
+    if ($lower -like "*installing:*") { return $true }
+    if ($lower -like "*up-to-date:*") { return $true }
+    if ($lower -like "*built target*") { return $true }
+    if ($lower -like "*building c object*") { return $true }
+    if ($lower -like "*linking c shared library*") { return $true }
+    if ($lower -like "*linking c static library*") { return $true }
+    if ($lower -like "*linking c executable*") { return $true }
+    if ($lower -like "*building cxx object*") { return $true }
+    if ($lower -like "*linking cxx shared library*") { return $true }
+    if ($lower -like "*linking cxx static library*") { return $true }
+    if ($lower -like "*linking cxx executable*") { return $true }
+
+    # Filter pip / progress bars / ultralytics package downloads / logs
+    if ($Line -match '^[0-9]+%?\s+[━╸─]+') { return $true }
+    if ($lower -like "*downloading*") { return $true }
+    if ($lower -like "*collecting*") { return $true }
+    if ($lower -like "*cloning*") { return $true }
+    if ($lower -like "*resolved*") { return $true }
+    if ($lower -like "*installing build dependencies*") { return $true }
+    if ($lower -like "*getting requirements to build wheel*") { return $true }
+    if ($lower -like "*preparing metadata*") { return $true }
+    if ($lower -like "*building wheels for*") { return $true }
+    if ($lower -like "*successfully built*") { return $true }
+    if ($lower -like "*installing collected packages*") { return $true }
+    if ($lower -like "*successfully installed*") { return $true }
+    if ($lower -like "*running pip as the 'root' user*") { return $true }
+    if ($lower -like "*requirements: ultralytics requirement*") { return $true }
+    if ($lower -like "*requirements: autoupdate success*") { return $true }
+    if ($lower -like "*restart runtime or rerun command*") { return $true }
+    if ($lower -like "*pip3 install*") { return $true }
+    if ($lower -like "*pip install*") { return $true }
+    if ($lower -like "*obtaining file:*") { return $true }
+    if ($lower -like "*running setup.py develop*") { return $true }
+    if ($lower -like "*checking if build backend*") { return $true }
+
+    # Filter lines that are progress indicators or download speeds
+    if ($Line -match '[━╸─]+\s+\d+\.\d+/[0-9.]+\s+[KMG]B') { return $true }
+    # Filter general progress lines in docker buildkit (e.g. #11 DONE 51.6s)
+    if ($Line -match '^#\d+\s+DONE\s+[0-9.]+s') { return $true }
+    # Filter progress bars in download/buildkit output
+    if ($Line -match '━+') { return $true }
+
+    # Keep important step headers, e.g. #12 [ 9/13] RUN ...
+    # but discard general buildkit verbose stdout/stderr lines that start with #<num> followed by float/done
+    if ($Line -match '^#\d+\s+\d+\.\d+\s+') { return $true }
+
+    return $false
+}
+
 function Invoke-LoggedCommand {
     param(
         [Parameter(Mandatory = $true)][string]$Stage,
@@ -433,7 +568,9 @@ function Invoke-LoggedCommand {
             $line = ConvertTo-CleanText $_
             if ($line) {
                 Add-Content -LiteralPath $LogPath -Encoding UTF8 -Value $line
-                Write-Host $line
+                if (-not (Test-ConsoleLineQuiet -Line $line)) {
+                    Write-Host $line
+                }
             }
         }
         $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
@@ -1067,6 +1204,18 @@ if ($NoDockerRun) {
             container = $DockerContainerName
         }
         exit 1
+    }
+}
+
+# Append the detailed evaluation summary if it was generated
+$evalSummaryFile = Join-Path $RunLogDir "evaluation_summary.txt"
+if (Test-Path -LiteralPath $evalSummaryFile) {
+    $evalContent = Get-Content -LiteralPath $evalSummaryFile -Raw -ErrorAction SilentlyContinue
+    if ($evalContent) {
+        Add-Content -LiteralPath $SummaryLog -Encoding UTF8 -Value "`r`n========================================"
+        Add-Content -LiteralPath $SummaryLog -Encoding UTF8 -Value "DETAILED SIMULATION EVALUATION:"
+        Add-Content -LiteralPath $SummaryLog -Encoding UTF8 -Value "========================================"
+        Add-Content -LiteralPath $SummaryLog -Encoding UTF8 -Value $evalContent
     }
 }
 

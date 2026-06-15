@@ -296,18 +296,22 @@ def _stair_assisted_world_z(
     vx: float,
     state: Go2LocomotionState,
     clearance_m: float,
+    stairs_detected: bool = False,
 ) -> float:
-    forward_lookahead_m = 0.0
-    if vx > 0.02:
-        forward_lookahead_m = 0.18 + min(0.24, vx * 0.35)
-    cos_y = math.cos(yaw)
-    sin_y = math.sin(yaw)
-    current_h = _get_analytical_terrain_height(rx, ry)
-    ahead_h = _get_analytical_terrain_height(
-        rx + cos_y * forward_lookahead_m,
-        ry + sin_y * forward_lookahead_m,
-    )
-    target_terrain_h = max(current_h, ahead_h)
+    if stairs_detected:
+        forward_lookahead_m = 0.0
+        if vx > 0.02:
+            forward_lookahead_m = 0.18 + min(0.24, vx * 0.35)
+        cos_y = math.cos(yaw)
+        sin_y = math.sin(yaw)
+        current_h = _get_analytical_terrain_height(rx, ry)
+        ahead_h = _get_analytical_terrain_height(
+            rx + cos_y * forward_lookahead_m,
+            ry + sin_y * forward_lookahead_m,
+        )
+        target_terrain_h = max(current_h, ahead_h)
+    else:
+        target_terrain_h = 0.0
     return target_terrain_h + max(0.24, clearance_m)
 
 
@@ -315,7 +319,10 @@ def _build_stair_demo_telemetry(
     rx: float,
     ry: float,
     rz: float,
+    roll: float,
+    pitch: float,
     yaw: float,
+    actual_height: float,
     vx: float,
     vy: float,
     wz: float,
@@ -365,6 +372,15 @@ def _build_stair_demo_telemetry(
     rl_active = bool(rl_mode in ("stair_approach", "stair_climb") and command_speed > 0.03)
     confidence = 0.96 if phase == "staircase" else 0.91 if detected else 0.42
 
+    robot_fell = False
+    robot_fall_type = "upright"
+    if abs(roll) > 1.05 or abs(pitch) > 1.05:
+        robot_fell = True
+        robot_fall_type = "flipped over"
+    elif actual_height < 0.18:
+        robot_fell = True
+        robot_fall_type = "collapsed"
+
     return {
         "source": "synthetic_isaac_ground_truth_raycast",
         "is_synthetic": True,
@@ -374,7 +390,12 @@ def _build_stair_demo_telemetry(
             "x_m": round(float(rx), 3),
             "y_m": round(float(ry), 3),
             "z_m": round(float(rz), 3),
+            "roll_deg": round(float(math.degrees(roll)), 2),
+            "pitch_deg": round(float(math.degrees(pitch)), 2),
             "yaw_deg": round(float(math.degrees(yaw)), 2),
+            "height_m": round(float(actual_height), 3),
+            "fell": bool(robot_fell),
+            "fall_type": str(robot_fall_type),
         },
         "lidar": {
             "model": "demo_4d_elevation_raycast",
@@ -569,6 +590,7 @@ def _set_stable_kinematic_pose(
     wz: float,
     dt: float,
     target_height_m: float,
+    stairs_detected: bool = False,
 ) -> None:
     # Force straight line movement along Y=0 and yaw=0
     vy = 0.0
@@ -579,7 +601,8 @@ def _set_stable_kinematic_pose(
     new_yaw = 0.0
     tx = float(matrix[3][0]) + (vx * dt)
     ty = 0.0
-    tz = _get_analytical_terrain_height(tx, ty) + target_height_m
+    terrain_h = _get_analytical_terrain_height(tx, ty) if stairs_detected else 0.0
+    tz = terrain_h + target_height_m
 
     # Reset linear and angular velocities to prevent dynamic bodies
     # from accumulating gravity momentum while being teleported.
@@ -1173,8 +1196,11 @@ def apply_go2_velocity(
                     foot_world_x = rx + dx_foot
                     foot_world_y = ry + dy_foot
                     
-                    foot_terrain_h = _query_terrain_height(foot_world_x, foot_world_y, rz)
-                    dh_terrain = foot_terrain_h - terrain_height
+                    if stairs_detected:
+                        foot_terrain_h = _query_terrain_height(foot_world_x, foot_world_y, rz)
+                        dh_terrain = foot_terrain_h - terrain_height
+                    else:
+                        dh_terrain = 0.0
                     z_target += dh_terrain
 
                     # Solve IK
@@ -1201,7 +1227,10 @@ def apply_go2_velocity(
                         rx,
                         ry,
                         rz,
+                        roll,
+                        pitch,
                         yaw,
+                        actual_height,
                         vx,
                         vy,
                         wz,
@@ -1290,6 +1319,7 @@ def apply_go2_velocity(
             vx,
             state,
             desired_height_m,
+            stairs_detected=stairs_detected,
         )
         vertical_assist_mps = _clamp(
             (desired_world_z - rz) * state.height_kp,
@@ -1303,7 +1333,10 @@ def apply_go2_velocity(
                 rx,
                 ry,
                 rz,
+                roll,
+                pitch,
                 yaw,
+                actual_height,
                 vx,
                 vy,
                 wz,
@@ -1321,6 +1354,7 @@ def apply_go2_velocity(
                 wz=wz,
                 dt=dt,
                 target_height_m=desired_height_m,
+                stairs_detected=stairs_detected,
             )
             if not gait_preapplied:
                 _apply_procedural_gait(
@@ -1373,6 +1407,7 @@ def apply_go2_velocity(
             wz=wz if state.gait_logged else 0.0,
             dt=dt,
             target_height_m=state.target_height_m,
+            stairs_detected=stairs_detected,
         )
 
     if not locals().get("gait_preapplied", False):
