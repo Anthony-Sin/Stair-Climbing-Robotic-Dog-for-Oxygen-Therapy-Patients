@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Optional
 
 # ---------------------------------------------------------------------------
 # Isaac Sim bootstrap -- must happen before any omni imports
@@ -33,12 +34,18 @@ parser.add_argument("--physics-hz", type=int, default=60,
                     help="Physics simulation rate in Hz")
 parser.add_argument("--render-every", type=int, default=2,
                     help="Publish a camera frame every N physics steps")
-parser.add_argument("--person-x", type=float, default=0.8,
-                    help="Initial X position of the person target")
+parser.add_argument("--person-x", type=float, default=1.4,
+                    help="Initial X position of the person target (kept well beyond "
+                         "target_distance from the robot so the robot has forward-follow "
+                         "room on flat ground before the stairs at x=2.0)")
 parser.add_argument("--person-y", type=float, default=0.0,
                     help="Initial Y position of the person target")
-parser.add_argument("--go2-x", type=float, default=-0.4,
-                    help="Initial X position of the Go2 robot")
+parser.add_argument("--go2-x", type=float, default=0.35,
+                    help="Initial X position of the Go2 robot. Must be strictly farther "
+                         "than target_distance behind the person (here ~1.05 m of "
+                         "separation) — do NOT set it to person_x - target_distance, "
+                         "which puts the person exactly at the stop distance and makes "
+                         "depth noise trip the no-reverse hold so the robot looks stuck.")
 parser.add_argument("--person-move", action="store_true",
                     help="Make the person walk a simple patrol path")
 parser.add_argument("--frame-host", type=str, default='0.0.0.0',
@@ -62,6 +69,24 @@ parser.add_argument("--verification-image", type=str, default="",
                     help="Write a wide scene verification PNG showing robot, person, and stairs")
 parser.add_argument("--exit-after-verification", action="store_true",
                     help="Exit after writing --verification-image")
+parser.add_argument("--locomotion-mode", type=str, default="procedural",
+                    choices=("procedural", "rl"),
+                    help="Low-level Go2 locomotion controller")
+parser.add_argument("--rl-policy-path", type=str,
+                    default=str(REPO_ROOT / "sim" / "isaac" / "assets" / "policies" / "go2_policy.pt"),
+                    help="Local TorchScript/ONNX Go2 policy path used when --locomotion-mode rl")
+parser.add_argument("--rl-policy-format", type=str, default="auto",
+                    choices=("auto", "torchscript", "torch", "pt", "jit", "onnx"),
+                    help="Policy loader format for --rl-policy-path")
+parser.add_argument("--rl-control-hz", type=float, default=50.0,
+                    help="Trained policy control rate in Hz")
+parser.add_argument("--rl-action-scale", type=float, default=0.25,
+                    help="Scale applied to policy actions before adding default joint pose")
+parser.add_argument("--rl-stairs-strategy", type=str, default="policy",
+                    choices=("policy", "procedural"),
+                    help="Use the RL policy on stairs, or switch stairs to procedural crawl")
+parser.add_argument("--spawn-settle-steps", type=int, default=50,
+                    help="Zero-command policy/hold steps after spawn before world_ready")
 args = parser.parse_args()
 
 # Setup logger
@@ -83,6 +108,8 @@ log_event(
     frame_host=args.frame_host,
     physics_hz=int(args.physics_hz),
     render_every=int(args.render_every),
+    locomotion_mode=args.locomotion_mode,
+    rl_policy_path=args.rl_policy_path if args.locomotion_mode == "rl" else "",
     log_path=getattr(LOGGER, "sim_log_path", ""),
 )
 
@@ -120,11 +147,17 @@ from isaacsim.sensors.camera import Camera
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
 from sim_go2_locomotion import (
+    GO2_STAND_POSE_RAD,
     Go2LocomotionState,
     apply_go2_velocity,
     get_stair_demo_telemetry,
     hold_go2_stable,
     _extract_roll_pitch_yaw,
+)
+from rl_locomotion_policy import (
+    RLLocomotionPolicy,
+    RLLocomotionPolicyConfig,
+    get_dof_names,
 )
 from sim_person_actor import spawn_sim_person
 
@@ -132,9 +165,13 @@ from sim_person_actor import spawn_sim_person
 # Constants
 # ---------------------------------------------------------------------------
 GO2_USD_PATH   = "/World/Go2"
+# Spawn height (m): ~1 cm above the GO2_STAND_POSE_RAD standing height (0.32 m) so
+# the feet touch down gently instead of dropping and tipping the robot at startup.
+GO2_SPAWN_Z    = 0.40
 CAMERA_PRIM    = "/World/Sensors/Go2FrontCamera"
 VIEW_CAMERA_PRIM = "/World/View/Go2FollowCamera"
 VERIFICATION_CAMERA_PRIM = "/World/View/SceneVerificationCamera"
+TOPDOWN_CAMERA_PRIM = "/World/View/TopDownCamera"
 PERSON_PRIM    = "/World/Person"
 # Official Isaac Sim 6.0 Go2 asset on Nucleus CDN (mesh-based, preferred)
 NUCLEUS_GO2    = "/Isaac/Robots/Unitree/Go2/go2.usd"
@@ -176,6 +213,7 @@ def _cmd_receiver_thread(port: int) -> None:
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("0.0.0.0", port))
     sock.settimeout(0.5)
+    last_reverse_x_suppressed_log_ts = 0.0
     log_event(
         LOGGER,
         logging.INFO,
@@ -188,10 +226,23 @@ def _cmd_receiver_thread(port: int) -> None:
         try:
             data, _ = sock.recvfrom(256)
             payload = json.loads(data.decode("utf-8"))
-            vx = float(payload.get("vx", 0.0))
+            vx_raw = float(payload.get("vx", 0.0))
+            vx = max(0.0, vx_raw)
             vy = float(payload.get("vy", 0.0))
             wz = float(payload.get("wz", 0.0))
             stairs_detected = bool(payload.get("stairs_detected", False))
+            if vx_raw < 0.0:
+                now = time.monotonic()
+                if (now - last_reverse_x_suppressed_log_ts) >= 1.0:
+                    last_reverse_x_suppressed_log_ts = now
+                    log_event(
+                        LOGGER,
+                        logging.INFO,
+                        "reverse_x_command_suppressed",
+                        "Backward X command suppressed by Isaac command receiver",
+                        vx_raw=float(vx_raw),
+                        vx_applied=float(vx),
+                    )
             is_nonzero_command = (abs(vx) > 0.01) or (abs(vy) > 0.01) or (abs(wz) > 0.01)
             with _cmd_lock:
                 _cmd_vel["vx"] = vx
@@ -231,9 +282,13 @@ def _cmd_receiver_thread(port: int) -> None:
                 logging.DEBUG,
                 "cmd_received",
                 "Velocity command received by Isaac",
-                vx=vx,
-                vy=vy,
-                wz=wz,
+                vx=round(float(vx), 4),
+                vy=round(float(vy), 4),
+                wz=round(float(wz), 4),
+                ts_monotonic=round(float(_cmd_vel["ts"]), 4),
+                cmd_count=int(cmd_count),
+                active_count=int(active_count),
+                nonzero=bool(is_nonzero_command),
             )
         except socket.timeout:
             continue
@@ -345,10 +400,11 @@ def load_go2(world: World):
     # Load all payloads (physics + visual)
     stage.Load(GO2_USD_PATH)
 
-    # Spawn the robot at proper standing height.
-    # The Nucleus Go2 base link is at local [0,0,0]; the feet reach ~0.33 m below.
-    # Spawn at 0.5 m so the feet land on the ground cleanly after world.reset().
-    _set_xform_ops(go2_prim, translate=(0.0, 0.0, 0.50), rotate_xyz=(0.0, 0.0, 0.0))
+    # Spawn just above the standing height so the feet touch down gently.  A larger
+    # drop combined with the settle-loop joint commands used to pitch the robot over
+    # backward at startup.  Shared with the root-xform realignment below.
+    _SPAWN_Z = GO2_SPAWN_Z
+    _set_xform_ops(go2_prim, translate=(args.go2_x, 0.0, _SPAWN_Z), rotate_xyz=(0.0, 0.0, 0.0))
 
     # For URDF-imported local assets the visual geometry has purpose='guide'.
     # Fix that so the camera can render the primitives.  On the official Nucleus
@@ -365,15 +421,11 @@ def load_go2(world: World):
     if changed_count > 0:
         print(f"[load_go2] Changed purpose to 'default' on {changed_count} prims (local URDF asset).")
 
-    # Go2 default standing joint positions (in radians, from Isaac Lab training config).
-    # hip=0, thigh=0.9 rad (~51.6°), calf=-1.8 rad (~-103°)
-    # These are set on every joint so the robot starts in a stable standing pose
-    # rather than fully extended (which causes immediate collapse).
-    STANDING_POSE_RAD = {
-        "hip":   0.0,
-        "thigh": 0.9,
-        "calf":  -1.8,
-    }
+    # Go2 default standing joint positions (in radians).  Shared with the
+    # settle/hold and gait-neutral pose (sim_go2_locomotion.GO2_STAND_POSE_RAD) so
+    # spawn -> settle -> first command is posture-continuous; a mismatch snaps the
+    # legs mid-drop and tips the robot over backward at startup.
+    STANDING_POSE_RAD = GO2_STAND_POSE_RAD
 
     art_path = ""
     if go2_prim and go2_prim.IsValid():
@@ -401,6 +453,9 @@ def load_go2(world: World):
                 base_link_path=base_link_path,
             )
 
+        drive_stiffness = 20.0 if args.locomotion_mode == "rl" else 800.0
+        drive_damping = 0.5 if args.locomotion_mode == "rl" else 40.0
+
         # Apply joint drives and set initial standing joint positions in USD.
         # USD Physics angular drive targets are in degrees.
         for prim in Usd.PrimRange(go2_prim):
@@ -414,8 +469,8 @@ def load_go2(world: World):
 
                 # Position drive with stiffness/damping
                 drive_api = UsdPhysics.DriveAPI.Apply(prim, "angular")
-                drive_api.CreateStiffnessAttr(800.0)
-                drive_api.CreateDampingAttr(40.0)
+                drive_api.CreateStiffnessAttr(drive_stiffness)
+                drive_api.CreateDampingAttr(drive_damping)
                 drive_api.CreateTargetPositionAttr(target_deg)
                 drive_api.CreateMaxForceAttr(1000.0)
 
@@ -430,7 +485,7 @@ def load_go2(world: World):
             Articulation(
                 prim_path=art_path,
                 name="go2",
-                position=np.array([args.go2_x, 0.0, 0.50])
+                position=np.array([args.go2_x, 0.0, _SPAWN_Z])
             )
         )
         log_event(
@@ -456,6 +511,15 @@ def load_go2(world: World):
         logging.INFO,
         "robot_o2_mount_skipped",
         "Skipping robot-mounted O2 props for a clean stairs-and-walls sim scene",
+    )
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "go2_joint_drive_configured",
+        "Go2 USD joint drives configured for selected locomotion mode",
+        locomotion_mode=args.locomotion_mode,
+        stiffness=drive_stiffness,
+        damping=drive_damping,
     )
     return go2
 
@@ -664,7 +728,52 @@ def add_verification_camera(stage, resolution: tuple = (1280, 720)) -> Camera:
     return camera
 
 
-def capture_verification_image(world: World, camera: Camera, output_path: str, go2=None, person=None, step_world=True) -> None:
+def add_topdown_camera(stage, resolution: tuple = (640, 480)) -> Camera:
+    """Create a static overhead camera looking straight down at the full scene."""
+    if not stage.GetPrimAtPath("/World/View").IsValid():
+        stage.DefinePrim("/World/View", "Xform")
+
+    camera_prim = UsdGeom.Camera.Define(stage, TOPDOWN_CAMERA_PRIM).GetPrim()
+    # Wide FOV to cover the full corridor (x: 0..6m, y: -1..1m) from 7m height
+    UsdGeom.Camera(camera_prim).CreateFocalLengthAttr().Set(10.0)
+    UsdGeom.Camera(camera_prim).CreateHorizontalApertureAttr().Set(24.0)
+
+    xform = UsdGeom.Xformable(camera_prim)
+    xform.ClearXformOpOrder()
+    transform_op = xform.AddTransformOp()
+
+    # Position at (3.0, 0.0, 7.0) looking straight down along -Z
+    eye = Gf.Vec3d(3.0, 0.0, 7.0)
+    target = Gf.Vec3d(3.0, 0.0, 0.0)
+    view_matrix = Gf.Matrix4d(1.0)
+    view_matrix.SetLookAt(eye, target, Gf.Vec3d(0.0, 1.0, 0.0))
+    transform_op.Set(view_matrix.GetInverse())
+
+    camera = Camera(
+        prim_path=TOPDOWN_CAMERA_PRIM,
+        name="topdown_camera",
+        resolution=resolution,
+    )
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "topdown_camera_created",
+        "Created static top-down overhead camera for scene recording",
+        camera_path=TOPDOWN_CAMERA_PRIM,
+        resolution=list(resolution),
+    )
+    return camera
+
+
+def capture_verification_image(
+    world: World,
+    camera: Camera,
+    output_path: str,
+    go2=None,
+    person=None,
+    step_world=True,
+    rl_policy: Optional[RLLocomotionPolicy] = None,
+) -> None:
     """Render and save a PNG from the wide scene verification camera."""
     out_path = Path(output_path).expanduser()
     if not out_path.is_absolute():
@@ -704,7 +813,10 @@ def capture_verification_image(world: World, camera: Camera, output_path: str, g
         for _ in range(50):
             if go2 is not None:
                 try:
-                    hold_go2_stable(go2, _go2_locomotion_state, dt, logger=None)
+                    if rl_policy is not None:
+                        _step_go2_locomotion(go2, rl_policy, 0.0, 0.0, 0.0, dt, stairs_detected=False)
+                    else:
+                        hold_go2_stable(go2, _go2_locomotion_state, dt, logger=None)
                 except Exception:
                     pass
             if person is not None:
@@ -717,7 +829,10 @@ def capture_verification_image(world: World, camera: Camera, output_path: str, g
         for _ in range(20):
             if go2 is not None:
                 try:
-                    hold_go2_stable(go2, _go2_locomotion_state, dt, logger=None)
+                    if rl_policy is not None:
+                        _step_go2_locomotion(go2, rl_policy, 0.0, 0.0, 0.0, dt, stairs_detected=False)
+                    else:
+                        hold_go2_stable(go2, _go2_locomotion_state, dt, logger=None)
                 except Exception:
                     pass
             if person is not None:
@@ -1654,6 +1769,7 @@ class FramePublisher:
 
 
 def apply_velocity_to_go2(go2: Articulation, vx: float, vy: float, wz: float, dt: float, stairs_detected: bool = False) -> None:
+    vx = max(0.0, float(vx))
     apply_go2_velocity(go2, vx, vy, wz, dt, state=_go2_locomotion_state, base_link_name=BASE_LINK_NAME, logger=LOGGER, stairs_detected=stairs_detected)
 
 
@@ -1914,15 +2030,106 @@ def _init_go2_standing_pose(go2) -> None:
                     f"{method_name} failed: {exc}",
                 )
 
-    # Also set the xform to the correct standing height
+    # Align the root xform with the spawn position so the USD visual matches physics.
     try:
         import omni.usd
         stage = omni.usd.get_context().get_stage()
         go2_prim = stage.GetPrimAtPath(GO2_USD_PATH)
         if go2_prim and go2_prim.IsValid():
-            _set_xform_ops(go2_prim, translate=(0.0, 0.0, 0.50), rotate_xyz=(0.0, 0.0, 0.0))
+            _set_xform_ops(go2_prim, translate=(args.go2_x, 0.0, GO2_SPAWN_Z), rotate_xyz=(0.0, 0.0, 0.0))
     except Exception:
         pass
+
+
+def _create_rl_locomotion_policy(go2) -> Optional[RLLocomotionPolicy]:
+    if args.locomotion_mode != "rl":
+        return None
+
+    dof_names = get_dof_names(go2)
+    policy_path = Path(args.rl_policy_path)
+    if not policy_path.is_absolute():
+        policy_path = (REPO_ROOT / policy_path).resolve()
+    policy = RLLocomotionPolicy(
+        RLLocomotionPolicyConfig(
+            policy_path=str(policy_path),
+            policy_format=args.rl_policy_format,
+            control_hz=float(args.rl_control_hz),
+            action_scale=float(args.rl_action_scale),
+        ),
+        dof_names,
+        logger=LOGGER,
+    )
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "rl_locomotion_policy_loaded",
+        "Loaded local Go2 RL locomotion policy",
+        policy_path=str(policy_path),
+        policy_format=args.rl_policy_format,
+        control_hz=float(args.rl_control_hz),
+        action_scale=float(args.rl_action_scale),
+        dof_count=len(dof_names),
+        observation_size=12 + (3 * len(dof_names)),
+    )
+    return policy
+
+
+def _step_go2_locomotion(
+    go2,
+    rl_policy: Optional[RLLocomotionPolicy],
+    vx: float,
+    vy: float,
+    wz: float,
+    dt: float,
+    *,
+    stairs_detected: bool = False,
+) -> None:
+    vx = max(0.0, float(vx))
+    if (
+        rl_policy is not None
+        and not (stairs_detected and args.rl_stairs_strategy == "procedural")
+    ):
+        telemetry = rl_policy.step(go2, (vx, vy, wz), dt)
+        if not getattr(rl_policy, "_active_logged", False):
+            setattr(rl_policy, "_active_logged", True)
+            log_event(
+                LOGGER,
+                logging.INFO,
+                "rl_locomotion_policy_active",
+                "Go2 RL policy is writing joint targets",
+                **telemetry,
+            )
+        return
+
+    apply_velocity_to_go2(go2, vx, vy, wz, dt, stairs_detected=stairs_detected)
+
+
+def _settle_go2_spawn(world: World, go2, rl_policy: Optional[RLLocomotionPolicy], steps: int, dt: float) -> None:
+    settle_steps = max(0, int(steps))
+    if settle_steps <= 0:
+        return
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "go2_spawn_settle_start",
+        "Settling Go2 at zero command before world_ready",
+        steps=settle_steps,
+        locomotion_mode=args.locomotion_mode,
+    )
+    for _ in range(settle_steps):
+        if rl_policy is not None:
+            _step_go2_locomotion(go2, rl_policy, 0.0, 0.0, 0.0, dt, stairs_detected=False)
+        else:
+            hold_go2_stable(go2, _go2_locomotion_state, dt, logger=LOGGER)
+        world.step(render=not args.headless)
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "go2_spawn_settle_complete",
+        "Go2 spawn settle finished",
+        steps=settle_steps,
+        locomotion_mode=args.locomotion_mode,
+    )
 
 
 def _run_evaluation_and_save_images(
@@ -1937,12 +2144,13 @@ def _run_evaluation_and_save_images(
     evaluation_exit_reason: str = "not_recorded",
     motion_elapsed_sim_sec: float = 0.0,
     robot_stair_phase_sim_sec: float = 0.0,
+    rl_policy: Optional[RLLocomotionPolicy] = None,
 ) -> None:
     """Capture final verification image, evaluate straight-line walking / balance, and log summary."""
     if log_dir:
         end_img_path = os.path.join(log_dir, "verification_end.png")
         try:
-            capture_verification_image(world, camera, end_img_path, go2=go2, person=person, step_world=True)
+            capture_verification_image(world, camera, end_img_path, go2=go2, person=person, step_world=True, rl_policy=rl_policy)
             log_event(LOGGER, logging.INFO, "verification_end_saved", f"Saved final verification screenshot to {end_img_path}")
         except Exception as e:
             log_event(LOGGER, logging.WARNING, "verification_end_failed", f"Failed to save final verification image: {e}")
@@ -2095,7 +2303,7 @@ def _run_evaluation_and_save_images(
                         "motion_elapsed_sim_sec": round(float(motion_elapsed_sim_sec), 3),
                         "robot_stair_phase_sim_sec": round(float(robot_stair_phase_sim_sec), 3),
                         "data_statement": "Synthetic demo data generated from Isaac Sim stair geometry; values are geometry-exact for the scene and are not hardware LiDAR or trained RL output.",
-                        "physics_statement": "Stair collisions and contact physics remain enabled; the demo uses body-height assist plus the existing gait loop.",
+                        "physics_statement": "Stair collisions and contact physics remain enabled; commanded motion uses physics gait only, with no rigid-body, kinematic, body-height, or anti-tip fallback.",
                         "stair_demo": stair_demo,
                     },
                     f,
@@ -2163,6 +2371,7 @@ def main() -> None:
     log_event(LOGGER, logging.INFO, "camera_add_start", "Adding front camera")
     camera = add_camera(stage)
     verification_camera = add_verification_camera(stage) if (args.verification_image or args.log_dir) else None
+    topdown_camera = add_topdown_camera(stage)
 
     log_event(LOGGER, logging.INFO, "person_spawn_start", "Spawning person target")
     person = spawn_person(world, x=args.person_x, y=args.person_y)
@@ -2171,15 +2380,26 @@ def main() -> None:
 
     world.reset()
     initialize_camera_streams(camera)
+    try:
+        topdown_camera.initialize()
+        topdown_camera.add_rgb_to_frame()
+        log_event(LOGGER, logging.INFO, "topdown_camera_initialized", "Top-down camera sensor initialized")
+    except Exception as _td_exc:
+        log_event(LOGGER, logging.WARNING, "topdown_camera_init_failed",
+                  "Top-down camera init failed; overhead recording will be skipped",
+                  error=str(_td_exc))
+        topdown_camera = None
 
     # After world.reset() the articulation is fully initialised; set the Go2
     # joints to the standing pose so the robot doesn't collapse.
     _init_go2_standing_pose(go2)
+    rl_policy = _create_rl_locomotion_policy(go2)
+    _settle_go2_spawn(world, go2, rl_policy, args.spawn_settle_steps, 1.0 / max(1, int(args.physics_hz)))
 
     animation_ready = ensure_person_animation_loaded(world, person, render=not args.headless, attempts=4)
 
     if verification_camera is not None and args.verification_image and args.exit_after_verification:
-        capture_verification_image(world, verification_camera, args.verification_image, go2=go2, person=person)
+        capture_verification_image(world, verification_camera, args.verification_image, go2=go2, person=person, rl_policy=rl_policy)
         log_event(
             LOGGER,
             logging.INFO,
@@ -2203,7 +2423,7 @@ def main() -> None:
     if verification_camera is not None and args.log_dir:
         start_img_path = os.path.join(args.log_dir, "verification_start.png")
         try:
-            capture_verification_image(world, verification_camera, start_img_path, go2=go2, person=person, step_world=True)
+            capture_verification_image(world, verification_camera, start_img_path, go2=go2, person=person, step_world=True, rl_policy=rl_policy)
             log_event(LOGGER, logging.INFO, "verification_start_saved", f"Saved initial verification screenshot to {start_img_path}")
         except Exception as e:
             log_event(LOGGER, logging.WARNING, "verification_start_failed", f"Failed to save initial verification image: {e}")
@@ -2219,6 +2439,9 @@ def main() -> None:
         person_animation_ready=bool(animation_ready),
         view_follow_camera=bool(view_camera is not None),
         hold_motion_until_command=bool(args.hold_motion_until_command),
+        locomotion_mode=args.locomotion_mode,
+        rl_policy_active=bool(rl_policy is not None),
+        rl_stairs_strategy=args.rl_stairs_strategy,
     )
 
     # Start background thread for receiving velocity commands
@@ -2232,6 +2455,15 @@ def main() -> None:
     publisher  = FramePublisher(host=args.frame_host, port=args.frame_port)
     dt         = 1.0 / args.physics_hz
     step_count = 0
+
+    # Top-down video writer — starts when scene_motion_released becomes True
+    topdown_video_path = os.path.join(args.log_dir, "topdown.mp4") if args.log_dir else ""
+    topdown_video_writer = None
+    topdown_recording_released = False
+    if topdown_video_path:
+        topdown_video_dir = os.path.dirname(topdown_video_path)
+        if topdown_video_dir:
+            os.makedirs(topdown_video_dir, exist_ok=True)
 
     # Stale command timeout: stop robot if no command received for this long
     CMD_TIMEOUT_SEC = 1.0
@@ -2304,10 +2536,31 @@ def main() -> None:
                     active_command_count=active_count,
                 )
  
-            if controller_ready and nonzero_command_fresh:
+            _loco_ts = time.monotonic()
+            if rl_policy is not None:
+                if controller_ready and nonzero_command_fresh:
+                    _step_go2_locomotion(go2, rl_policy, vx, vy, wz, dt, stairs_detected=stairs_detected)
+                else:
+                    _step_go2_locomotion(go2, rl_policy, 0.0, 0.0, 0.0, dt, stairs_detected=False)
+            elif controller_ready and nonzero_command_fresh:
                 apply_velocity_to_go2(go2, vx, vy, wz, dt, stairs_detected=stairs_detected)
             else:
                 hold_go2_stable(go2, _go2_locomotion_state, dt, logger=LOGGER)
+            log_event(
+                LOGGER,
+                logging.DEBUG,
+                "loco_step",
+                "Locomotion step applied",
+                ts_monotonic=round(float(_loco_ts), 4),
+                step=int(step_count),
+                vx=round(float(vx), 4),
+                vy=round(float(vy), 4),
+                wz=round(float(wz), 4),
+                cmd_active=bool(controller_ready and nonzero_command_fresh),
+                gait_phase=round(float(_go2_locomotion_state.gait_phase), 4),
+                gait_time=round(float(_go2_locomotion_state.gait_time), 4),
+                swing_legs=list(getattr(_go2_locomotion_state, "current_swing_legs", [])),
+            )
  
             # Centerline clamping removed to enable real physics and dynamic steering.
             # We only zero out velocities to hold position until autonomous scene motion is released.
@@ -2451,6 +2704,10 @@ def main() -> None:
                     )
                     break
 
+            # Release top-down recording when scene motion starts
+            if scene_motion_released and not topdown_recording_released:
+                topdown_recording_released = True
+
             # Publish camera frame at reduced rate
             if step_count % args.render_every == 0:
                 try:
@@ -2494,6 +2751,38 @@ def main() -> None:
                         error=str(exc),
                     )
 
+                # Top-down overhead recording — starts when scene motion is released
+                if topdown_camera is not None and topdown_video_path and topdown_recording_released:
+                    try:
+                        import cv2 as _cv2
+                        td_rgb = topdown_camera.get_rgb()
+                        if td_rgb is not None:
+                            td_bgr = _cv2.cvtColor(td_rgb, _cv2.COLOR_RGB2BGR)
+                            if topdown_video_writer is None:
+                                td_h, td_w = td_bgr.shape[:2]
+                                import platform as _td_plat
+                                _td_codecs = ("avc1", "mp4v") if _td_plat.system() == "Windows" else ("mp4v",)
+                                _tdvw = None
+                                for _codec in _td_codecs:
+                                    _fourcc = _cv2.VideoWriter_fourcc(*_codec)
+                                    _tdvw = _cv2.VideoWriter(
+                                        topdown_video_path, _fourcc,
+                                        max(1.0, args.physics_hz / max(1, args.render_every)),
+                                        (int(td_w), int(td_h)),
+                                    )
+                                    if _tdvw.isOpened():
+                                        break
+                                    _tdvw.release(); _tdvw = None
+                                if _tdvw is not None and _tdvw.isOpened():
+                                    topdown_video_writer = _tdvw
+                                    log_event(LOGGER, logging.INFO, "topdown_video_started",
+                                              "Top-down video recording started",
+                                              path=topdown_video_path)
+                            if topdown_video_writer is not None:
+                                topdown_video_writer.write(td_bgr)
+                    except Exception:
+                        pass
+
         # After loop exits, run evaluation and capture final image
         if evaluation_done or (_robot_positions_over_time or _person_positions_over_time):
             _run_evaluation_and_save_images(
@@ -2503,6 +2792,7 @@ def main() -> None:
                 evaluation_exit_reason=evaluation_exit_reason,
                 motion_elapsed_sim_sec=motion_elapsed_sim_sec,
                 robot_stair_phase_sim_sec=robot_stair_phase_sim_sec,
+                rl_policy=rl_policy,
             )
 
     except KeyboardInterrupt:
@@ -2510,6 +2800,13 @@ def main() -> None:
     finally:
         _running = False
         publisher.close()
+        if topdown_video_writer is not None:
+            try:
+                topdown_video_writer.release()
+                log_event(LOGGER, logging.INFO, "topdown_video_saved", "Top-down video recording finalized",
+                          path=topdown_video_path)
+            except Exception:
+                pass
         simulation_app.close()
         log_event(LOGGER, logging.INFO, "simulation_shutdown", "Simulation shutdown completed")
 

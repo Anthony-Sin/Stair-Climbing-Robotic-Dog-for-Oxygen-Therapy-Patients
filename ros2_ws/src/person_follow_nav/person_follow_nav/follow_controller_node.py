@@ -42,8 +42,13 @@ class TargetPacket:
     depth_valid: Optional[bool]
     depth_method: Optional[str]
     depth_distance_m: Optional[float]
+    target_distance_m: Optional[float]
+    bearing_rad: Optional[float]
+    rotation_error_deg: Optional[float]
     center_x: Optional[float]
     bbox_center_x: Optional[float]
+    stairs_detected: Optional[bool]
+    stairs_depth_m: Optional[float]
     received_monotonic: float
 
 
@@ -106,7 +111,7 @@ class PersonFollowController(Node):
         self.declare_parameter("target_stale_grace_sec", 0.25)
         self.declare_parameter("render_backlog_age_sec", 0.35)
         self.declare_parameter("ema_alpha", 0.6)
-        self.declare_parameter("desired_distance", 0.35)
+        self.declare_parameter("desired_distance", 0.45)
         self.declare_parameter("update_rate_hz", 30.0)
         self.declare_parameter("max_goal_rate_hz", 12.0)
         self.declare_parameter("position_change_threshold_m", 0.02)
@@ -202,6 +207,7 @@ class PersonFollowController(Node):
         self._last_valid_target_ts = 0.0
         self._last_target_packet_signature: Optional[tuple[object, ...]] = None
         self._last_target_packet_log_ts = 0.0
+        self._last_reverse_follow_hold_log_ts = 0.0
 
         self._udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._udp_socket.bind(
@@ -454,8 +460,13 @@ class PersonFollowController(Node):
             depth_valid=optional_bool(payload.get("depth_valid")),
             depth_method=optional_text(payload.get("depth_method")),
             depth_distance_m=optional_float(payload.get("depth_distance_m")),
+            target_distance_m=optional_float(payload.get("target_distance_m")),
+            bearing_rad=optional_float(payload.get("bearing_rad")),
+            rotation_error_deg=optional_float(payload.get("rotation_error_deg")),
             center_x=optional_float(payload.get("center_x")),
             bbox_center_x=optional_float(payload.get("bbox_center_x")),
+            stairs_detected=optional_bool(payload.get("stairs_detected")),
+            stairs_depth_m=optional_float(payload.get("stairs_depth_m")),
             received_monotonic=time.monotonic(),
         )
 
@@ -748,9 +759,58 @@ class PersonFollowController(Node):
     def _target_bearing_rad(self, target: FilteredTarget) -> float:
         return math.atan2(target.y_base_m, target.x_base_m)
 
+    def _log_reverse_follow_hold(
+        self,
+        *,
+        target: FilteredTarget,
+        dx_body_raw: float,
+        dy_body_raw: float,
+    ) -> None:
+        now = time.monotonic()
+        if (now - self._last_reverse_follow_hold_log_ts) < 1.0:
+            return
+        self._last_reverse_follow_hold_log_ts = now
+        self._ecs_logger.info(
+            "Reverse follow goal suppressed",
+            extra=build_ecs_extra(
+                component="sidecar.follow",
+                action="reverse_follow_goal_suppressed",
+                cable={
+                    "target": {
+                        "track_id": target.track_id,
+                        "x_base_m": target.x_base_m,
+                        "y_base_m": target.y_base_m,
+                        "desired_distance_m": self._desired_distance,
+                        "dx_body_before_suppression_m": dx_body_raw,
+                        "dy_body_before_suppression_m": dy_body_raw,
+                    }
+                },
+            ),
+        )
+        self._debug_trace.log(
+            "reverse_follow_goal_suppressed",
+            track_id=target.track_id,
+            x_base_m=target.x_base_m,
+            y_base_m=target.y_base_m,
+            desired_distance_m=self._desired_distance,
+            dx_body_before_suppression_m=dx_body_raw,
+            dy_body_before_suppression_m=dy_body_raw,
+        )
+
     def _build_follow_path(self, target: FilteredTarget, odom: OdomState) -> tuple[Path, GoalSignature]:
-        dx_body = target.x_base_m - self._desired_distance
-        dy_body = target.y_base_m
+        dx_body_raw = target.x_base_m - self._desired_distance
+        dy_body_raw = target.y_base_m
+        if dx_body_raw < 0.0:
+            dx_body = 0.0
+            dy_body = 0.0
+            self._log_reverse_follow_hold(
+                target=target,
+                dx_body_raw=dx_body_raw,
+                dy_body_raw=dy_body_raw,
+            )
+        else:
+            dx_body = dx_body_raw
+            dy_body = dy_body_raw
 
         cos_yaw = math.cos(odom.yaw)
         sin_yaw = math.sin(odom.yaw)

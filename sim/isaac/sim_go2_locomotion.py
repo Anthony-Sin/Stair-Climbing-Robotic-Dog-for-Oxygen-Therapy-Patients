@@ -17,10 +17,6 @@ from sim_logging_utils import log_event
 @dataclass
 class Go2LocomotionState:
     target_height_m: float = 0.32
-    height_kp: float = 3.5
-    attitude_kp: float = 5.0
-    max_vertical_speed_mps: float = 0.8
-    max_attitude_rate_rps: float = 1.8
     gait_phase: float = 0.0
     stand_joint_positions: Optional[np.ndarray] = None
     dof_names: List[str] = field(default_factory=list)
@@ -61,6 +57,8 @@ class Go2LocomotionState:
     stair_demo_climb_logged: bool = False
     stair_demo_complete_logged: bool = False
     stair_crawl_logged: bool = False
+    stair_visual_deferred_logged: bool = False
+    fallback_body_motion_disabled_logged: bool = False
 
 
 def solve_leg_ik(x: float, y: float, z: float, leg: str) -> Tuple[float, float, float]:
@@ -430,6 +428,8 @@ def _build_stair_demo_telemetry(
             "foot_clearance_m": round(float(_effective_swing_height_for_mode(rl_mode)), 3),
             "physics_contact_enabled": True,
             "collision_cheat": "none",
+            "body_height_assist_enabled": False,
+            "anti_tip_assist_enabled": False,
         },
     }
 
@@ -559,11 +559,13 @@ def _record_stair_demo_telemetry(
             logger,
             logging.INFO,
             "synthetic_blind_rl_stair_assist_active",
-            "Synthetic blind-RL stair assist is lifting the Go2 body while preserving the existing gait loop",
+            "Synthetic blind-RL stair telemetry is active; body-height and anti-tip assist are disabled",
             mode=blind_rl.get("mode"),
             body_height_target_m=blind_rl.get("body_height_target_m"),
             vertical_assist_mps=blind_rl.get("vertical_assist_mps"),
             physics_contact_enabled=True,
+            body_height_assist_enabled=False,
+            anti_tip_assist_enabled=False,
             is_synthetic=True,
         )
 
@@ -676,14 +678,15 @@ def hold_go2_stable(
     *,
     logger: Optional[logging.Logger] = None,
 ) -> None:
-    _set_stable_kinematic_pose(
-        go2,
-        vx=0.0,
-        vy=0.0,
-        wz=0.0,
-        dt=dt,
-        target_height_m=state.target_height_m,
-    )
+    # Damp any accumulated velocity so the standing joint drives take full effect.
+    # Do NOT teleport the root body — let PhysX + ground contact keep the robot upright.
+    try:
+        if hasattr(go2, "set_linear_velocity"):
+            go2.set_linear_velocity(np.zeros(3))
+        if hasattr(go2, "set_angular_velocity"):
+            go2.set_angular_velocity(np.zeros(3))
+    except Exception:
+        pass
     _apply_procedural_gait(
         go2,
         state,
@@ -699,7 +702,7 @@ def hold_go2_stable(
             logger,
             logging.INFO,
             "go2_stable_hold_active",
-            "Holding Go2 upright until the Docker/controller command stream starts",
+            "Holding Go2 upright via joint drives until the Docker/controller command stream starts",
             target_height_m=state.target_height_m,
         )
 
@@ -716,6 +719,18 @@ def _get_dof_names(go2: Any) -> List[str]:
             if names:
                 return [str(name) for name in names]
     return []
+
+
+# Single source of truth for the Go2 standing pose (radians).  These exact values
+# are also applied as the USD joint-drive targets at spawn (see isaac_env.load_go2)
+# so that spawn -> settle/hold -> first commanded gait is posture-continuous.  A
+# mismatch between the spawn pose and this pose snaps the legs mid-drop and tips the
+# robot over backward at startup.
+GO2_STAND_POSE_RAD = {
+    "hip":   0.0,
+    "thigh": 0.9,
+    "calf":  -1.8,
+}
 
 
 def _default_stand_pose(go2: Any, dof_names: List[str]) -> Optional[np.ndarray]:
@@ -735,12 +750,10 @@ def _default_stand_pose(go2: Any, dof_names: List[str]) -> Optional[np.ndarray]:
     stand = current.copy()
     for index, raw_name in enumerate(dof_names):
         name = raw_name.lower()
-        if "hip" in name:
-            stand[index] = 0.0
-        elif "thigh" in name:
-            stand[index] = 0.75
-        elif "calf" in name:
-            stand[index] = -1.45
+        for part, rad in GO2_STAND_POSE_RAD.items():
+            if part in name:
+                stand[index] = rad
+                break
     return stand
 
 
@@ -878,7 +891,7 @@ def _apply_procedural_gait(
             logger,
             state,
             "go2_gait_apply_failed",
-            "Go2 procedural gait command failed; disabling joint animation and keeping stable body motion",
+            "Go2 procedural gait command failed; disabling joint animation without rescue body motion",
             interval_sec=30.0,
             failure_count=int(state.procedural_gait_failure_count),
             error=str(exc),
@@ -920,6 +933,102 @@ def _query_terrain_height(rx: float, ry: float, rz: float) -> float:
     return max(0.0, rz - 0.32)
 
 
+def _record_passive_body_telemetry(
+    go2: Any,
+    state: Go2LocomotionState,
+    *,
+    base_link_name: str,
+    logger: Optional[logging.Logger],
+    vx: float,
+    vy: float,
+    wz: float,
+) -> None:
+    rb_prim, _ = _find_rigid_body_api(go2, base_link_name)
+    if rb_prim is None:
+        return
+    try:
+        matrix = UsdGeom.Xformable(rb_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        roll, pitch, yaw = _extract_roll_pitch_yaw(matrix)
+        rx = float(matrix[3][0])
+        ry = float(matrix[3][1])
+        rz = float(matrix[3][2])
+        terrain_height = _query_terrain_height(rx, ry, rz)
+        _record_stair_demo_telemetry(
+            state,
+            logger,
+            _build_stair_demo_telemetry(
+                rx,
+                ry,
+                rz,
+                roll,
+                pitch,
+                yaw,
+                rz - terrain_height,
+                vx,
+                vy,
+                wz,
+                state,
+                body_height_target_m=None,
+                vertical_assist_mps=0.0,
+            ),
+        )
+    except Exception as exc:
+        _warn_rate_limited(
+            logger,
+            state,
+            "go2_passive_telemetry_failed",
+            "Go2 passive telemetry update failed",
+            interval_sec=10.0,
+            error=str(exc),
+        )
+
+
+def _skip_commanded_motion_without_fallback(
+    go2: Any,
+    state: Go2LocomotionState,
+    *,
+    base_link_name: str,
+    logger: Optional[logging.Logger],
+    vx: float,
+    vy: float,
+    wz: float,
+    reason: str,
+    error: Optional[str] = None,
+) -> None:
+    if logger is not None and not state.fallback_body_motion_disabled_logged:
+        state.fallback_body_motion_disabled_logged = True
+        log_event(
+            logger,
+            logging.WARNING,
+            "go2_commanded_motion_no_fallback",
+            "Physics gait is unavailable; skipping rigid-body/kinematic fallback so falls remain physical",
+            reason=reason,
+            error=error,
+            rigid_body_fallback_enabled=False,
+            kinematic_fallback_enabled=False,
+            stable_pose_fallback_enabled=False,
+        )
+    else:
+        _warn_rate_limited(
+            logger,
+            state,
+            "go2_commanded_motion_no_fallback_repeat",
+            "Physics gait is unavailable; no fallback body motion will be applied",
+            interval_sec=5.0,
+            reason=reason,
+            error=error,
+        )
+    _record_passive_body_telemetry(
+        go2,
+        state,
+        base_link_name=base_link_name,
+        logger=logger,
+        vx=vx,
+        vy=vy,
+        wz=wz,
+    )
+
+
 def apply_go2_velocity(
     go2: Any,
     vx: float,
@@ -932,7 +1041,8 @@ def apply_go2_velocity(
     logger: Optional[logging.Logger] = None,
     stairs_detected: bool = False,
 ) -> None:
-    """Drive Go2 root motion through physics-driven trot gait or fallback kinematic mode."""
+    """Drive Go2 through physics gait only; commanded motion has no rescue fallback."""
+    vx = max(0.0, float(vx))
     root_prim = getattr(go2, "prim", None)
     if root_prim is None:
         _warn_rate_limited(
@@ -940,6 +1050,19 @@ def apply_go2_velocity(
             state,
             "go2_missing_root_prim",
             "Go2 velocity command skipped because the articulation root prim is missing",
+        )
+        return
+
+    if not state.use_physics_gait:
+        _skip_commanded_motion_without_fallback(
+            go2,
+            state,
+            base_link_name=base_link_name,
+            logger=logger,
+            vx=vx,
+            vy=vy,
+            wz=wz,
+            reason="physics_gait_disabled",
         )
         return
 
@@ -968,9 +1091,20 @@ def apply_go2_velocity(
                     logger,
                     state,
                     "go2_physics_gait_missing_dofs",
-                    f"Go2 physics gait requires 12 DOFs but only found {len(state.dof_map)}; falling back to legacy",
+                    f"Go2 physics gait requires 12 DOFs but only found {len(state.dof_map)}; no fallback body motion will be applied",
                 )
                 state.use_physics_gait = False
+                _skip_commanded_motion_without_fallback(
+                    go2,
+                    state,
+                    base_link_name=base_link_name,
+                    logger=logger,
+                    vx=vx,
+                    vy=vy,
+                    wz=wz,
+                    reason="missing_dofs",
+                )
+                return
             else:
                 # 2. Configure joint gains if not set
                 if not state.joint_gains_set and not state.joint_gains_unavailable:
@@ -993,17 +1127,20 @@ def apply_go2_velocity(
                                 "Go2 joint drive gains (stiffness=450, damping=25) have been applied",
                             )
                     except Exception as exc:
+                        # Runtime gain API (get_articulation_controller / get_dof_properties)
+                        # is absent on this Isaac Sim build.  That's fine — load_go2() already
+                        # configured USD-level DriveAPI stiffness/damping on every joint, so
+                        # _command_joint_positions() will still produce real motion.
                         state.joint_gains_unavailable = True
-                        state.use_physics_gait = False
+                        state.joint_gains_set = True  # USD drives from load_go2() are active
                         _warn_rate_limited(
                             logger,
                             state,
                             "go2_gains_config_failed",
-                            "Failed to configure Go2 joint gains; disabling physics gait and using stable fallback",
+                            "Runtime joint gain API unavailable; proceeding with USD-level drive gains set at load time (stiffness=800, damping=40)",
                             interval_sec=30.0,
                             error=str(exc)
                         )
-                        raise RuntimeError("Go2 joint drive gains are unavailable")
 
                 # 3. Find base rigid body to read pose & velocity
                 rb_prim, rb_api = _find_rigid_body_api(go2, base_link_name)
@@ -1020,10 +1157,14 @@ def apply_go2_velocity(
                 terrain_height = _query_terrain_height(rx, ry, rz)
                 actual_height = rz - terrain_height
 
-                actual_lin_vel = go2.get_linear_velocity()
-                actual_ang_vel = go2.get_angular_velocity()
-                actual_vx, actual_vy, actual_vz = actual_lin_vel[0], actual_lin_vel[1], actual_lin_vel[2]
-                actual_wx, actual_wy, actual_wz = actual_ang_vel[0], actual_ang_vel[1], actual_ang_vel[2]
+                try:
+                    actual_lin_vel = go2.get_linear_velocity()
+                    actual_ang_vel = go2.get_angular_velocity()
+                    actual_vx, actual_vy, actual_vz = actual_lin_vel[0], actual_lin_vel[1], actual_lin_vel[2]
+                    actual_wx, actual_wy, actual_wz = actual_ang_vel[0], actual_ang_vel[1], actual_ang_vel[2]
+                except Exception:
+                    actual_vx = actual_vy = actual_vz = 0.0
+                    actual_wx = actual_wy = actual_wz = 0.0
 
                 cos_y = math.cos(yaw)
                 sin_y = math.sin(yaw)
@@ -1032,7 +1173,41 @@ def apply_go2_velocity(
                 body_vx = cos_y * actual_vx + sin_y * actual_vy
                 body_vy = -sin_y * actual_vx + cos_y * actual_vy
 
-                gait_mode = "stair_crawl" if stairs_detected else "flat_trot"
+                terrain_phase = _terrain_phase(rx, ry)
+                edge_x, current_ground_h, next_ground_h = _next_stair_edge(rx, ry)
+                distance_to_step_m = None if edge_x is None else max(0.0, edge_x - rx)
+                step_delta_m = max(0.0, next_ground_h - current_ground_h)
+                stair_geometry_in_range = bool(
+                    terrain_phase in ("stair_approach", "staircase")
+                    or (
+                        distance_to_step_m is not None
+                        and distance_to_step_m <= STAIR_LIDAR_LOOKAHEAD_M
+                        and step_delta_m >= 0.02
+                    )
+                )
+                stairs_detected_for_gait = bool(stairs_detected and stair_geometry_in_range)
+                if (
+                    stairs_detected
+                    and not stairs_detected_for_gait
+                    and logger is not None
+                    and not state.stair_visual_deferred_logged
+                ):
+                    state.stair_visual_deferred_logged = True
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "go2_visual_stairs_deferred_until_geometry_near",
+                        "Visual stair detection was held out of gait selection until the robot reaches the stair lookahead or approach geometry",
+                        terrain_phase=terrain_phase,
+                        robot_x_m=float(rx),
+                        robot_y_m=float(ry),
+                        distance_to_next_riser_m=(
+                            None if distance_to_step_m is None else float(distance_to_step_m)
+                        ),
+                        lookahead_m=float(STAIR_LIDAR_LOOKAHEAD_M),
+                    )
+
+                gait_mode = "stair_crawl" if stairs_detected_for_gait else "flat_trot"
 
                 # 4. Gait phase scheduler
                 cmd_speed = math.sqrt(vx**2 + vy**2) + 0.25 * abs(wz)
@@ -1110,7 +1285,7 @@ def apply_go2_velocity(
                     "rl": 0.0955,
                     "rr": -0.0955,
                 }
-                if stairs_detected:
+                if stairs_detected_for_gait:
                     swing_height_m = max(state.swing_height, _effective_swing_height_for_mode("stair_climb"))
                 else:
                     swing_height_m = state.swing_height
@@ -1196,7 +1371,7 @@ def apply_go2_velocity(
                     foot_world_x = rx + dx_foot
                     foot_world_y = ry + dy_foot
                     
-                    if stairs_detected:
+                    if stairs_detected_for_gait:
                         foot_terrain_h = _query_terrain_height(foot_world_x, foot_world_y, rz)
                         dh_terrain = foot_terrain_h - terrain_height
                     else:
@@ -1252,171 +1427,27 @@ def apply_go2_velocity(
                 return
 
         except Exception as exc:
-            _warn_rate_limited(
-                logger,
-                state,
-                "go2_physics_gait_failed",
-                "Go2 physics-driven gait failed; falling back to legacy kinematic control",
-                error=str(exc)
-            )
-
-    # Legacy kinematic/procedural control fallback
-    try:
-        rb_prim, rb_api = _find_rigid_body_api(go2, base_link_name)
-        if rb_prim is None or rb_api is None:
-            raise RuntimeError("no rigid body API found on Go2 root or base links")
-
-        xform = UsdGeom.Xformable(rb_prim)
-        matrix = xform.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-        roll, pitch, yaw = _extract_roll_pitch_yaw(matrix)
-        cos_y, sin_y = math.cos(yaw), math.sin(yaw)
-        
-        rx = float(matrix[3][0])
-        ry = float(matrix[3][1])
-        rz = float(matrix[3][2])
-        wx = cos_y * vx - sin_y * vy
-        wy = sin_y * vx + cos_y * vy
-        terrain_height = _query_terrain_height(rx, ry, rz)
-        actual_height = rz - terrain_height
-        
-        command_speed = math.sqrt((vx * vx) + (vy * vy)) + (0.25 * abs(wz))
-        gait_preapplied = False
-        if command_speed > 0.03 and not state.gait_logged:
-            _apply_procedural_gait(
+            state.use_physics_gait = False
+            _skip_commanded_motion_without_fallback(
                 go2,
                 state,
-                vx=vx,
-                vy=vy,
-                wz=wz,
-                dt=dt,
+                base_link_name=base_link_name,
                 logger=logger,
-            )
-            gait_preapplied = True
-            if not state.gait_logged:
-                wx = 0.0
-                wy = 0.0
-                wz = 0.0
-                vx = 0.0
-                vy = 0.0
-                command_speed = 0.0
-                _warn_rate_limited(
-                    logger,
-                    state,
-                    "go2_motion_blocked_until_gait_ready",
-                    "Go2 body motion is blocked until joint gait animation is active",
-                    interval_sec=5.0,
-                )
-
-        walk_bob_m = 0.0
-        if command_speed > 0.03:
-            omega = 2.0 * math.pi / max(0.2, state.gait_period)
-            walk_bob_m = 0.012 * math.sin(2.0 * omega * state.gait_time)
-        desired_height_m = state.target_height_m + walk_bob_m
-        desired_world_z = _stair_assisted_world_z(
-            rx,
-            ry,
-            yaw,
-            vx,
-            state,
-            desired_height_m,
-            stairs_detected=stairs_detected,
-        )
-        vertical_assist_mps = _clamp(
-            (desired_world_z - rz) * state.height_kp,
-            -state.max_vertical_speed_mps,
-            state.max_vertical_speed_mps,
-        )
-        _record_stair_demo_telemetry(
-            state,
-            logger,
-            _build_stair_demo_telemetry(
-                rx,
-                ry,
-                rz,
-                roll,
-                pitch,
-                yaw,
-                actual_height,
-                vx,
-                vy,
-                wz,
-                state,
-                body_height_target_m=desired_world_z,
-                vertical_assist_mps=vertical_assist_mps,
-            ),
-        )
-
-        if _prim_is_kinematic(rb_prim):
-            _set_stable_kinematic_pose(
-                go2,
                 vx=vx,
                 vy=vy,
                 wz=wz,
-                dt=dt,
-                target_height_m=desired_height_m,
-                stairs_detected=stairs_detected,
+                reason="physics_gait_failed",
+                error=str(exc),
             )
-            if not gait_preapplied:
-                _apply_procedural_gait(
-                    go2,
-                    state,
-                    vx=vx,
-                    vy=vy,
-                    wz=wz,
-                    dt=dt,
-                    logger=logger,
-                )
             return
 
-        vz = vertical_assist_mps
-        roll_rate = _clamp(-roll * state.attitude_kp, -state.max_attitude_rate_rps, state.max_attitude_rate_rps)
-        pitch_rate = _clamp(-pitch * state.attitude_kp, -state.max_attitude_rate_rps, state.max_attitude_rate_rps)
-
-        rb_api.GetVelocityAttr().Set(Gf.Vec3f(float(wx), float(wy), float(vz)))
-        rb_api.GetAngularVelocityAttr().Set(
-            Gf.Vec3f(
-                float(math.degrees(roll_rate)),
-                float(math.degrees(pitch_rate)),
-                float(math.degrees(wz)),
-            )
-        )
-
-        if logger is not None and not state.rigid_body_logged:
-            state.rigid_body_logged = True
-            state.rigid_body_path = str(rb_prim.GetPath())
-            log_event(
-                logger,
-                logging.INFO,
-                "go2_rigid_body_velocity_active",
-                "Go2 rigid-body velocity control is active",
-                rigid_body_path=state.rigid_body_path,
-                target_height_m=state.target_height_m,
-            )
-    except Exception as exc:
-        _warn_rate_limited(
-            logger,
-            state,
-            "go2_velocity_physics_failed",
-            "Go2 rigid-body velocity path failed; using stable kinematic stand fallback",
-            error=str(exc),
-        )
-        _set_stable_kinematic_pose(
-            go2,
-            vx=vx if state.gait_logged else 0.0,
-            vy=vy if state.gait_logged else 0.0,
-            wz=wz if state.gait_logged else 0.0,
-            dt=dt,
-            target_height_m=state.target_height_m,
-            stairs_detected=stairs_detected,
-        )
-
-    if not locals().get("gait_preapplied", False):
-        _apply_procedural_gait(
-            go2,
-            state,
-            vx=vx,
-            vy=vy,
-            wz=wz,
-            dt=dt,
-            logger=logger,
-        )
+    _skip_commanded_motion_without_fallback(
+        go2,
+        state,
+        base_link_name=base_link_name,
+        logger=logger,
+        vx=vx,
+        vy=vy,
+        wz=wz,
+        reason="physics_gait_not_entered",
+    )

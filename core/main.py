@@ -2,7 +2,7 @@
 Person following robot controller with pose detection and depth sensing.
 
 Robot Coordinate System:
-- X-axis (trans_x): Forward(+) / Backward(-) movement
+- X-axis (trans_x): Forward(+) movement only; negative/backward commands are clamped to zero.
 - Y-axis (trans_y): Left(+) / Right(-) movement
 - Rotation: Counter-clockwise(+) / Clockwise(-) rotation
 
@@ -24,6 +24,8 @@ import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 from single_person_tracker import SinglePersonTracker
 from person_follower import PersonFollower, PersonFollowingConfig
+from depth_processor import DepthProcessor
+from pid_controller import SlewRateLimiter
 from args_parser import parse_args
 from visualization import (
     RotationDebugWindow, draw_frame_overlays
@@ -133,6 +135,191 @@ def _apply_sim_stair_gap_control(args, trans_x_cmd: float, debug_info: Dict[str,
     debug_info["stair_follow_override_active"] = abs(float(trans_x_cmd) - original_cmd) > 1e-4
     debug_info["stair_follow_cmd_mps"] = float(trans_x_cmd)
     return float(trans_x_cmd)
+
+
+def _depth_from_bbox(depth_img: np.ndarray, bbox: Optional[List[float]]) -> Optional[float]:
+    if bbox is None:
+        return None
+    try:
+        depth_m = DepthProcessor.foreground_depth_bimodal(
+            depth_img,
+            tuple(int(round(v)) for v in bbox[:4]),
+            return_histogram=False,
+        )
+        return None if depth_m is None else float(depth_m)
+    except Exception:
+        return None
+
+
+def _depth_from_bbox_excluding_person(
+    depth_img: np.ndarray,
+    stairs_bbox: Optional[List[float]],
+    person_bbox: Optional[List[float]] = None,
+) -> Optional[float]:
+    """Measure stair depth from the depth image, masking out the person's bbox.
+
+    Uses the 25th-percentile of valid (non-zero) pixels in the stair region
+    after zeroing any overlap with the person bbox.  Falls back to the standard
+    bimodal method when too few pixels remain after masking.
+    """
+    if stairs_bbox is None:
+        return None
+    try:
+        h, w = depth_img.shape[:2]
+        x1, y1, x2, y2 = [int(round(v)) for v in stairs_bbox[:4]]
+        x1 = max(0, x1); y1 = max(0, y1); x2 = min(w, x2); y2 = min(h, y2)
+        if x2 <= x1 or y2 <= y1:
+            return None
+
+        region = np.array(depth_img[y1:y2, x1:x2], dtype=np.float32)
+
+        if person_bbox is not None:
+            px1, py1, px2, py2 = [int(round(v)) for v in person_bbox[:4]]
+            rel_x1 = max(0, px1 - x1);  rel_y1 = max(0, py1 - y1)
+            rel_x2 = min(x2 - x1, px2 - x1); rel_y2 = min(y2 - y1, py2 - y1)
+            if rel_x2 > rel_x1 and rel_y2 > rel_y1:
+                region[rel_y1:rel_y2, rel_x1:rel_x2] = 0.0
+
+        valid = region[region > 0.0]
+        if len(valid) < 10:
+            return _depth_from_bbox(depth_img, stairs_bbox)
+
+        depth_mm = float(np.percentile(valid, 25))
+        return (depth_mm * 0.001) if depth_mm > 0 else None
+    except Exception:
+        return None
+
+
+def _apply_stair_command_policy(
+    args,
+    trans_x_cmd: float,
+    rotation_cmd: float,
+    debug_info: Dict[str, Any],
+) -> Tuple[float, float]:
+    if not bool(debug_info.get("stairs_detected", False)):
+        debug_info["stairs_action_active"] = False
+        return float(trans_x_cmd), float(rotation_cmd)
+
+    # Gate: stair behavior requires the person to be actively detected.
+    # Applying centering amplification during lost-person recovery rotation
+    # causes the robot to over-rotate and fall.
+    if not bool(debug_info.get("person_detected", False)):
+        debug_info["stairs_action_active"] = False
+        debug_info["stairs_gated_no_person"] = True
+        return float(trans_x_cmd), float(rotation_cmd)
+
+    stair_depth_m = debug_info.get("stairs_depth_m")
+
+    # Require at least one sensor-confirmed (non-latched-only) depth reading
+    # before engaging the stair policy.  This prevents reaction to distant
+    # YOLO detections where depth could not be measured.
+    if stair_depth_m is None and not bool(debug_info.get("stairs_depth_ever_confirmed", False)):
+        debug_info["stairs_action_active"] = False
+        debug_info["stairs_gated_no_depth"] = True
+        return float(trans_x_cmd), float(rotation_cmd)
+
+    stairs_near = stair_depth_m is None or float(stair_depth_m) <= float(args.stair_near_distance)
+    debug_info["stairs_near"] = bool(stairs_near)
+    if not stairs_near:
+        debug_info["stairs_action_active"] = False
+        return float(trans_x_cmd), float(rotation_cmd)
+
+    original_x = float(trans_x_cmd)
+    original_wz = float(rotation_cmd)
+
+    # "Too close" guard: if the robot has already reached the stair base,
+    # cut all forward motion so it doesn't ram the first step.
+    too_close_dist = float(getattr(args, "stair_too_close_distance", 0.35))
+    if stair_depth_m is not None and float(stair_depth_m) <= too_close_dist:
+        debug_info["stairs_too_close"] = True
+        trans_x_cmd = 0.0
+    else:
+        debug_info["stairs_too_close"] = False
+        max_forward = max(0.0, float(args.trans_x_max) * float(args.stair_speed_scale))
+        if trans_x_cmd > max_forward:
+            trans_x_cmd = max_forward
+
+    max_rot = max(0.0, float(args.rot_max))
+    rotation_cmd = float(rotation_cmd) * float(args.stair_centering_scale)
+    if max_rot > 0.0:
+        rotation_cmd = float(np.clip(rotation_cmd, -max_rot, max_rot))
+
+    debug_info["stairs_action_active"] = True
+    debug_info["stairs_speed_limit_mps"] = float(trans_x_cmd)
+    debug_info["stairs_trans_x_before"] = original_x
+    debug_info["stairs_rotation_before"] = original_wz
+    return float(trans_x_cmd), float(rotation_cmd)
+
+
+def _apply_front_obstacle_gate(
+    args,
+    trans_x_cmd: float,
+    depth_img: np.ndarray,
+    debug_info: Dict[str, Any],
+) -> float:
+    if not bool(args.obstacle_stop_enabled) or trans_x_cmd <= 0.0:
+        debug_info["front_obstacle_gate_active"] = False
+        return float(trans_x_cmd)
+
+    nearest_m, roi_info = DepthProcessor.central_roi_nearest_depth(
+        depth_img,
+        width_ratio=args.obstacle_roi_width_ratio,
+        height_ratio=args.obstacle_roi_height_ratio,
+    )
+    debug_info["front_obstacle_depth_m"] = nearest_m
+    debug_info["front_obstacle_roi"] = roi_info.get("roi")
+    debug_info["front_obstacle_valid_pixels"] = roi_info.get("valid_pixels", 0)
+    if nearest_m is None:
+        debug_info["front_obstacle_gate_active"] = False
+        return float(trans_x_cmd)
+
+    target_depth = debug_info.get("depth_distance_m")
+    if target_depth is not None:
+        try:
+            if float(nearest_m) >= (float(target_depth) - float(args.obstacle_target_clearance)):
+                debug_info["front_obstacle_gate_active"] = False
+                debug_info["front_obstacle_reason"] = "not_closer_than_target"
+                return float(trans_x_cmd)
+        except Exception:
+            pass
+
+    if nearest_m > args.obstacle_slow_distance:
+        debug_info["front_obstacle_gate_active"] = False
+        return float(trans_x_cmd)
+
+    original_cmd = float(trans_x_cmd)
+    if nearest_m <= args.obstacle_stop_distance:
+        trans_x_cmd = 0.0
+        scale = 0.0
+    else:
+        span = max(1e-3, float(args.obstacle_slow_distance) - float(args.obstacle_stop_distance))
+        scale = max(0.0, min(1.0, (float(nearest_m) - float(args.obstacle_stop_distance)) / span))
+        trans_x_cmd = float(trans_x_cmd) * scale
+
+    debug_info["front_obstacle_gate_active"] = True
+    debug_info["front_obstacle_scale"] = float(scale)
+    debug_info["front_obstacle_trans_x_before"] = original_cmd
+    return float(trans_x_cmd)
+
+
+def _apply_no_reverse_follow_policy(
+    args,
+    trans_x_cmd: float,
+    debug_info: Dict[str, Any],
+    *,
+    source: str,
+) -> float:
+    if trans_x_cmd >= 0.0:
+        debug_info.setdefault("reverse_follow_suppressed", False)
+        return float(trans_x_cmd)
+
+    debug_info["reverse_follow_suppressed"] = True
+    debug_info["reverse_follow_source"] = source
+    debug_info["reverse_follow_cmd_before_suppression"] = float(trans_x_cmd)
+    debug_info["reverse_follow_reason"] = (
+        "hold_position_track_target_until_forward_gap_opens"
+    )
+    return 0.0
 
 
 class _AsyncPreviewWorker:
@@ -295,7 +482,11 @@ def main():
     )
     trt_infer  = TRTInference(args.trt_engine, verbose=args.debug)
 
-    yolo_stairs = YoloStairsInference(verbose=args.debug)
+    yolo_stairs = YoloStairsInference(
+        verbose=args.debug,
+        consistency_frames=args.stairs_consistency_frames,
+        consistency_required=args.stairs_consistency_required,
+    )
     yolo_stairs.initialize()
 
     tracker = SinglePersonTracker(
@@ -303,6 +494,8 @@ def main():
         allow_auto_reacquire=args.auto_reacquire,
         max_lost_frames=45 if args.sim else 300,
         reacquire_after_frames=6 if args.sim else 18,
+        selection_area_weight=args.tracker_area_weight,
+        selection_center_weight=args.tracker_center_weight,
     )
 
     use_pid_backend  = args.follow and args.follow_backend == 'pid'
@@ -338,6 +531,13 @@ def main():
         camera_fx=camera_intrinsics['fx'],
         camera_cx=camera_intrinsics['cx'],
         target_distance=args.target_distance,
+        enable_prediction=args.enable_prediction,
+        prediction_time_limit=args.prediction_time_limit,
+        min_tracking_time=args.min_tracking_time,
+        lost_search_yaw_speed=args.lost_search_yaw_speed,
+        lost_search_timeout_sec=args.lost_search_timeout_sec,
+        lost_search_min_error_deg=args.lost_search_min_error_deg,
+        rotation_velocity_ff_gain=args.rot_velocity_ff,
         edge_penalty_k=args.edge_penalty_k,
         size_penalty_k=args.size_penalty_k,
         large_bbox_threshold=args.large_bbox_thresh,
@@ -364,6 +564,7 @@ def main():
     last_target_gate_log_ts  = 0.0
     last_payload_warning_signature: Optional[Tuple[Optional[int], str]] = None
     last_payload_warning_ts  = 0.0
+    lost_timeout_alerted = False
 
     # ------------------------------------------------------------------
     # Robot controller (real hardware or sim shim)
@@ -413,6 +614,16 @@ def main():
             os.makedirs(video_dir, exist_ok=True)
     preview_video_writer = None
 
+    raw_video_path = getattr(args, "raw_video_path", "")
+    if not raw_video_path and args.preview_save_dir:
+        raw_video_path = os.path.join(args.preview_save_dir, "raw_camera.mp4")
+    if raw_video_path and not args.preview_save_dir:
+        raw_video_dir = os.path.dirname(raw_video_path)
+        if raw_video_dir:
+            os.makedirs(raw_video_dir, exist_ok=True)
+    raw_video_writer = None
+    raw_recording_released = False  # starts writing only once motion is first allowed
+
     # --- Graceful video-writer flush on SIGTERM (sent by `docker stop`) ---
     # Docker sends SIGTERM, waits --time seconds, then sends SIGKILL.
     # Without this handler the finally block is never reached and the MP4
@@ -421,13 +632,19 @@ def main():
     import atexit as _atexit
 
     def _flush_video_writer():
-        nonlocal preview_video_writer
+        nonlocal preview_video_writer, raw_video_writer
         if preview_video_writer is not None:
             try:
                 preview_video_writer.release()
             except Exception:
                 pass
             preview_video_writer = None
+        if raw_video_writer is not None:
+            try:
+                raw_video_writer.release()
+            except Exception:
+                pass
+            raw_video_writer = None
 
     def _sigterm_handler(signum, frame):
         _flush_video_writer()
@@ -448,6 +665,12 @@ def main():
     frame_idx             = 0
     sim_frame_failure_since: Optional[float] = None
     stair_latch_counter = 0
+    last_stairs_bbox: Optional[List[float]] = None
+    last_stairs_conf = 0.0
+    last_stairs_depth_m: Optional[float] = None
+    stairs_depth_ever_confirmed = False
+    trans_x_limiter = SlewRateLimiter(args.max_trans_x_accel)
+    rotation_limiter = SlewRateLimiter(args.max_rot_accel)
  
     try:
         while True:
@@ -456,6 +679,7 @@ def main():
             stage_ms: Dict[str, float] = {}
 
             capture_start_ts = time.perf_counter()
+            frame_capture_wall_ts = time.time()
             img, depths, is_stitched, _ = cam.get_frame()
             stage_ms["capture"] = (time.perf_counter() - capture_start_ts) * 1000.0
             frame_meta       = cam.get_last_frame_meta()
@@ -518,7 +742,9 @@ def main():
             stage_ms["preprocess"] = (time.perf_counter() - preprocess_start_ts) * 1000.0
 
             infer_start_ts = time.perf_counter()
+            pose_infer_wall_ts = time.time()
             trt_output     = trt_infer.infer(input_tensor_np, args.debug)
+            pose_infer_done_ts = time.monotonic()
             stage_ms["pose_infer"] = (time.perf_counter() - infer_start_ts) * 1000.0
             if trt_output is None:
                 debug_trace.log(
@@ -596,15 +822,46 @@ def main():
             )
             stairs_result = yolo_stairs.get_latest_result()
             if stairs_result.get("detected", False):
-                stair_latch_counter = 1200
-            
+                stair_latch_counter = int(args.stairs_latch_frames)
+                if stairs_result.get("bbox") is not None:
+                    last_stairs_bbox = list(stairs_result.get("bbox"))
+                    last_stairs_conf = float(stairs_result.get("conf", 0.0))
+
             stairs_detected = stair_latch_counter > 0
             if stair_latch_counter > 0:
                 stair_latch_counter -= 1
-                
+
+            stairs_bbox = stairs_result.get("bbox") or last_stairs_bbox
+            # Measure stair depth excluding the person's footprint so the robot
+            # doesn't confuse the person's legs/body with the stair edge.
+            _person_bbox_for_depth = (
+                list(main_person.get("bbox", []))
+                if main_person is not None and main_person.get("bbox") is not None
+                else None
+            )
+            stairs_depth_m = _depth_from_bbox_excluding_person(
+                depth_img, stairs_bbox, _person_bbox_for_depth
+            )
+            if stairs_depth_m is not None:
+                last_stairs_depth_m = stairs_depth_m
+                stairs_depth_ever_confirmed = True
+            elif stairs_detected:
+                stairs_depth_m = last_stairs_depth_m
+
             debug_info["stairs_detected"] = stairs_detected
-            debug_info["stairs_bbox"] = stairs_result.get("bbox")
-            debug_info["stairs_conf"] = stairs_result.get("conf", 0.0)
+            debug_info["stairs_raw_detected"] = bool(stairs_result.get("raw_detected", False))
+            debug_info["stairs_positive_count"] = int(stairs_result.get("positive_count", 0))
+            debug_info["stairs_consistency_required"] = int(stairs_result.get("consistency_required", 1))
+            debug_info["stairs_latch_frames_remaining"] = int(stair_latch_counter)
+            debug_info["stairs_bbox"] = stairs_bbox
+            debug_info["stairs_conf"] = float(stairs_result.get("conf", last_stairs_conf))
+            debug_info["stairs_depth_m"] = stairs_depth_m
+            debug_info["stairs_depth_ever_confirmed"] = stairs_depth_ever_confirmed
+            debug_info["frame_capture_ts"] = frame_capture_wall_ts
+            debug_info["pose_infer_ts"] = pose_infer_wall_ts
+            debug_info["pose_infer_done_mono"] = pose_infer_done_ts
+            debug_info["stairs_result_ts_unix"] = stairs_result.get("ts_unix")
+            debug_info["stairs_result_ts_mono"] = stairs_result.get("ts_monotonic")
             depth_m = debug_info.get('depth_distance_m')
             if depth_m is not None:
                 last_depth_error_m = float(depth_m) - float(
@@ -613,6 +870,17 @@ def main():
             rot_err = debug_info.get('rotation_error_deg')
             if rot_err is not None:
                 last_rotation_error_deg = float(rot_err)
+            trans_x_cmd, rotation_cmd = _apply_stair_command_policy(
+                args, trans_x_cmd, rotation_cmd, debug_info
+            )
+            trans_x_cmd = _apply_front_obstacle_gate(
+                args, trans_x_cmd, depth_img, debug_info
+            )
+            trans_x_cmd = _apply_no_reverse_follow_policy(
+                args, trans_x_cmd, debug_info, source="post_follow_shaping"
+            )
+            debug_info["trans_x_cmd"] = float(trans_x_cmd)
+            debug_info["rotation_cmd"] = float(rotation_cmd)
             stage_ms["follower"] = (time.perf_counter() - follow_start_ts) * 1000.0
 
             debug_info['matched_visual_lock'] = matched_visual_lock
@@ -621,6 +889,34 @@ def main():
             debug_info['motion_lock_streak']  = motion_lock_streak
             debug_info['motion_lock_frames']  = motion_lock_frames
             debug_info['reacquire_active']    = reacquire_active
+            debug_info['auto_reacquire_enabled'] = bool(args.auto_reacquire)
+            debug_info['target_distance'] = float(person_follower.config.target_distance)
+            if debug_info.get('person_detected', False):
+                lost_timeout_alerted = False
+            elif (
+                str(debug_info.get('reason', '')).startswith('Target lost - recovery timeout')
+                and not lost_timeout_alerted
+            ):
+                lost_timeout_alerted = True
+                debug_trace.log(
+                    "target_lost_recovery_timeout",
+                    frame_index=int(frame_idx),
+                    lost_age_sec=debug_info.get('lost_age_sec'),
+                    last_rotation_error_deg=float(last_rotation_error_deg),
+                )
+                logger.warning(
+                    "Target lost recovery timed out; robot stopped",
+                    extra=build_ecs_extra(
+                        component="vision.main",
+                        action="target_lost_recovery_timeout",
+                        cable={
+                            "follow": {
+                                "lost_age_sec": debug_info.get('lost_age_sec'),
+                                "last_rotation_error_deg": float(last_rotation_error_deg),
+                            }
+                        },
+                    ),
+                )
 
             if "gt_patient" in frame_meta:
                 debug_info["gt_patient"] = frame_meta["gt_patient"]
@@ -722,7 +1018,7 @@ def main():
             if export_debug_info is not debug_info:
                 export_debug_info['payload_coordinates_valid'] = payload_coordinates_valid
 
-            motion_allowed = (
+            live_motion_allowed = (
                 args.follow
                 and robot_controller is not None
                 and robot_controller.is_ready()
@@ -730,6 +1026,17 @@ def main():
                 and (matched_visual_lock or recent_visual_lock)
                 and motion_lock_ready
             )
+            recovery_motion_allowed = (
+                args.follow
+                and robot_controller is not None
+                and robot_controller.is_ready()
+                and not preparation_mode
+                and bool(debug_info.get("recovery_cmd_active", False))
+                and abs(float(rotation_cmd)) > 1e-4
+            )
+            motion_allowed = live_motion_allowed or recovery_motion_allowed
+            debug_info["live_motion_allowed"] = bool(live_motion_allowed)
+            debug_info["recovery_motion_allowed"] = bool(recovery_motion_allowed)
 
             controller = robot_controller
             if motion_allowed and controller is not None:
@@ -737,13 +1044,34 @@ def main():
                     motion_start_ts = current_time
                 elapsed_motion = current_time - motion_start_ts
                 cmd_scale = motion_slow_factor if elapsed_motion < motion_slow_duration_sec else 1.0
+                command_trans_x = trans_x_limiter.update(trans_x_cmd * cmd_scale)
+                command_rotation = rotation_limiter.update(rotation_cmd * cmd_scale)
+                if command_trans_x < 0.0:
+                    debug_info["command_reverse_follow_suppressed"] = True
+                    debug_info["command_reverse_follow_before_suppression"] = float(command_trans_x)
+                    command_trans_x = 0.0
+                    trans_x_limiter.reset(0.0)
+                else:
+                    debug_info["command_reverse_follow_suppressed"] = False
+                debug_info["command_trans_x_limited"] = float(command_trans_x)
+                debug_info["command_rotation_limited"] = float(command_rotation)
+                debug_info["command_trans_x_limiter"] = trans_x_limiter.get_state()
+                debug_info["command_rotation_limiter"] = rotation_limiter.get_state()
+                debug_info["cmd_sent_ts"] = time.time()
+                debug_info["cmd_sent_mono"] = time.monotonic()
                 controller.move(
-                    trans_x_cmd * cmd_scale, 0.0, rotation_cmd * cmd_scale,
+                    command_trans_x, 0.0, command_rotation,
                     stairs_detected=stairs_detected
                 )
             elif controller is not None and controller.is_ready():
                 controller.stop()
+                trans_x_limiter.reset(0.0)
+                rotation_limiter.reset(0.0)
+                debug_info["command_trans_x_limited"] = 0.0
+                debug_info["command_rotation_limited"] = 0.0
 
+            if motion_allowed and not raw_recording_released:
+                raw_recording_released = True
             if motion_allowed != last_motion_allowed:
                 if not motion_allowed:
                     motion_start_ts = None
@@ -884,6 +1212,40 @@ def main():
                         )
             stage_ms["render"] = (time.perf_counter() - render_start_ts) * 1000.0
 
+            # Raw camera recording -- img without any overlays, written on the
+            # same cadence as the preview so the two videos stay frame-aligned.
+            # Recording starts when motion is first allowed (same moment the
+            # Isaac top-down camera begins recording).
+            if raw_video_path and preview_due and img is not None and raw_recording_released:
+                try:
+                    if raw_video_writer is None:
+                        frame_h, frame_w = img.shape[:2]
+                        import platform as _plat
+                        _raw_codecs = ("avc1", "mp4v") if _plat.system() == "Windows" else ("mp4v",)
+                        _rvw = None
+                        for _codec in _raw_codecs:
+                            _fourcc = cv2.VideoWriter_fourcc(*_codec)
+                            _rvw = cv2.VideoWriter(
+                                raw_video_path, _fourcc,
+                                max(1.0, preview_rate_hz),
+                                (int(frame_w), int(frame_h)),
+                            )
+                            if _rvw.isOpened():
+                                break
+                            _rvw.release(); _rvw = None
+                        if _rvw is not None and _rvw.isOpened():
+                            raw_video_writer = _rvw
+                            debug_trace.log(
+                                "raw_camera_video_started",
+                                path=raw_video_path,
+                                fps=float(preview_rate_hz),
+                                frame_shape=list(img.shape),
+                            )
+                    if raw_video_writer is not None:
+                        raw_video_writer.write(img)
+                except Exception:
+                    pass
+
             total_loop_ms   = (time.perf_counter() - loop_start_ts) * 1000.0
             stage_ms["total_loop"] = total_loop_ms
             emit_trace_frame = (frame_idx % int(args.debug_trace_every_n_frames)) == 0
@@ -915,6 +1277,8 @@ def main():
         preview_worker.stop()
         if preview_video_writer is not None:
             preview_video_writer.release()
+        if raw_video_writer is not None:
+            raw_video_writer.release()
         debug_trace.close()
         logger.info(
             "Vision follow session end",

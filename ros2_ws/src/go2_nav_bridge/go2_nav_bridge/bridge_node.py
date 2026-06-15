@@ -74,8 +74,8 @@ class Go2NavBridge(Node):
         self.declare_parameter("min_move_command_y", 0.0)
         self.declare_parameter("min_move_command_wz", 0.0)
         self.declare_parameter("max_move_command_x", 1.0)
-        self.declare_parameter("max_move_command_y", 0.4)
-        self.declare_parameter("max_move_command_wz", 1.65)
+        self.declare_parameter("max_move_command_y", 0.56)
+        self.declare_parameter("max_move_command_wz", 2.59)
         self.declare_parameter("move_scale_x", 1.0)
         self.declare_parameter("move_scale_y", 1.0)
         self.declare_parameter("move_scale_wz", 1.0)
@@ -126,6 +126,7 @@ class Go2NavBridge(Node):
         self._last_state_log_ts = 0.0
         self._last_cmd_ros_log_ts = 0.0
         self._last_move_ros_log_ts = 0.0
+        self._last_reverse_x_suppressed_log_ts = 0.0
         self._last_watchdog_reason: Optional[str] = None
 
         self._state_lock = threading.Lock()
@@ -413,11 +414,38 @@ class Go2NavBridge(Node):
         vx_raw = float(msg.linear.x)
         vy_raw = float(msg.linear.y)
         wz_raw = float(msg.angular.z)
-        vx = self._apply_command_floor(
-            vx_raw * self._move_scale_x, self._min_move_command_x
-        )
+        vx_scaled = vx_raw * self._move_scale_x
+        if vx_scaled < 0.0:
+            now = time.monotonic()
+            if (now - self._last_reverse_x_suppressed_log_ts) >= 1.0:
+                self._last_reverse_x_suppressed_log_ts = now
+                self._ecs_logger.info(
+                    "Reverse X move command suppressed",
+                    extra=build_ecs_extra(
+                        component="sidecar.bridge",
+                        action="reverse_x_move_suppressed",
+                        cable={
+                            "robot": {
+                                "command": {
+                                    "vx_raw": vx_raw,
+                                    "vx_scaled": vx_scaled,
+                                }
+                            }
+                        },
+                    ),
+                )
+                self._debug_trace.log(
+                    "reverse_x_move_suppressed",
+                    vx_raw=vx_raw,
+                    vx_scaled=vx_scaled,
+                )
+            vx_scaled = 0.0
+
+        vx = self._apply_command_floor(vx_scaled, self._min_move_command_x)
         if self._max_move_command_x > 0.0:
-            vx = min(max(vx, -self._max_move_command_x), self._max_move_command_x)
+            vx = min(max(vx, 0.0), self._max_move_command_x)
+        else:
+            vx = max(0.0, vx)
         vy = self._apply_command_floor(
             vy_raw * self._move_scale_y, self._min_move_command_y
         )

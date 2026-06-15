@@ -1,7 +1,8 @@
 import threading
 import time
 import logging
-from typing import Dict, Any, Optional
+from collections import deque
+from typing import Deque, Dict, Any, Optional
 import numpy as np
 
 # Configure local logging
@@ -12,15 +13,33 @@ class YoloStairsInference:
     Handles parallel open-vocabulary stairs detection using YOLO-World.
     Runs predictions on a separate thread to maintain main loop speed.
     """
-    def __init__(self, model_path: str = "yolov8x-worldv2.pt", confidence: float = 0.20, verbose: bool = False):
+    def __init__(
+        self,
+        model_path: str = "yolov8x-worldv2.pt",
+        confidence: float = 0.20,
+        verbose: bool = False,
+        consistency_frames: int = 5,
+        consistency_required: int = 3,
+    ):
         self.verbose = verbose
         self.confidence = confidence
         self.model_path = model_path
         self.model = None
+        self.consistency_frames = max(1, int(consistency_frames))
+        self.consistency_required = max(1, min(int(consistency_required), self.consistency_frames))
+        self._positive_history: Deque[bool] = deque(maxlen=self.consistency_frames)
         
         self._lock = threading.Lock()
         self._latest_image = None
-        self._latest_result = {"detected": False, "bbox": None, "conf": 0.0}
+        self._latest_result = {
+            "detected": False,
+            "raw_detected": False,
+            "bbox": None,
+            "conf": 0.0,
+            "positive_count": 0,
+            "consistency_frames": self.consistency_frames,
+            "consistency_required": self.consistency_required,
+        }
         self._thread = None
         self._stop_event = threading.Event()
         self._new_frame_event = threading.Event()
@@ -112,11 +131,24 @@ class YoloStairsInference:
                                 detected = True
                                 best_bbox = boxes.xyxy[best_idx].cpu().numpy().tolist()
 
+                self._positive_history.append(bool(detected))
+                positive_count = sum(1 for item in self._positive_history if item)
+                consistent_detected = (
+                    positive_count >= self.consistency_required
+                    and len(self._positive_history) >= self.consistency_required
+                )
+
                 with self._lock:
                     self._latest_result = {
-                        "detected": detected,
+                        "detected": bool(consistent_detected),
+                        "raw_detected": bool(detected),
                         "bbox": best_bbox,
-                        "conf": best_conf
+                        "conf": best_conf,
+                        "positive_count": int(positive_count),
+                        "consistency_frames": self.consistency_frames,
+                        "consistency_required": self.consistency_required,
+                        "ts_unix": time.time(),
+                        "ts_monotonic": time.monotonic(),
                     }
                     
             except Exception as e:

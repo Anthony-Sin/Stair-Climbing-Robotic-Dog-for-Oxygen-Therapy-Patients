@@ -22,6 +22,7 @@ class SimRobotController:
         self._logger = configure_sim_logger("sim_robot_controller", reset=True, console=True)
         self._total_sent = 0
         self._failed_sent = 0
+        self._last_reverse_x_suppressed_log_ts = 0.0
 
     def initialize(self) -> bool:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -62,6 +63,19 @@ class SimRobotController:
     def _send(self, vx: float, vy: float, wz: float, stairs_detected: bool = False) -> None:
         if not self._sock:
             return
+        vx_raw = float(vx)
+        if vx_raw < 0.0:
+            now = time.monotonic()
+            if (now - self._last_reverse_x_suppressed_log_ts) >= 1.0:
+                self._last_reverse_x_suppressed_log_ts = now
+                log_event(
+                    self._logger,
+                    logging.INFO,
+                    "reverse_x_command_suppressed",
+                    "Backward X command suppressed before sending to Isaac",
+                    vx_raw=float(vx_raw),
+                )
+            vx = 0.0
         payload = json.dumps({"vx": vx, "vy": vy, "wz": wz, "stairs_detected": stairs_detected}).encode()
         try:
             self._sock.sendto(payload, (self._host, self._port))

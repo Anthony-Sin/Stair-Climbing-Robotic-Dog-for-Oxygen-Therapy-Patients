@@ -36,6 +36,12 @@ if /I "%ARG%"=="--trt-engine" set "ARG=-TrtEngine"
 if /I "%ARG%"=="--sim-frame-timeout-exit-sec" set "ARG=-SimFrameTimeoutExitSec"
 if /I "%ARG%"=="--no-model-preflight" set "ARG=-NoModelPreflight"
 if /I "%ARG%"=="--max-run-time-sec" set "ARG=-MaxRunTimeSec"
+if /I "%ARG%"=="--locomotion-mode" set "ARG=-LocomotionMode"
+if /I "%ARG%"=="--rl-policy-path" set "ARG=-RlPolicyPath"
+if /I "%ARG%"=="--rl-policy-format" set "ARG=-RlPolicyFormat"
+if /I "%ARG%"=="--rl-control-hz" set "ARG=-RlControlHz"
+if /I "%ARG%"=="--rl-action-scale" set "ARG=-RlActionScale"
+if /I "%ARG%"=="--rl-stairs-strategy" set "ARG=-RlStairsStrategy"
 set "PS_ARGS=%PS_ARGS% "%ARG%""
 shift
 goto parse_args

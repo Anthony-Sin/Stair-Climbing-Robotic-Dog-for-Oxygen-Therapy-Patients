@@ -95,3 +95,36 @@ class PIDController:
             'prev_output': self.prev_output,
             'prev_smoothed_output': self.prev_smoothed_output
         }
+
+
+class SlewRateLimiter:
+    """Limit how quickly a command can change over time."""
+
+    def __init__(self, max_rate_per_sec: float):
+        self.max_rate_per_sec = max(0.0, float(max_rate_per_sec))
+        self.reset()
+
+    def reset(self, value: float = 0.0):
+        self.prev_value = float(value)
+        self.prev_time = time.perf_counter()
+
+    def update(self, target_value: float) -> float:
+        target_value = float(target_value)
+        now = time.perf_counter()
+        dt = max(1e-3, now - self.prev_time)
+        self.prev_time = now
+
+        if self.max_rate_per_sec <= 0.0:
+            self.prev_value = target_value
+            return target_value
+
+        max_delta = self.max_rate_per_sec * dt
+        delta = float(np.clip(target_value - self.prev_value, -max_delta, max_delta))
+        self.prev_value += delta
+        return self.prev_value
+
+    def get_state(self) -> dict:
+        return {
+            'prev_value': self.prev_value,
+            'max_rate_per_sec': self.max_rate_per_sec,
+        }

@@ -4,7 +4,13 @@ param(
     [Parameter(Mandatory = $true)][string]$RunLogDir,
     [Parameter(Mandatory = $true)][string]$FrameHost,
     [int]$FramePort = 55002,
-    [int]$CmdPort = 55001
+    [int]$CmdPort = 55001,
+    [string]$LocomotionMode = "procedural",
+    [string]$RlPolicyPath = "",
+    [string]$RlPolicyFormat = "auto",
+    [double]$RlControlHz = 50.0,
+    [double]$RlActionScale = 0.25,
+    [string]$RlStairsStrategy = "policy"
 )
 
 $ErrorActionPreference = "Stop"
@@ -40,6 +46,10 @@ Write-ConsoleLog "  Isaac JSONL events:  $(Join-Path $RunLogDir 'isaac_env.jsonl
 Write-ConsoleLog "  Isaac Sim dir:       $IsaacSimDir"
 Write-ConsoleLog "  Frame target:        ${FrameHost}:${FramePort}"
 Write-ConsoleLog "  Command receiver:    0.0.0.0:${CmdPort}"
+Write-ConsoleLog "  Locomotion mode:     $LocomotionMode"
+if ($RlPolicyPath) {
+    Write-ConsoleLog "  RL policy path:      $RlPolicyPath"
+}
 Write-ConsoleLog ""
 
 if (-not (Test-Path -LiteralPath $IsaacSimDir)) {
@@ -62,7 +72,12 @@ $env:PYTHONUNBUFFERED = "1"
 # Initialize RawLog file first
 New-Item -ItemType File -Path $RawLog -Force | Out-Null
 
-$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" --person-move --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera > `"$RawLog`" 2>&1`""
+$rlArgs = "--locomotion-mode $LocomotionMode --rl-policy-format $RlPolicyFormat --rl-control-hz $RlControlHz --rl-action-scale $RlActionScale --rl-stairs-strategy $RlStairsStrategy"
+if ($RlPolicyPath) {
+    $rlArgs = "$rlArgs --rl-policy-path `"$RlPolicyPath`""
+}
+
+$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" --person-move --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera $rlArgs > `"$RawLog`" 2>&1`""
 
 # Start the process with direct OS redirection to prevent pipeline blocking
 $process = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs -PassThru -NoNewWindow

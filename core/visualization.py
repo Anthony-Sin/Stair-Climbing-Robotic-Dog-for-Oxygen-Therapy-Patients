@@ -621,21 +621,36 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
     cv2.line(combined, (0, h_f - 30), (w_f, h_f - 30), (100, 100, 100), 1)
     
     # Footer approved status
-    cv2.putText(combined, "SAFETY CHECK: HEALTHY", (20, h_f - 10), 
+    footer_status = "SAFETY CHECK: FALL DETECTED" if hud_alert else "SAFETY CHECK: HEALTHY"
+    cv2.putText(combined, footer_status, (20, h_f - 10),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 160, 160), 1, cv2.LINE_AA)
+
+    margin = 20
+    panel_w = 300
+    top_panel_h = 230
+    bottom_panel_h = 240
+    left_x = margin
+    right_x = max(margin, w_f - margin - panel_w)
+    top_y = 60
+    bottom_y = max(top_y + top_panel_h + 16, h_f - 30 - bottom_panel_h - margin)
 
     # -----------------------------------------------------------------------
     # Panel 1 (Top-Left): SYSTEM HEALTH & SENSORS
     # -----------------------------------------------------------------------
-    _draw_hud_panel(combined, 20, 80, 300, 220, "SYSTEM HEALTH & SENSORS", active_color, alert=hud_alert)
+    _draw_hud_panel(combined, left_x, top_y, panel_w, top_panel_h, "SYSTEM HEALTH & SENSORS", active_color, alert=hud_alert)
     
     cam_ok = frame_meta is not None and frame_meta.get("success", True)
     cam_str = "CONNECTED [OK]" if cam_ok else "FAULT [!]"
     cam_color = active_color if cam_ok else (0, 0, 255)
     
     has_sim_telemetry = bool(stair_demo)
-    imu_str = "CONNECTED [OK]" if has_sim_telemetry else "STANDBY"
-    act_str = "CONNECTED [OK]" if has_sim_telemetry else "STANDBY"
+    stair_lidar = stair_demo.get("lidar", {}) if stair_demo else {}
+    lidar_ok = bool(stair_lidar.get("ray_count", 0))
+    lidar_str = "SYNTH OK" if lidar_ok else "STANDBY"
+    imu_str = "TELEM OK" if robot_data else "STANDBY"
+    roll_deg = _safe_float(robot_data.get("roll_deg"), 0.0)
+    pitch_deg = _safe_float(robot_data.get("pitch_deg"), 0.0)
+    height_m = robot_data.get("height_m")
     
     blind_rl = stair_demo.get("blind_rl", {}) if stair_demo else {}
     rl_active = blind_rl.get("active", False) if blind_rl else False
@@ -651,23 +666,25 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
     
     p1_lines = [
         ("CAM FEED:", cam_str, cam_color),
-        ("IMU SYS:", imu_str, active_color),
-        ("ACTUATORS:", act_str, active_color),
+        ("LIDAR:", lidar_str, active_color if lidar_ok else (150, 150, 150)),
+        ("IMU SYS:", imu_str, active_color if robot_data else (150, 150, 150)),
+        ("BODY R/P:", f"{roll_deg:+.1f}/{pitch_deg:+.1f}", active_color),
+        ("HEIGHT:", _format_optional_m(height_m), (255, 255, 255)),
         ("COMM LINK:", comm_str, comm_color),
         ("RL POLICY:", rl_str, rl_color),
         ("STATUS:", status_str, status_color)
     ]
     
-    curr_y = 125
+    curr_y = top_y + 45
     for label, val, val_color in p1_lines:
-        cv2.putText(combined, label, (32, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 180, 180), 1, cv2.LINE_AA)
-        cv2.putText(combined, val, (150, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, val_color, 2 if "STATUS" in label else 1, cv2.LINE_AA)
-        curr_y += 26
+        cv2.putText(combined, label, (left_x + 12, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 180, 180), 1, cv2.LINE_AA)
+        cv2.putText(combined, val, (left_x + 150, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, val_color, 2 if "STATUS" in label else 1, cv2.LINE_AA)
+        curr_y += 24
 
     # -----------------------------------------------------------------------
     # Panel 2 (Bottom-Left): TARGET TRACKING & CONTROL
     # -----------------------------------------------------------------------
-    _draw_hud_panel(combined, 20, 310, 300, 230, "TARGET TRACKING & CONTROL", active_color, alert=hud_alert)
+    _draw_hud_panel(combined, left_x, bottom_y, panel_w, bottom_panel_h, "TARGET TRACKING & STAIRS", active_color, alert=hud_alert)
     
     target_dist = debug_info.get('depth_distance_m')
     target_bear = debug_info.get('rotation_error_deg')
@@ -682,12 +699,21 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
         lock_status = "LOST"
         lock_color = (0, 0, 255)
         
+    stairs_detected = debug_info.get("stairs_detected", False) if debug_info else False
+    stairs_conf = _safe_float(debug_info.get("stairs_conf"), 0.0) if debug_info else 0.0
+    stair_status = "DETECTED" if stairs_detected else "SCANNING"
+    stair_conf_text = f"{stairs_conf * 100:.1f}%" if stairs_detected else "0.0%"
+    lidar_conf = stair_lidar.get("confidence")
+    lidar_ray_count = stair_lidar.get("ray_count")
+
     p2_lines = [
         ("LOCK STATE:", lock_status, lock_color),
         ("TARGET DIST:", f"{target_dist:.2f} m" if target_dist is not None else "N/A", (255, 255, 255)),
         ("BEARING:", f"{target_bear:+.1f} deg" if target_bear is not None else "N/A", (255, 255, 255)),
         ("CMD SPEED:", f"{trans_x_cmd:+.2f} m/s", active_color),
         ("CMD YAW RATE:", f"{rotation_cmd:+.2f} rad/s", active_color),
+        ("STAIRS:", f"{stair_status} {stair_conf_text}", (0, 255, 255) if stairs_detected else (150, 150, 150)),
+        ("SIM LIDAR:", f"{lidar_ray_count or 0} rays {(_safe_float(lidar_conf) * 100.0):.0f}%", active_color if lidar_ok else (150, 150, 150)),
     ]
     
     stair_gap_steps = debug_info.get("stair_follow_gap_steps")
@@ -697,44 +723,53 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
             ("STAIR GAP:", f"{float(stair_gap_steps):.1f}/{float(target_gap_steps):.0f} steps", (0, 255, 255))
         )
         
-    curr_y = 355
+    curr_y = bottom_y + 45
     for label, val, val_color in p2_lines:
-        cv2.putText(combined, label, (32, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 180, 180), 1, cv2.LINE_AA)
-        cv2.putText(combined, val, (150, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, val_color, 2 if "LOCK" in label else 1, cv2.LINE_AA)
-        curr_y += 26
+        cv2.putText(combined, label, (left_x + 12, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 180, 180), 1, cv2.LINE_AA)
+        cv2.putText(combined, val, (left_x + 150, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, val_color, 2 if "LOCK" in label else 1, cv2.LINE_AA)
+        curr_y += 24
 
     # -----------------------------------------------------------------------
     # Panel 3 (Top-Right): RL LOCOMOTION POLICY
     # -----------------------------------------------------------------------
-    right_x = w_f - 320
-    _draw_hud_panel(combined, right_x, 80, 300, 220, "RL LOCOMOTION POLICY", active_color, alert=hud_alert)
+    _draw_hud_panel(combined, right_x, top_y, panel_w, top_panel_h, "RL LOCOMOTION POLICY", active_color, alert=hud_alert)
     
     policy_name = blind_rl.get("policy", "N/A")
     mode_str = blind_rl.get("mode", "STANDBY").upper()
     gait_pattern = blind_rl.get("gait_pattern", "N/A").upper()
     clearance = blind_rl.get("foot_clearance_m", 0.0)
     cmd_speed_policy = blind_rl.get("commanded_speed_mps", 0.0)
+    body_height_target = blind_rl.get("body_height_target_m")
+    vertical_assist = _safe_float(blind_rl.get("vertical_assist_mps"), 0.0)
+    assist_enabled = bool(
+        blind_rl.get("body_height_assist_enabled", abs(vertical_assist) > 1e-3)
+        or blind_rl.get("anti_tip_assist_enabled", False)
+    )
+    assist_str = "ON" if assist_enabled else "OFF"
+    assist_color = (0, 0, 255) if assist_enabled else (0, 255, 100)
     
     p3_lines = [
-        ("POLICY:", policy_name[:22], active_color),
+        ("POLICY:", policy_name.replace("synthetic_", "syn_")[:22], active_color),
         ("MODE:", mode_str, (0, 255, 100) if "CLIMB" in mode_str or "APPROACH" in mode_str else active_color),
         ("GAIT TYPE:", gait_pattern.replace("_", " "), (255, 255, 255)),
         ("CLEARANCE:", f"{clearance:.2f} m" if clearance > 0 else "N/A", (255, 255, 255)),
         ("CMD SPEED:", f"{cmd_speed_policy:.2f} m/s", active_color),
+        ("BODY Z:", _format_optional_m(body_height_target), (255, 255, 255)),
+        ("ANTI-TIP:", assist_str, assist_color),
     ]
     
-    curr_y = 125
+    curr_y = top_y + 45
     for label, val, val_color in p3_lines:
         cv2.putText(combined, label, (right_x + 12, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 180, 180), 1, cv2.LINE_AA)
         cv2.putText(combined, val, (right_x + 120, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, val_color, 1, cv2.LINE_AA)
-        curr_y += 26
+        curr_y += 24
 
     # -----------------------------------------------------------------------
     # Panel 4 (Bottom-Right): LEG ACTUATORS & COMMANDS
     # -----------------------------------------------------------------------
-    _draw_hud_panel(combined, right_x, 310, 300, 230, "LEG ACTUATORS & COMMANDS", active_color, alert=hud_alert)
+    _draw_hud_panel(combined, right_x, bottom_y, panel_w, bottom_panel_h, "LEG ACTUATORS & COMMANDS", active_color, alert=hud_alert)
     
-    curr_y = 355
+    curr_y = bottom_y + 45
     detail_x = right_x + 20
     leg_commands = blind_rl.get("leg_commands", {})
     
@@ -753,11 +788,6 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
         cv2.putText(combined, f"LEG {leg}: {action[:10]}", (detail_x, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, leg_color, 1, cv2.LINE_AA)
         cv2.putText(combined, f"  lift clearance: {lift_m:.2f} m", (detail_x + 10, curr_y + 13), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (180, 180, 180), 1, cv2.LINE_AA)
         curr_y += 42
-
-    # -----------------------------------------------------------------------
-    # Center Bottom: YOLO-World Vision Stairs (Panel 5)
-    # -----------------------------------------------------------------------
-    _draw_stair_vision_panel(combined, debug_info, active_color, alert=hud_alert)
 
     # -----------------------------------------------------------------------
     # Overlay Alerts

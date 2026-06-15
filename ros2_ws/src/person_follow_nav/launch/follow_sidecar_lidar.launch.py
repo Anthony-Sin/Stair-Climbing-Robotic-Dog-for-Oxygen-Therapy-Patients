@@ -152,7 +152,7 @@ def generate_launch_description() -> LaunchDescription:
         [
             DeclareLaunchArgument("network_interface", default_value="eth0"),
             DeclareLaunchArgument("target_port", default_value="41234"),
-            DeclareLaunchArgument("desired_distance", default_value="0.35"),
+            DeclareLaunchArgument("desired_distance", default_value="0.45"),
             DeclareLaunchArgument("follow_tolerance_m", default_value="0.40"),
             DeclareLaunchArgument("target_timeout_sec", default_value="0.8"),
             DeclareLaunchArgument("target_hold_sec", default_value="0.7"),

@@ -1,3 +1,4 @@
+import math
 import time
 import numpy as np
 from dataclasses import dataclass
@@ -10,7 +11,7 @@ from depth_processor import DepthProcessor
 @dataclass
 class PersonFollowingConfig:
     """Configuration for person following behavior"""
-    # X-axis translation (forward/backward) PID controller settings
+    # X-axis translation PID controller settings; person-follow X motion is forward-only.
     trans_x_kp: float = 0.0
     trans_x_ki: float = 0.0
     trans_x_kd: float = 0.0
@@ -34,7 +35,6 @@ class PersonFollowingConfig:
 
     # Target settings
     target_distance: float = 0.0
-
     # Depth measurement settings
     depth_kernel_size: int = 5
     min_valid_depth_pixels: int = 3
@@ -43,6 +43,10 @@ class PersonFollowingConfig:
     enable_prediction: bool = False
     prediction_time_limit: float = 3.0  # seconds to predict after losing track
     min_tracking_time: float = 4.0  # minimum time tracking before enabling prediction
+    lost_search_yaw_speed: float = 0.25
+    lost_search_timeout_sec: float = 2.5
+    lost_search_min_error_deg: float = 3.0
+    rotation_velocity_ff_gain: float = 0.01
 
     # Rotation error penalties (bbox-based)
     edge_penalty_k: float = 10.0  # Exponential decay for edge proximity penalty
@@ -89,12 +93,34 @@ class PersonFollower:
         self.person_velocity = None  # pixels per second
         self.tracking_start_time = None
         self.is_tracking = False
+        self.last_rotation_error_deg = 0.0
         
         # Store reference to the YoloPoseInference instance for keypoint-based depth measurement
         self.yolo_pose = yolo_pose_inference
 
 
-    
+    def _suppress_reverse_follow_command(
+        self,
+        trans_x_cmd: float,
+        debug_info: Dict[str, Any],
+        *,
+        source: str,
+    ) -> float:
+        if trans_x_cmd >= 0.0:
+            debug_info.setdefault('reverse_follow_suppressed', False)
+            return float(trans_x_cmd)
+
+        debug_info['reverse_follow_suppressed'] = True
+        debug_info['reverse_follow_source'] = source
+        debug_info['reverse_follow_cmd_before_suppression'] = float(trans_x_cmd)
+        debug_info['reverse_follow_reason'] = 'target_too_close_hold_position'
+        self.trans_x_pid_controller.reset()
+        debug_info['trans_x_pid_state_after_reverse_suppression'] = (
+            self.trans_x_pid_controller.get_state()
+        )
+        return 0.0
+
+
     def _extract_center(self, main_person: Optional[Union[Dict[str, Any], Sequence[float]]]) -> Optional[Tuple[int, int]]:
         """Extract the center coordinates from a person detection"""
         if main_person is None:
@@ -213,8 +239,12 @@ class PersonFollower:
     
     def _calculate_predicted_rotation_error(self, predicted_center: Tuple[int, int], frame_shape: Tuple[int, int]) -> float:
         """Calculate rotation error based on predicted person position"""
-        frame_center_x = frame_shape[1] // 2
-        return float(predicted_center[0] - frame_center_x)
+        rotation_error, _, _ = self._rotation_error_from_center(
+            float(predicted_center[0]),
+            frame_shape,
+            use_camera_intrinsics=True,
+        )
+        return float(rotation_error)
 
     def _effective_principal_x(self, frame_shape: Tuple[int, int], use_camera_intrinsics: bool) -> Tuple[float, str]:
         """Return principal point x for rotation error with safety fallback.
@@ -311,6 +341,7 @@ class PersonFollower:
         self.person_velocity = None
         self.tracking_start_time = None
         self.is_tracking = False
+        self.last_rotation_error_deg = 0.0
     
     def update(self, main_person: Optional[Union[Dict[str, Any], Sequence[float]]], depth_image: np.ndarray,
                frame_shape: Tuple[int, int], depth_mapper: Optional[Any] = None) -> Tuple[float, float, Dict[str, Any]]:
@@ -340,7 +371,9 @@ class PersonFollower:
             'rotation_pid_state': self.rotation_pid_controller.get_state(),
             'using_prediction': False,
             'predicted_position': None,
-            'person_velocity': self.person_velocity
+            'person_velocity': self.person_velocity,
+            'lost_search_active': False,
+            'lost_age_sec': None,
         }
         
         # Update person tracking state
@@ -348,7 +381,53 @@ class PersonFollower:
         
         # Check if person is detected
         if main_person is None:
-            debug_info['reason'] = 'No person detected - paused'
+            if self.last_lost_time is not None:
+                debug_info['lost_age_sec'] = current_time - self.last_lost_time
+
+            predicted_center = self._predict_person_position(current_time, frame_shape)
+            if predicted_center is not None:
+                rotation_error = self._calculate_predicted_rotation_error(predicted_center, frame_shape)
+                rotation_cmd_raw = self.rotation_pid_controller.update(rotation_error, 0.0)
+                rotation_cmd = -rotation_cmd_raw
+                debug_info.update({
+                    'reason': 'Target temporarily lost - using predicted bearing',
+                    'rotation_cmd': rotation_cmd,
+                    'rotation_error_deg': rotation_error,
+                    'using_prediction': True,
+                    'predicted_position': predicted_center,
+                    'recovery_cmd_active': abs(rotation_cmd) > 1e-4,
+                    'trans_x_pid_state': self.trans_x_pid_controller.get_state(),
+                    'rotation_pid_state': self.rotation_pid_controller.get_state(),
+                })
+                return 0.0, rotation_cmd, debug_info
+
+            lost_age = debug_info.get('lost_age_sec')
+            if (
+                lost_age is not None
+                and lost_age <= self.config.lost_search_timeout_sec
+                and abs(self.last_rotation_error_deg) >= self.config.lost_search_min_error_deg
+                and self.config.lost_search_yaw_speed > 0.0
+            ):
+                rotation_cmd = -math.copysign(
+                    min(self.config.max_rotation_speed, self.config.lost_search_yaw_speed),
+                    self.last_rotation_error_deg,
+                )
+                debug_info.update({
+                    'reason': 'Target lost - searching toward last-known bearing',
+                    'rotation_cmd': rotation_cmd,
+                    'rotation_error_deg': self.last_rotation_error_deg,
+                    'lost_search_active': True,
+                    'lost_search_direction': 'right' if self.last_rotation_error_deg > 0 else 'left',
+                    'recovery_cmd_active': True,
+                    'trans_x_pid_state': self.trans_x_pid_controller.get_state(),
+                    'rotation_pid_state': self.rotation_pid_controller.get_state(),
+                })
+                return 0.0, rotation_cmd, debug_info
+
+            if lost_age is not None and lost_age > self.config.lost_search_timeout_sec:
+                debug_info['reason'] = 'Target lost - recovery timeout, stopped'
+            else:
+                debug_info['reason'] = 'No person detected - paused'
             return 0.0, 0.0, debug_info
         
         # Extract center coordinates
@@ -411,6 +490,8 @@ class PersonFollower:
         
         debug_info['depth_valid'] = True
         debug_info['depth_distance_m'] = depth_m
+        debug_info['target_distance'] = float(self.config.target_distance)
+        debug_info['distance_error_m'] = float(depth_m) - float(self.config.target_distance)
 
         # Determine bbox center x
         if isinstance(main_person, dict) and 'bbox' in main_person:
@@ -431,8 +512,15 @@ class PersonFollower:
         debug_info['center_x'] = float(bbox_center_x)
 
         # Calculate X-axis translation (forward/backward) command using PID controller
-        trans_x_cmd = self.trans_x_pid_controller.update(float(depth_m), self.config.target_distance)
+        trans_x_cmd_raw = self.trans_x_pid_controller.update(float(depth_m), self.config.target_distance)
+        debug_info['trans_x_cmd_raw'] = float(trans_x_cmd_raw)
+        trans_x_cmd = self._suppress_reverse_follow_command(
+            float(trans_x_cmd_raw),
+            debug_info,
+            source='live_depth_pid',
+        )
         debug_info['trans_x_cmd'] = trans_x_cmd
+        debug_info['trans_x_pid_state'] = self.trans_x_pid_controller.get_state()
 
         # Calculate rotation error and command using center_x
         rotation_error, edge_penalty, size_penalty, size_ratio, suppression, principal_x_used, principal_source = self._calculate_bbox_rotation_error(
@@ -440,15 +528,29 @@ class PersonFollower:
         )
         rotation_cmd_raw = self.rotation_pid_controller.update(rotation_error, 0.0)
         rotation_cmd = -rotation_cmd_raw
+        velocity_ff_cmd = 0.0
+        if self.person_velocity is not None and self.config.rotation_velocity_ff_gain > 0.0:
+            vx_pixels_sec = float(self.person_velocity[0])
+            fx = self.config.camera_fx if self.config.camera_fx > 0.0 else max(1.0, float(frame_shape[1]) * 0.8)
+            lateral_rate_deg_sec = float(np.degrees(np.arctan(vx_pixels_sec / fx)))
+            velocity_ff_cmd = -self.config.rotation_velocity_ff_gain * lateral_rate_deg_sec
+            max_rot = max(0.0, float(self.config.max_rotation_speed))
+            if max_rot > 0.0:
+                rotation_cmd = float(np.clip(rotation_cmd + velocity_ff_cmd, -max_rot, max_rot))
+            else:
+                rotation_cmd += velocity_ff_cmd
 
         debug_info['rotation_cmd'] = rotation_cmd
         debug_info['rotation_error_deg'] = rotation_error
+        debug_info['rotation_velocity_ff_cmd'] = velocity_ff_cmd
         debug_info['edge_penalty'] = edge_penalty
         debug_info['size_penalty'] = size_penalty
         debug_info['size_ratio'] = size_ratio
         debug_info['suppression'] = suppression
         debug_info['principal_x_used'] = principal_x_used
         debug_info['principal_x_source'] = principal_source
+        debug_info['rotation_pid_state'] = self.rotation_pid_controller.get_state()
+        self.last_rotation_error_deg = float(rotation_error)
 
         return trans_x_cmd, rotation_cmd, debug_info
 
@@ -459,7 +561,7 @@ class PersonFollower:
     ) -> Tuple[float, float, Dict[str, Any]]:
         """Drive PID controllers using frozen last-observed errors."""
         synthetic_depth_m = float(self.config.target_distance + last_depth_error_m)
-        trans_x_cmd = self.trans_x_pid_controller.update(synthetic_depth_m, self.config.target_distance)
+        trans_x_cmd_raw = self.trans_x_pid_controller.update(synthetic_depth_m, self.config.target_distance)
 
         rotation_cmd_raw = self.rotation_pid_controller.update(float(last_rotation_error_deg), 0.0)
         rotation_cmd = -rotation_cmd_raw
@@ -469,7 +571,10 @@ class PersonFollower:
             'depth_valid': False,
             'depth_distance_m': None,
             'depth_method': 'frozen_errors',
-            'trans_x_cmd': trans_x_cmd,
+            'distance_error_m': float(last_depth_error_m),
+            'target_distance': float(self.config.target_distance),
+            'trans_x_cmd_raw': float(trans_x_cmd_raw),
+            'trans_x_cmd': None,
             'rotation_cmd': rotation_cmd,
             'trans_x_pid_state': self.trans_x_pid_controller.get_state(),
             'rotation_pid_state': self.rotation_pid_controller.get_state(),
@@ -485,6 +590,13 @@ class PersonFollower:
             'size_ratio': 0.0,
             'suppression': 0.0,
         }
+        trans_x_cmd = self._suppress_reverse_follow_command(
+            float(trans_x_cmd_raw),
+            debug_info,
+            source='frozen_depth_pid',
+        )
+        debug_info['trans_x_cmd'] = trans_x_cmd
+        debug_info['trans_x_pid_state'] = self.trans_x_pid_controller.get_state()
         return trans_x_cmd, rotation_cmd, debug_info
     
     def get_config(self) -> PersonFollowingConfig:

@@ -20,10 +20,25 @@ param(
     [switch]$NoIsaacReadyWait,
     [int]$IsaacReadyTimeoutSec = 420,
     [int]$KeepRunLogs = 1,
-    [int]$MaxRunTimeSec = 450
+    [int]$MaxRunTimeSec = 900,
+    [string]$LocomotionMode = "procedural",
+    [string]$RlPolicyPath = "",
+    [string]$RlPolicyFormat = "auto",
+    [double]$RlControlHz = 50.0,
+    [double]$RlActionScale = 0.25,
+    [string]$RlStairsStrategy = "policy"
 )
 
 $ErrorActionPreference = "Stop"
+if ($LocomotionMode -notin @("procedural", "rl")) {
+    throw "LocomotionMode must be 'procedural' or 'rl'."
+}
+if ($RlPolicyFormat -notin @("auto", "torchscript", "torch", "pt", "jit", "onnx")) {
+    throw "RlPolicyFormat must be one of: auto, torchscript, torch, pt, jit, onnx."
+}
+if ($RlStairsStrategy -notin @("policy", "procedural")) {
+    throw "RlStairsStrategy must be 'policy' or 'procedural'."
+}
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $Stamp = Get-Date -Format "yyyyMMdd_HHmmss_fff"
 $RunLogDir = Join-Path $RepoRoot ("log\run_sim_" + $Stamp)
@@ -958,6 +973,12 @@ Write-Stage "setup" "start" "Preparing run_sim launch" @{
     keep_run_logs = [int]$KeepRunLogs
     trt_engine = $TrtEngine
     sim_frame_timeout_exit_sec = [double]$SimFrameTimeoutExitSec
+    locomotion_mode = $LocomotionMode
+    rl_policy_path = $RlPolicyPath
+    rl_policy_format = $RlPolicyFormat
+    rl_control_hz = [double]$RlControlHz
+    rl_action_scale = [double]$RlActionScale
+    rl_stairs_strategy = $RlStairsStrategy
 }
 Write-Host "Read first: $SummaryLog"
 Prune-OldRunLogs -KeepCount $KeepRunLogs
@@ -995,6 +1016,39 @@ Write-Stage "network" "ready" "Resolved sim network endpoints" @{
     cmd_port = $CmdPort
 }
 
+# Build Docker before Isaac launches so the container is ready to start
+# the moment Isaac reports world_ready.
+$dockerImageExists = $false
+if (-not $NoDockerRun -and -not $SkipBuild -and -not $ForceBuild) {
+    $dockerImageExists = Test-DockerImageExists -ImageName $Image
+}
+
+if ($NoDockerRun) {
+    Write-Stage "build" "skipped" "Docker image build skipped because Docker run is disabled"
+} elseif ($SkipBuild) {
+    Write-Stage "build" "skipped" "Docker image build skipped by --skip-build"
+} elseif ($dockerImageExists) {
+    Write-Stage "build" "skipped" "Using existing Docker image; pass --force-build to rebuild" @{
+        image = $Image
+        command = ".\run_sim.bat --force-build"
+    }
+} else {
+    $buildLog = Join-Path $RunLogDir "docker_build.log"
+    $buildCommand = "cd '$WslRepoRoot' && bash docker/docker_build_x86_sim.sh"
+    Write-Stage "build" "notice" "Building Docker image before Isaac launches; use --skip-build when the image is already built" @{
+        log = $buildLog
+        command = ".\run_sim.bat --skip-build"
+    }
+    $buildExit = Invoke-LoggedCommand -Stage "build" -FilePath "wsl.exe" -Arguments @("-e", "bash", "-lc", $buildCommand) -LogPath $buildLog
+    if ($buildExit -ne 0) {
+        Write-Stage "summary" "failed" "Stopping before Isaac because Docker build failed" @{
+            exit_code = $buildExit
+            log = $buildLog
+        }
+        exit $buildExit
+    }
+}
+
 if ($NoIsaac) {
     Write-Stage "isaac" "skipped" "Isaac launch skipped by --no-isaac"
 } else {
@@ -1011,8 +1065,16 @@ if ($NoIsaac) {
         "-RunLogDir", $RunLogDir,
         "-FrameHost", $FrameHost,
         "-FramePort", [string]$FramePort,
-        "-CmdPort", [string]$CmdPort
+        "-CmdPort", [string]$CmdPort,
+        "-LocomotionMode", $LocomotionMode,
+        "-RlPolicyFormat", $RlPolicyFormat,
+        "-RlControlHz", [string]$RlControlHz,
+        "-RlActionScale", [string]$RlActionScale,
+        "-RlStairsStrategy", $RlStairsStrategy
     )
+    if ($RlPolicyPath) {
+        $isaacArgs += @("-RlPolicyPath", $RlPolicyPath)
+    }
 
     $isaacCommandLine = Format-CommandLine -FilePath "powershell.exe" -Arguments $isaacArgs
     if ($DryRun) {
@@ -1054,38 +1116,6 @@ if ($PauseAfterIsaac -and -not $NoPauseAfterIsaac -and -not $NoIsaac -and -not $
     Write-Stage "operator" "confirmed" "User confirmed Isaac is ready; continuing to WSL/Docker"
 } else {
     Write-Stage "operator" "skipped" "Manual Isaac-ready pause skipped; Docker will start automatically"
-}
-
-$dockerImageExists = $false
-if (-not $NoDockerRun -and -not $SkipBuild -and -not $ForceBuild) {
-    $dockerImageExists = Test-DockerImageExists -ImageName $Image
-}
-
-if ($NoDockerRun) {
-    Write-Stage "build" "skipped" "Docker image build skipped because Docker run is disabled"
-} elseif ($SkipBuild) {
-    Write-Stage "build" "skipped" "Docker image build skipped by --skip-build"
-} elseif ($dockerImageExists) {
-    Write-Stage "build" "skipped" "Using existing Docker image; pass --force-build to rebuild" @{
-        image = $Image
-        command = ".\run_sim.bat --force-build"
-    }
-} else {
-    $buildLog = Join-Path $RunLogDir "docker_build.log"
-    $buildCommand = "cd '$WslRepoRoot' && bash docker/docker_build_x86_sim.sh"
-    Write-Stage "build" "notice" "Docker build may download large packages; use --skip-build when the image is already built" @{
-        log = $buildLog
-        command = ".\run_sim.bat --skip-build"
-    }
-    $buildExit = Invoke-LoggedCommand -Stage "build" -FilePath "wsl.exe" -Arguments @("-e", "bash", "-lc", $buildCommand) -LogPath $buildLog
-    if ($buildExit -ne 0) {
-        Write-Stage "summary" "failed" "Stopping before Docker run because Docker build failed" @{
-            exit_code = $buildExit
-            log = $buildLog
-        }
-        $null = Stop-IsaacProcess -Process $proc -Reason "Docker build failed"
-        exit $buildExit
-    }
 }
 
 if ($NoDockerRun) {

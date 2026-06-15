@@ -113,6 +113,7 @@ class VisionTargetExporter:
 
         x_base_m = None
         y_base_m = None
+        bearing_rad = None
 
         if debug_info is not None:
             center_x = debug_info.get("center_x")
@@ -130,6 +131,7 @@ class VisionTargetExporter:
                 x_base_m = self.camera_offset_x_m + depth_m_f
                 # RealSense optical frame uses +x to the right; base_link +y is left.
                 y_base_m = self.camera_offset_y_m - lateral_camera_m
+                bearing_rad = math.atan2(y_base_m, x_base_m)
 
         track_id = None
         confidence = 0.0
@@ -158,6 +160,11 @@ class VisionTargetExporter:
             "depth_valid": optional_bool(debug_info.get("depth_valid")) if debug_info is not None else None,
             "depth_method": optional_text(debug_info.get("depth_method")) if debug_info is not None else None,
             "depth_distance_m": optional_float(debug_info.get("depth_distance_m")) if debug_info is not None else None,
+            "target_distance_m": optional_float(debug_info.get("target_distance")) if debug_info is not None else None,
+            "bearing_rad": optional_float(bearing_rad),
+            "rotation_error_deg": optional_float(debug_info.get("rotation_error_deg")) if debug_info is not None else None,
             "center_x": optional_float(debug_info.get("center_x")) if debug_info is not None else None,
             "bbox_center_x": optional_float(debug_info.get("bbox_center_x")) if debug_info is not None else None,
+            "stairs_detected": optional_bool(debug_info.get("stairs_detected")) if debug_info is not None else None,
+            "stairs_depth_m": optional_float(debug_info.get("stairs_depth_m")) if debug_info is not None else None,
         }

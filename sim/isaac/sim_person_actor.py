@@ -155,6 +155,24 @@ class SimPersonTarget:
                 "Animated person setup failed: walk or idle animation clip path is empty."
             )
 
+        # Re-apply idle binding after timeline pump so Fabric picks it up
+        # in case the pre-Fabric binding was snapshotted before the USD loaded.
+        if self._skel_root_path and self._idle_clip_path:
+            try:
+                from pxr import UsdSkel
+                stage = omni.usd.get_context().get_stage()
+                skel_root_prim = stage.GetPrimAtPath(self._skel_root_path)
+                if skel_root_prim and skel_root_prim.IsValid():
+                    binding_api = UsdSkel.BindingAPI.Apply(skel_root_prim)
+                    binding_api.GetAnimationSourceRel().SetTargets([Sdf.Path(self._idle_clip_path)])
+                    try:
+                        import omni.kit.app as _omni_kit_app
+                        _omni_kit_app.get_app().update()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
         self.animation_ready = True
         if self.logger is not None:
             log_event(
@@ -188,10 +206,36 @@ class SimPersonTarget:
             skel_root_prim = stage.GetPrimAtPath(self._skel_root_path)
             if not skel_root_prim or not skel_root_prim.IsValid():
                 return
+
+            # Verify the animation prim exists before trying to bind it
+            anim_prim = stage.GetPrimAtPath(anim_prim_path)
+            if not anim_prim or not anim_prim.IsValid():
+                if self.logger is not None and not getattr(self, "_anim_prim_missing_logged", False):
+                    self._anim_prim_missing_logged = True
+                    log_event(
+                        self.logger,
+                        logging.WARNING,
+                        "person_anim_prim_missing",
+                        "Animation prim not found on stage; skipping clip switch",
+                        target=target,
+                        anim_prim_path=anim_prim_path,
+                        skel_root_path=self._skel_root_path,
+                    )
+                return
+
             # Re-bind the animationSource on the SkelRoot to the new SkelAnimation prim
             binding_api = UsdSkel.BindingAPI.Apply(skel_root_prim)
             binding_api.GetAnimationSourceRel().SetTargets([Sdf.Path(anim_prim_path)])
             self._anim_clip_state = target
+
+            # Pump the app once so Fabric picks up the animationSource change.
+            # This only fires on walk<->idle transitions (not every frame).
+            try:
+                import omni.kit.app as _omni_kit_app
+                _omni_kit_app.get_app().update()
+            except Exception:
+                pass
+
             if self.logger is not None:
                 log_event(
                     self.logger,
@@ -788,9 +832,9 @@ def spawn_sim_person(world: Any, x: float, y: float, logger: Optional[logging.Lo
                 skel_root.GetRelationship("animationGraph").ClearTargets(True)
 
             binding_api = UsdSkel.BindingAPI.Apply(skel_root)
-            binding_api.GetAnimationSourceRel().SetTargets([Sdf.Path(walk_anim)])
+            binding_api.GetAnimationSourceRel().SetTargets([Sdf.Path(idle_anim)])
             skel_root_path = str(skel_root.GetPath())
-            print(f"[person_actor] Pre-Fabric walk binding: {skel_root_path} -> {walk_anim}")
+            print(f"[person_actor] Pre-Fabric idle binding: {skel_root_path} -> {idle_anim}")
             # Store the SkelRoot path in module-level cache so ensure_animation_ready can use it
             _skel_root_path_cache["path"] = skel_root_path
         else:
@@ -836,7 +880,7 @@ def spawn_sim_person(world: Any, x: float, y: float, logger: Optional[logging.Lo
         _skel_root_path=_skel_root_path_cache.get("path", ""),
         _walk_clip_path=walk_anim or "",
         _idle_clip_path=idle_anim or "",
-        _anim_clip_state="walk",
+        _anim_clip_state="idle",
     )
 
     if logger is not None:

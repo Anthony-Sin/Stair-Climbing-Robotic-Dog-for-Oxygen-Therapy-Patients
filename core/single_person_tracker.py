@@ -41,6 +41,8 @@ class SinglePersonTracker:
         max_lost_frames=300,
         allow_auto_reacquire=True,
         reacquire_after_frames=18,
+        selection_area_weight=1.0,
+        selection_center_weight=0.6,
         debug=False,
     ):
         cfg = tracker_cfg or default_cfg
@@ -51,6 +53,8 @@ class SinglePersonTracker:
         self.max_lost_frames = max_lost_frames
         self.reacquire_after_frames = max(1, int(reacquire_after_frames))
         self.allow_auto_reacquire = allow_auto_reacquire
+        self.selection_area_weight = max(0.0, float(selection_area_weight))
+        self.selection_center_weight = max(0.0, float(selection_center_weight))
         self.debug = debug
         self._tracking_initialized = False
         self._manual_reacquire_requested = False
@@ -92,10 +96,15 @@ class SinglePersonTracker:
             if not det.get('matched_detection', False):
                 continue
             x1, y1, x2, y2 = det['bbox']
-            area = (x2 - x1) * (y2 - y1)
+            area = max(0.0, (x2 - x1) * (y2 - y1))
             center_x = (x1 + x2) / 2
             center_dist = abs(center_x - cx)
-            score = -area + center_dist  # prefer large center-aligned box
+            area_norm = area / max(1.0, float(w * h))
+            center_norm = center_dist / max(1.0, float(w) * 0.5)
+            score = (
+                self.selection_center_weight * center_norm
+                - self.selection_area_weight * area_norm
+            )
 
             if score < best_score:
                 best_score = score

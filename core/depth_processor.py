@@ -396,6 +396,57 @@ class DepthProcessor:
         return interpolated
 
     @staticmethod
+    def central_roi_nearest_depth(
+        depth_image: np.ndarray,
+        width_ratio: float = 0.24,
+        height_ratio: float = 0.42,
+        depth_min: float = 100.0,
+        depth_max: float = 10000.0,
+        percentile: float = 10.0,
+        min_valid_pixels: int = 20,
+    ) -> Tuple[Optional[float], Dict[str, Any]]:
+        """Return a robust nearest depth from the lower-center forward ROI.
+
+        Depth input follows the rest of this module: uint16 millimeters.
+        """
+        result: Dict[str, Any] = {
+            'depth_m': None,
+            'roi': None,
+            'valid_pixels': 0,
+            'percentile': float(percentile),
+        }
+        if depth_image is None:
+            return None, result
+        if hasattr(depth_image, "get_data"):
+            depth_image = depth_image.get_data()
+        if depth_image is None or getattr(depth_image, "size", 0) == 0:
+            return None, result
+
+        h, w = depth_image.shape[:2]
+        width_ratio = min(1.0, max(0.05, float(width_ratio)))
+        height_ratio = min(1.0, max(0.05, float(height_ratio)))
+        roi_w = max(1, int(w * width_ratio))
+        roi_h = max(1, int(h * height_ratio))
+        x1 = max(0, int((w - roi_w) / 2))
+        x2 = min(w, x1 + roi_w)
+        y1 = max(0, int(h * 0.5))
+        y2 = min(h, y1 + roi_h)
+        result['roi'] = (x1, y1, x2, y2)
+
+        roi = depth_image[y1:y2, x1:x2]
+        if roi.size == 0:
+            return None, result
+
+        valid = roi[(roi >= depth_min) & (roi <= depth_max)]
+        result['valid_pixels'] = int(valid.size)
+        if valid.size < max(1, int(min_valid_pixels)):
+            return None, result
+
+        depth_m = float(np.percentile(valid.astype(np.float32), percentile) / 1000.0)
+        result['depth_m'] = depth_m
+        return depth_m, result
+
+    @staticmethod
     def foreground_depth_bimodal(depth_image, bbox: Tuple[int, int, int, int],
                                  depth_min: float = 100.0, depth_max: float = 10000.0,
                                  num_bins: int = 50,
