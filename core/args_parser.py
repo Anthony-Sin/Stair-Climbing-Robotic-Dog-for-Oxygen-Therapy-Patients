@@ -212,15 +212,26 @@ def parse_args():
                         help='Stair depth threshold where follow speed/centering are tightened')
     parser.add_argument('--stair-speed-scale', type=float, default=0.45,
                         help='Forward command scale while stairs are detected nearby')
-    parser.add_argument('--stair-centering-scale', type=float, default=1.25,
-                        help='Yaw command scale while stairs are detected nearby')
+    parser.add_argument('--stair-centering-scale', type=float, default=0.6,
+                        help='Yaw command scale while stairs are detected nearby. <1.0 suppresses the '
+                             'bbox edge/size penalty amplification that otherwise saws the body on steps')
+    parser.add_argument('--stair-forward-floor', type=float, default=0.35,
+                        help='Minimum forward command (m/s) held while climbing detected nearby stairs, '
+                             'so the follow PID cannot stall the blind RL policy at the stair base')
+    parser.add_argument('--stair-rot-max', type=float, default=0.6,
+                        help='Yaw command cap (rad/s) while on stairs; lower than --rot-max to stop the '
+                             'centering saw that destabilizes the climb')
+    parser.add_argument('--stair-yaw-deadband-deg', type=float, default=4.0,
+                        help='Zero the yaw command while on stairs when the centering error is within '
+                             'this many degrees')
+    parser.add_argument('--stair-target-distance', type=float, default=0.7,
+                        help='Follow standoff (m) used while stairs are detected; larger than '
+                             '--target-distance so the dog does not park one step behind the person')
     parser.add_argument('--raw-video-path', type=str, default='',
                         help='MP4 path for raw camera frame recording (no overlays); empty disables')
     parser.add_argument('--no-raw-video', action='store_true',
                         help='Disable the controller-side raw_camera.mp4 writer. Used in sim, '
                              'where Isaac records raw_camera.mp4 from the external scene Left view.')
-    parser.add_argument('--stair-too-close-distance', type=float, default=0.35,
-                        help='Stop all forward motion when stair depth is at/below this distance (meters)')
     parser.add_argument('--no-obstacle-stop', dest='obstacle_stop_enabled',
                         action='store_false', default=True,
                         help='Disable central-depth front obstacle speed gating')
@@ -258,7 +269,10 @@ def parse_args():
     args.stair_near_distance = max(0.0, float(args.stair_near_distance))
     args.stair_speed_scale = min(1.0, max(0.0, float(args.stair_speed_scale)))
     args.stair_centering_scale = max(0.0, float(args.stair_centering_scale))
-    args.stair_too_close_distance = max(0.0, float(args.stair_too_close_distance))
+    args.stair_forward_floor = max(0.0, float(args.stair_forward_floor))
+    args.stair_rot_max = max(0.0, float(args.stair_rot_max))
+    args.stair_yaw_deadband_deg = max(0.0, float(args.stair_yaw_deadband_deg))
+    args.stair_target_distance = max(0.0, float(args.stair_target_distance))
     args.obstacle_stop_distance = max(0.0, float(args.obstacle_stop_distance))
     args.obstacle_slow_distance = max(args.obstacle_stop_distance, float(args.obstacle_slow_distance))
     args.obstacle_target_clearance = max(0.0, float(args.obstacle_target_clearance))

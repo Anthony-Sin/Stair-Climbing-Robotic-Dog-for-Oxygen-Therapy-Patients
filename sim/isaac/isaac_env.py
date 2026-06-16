@@ -88,8 +88,26 @@ parser.add_argument("--rl-control-hz", type=float, default=50.0,
 parser.add_argument("--rl-action-scale", type=float, default=0.25,
                     help="Scale applied to policy actions before adding default joint pose")
 parser.add_argument("--rl-stairs-strategy", type=str, default="policy",
-                    choices=("policy", "procedural"),
-                    help="Use the RL policy on stairs, or switch stairs to procedural crawl")
+                    choices=("policy",),
+                    help="Stairs are handled by the RL policy (the only supported strategy)")
+parser.add_argument("--stair-preset", type=str, default="demo_gentle",
+                    choices=("demo_gentle", "residential", "commercial", "steep"),
+                    help="Staircase geometry preset (single source of truth in "
+                         "sim_go2_locomotion.StairSpec). demo_gentle (default) reproduces the "
+                         "original 0.08 m x 0.30 m x 12 gentle test stairs; residential/"
+                         "commercial/steep use real building-code rise/run so the sensor + RL "
+                         "stack faces non-trivial stairs. Drives the physics cuboids, analytical "
+                         "terrain, patient path, and stair overlay from one spec.")
+parser.add_argument("--stair-step-height", type=float, default=None,
+                    help="Override the preset tread rise in metres (e.g. 0.178)")
+parser.add_argument("--stair-step-depth", type=float, default=None,
+                    help="Override the preset tread run/depth in metres (e.g. 0.279)")
+parser.add_argument("--stair-step-count", type=int, default=None,
+                    help="Override the preset number of steps")
+parser.add_argument("--stair-handrail", dest="stair_handrail", action="store_true", default=None,
+                    help="Force-add coarse handrail volumes alongside the staircase")
+parser.add_argument("--no-stair-handrail", dest="stair_handrail", action="store_false",
+                    help="Force-disable handrail volumes (overrides the preset)")
 parser.add_argument("--spawn-settle-steps", type=int, default=50,
                     help="Zero-command policy/hold steps after spawn before world_ready")
 # Go2 joint PD gains. These are the deployment contract for the rl_sar go2
@@ -112,6 +130,41 @@ parser.add_argument("--rl-control-mode", type=str, default="torque",
                     help="Low-level actuation. 'torque' applies the rl_sar explicit PD law "
                          "tau=kp*(target-q)-kd*qd clipped to the torque limit (faithful to "
                          "training); 'position' uses the PhysX implicit position drive.")
+parser.add_argument("--rl-obs-noise", dest="rl_obs_noise", action="store_true", default=False,
+                    help="Inject Gaussian IMU/encoder noise into the RL policy observation "
+                         "(default off => exact clean obs). Stress-tests policy robustness "
+                         "against the noisy state the real robot sees.")
+parser.add_argument("--rl-obs-latency-steps", type=int, default=0,
+                    help="Make the RL policy act on the observation from N control steps ago "
+                         "(0 = none) to model the sense->actuate delay absent in lockstep sim.")
+parser.add_argument("--rl-torque-rate", type=float, default=0.0,
+                    help="Actuator torque slew-rate limit in Nm per control step (0 = "
+                         "unlimited). Models finite actuator bandwidth the ideal PD lacks.")
+parser.add_argument("--domain-rand", dest="domain_rand", action="store_true", default=False,
+                    help="Enable locomotion domain randomization (friction, PD gains, and "
+                         "periodic push disturbances) to stress-test policy robustness in "
+                         "sim. Default off => fixed nominal physics.")
+parser.add_argument("--dr-seed", type=int, default=0,
+                    help="Seed for the domain-randomization draws (reproducible runs).")
+parser.add_argument("--dr-friction-pct", type=float, default=0.3,
+                    help="Fractional +/- randomization of ground/stair static & dynamic "
+                         "friction when --domain-rand is set (0.3 = plus/minus 30 percent).")
+parser.add_argument("--dr-gain-pct", type=float, default=0.2,
+                    help="Fractional +/- randomization of the RL PD gains kp/kd when "
+                         "--domain-rand is set (0.2 = plus/minus 20 percent).")
+parser.add_argument("--dr-push-interval-sec", type=float, default=4.0,
+                    help="Seconds between random base-velocity push disturbances when "
+                         "--domain-rand is set (<=0 disables pushes).")
+parser.add_argument("--dr-push-vel", type=float, default=0.4,
+                    help="Magnitude (m/s) of each random horizontal push disturbance.")
+parser.add_argument("--fall-recovery", dest="fall_recovery", action="store_true", default=False,
+                    help="On a sustained fall, kinematically re-stand the robot in place and "
+                         "continue instead of ending the run. NOT a learned getup -- the single "
+                         "locomotion policy can't get up; this snaps to the stand pose at the "
+                         "current XY. Default off => the run ends on a fall as before.")
+parser.add_argument("--max-fall-recoveries", type=int, default=3,
+                    help="Maximum in-place re-stand recoveries before the run ends anyway "
+                         "(bounds retries when --fall-recovery is set).")
 # Headless locomotion self-test: drive a constant forward command directly into
 # the RL policy (no Docker/vision needed) so flat-ground walking and balance can
 # be verified in isolation, then auto-exit and write the evaluation summary.
@@ -140,6 +193,12 @@ parser.add_argument("--no-lidar-preview", action="store_true",
                     help="Disable the simulated XT16 LiDAR raycast + preview video.")
 parser.add_argument("--lidar-hz", type=float, default=10.0,
                     help="XT16 scan rate (Hz). The real XT16 spins at 10/20 Hz.")
+parser.add_argument("--lidar-range-noise-m", type=float, default=0.0,
+                    help="1-sigma Gaussian range noise per XT16 return in metres (0 = exact "
+                         "ray hits; real Hesai XT16 ~0.02). Exercises the polar-profile + "
+                         "person_follower distance fusion against noisy ranges.")
+parser.add_argument("--lidar-dropout-prob", type=float, default=0.0,
+                    help="Per-ray probability of a missing XT16 return (0 = none).")
 parser.add_argument("--lidar-azimuth-step-deg", type=float, default=3.0,
                     help="Horizontal angular step between rays (deg). Smaller = denser "
                          "scan but many more PhysX raycasts per scan (cost scales as "
@@ -156,10 +215,22 @@ parser.add_argument("--raw-video-path", type=str, default="",
                          "the vision preview dir so it sits beside opencv_preview.mp4.")
 args = parser.parse_args()
 
-# Setup logger
+
+def _log_bucket(log_dir: str, bucket: str) -> str:
+    """Return <log_dir>/<bucket>, creating it. Each run folder is organised into
+    videos/ (mp4s), reports/ (summaries, verification PNGs, JSON), and debug/
+    (verbose JSONL/raw logs). Returns log_dir itself when log_dir is empty."""
+    if not log_dir:
+        return log_dir
+    d = os.path.join(log_dir, bucket)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+# Setup logger -- the verbose per-run JSONL lives in the debug/ bucket.
 LOGGER = configure_sim_logger(
     "isaac_env",
-    log_dir=args.log_dir,
+    log_dir=(_log_bucket(args.log_dir, "debug") if args.log_dir else args.log_dir),
     reset=True,
     console=not args.quiet_console_log,
 )
@@ -215,10 +286,66 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
 from sim_go2_locomotion import (
     Go2LocomotionState,
+    configure_stairs,
+    get_active_stairs,
     get_stair_demo_telemetry,
     record_go2_telemetry,
     _extract_roll_pitch_yaw,
 )
+
+# Resolve the active staircase geometry from CLI args once, before any scene is
+# spawned or the patient path is built. Every stair consumer (spawn_obstacles,
+# get_terrain_height[_smooth], the patient waypoints, the stair overlay) reads
+# this single spec so the rendered scene and ground-truth telemetry stay in sync.
+_ACTIVE_STAIRS = configure_stairs(
+    args.stair_preset,
+    step_height_m=args.stair_step_height,
+    step_depth_m=args.stair_step_depth,
+    step_count=args.stair_step_count,
+    handrail=args.stair_handrail,
+)
+log_event(
+    LOGGER,
+    logging.INFO,
+    "stair_preset_configured",
+    f"Active staircase: {_ACTIVE_STAIRS.name} "
+    f"({_ACTIVE_STAIRS.step_count} steps, rise={_ACTIVE_STAIRS.step_height_m:.3f} m, "
+    f"run={_ACTIVE_STAIRS.step_depth_m:.3f} m, top={_ACTIVE_STAIRS.top_height_m:.3f} m, "
+    f"handrail={_ACTIVE_STAIRS.handrail})",
+    preset=_ACTIVE_STAIRS.name,
+    step_count=int(_ACTIVE_STAIRS.step_count),
+    step_height_m=float(_ACTIVE_STAIRS.step_height_m),
+    step_depth_m=float(_ACTIVE_STAIRS.step_depth_m),
+    top_height_m=float(_ACTIVE_STAIRS.top_height_m),
+    handrail=bool(_ACTIVE_STAIRS.handrail),
+)
+
+# Domain randomization (opt-in). Draw the per-run randomized physics once here so
+# the friction binding, the RL PD gains, and the push schedule all share one
+# seeded RNG. _DR stays empty when --domain-rand is off, so every `.get(k, nom)`
+# below falls back to the nominal value => identical behaviour to before.
+_DR_RNG = np.random.default_rng(int(args.dr_seed)) if args.domain_rand else None
+_DR = {}
+if _DR_RNG is not None:
+    _fpct = float(args.dr_friction_pct)
+    _gpct = float(args.dr_gain_pct)
+    _DR["static_friction"] = float(1.2 * (1.0 + _DR_RNG.uniform(-_fpct, _fpct)))
+    _DR["dynamic_friction"] = float(1.0 * (1.0 + _DR_RNG.uniform(-_fpct, _fpct)))
+    _DR["kp_mult"] = float(1.0 + _DR_RNG.uniform(-_gpct, _gpct))
+    _DR["kd_mult"] = float(1.0 + _DR_RNG.uniform(-_gpct, _gpct))
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "domain_rand_configured",
+        "Domain randomization enabled",
+        seed=int(args.dr_seed),
+        static_friction=round(_DR["static_friction"], 3),
+        dynamic_friction=round(_DR["dynamic_friction"], 3),
+        kp_mult=round(_DR["kp_mult"], 3),
+        kd_mult=round(_DR["kd_mult"], 3),
+        push_interval_sec=float(args.dr_push_interval_sec),
+        push_vel=float(args.dr_push_vel),
+    )
 from rl_locomotion_policy import (
     POLICY_DEFAULT_BY_JOINT,
     RLLocomotionPolicy,
@@ -226,7 +353,7 @@ from rl_locomotion_policy import (
     get_dof_names,
 )
 from sim_person_actor import spawn_sim_person
-from sim_lidar_xt16 import Xt16Config, cast_scan, render_preview
+from sim_lidar_xt16 import Xt16Config, cast_scan, render_preview, profile_from_scan
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1067,17 +1194,48 @@ def initialize_camera_streams(camera: Camera) -> None:
 
 
 def get_terrain_height(x: float, y: float) -> float:
-    """Return the exact terrain height at coordinate (x, y) based on spawned geometry."""
-    if not (-1.05 <= y <= 1.05):
+    """Return the exact terrain height at coordinate (x, y) based on spawned geometry.
+
+    Discrete tread-top height (snaps one step rise at each tread boundary). This
+    is the physically correct value for foot contact, the collider footing, the
+    distractor, and idle holds. For the patient's *rendered* root and recorded
+    ground-truth Z use get_terrain_height_smooth() instead, which avoids the
+    teleport pops the snapped value produces. Geometry comes from the active
+    StairSpec (see --stair-preset) so it tracks spawn_obstacles exactly.
+    """
+    s = get_active_stairs()
+    if not (-s.half_width_m <= y <= s.half_width_m):
         return 0.0
-    # Stairs: 12 steps from 2.0m to 5.6m, each step 0.3m deep, 0.08m rise
-    if 2.0 <= x < 5.6:
-        step_idx = int((x - 2.0) / 0.3)
-        return min(0.96, (step_idx + 1) * 0.08)
+    if s.start_x_m <= x < s.end_x_m:
+        step_idx = int((x - s.start_x_m) / s.step_depth_m)
+        return min(s.top_height_m, (step_idx + 1) * s.step_height_m)
     # Top landing: hold at full stair height
-    if x >= 5.6:
-        return 0.96
+    if x >= s.end_x_m:
+        return s.top_height_m
     # Flat ground
+    return 0.0
+
+
+def get_terrain_height_smooth(x: float, y: float) -> float:
+    """Continuous stair height for the patient's rendered root and ground-truth Z.
+
+    get_terrain_height() snaps Z up one tread rise the instant x crosses each
+    tread boundary, which teleported the person (and the recorded GT trajectory)
+    up the stairs in discrete pops -- the "jumps 2 stairs / skips steps" symptom.
+    A climbing body's pelvis actually rides a continuous slope along the stair
+    nosing line, so this returns that slope (top_height of rise over the stair
+    run). The result is C0-continuous, so both the climb and the GT data are
+    faithful. Feet still contact discrete tread tops via get_terrain_height().
+    Geometry comes from the active StairSpec (see --stair-preset).
+    """
+    s = get_active_stairs()
+    if not (-s.half_width_m <= y <= s.half_width_m):
+        return 0.0
+    run = s.end_x_m - s.start_x_m
+    if run > 0.0 and s.start_x_m <= x < s.end_x_m:
+        return max(0.0, min(s.top_height_m, (x - s.start_x_m) * (s.top_height_m / run)))
+    if x >= s.end_x_m:
+        return s.top_height_m
     return 0.0
 
 
@@ -1318,40 +1476,69 @@ def spawn_obstacles(world: World) -> None:
     else:
         download_ok = True
 
-    # 1. Spawn Stairs (12 steps: 2.0 to 5.6m along X, 2.0m wide along Y,
-    #    step height 0.08m per step → top of step 12 is 0.96m above ground)
-    for i in range(12):
-        step_x = 2.0 + i * 0.3 + 0.15          # centre of each tread
-        step_height = (i + 1) * 0.08            # cumulative height of this step
-        step_z = step_height / 2.0              # centre of the cuboid in Z
+    s = get_active_stairs()
+
+    # 1. Spawn Stairs: step_count treads from start_x to end_x, width_m along Y,
+    #    step_height_m rise per tread (top of the last tread = top_height_m above
+    #    ground). Geometry comes from the active StairSpec (see --stair-preset).
+    half_depth = s.step_depth_m / 2.0
+    for i in range(s.step_count):
+        step_x = s.start_x_m + i * s.step_depth_m + half_depth   # centre of each tread
+        step_height = (i + 1) * s.step_height_m                  # cumulative height of this step
+        step_z = step_height / 2.0                               # centre of the cuboid in Z
         try:
             world.scene.add(
                 FixedCuboid(
                     prim_path=f"/World/Environment/step_{i}",
                     name=f"step_{i}",
                     position=np.array([step_x, 0.0, step_z]),
-                    scale=np.array([0.3, 2.0, step_height]),
+                    scale=np.array([s.step_depth_m, s.width_m, step_height]),
                     color=np.array([0.5, 0.5, 0.5])
                 )
             )
         except Exception as exc:
             log_event(LOGGER, logging.WARNING, "obstacle_spawn_failed", f"Failed to spawn step_{i}", error=str(exc))
 
-    # 2. Top landing platform (flat slab at full stair height)
+    # 2. Top landing platform (flat slab at full stair height, abutting last tread)
     try:
-        landing_x = 5.6 + 0.5          # 0.5 m past the last step
-        landing_height = 0.96
+        landing_x = s.end_x_m + s.landing_depth_m / 2.0
+        landing_height = s.top_height_m
         world.scene.add(
             FixedCuboid(
                 prim_path="/World/Environment/top_landing",
                 name="top_landing",
                 position=np.array([landing_x, 0.0, landing_height / 2.0]),
-                scale=np.array([1.0, 2.0, landing_height]),
+                scale=np.array([s.landing_depth_m, s.width_m, landing_height]),
                 color=np.array([0.55, 0.55, 0.55])
             )
         )
     except Exception as exc:
         log_event(LOGGER, logging.WARNING, "obstacle_spawn_failed", "Failed to spawn top landing", error=str(exc))
+
+    # 2b. Optional coarse handrail volumes along both stair edges (preset-driven).
+    #     Modelled as a single thin horizontal bar per side at ~hand height above
+    #     the mid-stair tread line -- enough for occlusion/obstacle realism without
+    #     walling off the depth camera / LiDAR view of the treads.
+    if s.handrail:
+        rail_thickness = 0.06
+        rail_band_height = 0.10
+        hand_height = 0.9
+        run_len = (s.end_x_m + s.landing_depth_m) - s.start_x_m
+        rail_x = s.start_x_m + run_len / 2.0
+        rail_z = 0.5 * s.top_height_m + hand_height
+        for side_name, side_y in (("left", s.half_width_m), ("right", -s.half_width_m)):
+            try:
+                world.scene.add(
+                    FixedCuboid(
+                        prim_path=f"/World/Environment/handrail_{side_name}",
+                        name=f"handrail_{side_name}",
+                        position=np.array([rail_x, side_y, rail_z]),
+                        scale=np.array([run_len, rail_thickness, rail_band_height]),
+                        color=np.array([0.30, 0.30, 0.35])
+                    )
+                )
+            except Exception as exc:
+                log_event(LOGGER, logging.WARNING, "obstacle_spawn_failed", f"Failed to spawn handrail_{side_name}", error=str(exc))
 
     # Apply texture material to stairs and top landing
     if download_ok:
@@ -1377,7 +1564,7 @@ def spawn_obstacles(world: World) -> None:
                 material_prim = UsdShade.Material(stage.GetPrimAtPath(material_path))
             
             # Bind material to each step and landing
-            for i in range(12):
+            for i in range(s.step_count):
                 step_prim = stage.GetPrimAtPath(f"/World/Environment/step_{i}")
                 if step_prim.IsValid():
                     material_api = UsdShade.MaterialBindingAPI(step_prim)
@@ -1393,7 +1580,16 @@ def spawn_obstacles(world: World) -> None:
             log_event(LOGGER, logging.WARNING, "texture_binding_failed", "Failed to bind texture material to stairs", error=str(exc))
 
     # 3. Corridor walls spawning has been removed as requested by the user
-    log_event(LOGGER, logging.INFO, "environment_spawned", "Clean stairs-only environment (12 steps + landing) successfully spawned")
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "environment_spawned",
+        f"Clean stairs-only environment ({s.name} preset: {s.step_count} steps + landing"
+        f"{', handrails' if s.handrail else ''}) successfully spawned",
+        preset=s.name,
+        step_count=int(s.step_count),
+        handrail=bool(s.handrail),
+    )
 
 
 _random_cache = {}
@@ -1527,6 +1723,13 @@ class PatientLocomotionState:
         self.stop_timer = 0.0
         self.turn_timer = 0.0
         self.gait_time = 0.0
+        # Gait clock in full L/R cycles (one cycle == two footfalls == 0.6 m of
+        # travel at speed = cadence * 0.3 m). Drives the visual bob; advanced only
+        # while the patient is moving.
+        self.gait_phase = 0.0
+        # Throttled-trajectory-log bookkeeping (verify the climb from the JSONL).
+        self.last_pz = 0.0
+        self.dbg_accum = 0.0
         self.elapsed_time = 0.0
         self.stair_phase_started = False
         self.stair_phase_logged = False
@@ -1542,23 +1745,15 @@ class PatientLocomotionState:
         if self.waypoints[-1][0] < 1.8:
             self.waypoints.append((1.8, 0.0))
         self.stair_base_wp_idx = len(self.waypoints) - 1
-        self.waypoints.extend([
-            # --- stair treads (12 steps, one waypoint per step) ---
-            (2.14, 0.0),
-            (2.44, 0.0),
-            (2.74, 0.0),
-            (3.04, 0.0),
-            (3.34, 0.0),
-            (3.64, 0.0),
-            (3.94, 0.0),
-            (4.24, 0.0),
-            (4.54, 0.0),
-            (4.84, 0.0),
-            (5.14, 0.0),
-            (5.44, 0.0),
-            # --- top landing ---
-            (5.8,  0.0),
-        ])
+        # One waypoint per tread (tread centre) plus a top-landing target,
+        # generated from the active StairSpec so the patient path matches the
+        # spawned stairs for every preset (see --stair-preset).
+        _stairs = get_active_stairs()
+        self.waypoints.extend(
+            (_stairs.start_x_m + (i + 0.5) * _stairs.step_depth_m, 0.0)
+            for i in range(_stairs.step_count)
+        )
+        self.waypoints.append((_stairs.end_x_m + 0.2, 0.0))  # top landing
         self.current_wp_idx = min(1, len(self.waypoints) - 1)
         self.wp_direction = 1
 
@@ -1646,6 +1841,21 @@ def update_distractor(prim_path: str, dt: float) -> None:
         pass
 
 
+# Visual-only stair-climb cues for the patient (NEVER folded into ground truth):
+# a gentle forward lean and a small per-footfall vertical bob. The lean is sent
+# as roll_rad because the mannequin carries a +pi/2 visual-yaw offset, so a roll
+# about its local axis reads as a forward (travel-direction) lean. Eyeball this
+# once from a run and flip the sign if it reads as a sideways tilt instead.
+STAIR_LEAN_RAD = 0.10
+STAIR_BOB_AMP = 0.02
+
+# Patient walking pace. Kept just under the robot's caps (trans_x_max 0.85 m/s on
+# flat ground, * stair_speed_scale 0.45 -> ~0.38 m/s on stairs) so the follower
+# can actually keep up instead of crawling behind a too-slow target.
+PERSON_WALK_SPEED = 0.70   # flat ground (was 0.28)
+PERSON_STAIR_SPEED = 0.30  # stairs (was 0.16)
+
+
 def update_person_patrol(person, dt: float) -> None:
     global _patient_state, _last_gt_patient_pose
     if _patient_state is None:
@@ -1657,7 +1867,7 @@ def update_person_patrol(person, dt: float) -> None:
     if state.at_destination:
         px = state.x
         py_pos = 0.0
-        pz = get_terrain_height(px, py_pos)
+        pz = get_terrain_height_smooth(px, py_pos)
         yaw = 0.0
         qw = math.cos(yaw * 0.5)
         person.set_world_pose(
@@ -1667,13 +1877,16 @@ def update_person_patrol(person, dt: float) -> None:
         _last_gt_patient_pose = (px, py_pos, pz)
         return
 
+    # Active staircase geometry (preset-driven) for all stair-zone checks below.
+    _stairs = get_active_stairs()
+
     # Clinical exertion logic
     is_stumbling = False
     if state.stop_timer > 0.0:
         state.o2_sat = min(98.0, state.o2_sat + 0.8 * dt)
     else:
         px = state.x
-        if 2.0 <= px < 5.6:
+        if _stairs.start_x_m <= px < _stairs.end_x_m:
             state.o2_sat -= 0.18 * dt
         else:
             state.o2_sat -= 0.05 * dt
@@ -1705,17 +1918,20 @@ def update_person_patrol(person, dt: float) -> None:
         state.gait_time += dt
         px = state.x
         py_pos = 0.0
+        pz = get_terrain_height_smooth(px, py_pos)
+        # Resting bob is a visual cue only; keep it off the ground-truth Z (pz).
         bob_amp = 0.035 if is_stumbling else 0.015
-        pz = get_terrain_height(px, py_pos) + max(0.0, bob_amp * math.sin(6.0 * state.gait_time))
+        bob_z = max(0.0, bob_amp * math.sin(6.0 * state.gait_time))
+        lean_rad = 0.0
     else:
         # Determine patient speed based on terrain section
         px = state.x
         if not state.stair_phase_started:
-            speed = 0.28
-        elif 2.0 <= px < 5.6:
-            speed = 0.16
+            speed = PERSON_WALK_SPEED
+        elif _stairs.start_x_m <= px < _stairs.end_x_m:
+            speed = PERSON_STAIR_SPEED
         else:
-            speed = 0.28
+            speed = PERSON_WALK_SPEED
 
         if is_stumbling:
             speed *= 0.5
@@ -1724,7 +1940,7 @@ def update_person_patrol(person, dt: float) -> None:
         if dist <= step_dist:
             state.x = tx
             state.y = 0.0
-            
+
             # Check if entering stair phase
             if not state.stair_phase_started and state.current_wp_idx == state.stair_base_wp_idx:
                 state.stair_phase_started = True
@@ -1736,7 +1952,7 @@ def update_person_patrol(person, dt: float) -> None:
                     person_x=float(state.x),
                     person_y=float(state.y),
                 )
-                
+
             state.current_wp_idx += 1
             if state.current_wp_idx >= len(state.waypoints):
                 state.current_wp_idx = len(state.waypoints) - 1
@@ -1748,16 +1964,31 @@ def update_person_patrol(person, dt: float) -> None:
                     "Patient reached the top of the stairs and stopped",
                     person_x=float(state.x),
                     person_y=float(state.y),
-                    person_z=float(get_terrain_height(state.x, state.y)),
+                    person_z=float(get_terrain_height_smooth(state.x, state.y)),
                 )
         else:
             state.x += speed * dt
             state.y = 0.0
 
         state.gait_time += dt
+        # Advance the gait clock so the bob stays in step with travel: one full
+        # L/R cycle per 0.6 m (a footfall per 0.3 m tread). Only while moving.
+        if speed > 0.0:
+            state.gait_phase += (speed / 0.6) * dt
         px = state.x
         py_pos = 0.0
-        pz = get_terrain_height(px, py_pos)
+        pz = get_terrain_height_smooth(px, py_pos)
+
+        # Visual-only climbing cues while on the stairs (never written to GT):
+        # a forward lean ramped in/out over one tread at each end, and a small bob
+        # that rises once per footfall.
+        if _stairs.start_x_m <= px < _stairs.end_x_m:
+            ramp = max(0.0, min(1.0, (px - _stairs.start_x_m) / _stairs.step_depth_m, (_stairs.end_x_m - px) / _stairs.step_depth_m))
+            lean_rad = STAIR_LEAN_RAD * ramp
+            bob_z = STAIR_BOB_AMP * 0.5 * (1.0 - math.cos(4.0 * math.pi * state.gait_phase))
+        else:
+            lean_rad = 0.0
+            bob_z = 0.0
 
     # Convert yaw to quaternion
     qw = math.cos(yaw * 0.5)
@@ -1768,10 +1999,31 @@ def update_person_patrol(person, dt: float) -> None:
     person.set_world_pose(
         position=np.array([px, py_pos, pz]),
         orientation=np.array([qw, qx, qy, qz]),
+        roll_rad=lean_rad,
+        bob_z=bob_z,
     )
 
-    # Store ground truth pose for evaluations
+    # Store ground truth pose for evaluations (smooth, bob-free, foot-IK-free).
     _last_gt_patient_pose = (px, py_pos, pz)
+
+    # Throttled trajectory diagnostic so the climb can be verified from the
+    # debug/ JSONL without a visual run: person_z must be monotonic and
+    # continuous (per-window d_z stays small; no 0.08 m tread-snap jumps).
+    state.dbg_accum += dt
+    if state.dbg_accum >= 0.5:
+        log_event(
+            LOGGER,
+            logging.INFO,
+            "patient_trajectory",
+            "Patient climb trajectory sample",
+            person_x=round(float(px), 4),
+            person_z=round(float(pz), 4),
+            d_z=round(float(pz - state.last_pz), 5),
+            gait_phase=round(float(state.gait_phase), 3),
+            on_stairs=bool(_stairs.start_x_m <= px < _stairs.end_x_m),
+        )
+        state.last_pz = float(pz)
+        state.dbg_accum = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -1925,6 +2177,7 @@ class FramePublisher:
         gt_distractor: tuple = None,
         stair_demo: dict = None,
         swing_legs: list = None,
+        lidar_profile: dict = None,
     ) -> None:
         import cv2, base64, zlib
 
@@ -1970,6 +2223,7 @@ class FramePublisher:
                 "gt_distractor": gt_distractor,
                 "stair_demo": stair_demo or {},
                 "swing_legs": swing_legs or [],
+                "lidar_profile": lidar_profile or {},
             }
             candidate_payload = json.dumps(meta).encode("utf-8")
             payload_meta = {
@@ -2017,16 +2271,17 @@ class FramePublisher:
         self._sock.close()
 
 
-def create_and_bind_friction_material(stage, prim_paths: list, material_path: str = "/World/PhysicsMaterials/HighFrictionMaterial"):
+def create_and_bind_friction_material(stage, prim_paths: list, material_path: str = "/World/PhysicsMaterials/HighFrictionMaterial",
+                                       *, dynamic_friction: float = 1.0, static_friction: float = 1.2, restitution: float = 0.0):
     from pxr import UsdPhysics, Sdf
     material_prim = stage.GetPrimAtPath(material_path)
     if not material_prim.IsValid():
         material_prim = stage.DefinePrim(material_path, "Material")
         phys_mat = UsdPhysics.MaterialAPI.Apply(material_prim)
-        phys_mat.CreateDynamicFrictionAttr().Set(1.0)
-        phys_mat.CreateStaticFrictionAttr().Set(1.2)
-        phys_mat.CreateRestitutionAttr().Set(0.0)
-        log_event(LOGGER, logging.INFO, "physics_material_created", f"Created physics material {material_path} with dynamic=1.0, static=1.2")
+        phys_mat.CreateDynamicFrictionAttr().Set(float(dynamic_friction))
+        phys_mat.CreateStaticFrictionAttr().Set(float(static_friction))
+        phys_mat.CreateRestitutionAttr().Set(float(restitution))
+        log_event(LOGGER, logging.INFO, "physics_material_created", f"Created physics material {material_path} with dynamic={dynamic_friction:.3f}, static={static_friction:.3f}")
         
     for p_path in prim_paths:
         prim = stage.GetPrimAtPath(p_path)
@@ -2359,6 +2614,41 @@ def _freeze_go2_at_spawn(go2) -> None:
         pass
 
 
+def _recover_go2_in_place(go2, x: float, y: float) -> None:
+    """Kinematically re-stand the robot at (x, y) after a sustained fall.
+
+    This is NOT a learned getup -- the single locomotion policy cannot get up from
+    a collapsed/flipped state, and no separate getup policy exists. It snaps the
+    joints to the default stance, lifts the base to standing height above the
+    *current* terrain at the current XY with upright (+X) orientation, and zeroes
+    velocities, so the demo can continue after a stumble instead of ending. Opt-in
+    via --fall-recovery; bounded by --max-fall-recoveries.
+    """
+    try:
+        standing_rad, _names, _ = _go2_standing_joint_targets(go2)
+        setter = getattr(go2, "set_joint_positions", None)
+        if callable(setter):
+            setter(standing_rad)
+        vz = getattr(go2, "set_joint_velocities", None)
+        if callable(vz):
+            vz(np.zeros(len(standing_rad)))
+    except Exception:
+        pass
+    try:
+        stand_z = get_terrain_height(float(x), float(y)) + float(GO2_SPAWN_Z)
+        if hasattr(go2, "set_world_pose"):
+            go2.set_world_pose(
+                position=np.array([float(x), float(y), float(stand_z)]),
+                orientation=np.array([1.0, 0.0, 0.0, 0.0]),  # (w,x,y,z) identity -> faces +X
+            )
+        if hasattr(go2, "set_linear_velocity"):
+            go2.set_linear_velocity(np.zeros(3))
+        if hasattr(go2, "set_angular_velocity"):
+            go2.set_angular_velocity(np.zeros(3))
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Go2 standing pose initialisation (called after world.reset())
 # ---------------------------------------------------------------------------
@@ -2434,9 +2724,12 @@ def _create_rl_locomotion_policy(go2) -> Optional[RLLocomotionPolicy]:
         policy_format=args.rl_policy_format,
         control_hz=float(args.rl_control_hz),
         control_mode=str(args.rl_control_mode),
-        kp=float(args.rl_kp),
-        kd=float(args.rl_kd),
+        kp=float(args.rl_kp) * float(_DR.get("kp_mult", 1.0)),
+        kd=float(args.rl_kd) * float(_DR.get("kd_mult", 1.0)),
         torque_limit=float(args.rl_torque_limit),
+        torque_rate_limit_nm=float(args.rl_torque_rate),
+        obs_noise_enabled=bool(args.rl_obs_noise),
+        obs_latency_steps=int(args.rl_obs_latency_steps),
     )
     policy = RLLocomotionPolicy(config, dof_names, logger=LOGGER)
     log_event(
@@ -2476,6 +2769,11 @@ def _step_go2_locomotion(
         )
         return
     telemetry = rl_policy.step(go2, (vx, vy, wz), dt)
+    # The policy just moved the joints; capture its real per-leg command so the
+    # stair-demo telemetry and HUD reflect what the RL policy actually did this
+    # step (replaces the removed procedural-gait swing bookkeeping).
+    _go2_locomotion_state.rl_leg_summary = rl_policy.leg_command_summary()
+    _go2_locomotion_state.rl_policy_name = rl_policy.policy_path.name
     if not getattr(rl_policy, "_active_logged", False):
         setattr(rl_policy, "_active_logged", True)
         log_event(
@@ -2573,7 +2871,7 @@ def _run_evaluation_and_save_images(
 ) -> None:
     """Capture final verification image, evaluate straight-line walking / balance, and log summary."""
     if log_dir:
-        end_img_path = os.path.join(log_dir, "verification_end.png")
+        end_img_path = os.path.join(_log_bucket(log_dir, "reports"), "verification_end.png")
         try:
             capture_verification_image(world, camera, end_img_path, go2=go2, person=person, step_world=True, rl_policy=rl_policy)
             log_event(LOGGER, logging.INFO, "verification_end_saved", f"Saved final verification screenshot to {end_img_path}")
@@ -2698,7 +2996,7 @@ def _run_evaluation_and_save_images(
     print("="*40 + "\n", flush=True)
     
     if log_dir:
-        summary_path = os.path.join(log_dir, "evaluation_summary.txt")
+        summary_path = os.path.join(_log_bucket(log_dir, "reports"), "evaluation_summary.txt")
         try:
             with open(summary_path, "w") as f:
                 f.write("EVALUATION SUMMARY:\n")
@@ -2717,7 +3015,7 @@ def _run_evaluation_and_save_images(
         except Exception as e:
             log_event(LOGGER, logging.WARNING, "evaluation_summary_failed", f"Failed to write evaluation summary: {e}")
 
-        report_path = os.path.join(log_dir, "stair_demo_report.json")
+        report_path = os.path.join(_log_bucket(log_dir, "reports"), "stair_demo_report.json")
         try:
             with open(report_path, "w") as f:
                 json.dump(
@@ -2760,7 +3058,11 @@ def main() -> None:
         setup_scene_lighting(stage)
         step_paths = [f"/World/Environment/step_{i}" for i in range(5)]
         step_paths.append("/World/defaultGroundPlane")
-        create_and_bind_friction_material(stage, step_paths)
+        create_and_bind_friction_material(
+            stage, step_paths,
+            dynamic_friction=_DR.get("dynamic_friction", 1.0),
+            static_friction=_DR.get("static_friction", 1.2),
+        )
     except Exception as exc:
         log_event(LOGGER, logging.WARNING, "physics_material_failed", "Failed to create/bind friction material", error=str(exc))
 
@@ -2868,7 +3170,7 @@ def main() -> None:
 
     # Capture initial verification image
     if verification_camera is not None and args.log_dir:
-        start_img_path = os.path.join(args.log_dir, "verification_start.png")
+        start_img_path = os.path.join(_log_bucket(args.log_dir, "reports"), "verification_start.png")
         try:
             capture_verification_image(world, verification_camera, start_img_path, go2=go2, person=person, step_world=True, rl_policy=rl_policy)
             log_event(LOGGER, logging.INFO, "verification_start_saved", f"Saved initial verification screenshot to {start_img_path}")
@@ -2904,7 +3206,7 @@ def main() -> None:
     step_count = 0
 
     # Top-down video writer — starts when scene_motion_released becomes True
-    topdown_video_path = os.path.join(args.log_dir, "topdown.mp4") if args.log_dir else ""
+    topdown_video_path = os.path.join(_log_bucket(args.log_dir, "videos"), "topdown.mp4") if args.log_dir else ""
     topdown_video_writer = None
     topdown_recording_released = False
     if topdown_video_path:
@@ -2917,7 +3219,7 @@ def main() -> None:
     # (the controller's raw writer is disabled via --no-raw-video). Starts with the
     # top-down recorder once scene motion is released.
     raw_video_path = args.raw_video_path or (
-        os.path.join(args.log_dir, "raw_camera.mp4") if args.log_dir else "")
+        os.path.join(_log_bucket(args.log_dir, "videos"), "raw_camera.mp4") if args.log_dir else "")
     raw_video_writer = None
     if scene_left_camera is not None and raw_video_path:
         raw_video_dir = os.path.dirname(raw_video_path)
@@ -2929,16 +3231,26 @@ def main() -> None:
     # Simulated Hesai XT16 LiDAR: real PhysX raycasts against the scene geometry,
     # rendered to log_dir/lidar_preview.mp4 (BEV scatter + range image). Scanned at
     # --lidar-hz, throttled relative to the camera render rate.
-    lidar_enabled = bool(args.log_dir) and not args.no_lidar_preview
-    lidar_video_path = os.path.join(args.log_dir, "lidar_preview.mp4") if lidar_enabled else ""
+    # The scan runs whenever a log_dir is configured so the controller always gets
+    # the LiDAR profile for the BEV panel and the distance fusion. --no-lidar-preview
+    # only suppresses the lidar_preview.mp4 writer, not the scan/profile send.
+    lidar_scan_enabled = bool(args.log_dir)
+    lidar_video_path = (
+        os.path.join(_log_bucket(args.log_dir, "videos"), "lidar_preview.mp4")
+        if (lidar_scan_enabled and not args.no_lidar_preview) else ""
+    )
     lidar_video_writer = None
+    # Latest polar profile sent to the controller; resent each frame between scans.
+    lidar_profile_latest: dict = {}
     lidar_config = Xt16Config(
         azimuth_step_deg=float(args.lidar_azimuth_step_deg),
         max_range_m=float(args.lidar_max_range_m),
+        range_noise_m=float(args.lidar_range_noise_m),
+        dropout_prob=float(args.lidar_dropout_prob),
     )
     _render_rate_hz = args.physics_hz / max(1, args.render_every)
     lidar_scan_stride = max(1, int(round(_render_rate_hz / max(0.1, args.lidar_hz))))
-    if lidar_enabled:
+    if lidar_scan_enabled:
         log_event(LOGGER, logging.INFO, "lidar_preview_configured",
                   "Simulated XT16 LiDAR enabled",
                   path=lidar_video_path,
@@ -2958,11 +3270,14 @@ def main() -> None:
     destination_reached_sim_sec = None
     motion_start_time = None
     motion_elapsed_sim_sec = 0.0
+    # Domain-randomization push schedule (first push after one interval of motion).
+    _dr_next_push_sec = float(args.dr_push_interval_sec)
     robot_stair_phase_sim_sec = 0.0
     robot_top_landing_seen = False
     robot_stair_visibility_logged = False
     # Live fall watchdog: sim-time at which the robot first looked fallen (None when upright)
     robot_fall_since_sim_sec = None
+    _fall_recoveries_done = 0  # count of in-place re-stand recoveries (--fall-recovery)
     evaluation_exit_reason = "not_recorded"
     evaluation_done = False
     DEMO_SIM_TIMEOUT_SEC = 120.0
@@ -3057,6 +3372,34 @@ def main() -> None:
                 # with the policy (the robot has already started walking, so do not
                 # re-freeze -- that would teleport it back).
                 _step_go2_locomotion(go2, rl_policy, 0.0, 0.0, 0.0, dt, stairs_detected=False)
+
+            # Domain-randomization push disturbances: periodically shove the base
+            # with a random horizontal velocity impulse to test the policy's
+            # recovery. Only while the policy is actively driving the robot.
+            if (
+                _DR_RNG is not None
+                and scene_motion_allowed
+                and float(args.dr_push_interval_sec) > 0.0
+                and motion_elapsed_sim_sec >= _dr_next_push_sec
+            ):
+                _dr_next_push_sec = motion_elapsed_sim_sec + float(args.dr_push_interval_sec)
+                try:
+                    _theta = float(_DR_RNG.uniform(0.0, 2.0 * math.pi))
+                    _mag = float(args.dr_push_vel)
+                    _dvx, _dvy = _mag * math.cos(_theta), _mag * math.sin(_theta)
+                    _cur_v = go2.get_linear_velocity()
+                    go2.set_linear_velocity(
+                        np.array([float(_cur_v[0]) + _dvx, float(_cur_v[1]) + _dvy, float(_cur_v[2])], dtype=np.float32)
+                    )
+                    log_event(
+                        LOGGER, logging.INFO, "domain_rand_push",
+                        "Applied push disturbance",
+                        t=round(float(motion_elapsed_sim_sec), 2),
+                        dvx=round(_dvx, 3), dvy=round(_dvy, 3),
+                    )
+                except Exception as exc:
+                    log_event(LOGGER, logging.WARNING, "domain_rand_push_failed",
+                              "Push disturbance failed", error=str(exc))
             log_event(
                 LOGGER,
                 logging.DEBUG,
@@ -3069,9 +3412,8 @@ def main() -> None:
                 wz=round(float(wz), 4),
                 cmd_active=bool(controller_ready and nonzero_command_fresh),
                 scene_motion_allowed=bool(scene_motion_allowed),
-                gait_phase=round(float(_go2_locomotion_state.gait_phase), 4),
                 gait_time=round(float(_go2_locomotion_state.gait_time), 4),
-                swing_legs=list(getattr(_go2_locomotion_state, "current_swing_legs", [])),
+                swing_legs=list((_go2_locomotion_state.rl_leg_summary or {}).get("swing_legs", [])),
             )
 
             if view_camera is not None:
@@ -3218,21 +3560,48 @@ def main() -> None:
                         if robot_fall_since_sim_sec is None:
                             robot_fall_since_sim_sec = motion_elapsed_sim_sec
                         elif (motion_elapsed_sim_sec - robot_fall_since_sim_sec) >= ROBOT_FALL_SUSTAIN_SEC:
-                            evaluation_done = True
-                            evaluation_exit_reason = "robot_fell"
-                            log_event(
-                                LOGGER,
-                                logging.WARNING,
-                                "evaluation_exit",
-                                "Robot fell (flipped or collapsed); stopping run early",
-                                reason=evaluation_exit_reason,
-                                robot_height_m=round(float(robot_height_now), 3),
-                                roll_rad=round(float(lroll), 3),
-                                pitch_rad=round(float(lpitch), 3),
-                                motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
-                                stair_phase=stair_phase_now,
-                            )
-                            break
+                            if args.fall_recovery and _fall_recoveries_done < int(args.max_fall_recoveries):
+                                # Recover in place and keep going instead of ending the run.
+                                _fall_recoveries_done += 1
+                                _recover_go2_in_place(go2, lrx, lry)
+                                robot_fall_since_sim_sec = None
+                                # Clear the policy's last action so it doesn't slam the
+                                # joints based on the pre-fall command after the re-stand.
+                                if rl_policy is not None and hasattr(rl_policy, "prev_action"):
+                                    try:
+                                        rl_policy.prev_action[:] = 0.0
+                                    except Exception:
+                                        pass
+                                log_event(
+                                    LOGGER,
+                                    logging.WARNING,
+                                    "fall_recovery",
+                                    "Robot fell; kinematic in-place re-stand recovery applied",
+                                    recovery=int(_fall_recoveries_done),
+                                    max_recoveries=int(args.max_fall_recoveries),
+                                    x=round(float(lrx), 3),
+                                    y=round(float(lry), 3),
+                                    robot_height_m=round(float(robot_height_now), 3),
+                                    motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
+                                    stair_phase=stair_phase_now,
+                                )
+                            else:
+                                evaluation_done = True
+                                evaluation_exit_reason = "robot_fell"
+                                log_event(
+                                    LOGGER,
+                                    logging.WARNING,
+                                    "evaluation_exit",
+                                    "Robot fell (flipped or collapsed); stopping run early",
+                                    reason=evaluation_exit_reason,
+                                    robot_height_m=round(float(robot_height_now), 3),
+                                    roll_rad=round(float(lroll), 3),
+                                    pitch_rad=round(float(lpitch), 3),
+                                    motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
+                                    stair_phase=stair_phase_now,
+                                    recoveries_used=int(_fall_recoveries_done),
+                                )
+                                break
 
                 # Condition 1: reached destination (patient stops)
                 if _patient_state is not None and _patient_state.at_destination:
@@ -3331,12 +3700,14 @@ def main() -> None:
                         gt_patient = _last_gt_patient_pose
                         gt_distractor = None
                         stair_demo = get_stair_demo_telemetry(_go2_locomotion_state)
-                        swing_legs = list(getattr(_go2_locomotion_state, "current_swing_legs", []))
+                        swing_legs = list((_go2_locomotion_state.rl_leg_summary or {}).get("swing_legs", []))
 
-                        # Simulated XT16 LiDAR: real raycast against scene geometry,
-                        # rendered to lidar_preview.mp4. Throttled to ~--lidar-hz and
-                        # merged into the HUD telemetry so "SIM LIDAR" shows real hits.
-                        if lidar_enabled and (step_count // args.render_every) % lidar_scan_stride == 0:
+                        # Simulated XT16 LiDAR: real raycast against scene geometry.
+                        # Throttled to ~--lidar-hz; the compact polar profile rides the
+                        # UDP frame to the controller (BEV panel + distance fusion), the
+                        # HUD telemetry shows real hits, and lidar_preview.mp4 records the
+                        # full BEV/range image unless --no-lidar-preview disables it.
+                        if lidar_scan_enabled and (step_count // args.render_every) % lidar_scan_stride == 0:
                             try:
                                 robot_pose = stair_demo.get("robot", {})
                                 scan = cast_scan(
@@ -3361,30 +3732,36 @@ def main() -> None:
                                 stair_demo = dict(stair_demo)
                                 stair_demo["lidar"] = lidar_block
 
-                                import cv2 as _cv2_lidar
-                                preview = render_preview(scan, float(args.lidar_view_range_m))
-                                if lidar_video_writer is None:
-                                    lh, lw = preview.shape[:2]
-                                    import platform as _ld_plat
-                                    _ld_codecs = ("avc1", "mp4v") if _ld_plat.system() == "Windows" else ("mp4v",)
-                                    _ldvw = None
-                                    for _codec in _ld_codecs:
-                                        _ldvw = _cv2_lidar.VideoWriter(
-                                            lidar_video_path,
-                                            _cv2_lidar.VideoWriter_fourcc(*_codec),
-                                            max(1.0, float(args.lidar_hz)),
-                                            (int(lw), int(lh)),
-                                        )
-                                        if _ldvw.isOpened():
-                                            break
-                                        _ldvw.release(); _ldvw = None
-                                    if _ldvw is not None and _ldvw.isOpened():
-                                        lidar_video_writer = _ldvw
-                                        log_event(LOGGER, logging.INFO, "lidar_video_started",
-                                                  "XT16 LiDAR preview recording started",
-                                                  path=lidar_video_path)
-                                if lidar_video_writer is not None:
-                                    lidar_video_writer.write(preview)
+                                # Compact profile for the controller (BEV + fusion).
+                                lidar_profile_latest = profile_from_scan(
+                                    scan, float(args.lidar_view_range_m)
+                                )
+
+                                if lidar_video_path:
+                                    import cv2 as _cv2_lidar
+                                    preview = render_preview(scan, float(args.lidar_view_range_m))
+                                    if lidar_video_writer is None:
+                                        lh, lw = preview.shape[:2]
+                                        import platform as _ld_plat
+                                        _ld_codecs = ("avc1", "mp4v") if _ld_plat.system() == "Windows" else ("mp4v",)
+                                        _ldvw = None
+                                        for _codec in _ld_codecs:
+                                            _ldvw = _cv2_lidar.VideoWriter(
+                                                lidar_video_path,
+                                                _cv2_lidar.VideoWriter_fourcc(*_codec),
+                                                max(1.0, float(args.lidar_hz)),
+                                                (int(lw), int(lh)),
+                                            )
+                                            if _ldvw.isOpened():
+                                                break
+                                            _ldvw.release(); _ldvw = None
+                                        if _ldvw is not None and _ldvw.isOpened():
+                                            lidar_video_writer = _ldvw
+                                            log_event(LOGGER, logging.INFO, "lidar_video_started",
+                                                      "XT16 LiDAR preview recording started",
+                                                      path=lidar_video_path)
+                                    if lidar_video_writer is not None:
+                                        lidar_video_writer.write(preview)
                             except Exception as exc:
                                 _warn_lidar = getattr(main, "_lidar_warned", False)
                                 if not _warn_lidar:
@@ -3393,7 +3770,8 @@ def main() -> None:
                                               "XT16 LiDAR scan/render failed", error=str(exc))
 
                         # Depth noise is applied inside publisher.send after downsampling
-                        publisher.send(rgb_data, depth_mm, vx, vy, wz, gt_patient, gt_distractor, stair_demo, swing_legs)
+                        publisher.send(rgb_data, depth_mm, vx, vy, wz, gt_patient, gt_distractor,
+                                       stair_demo, swing_legs, lidar_profile_latest)
                 except Exception as exc:
                     log_event(
                         LOGGER,

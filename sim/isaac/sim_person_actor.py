@@ -52,6 +52,20 @@ _BIPED_IDLE_ANIM_SUBPATH = "CharacterAnimation/Animation/stand_idle_loop_skelani
 # world yaw directly.
 PERSON_VISUAL_FORWARD_YAW_OFFSET_RAD = math.pi / 2.0
 
+# Debounce window for idle: only fall back to the idle clip after the target has
+# been still this long. Prevents brief sub-threshold frames (waypoint-arrival
+# snaps, single-step rest pauses) from rapidly toggling walk<->idle, which showed
+# up in the logs as paired "clip switched" events during the climb.
+PERSON_IDLE_DEBOUNCE_SEC = 0.5
+
+# Leg-cycle speed-up baked into the walk clip loop. >1 makes the legs cycle
+# faster, so at a given body speed each step covers less ground -> shorter,
+# quicker steps (the baked clip's stride is otherwise long/gliding). Applied in
+# _loop_animation_channels at load time. Tunable: raise for shorter steps, 1.0
+# for the original cadence. Eyeball and adjust; the per-run diagnostics log the
+# clip's true period so this can be set precisely.
+_PERSON_GAIT_CADENCE_MULT = 1.8
+
 # Isaac 4.5 Biped_Setup is used because 6.0 Nucleus doesn't have it yet.
 _BIPED_SETUP_USD_CANDIDATES = [
     "{assets_root}/Isaac/People/Characters/Biped_Setup.usd",
@@ -78,8 +92,24 @@ class SimPersonTarget:
     _skel_root_path: str = ""
     last_collider_warning_time: float = 0.0
     suppressed_collider_warnings: int = 0
+    _last_moving_time: float = 0.0
 
-    def set_world_pose(self, position: np.ndarray, orientation: Optional[np.ndarray] = None) -> None:
+    def set_world_pose(
+        self,
+        position: np.ndarray,
+        orientation: Optional[np.ndarray] = None,
+        *,
+        roll_rad: float = 0.0,
+        pitch_rad: float = 0.0,
+        bob_z: float = 0.0,
+    ) -> None:
+        """Place the visual + collider at ``position``.
+
+        ``roll_rad``/``pitch_rad`` and ``bob_z`` are VISUAL-ONLY climbing cues
+        (forward lean + per-footfall bob). They are applied to the rendered
+        mannequin only; the caller's ``position`` is what the collider tracks and
+        what the caller records as ground truth, so these never distort the GT.
+        """
         position = np.asarray(position, dtype=float)
         if position.shape[0] < 3:
             position = np.array([float(position[0]), float(position[1]), 0.0], dtype=float)
@@ -100,12 +130,27 @@ class SimPersonTarget:
 
         walking = distance > 5e-5
 
+        # Idle debounce: switch to walk instantly on motion, but only fall back to
+        # idle after PERSON_IDLE_DEBOUNCE_SEC of stillness so brief stops don't
+        # flip the clip back and forth (see PERSON_IDLE_DEBOUNCE_SEC note).
+        now = time.monotonic()
+        if walking:
+            self._last_moving_time = now
+            effective_walking = True
+        else:
+            effective_walking = (now - self._last_moving_time) < PERSON_IDLE_DEBOUNCE_SEC
+
         _set_xform_pose(
             self.visual_prim_path,
-            np.array([float(position[0]), float(position[1]), float(position[2])], dtype=float),
+            np.array(
+                [float(position[0]), float(position[1]), float(position[2]) + float(bob_z)],
+                dtype=float,
+            ),
             self.yaw_rad + PERSON_VISUAL_FORWARD_YAW_OFFSET_RAD,
+            roll_rad=float(roll_rad),
+            pitch_rad=float(pitch_rad),
         )
-        self._update_animation_state(walking=walking)
+        self._update_animation_state(walking=effective_walking)
 
         collider_center = np.array(
             [
@@ -464,7 +509,12 @@ def _zero_root_rotation_channel(anim: Any, root_idx: int) -> bool:
     return changed
 
 
-def _loop_animation_channels(anim: Any, loop_duration: float = 80.0, t_start: float = 186.0) -> bool:
+def _loop_animation_channels(
+    anim: Any,
+    loop_duration: float = 80.0,
+    t_start: float = 186.0,
+    cadence_mult: float = 1.0,
+) -> bool:
     """Re-tile all animation channels using a stable mid-clip walk cycle window.
 
     Instead of looping from t=0 (which includes a startup transition / rest pose
@@ -474,9 +524,15 @@ def _loop_animation_channels(anim: Any, loop_duration: float = 80.0, t_start: fl
     then fill every time sample in the original clip by mapping it into that
     normalised window.  The result is a seamlessly repeating mid-stride cycle
     with no rest-pose pop at the seam.
+
+    cadence_mult > 1 advances the loop phase faster relative to the timeline, so
+    the legs cycle quicker and each step covers less ground (shorter, quicker
+    steps) WITHOUT shrinking the content window -- the full stride content is
+    preserved, only its playback speed changes.
     """
     changed = False
     t_end = t_start + loop_duration
+    cadence_mult = float(cadence_mult) if cadence_mult and cadence_mult > 0.0 else 1.0
     for attr in [anim.GetTranslationsAttr(), anim.GetRotationsAttr(), anim.GetScalesAttr()]:
         if not attr.IsValid():
             continue
@@ -501,15 +557,119 @@ def _loop_animation_channels(anim: Any, loop_duration: float = 80.0, t_start: fl
         sorted_keys = sorted(cache.keys())
 
         # 2. For every time sample in the original clip, map into [0, loop_duration)
-        #    and pick the nearest cached sample.
+        #    and pick the nearest cached sample. cadence_mult speeds up the phase
+        #    advance so the same stride content plays in fewer timeline units.
         for t in time_samples:
-            t_norm = t % loop_duration
+            t_norm = (t * cadence_mult) % loop_duration
             best_key = min(sorted_keys, key=lambda k: abs(k - t_norm))
             val = cache[best_key]
             attr.Set(val, t)
             changed = True
     return changed
 
+
+
+def _estimate_gait_period(anim: Any, joints_list: List[str], logger: Optional[logging.Logger]) -> None:
+    """LOG-ONLY diagnostic for the walk clip — never edits the clip, never raises.
+
+    The local Biped_Setup copy is a binary USDC, so we cannot read its timing
+    offline. This logs, from a normal run: the full joint-name list (needed to
+    resolve leg joints for any future foot work), the rotation channel's
+    time-sample span/count + sampling rate, and an autocorrelation estimate of the
+    true full gait period of a left-leg joint. That estimate tells us whether the
+    current loop window (loop_duration=80, t_start=186) captures a FULL two-step
+    cycle or only a half cycle (the suspected cause of the one-sided "left side"
+    look). The loop value is then set from this logged number rather than guessed.
+    """
+    try:
+        rot_attr = anim.GetRotationsAttr()
+        ts = sorted(rot_attr.GetTimeSamples()) if (rot_attr and rot_attr.IsValid()) else []
+
+        try:
+            tcps = float(anim.GetPrim().GetStage().GetTimeCodesPerSecond())
+        except Exception:
+            tcps = None
+
+        # Joint tokens are full paths (e.g. "Root/Pelvis/L_UpLeg"); match the leaf
+        # bone name. The upper-leg (hip) joint carries the clearest 1-per-cycle
+        # swing, so prefer L_UpLeg / LeftUpLeg / *Thigh.
+        leg_idx = None
+        leg_name = None
+        for idx, j in enumerate(joints_list):
+            leaf = str(j).rsplit("/", 1)[-1].lower()
+            is_left = leaf.startswith("l_") or leaf.startswith("left")
+            is_upper_leg = any(k in leaf for k in ("upleg", "thigh", "femur"))
+            if is_left and is_upper_leg:
+                leg_idx, leg_name = idx, str(j)
+                break
+
+        period = None
+        confidence = 0.0
+        if ts and leg_idx is not None:
+            angles = []
+            for t in ts:
+                vals = rot_attr.Get(t)
+                if not vals or len(vals) <= leg_idx:
+                    angles = []
+                    break
+                q = vals[leg_idx]
+                try:
+                    w = float(q.GetReal())
+                except Exception:
+                    w = float(getattr(q, "real", 1.0))
+                w = max(-1.0, min(1.0, w))
+                angles.append(2.0 * math.acos(abs(w)))  # rotation magnitude per sample
+            if len(angles) > 8:
+                sig = np.asarray(angles, dtype=float)
+                sig = sig - sig.mean()
+                if np.any(sig):
+                    ac = np.correlate(sig, sig, mode="full")[len(sig) - 1:]
+                    ac = ac / ac[0]
+                    lag = None
+                    for i in range(2, len(ac) - 1):
+                        if ac[i] > ac[i - 1] and ac[i] >= ac[i + 1] and ac[i] > 0.3:
+                            lag = i
+                            break
+                    if lag is not None:
+                        dts = np.diff(np.asarray(ts, dtype=float))
+                        med = float(np.median(dts)) if len(dts) else 1.0
+                        period = lag * med
+                        confidence = float(ac[lag])
+
+        period_seconds = (period / tcps) if (period and tcps) else None
+        leg_joints = [str(j).rsplit("/", 1)[-1] for j in joints_list
+                      if str(j).rsplit("/", 1)[-1].lower().startswith(("l_", "r_"))
+                      and any(k in str(j).lower() for k in ("upleg", "loleg", "ankle", "ball"))]
+        if logger is not None:
+            log_event(
+                logger,
+                logging.INFO,
+                "person_walk_clip_diagnostics",
+                "Walk clip timing + estimated gait period (diagnostic only; clip unchanged)",
+                leg_joints=leg_joints,
+                joints_count=len(joints_list),
+                time_sample_count=len(ts),
+                t_min=(float(ts[0]) if ts else None),
+                t_max=(float(ts[-1]) if ts else None),
+                time_codes_per_second=tcps,
+                leg_joint=leg_name,
+                leg_joint_index=leg_idx,
+                estimated_full_period=period,
+                estimated_full_period_seconds=(round(period_seconds, 4) if period_seconds else None),
+                autocorr_confidence=round(confidence, 3),
+                current_loop_duration=80.0,
+                current_loop_t_start=186.0,
+                current_cadence_mult=_PERSON_GAIT_CADENCE_MULT,
+            )
+    except Exception as exc:
+        if logger is not None:
+            log_event(
+                logger,
+                logging.WARNING,
+                "person_walk_clip_diagnostics_failed",
+                "Could not compute walk clip diagnostics",
+                error=str(exc),
+            )
 
 
 def _find_first_skel_root(stage: Any, parent_path: str) -> Optional[Any]:
@@ -664,7 +824,15 @@ def _resolve_character_with_clips(
                     # mid-stride and never snaps back to a rest/stand pose.
                     prim_name = prim.GetName()
                     if "walk_1" in prim_name:
-                        if _loop_animation_channels(anim, loop_duration=80.0, t_start=186.0):
+                        # Diagnostic only (logs joints + true gait period) so the
+                        # loop window below can be set from real data, not guessed.
+                        _estimate_gait_period(anim, joints_list, logger)
+                        if _loop_animation_channels(
+                            anim,
+                            loop_duration=80.0,
+                            t_start=186.0,
+                            cadence_mult=_PERSON_GAIT_CADENCE_MULT,
+                        ):
                             modified = True
 
         if modified:

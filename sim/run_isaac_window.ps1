@@ -15,8 +15,14 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$RawLog = Join-Path $RunLogDir "isaac_raw.log"
-$ConsoleLog = Join-Path $RunLogDir "isaac_console.log"
+# Per-run logs are bucketed: verbose raw Kit output under debug/, the filtered
+# human console under logs/. (Isaac itself sorts videos/reports/jsonl into buckets.)
+$DebugDir = Join-Path $RunLogDir "debug"
+$LogsDir = Join-Path $RunLogDir "logs"
+New-Item -ItemType Directory -Force -Path $DebugDir | Out-Null
+New-Item -ItemType Directory -Force -Path $LogsDir | Out-Null
+$RawLog = Join-Path $DebugDir "isaac_raw.log"
+$ConsoleLog = Join-Path $LogsDir "isaac_console.log"
 $IsaacEnv = Join-Path $RepoRoot "sim\isaac\isaac_env.py"
 
 function Write-ConsoleLog {
@@ -43,7 +49,7 @@ function Should-ShowIsaacLine {
 Write-ConsoleLog "Isaac Sim launcher"
 Write-ConsoleLog "  Raw Kit output:      $RawLog"
 Write-ConsoleLog "  Filtered console:    $ConsoleLog"
-Write-ConsoleLog "  Isaac JSONL events:  $(Join-Path $RunLogDir 'isaac_env.jsonl')"
+Write-ConsoleLog "  Isaac JSONL events:  $(Join-Path $DebugDir 'isaac_env.jsonl')"
 Write-ConsoleLog "  Isaac Sim dir:       $IsaacSimDir"
 Write-ConsoleLog "  Frame target:        ${FrameHost}:${FramePort}"
 Write-ConsoleLog "  Command receiver:    0.0.0.0:${CmdPort}"

@@ -25,45 +25,33 @@ class Go2LocomotionState:
     # locomotion policy (rl_locomotion_policy.py) drives the joints; this struct
     # only carries perception/telemetry fields and per-run logging latches.
     target_height_m: float = 0.30
-    gait_phase: float = 0.0
     stand_joint_positions: Optional[np.ndarray] = None
     dof_names: List[str] = field(default_factory=list)
     rigid_body_path: str = ""
     rigid_body_logged: bool = False
     gait_logged: bool = False
     stair_hold_logged: bool = False
-    procedural_gait_unavailable: bool = False
-    procedural_gait_failure_count: int = 0
     warning_times: Dict[str, float] = field(default_factory=dict)
     stable_hold_logged: bool = False
 
-    # Physics gait parameters
-    use_physics_gait: bool = False
+    # Front-camera handheld-shake clock. set_front_camera_local_pose() uses these
+    # to add subtle walking motion to the robot-POV camera; gait_period sets the
+    # shake rate. (These are NOT a locomotion gait -- the RL policy moves the legs.)
     gait_time: float = 0.0
     gait_period: float = 0.6
-    duty_factor: float = 0.5
-    swing_height: float = 0.06
-
-    # Posture balance PD gains. Roll/pitch gains drive per-foot height offsets that
-    # right the body; the previous values (1.0 / 0.05) produced only ~2 cm of
-    # correction at a 30 deg tilt and could not stop a sideways rollover at follow
-    # speed, so they are stiffer here.
-    kp_height: float = 1.2
-    kd_height: float = 0.15
-    kp_roll: float = 3.0
-    kd_roll: float = 0.15
-    kp_pitch: float = 3.0
-    kd_pitch: float = 0.15
 
     # Tracking states
     joint_gains_set: bool = False
     joint_gains_unavailable: bool = False
     dof_map: Dict[Tuple[str, str], int] = field(default_factory=dict)
-    lift_off_positions: Dict[str, Tuple[float, float, float]] = field(default_factory=dict)
-    last_foot_positions: Dict[str, Tuple[float, float, float]] = field(default_factory=dict)
-    last_phases: Dict[str, float] = field(default_factory=dict)
     stair_demo_telemetry: Dict[str, Any] = field(default_factory=dict)
-    current_swing_legs: List[str] = field(default_factory=list)
+    # Per-leg command summary from the RL policy
+    # (rl_locomotion_policy.RLLocomotionPolicy.leg_command_summary()):
+    #   {"swing_legs": [...], "leg_commands": {LEG: {...}}}.
+    # This is the single source of truth for the leg/gait telemetry and HUD,
+    # replacing the removed procedural-gait swing bookkeeping.
+    rl_leg_summary: Dict[str, Any] = field(default_factory=dict)
+    rl_policy_name: str = ""
     stair_demo_detected_logged: bool = False
     stair_demo_climb_logged: bool = False
     stair_demo_complete_logged: bool = False
@@ -216,42 +204,129 @@ def _clamp(value: float, min_value: float, max_value: float) -> float:
     return max(min_value, min(max_value, value))
 
 
-STAIR_START_X_M = 2.0
-STAIR_STEP_DEPTH_M = 0.3
-STAIR_STEP_HEIGHT_M = 0.08
-STAIR_STEP_COUNT = 12
-STAIR_END_X_M = STAIR_START_X_M + STAIR_STEP_COUNT * STAIR_STEP_DEPTH_M
-STAIR_TOP_HEIGHT_M = STAIR_STEP_COUNT * STAIR_STEP_HEIGHT_M
-STAIR_HALF_WIDTH_M = 1.05
+@dataclass(frozen=True)
+class StairSpec:
+    """Single source of truth for the simulated staircase geometry.
+
+    Every consumer -- the physics cuboids in ``isaac_env.spawn_obstacles``, the
+    analytical terrain/phase helpers in this module, the patient waypoint
+    generator, and the stair-demo overlay -- must read the active spec so the
+    rendered scene, the foot-contact colliders, and the ground-truth telemetry
+    never drift apart. ``start_x_m`` is intentionally fixed across presets so the
+    robot/person spawn geometry and the flat-ground approach path stay valid;
+    only the tread rise/run/count/width (and optional handrails) change.
+    """
+
+    name: str = "demo_gentle"
+    start_x_m: float = 2.0
+    step_depth_m: float = 0.30
+    step_height_m: float = 0.08
+    step_count: int = 12
+    half_width_m: float = 1.05
+    landing_depth_m: float = 1.0
+    handrail: bool = False
+
+    @property
+    def end_x_m(self) -> float:
+        return self.start_x_m + self.step_count * self.step_depth_m
+
+    @property
+    def top_height_m(self) -> float:
+        return self.step_count * self.step_height_m
+
+    @property
+    def width_m(self) -> float:
+        return 2.0 * self.half_width_m
+
+
+# Named presets. ``demo_gentle`` reproduces the original hard-coded 0.08 m rise x
+# 0.30 m run x 12 staircase exactly (default => backward compatible). The
+# realistic presets use real building-code rise/run so the sensor + RL stack
+# faces stairs that do not trivially pass: US IRC residential ~7"/11"
+# (0.178/0.279), commercial/ADA ~6"/12" (0.150/0.305), and a steep code-max case.
+STAIR_PRESETS: Dict[str, "StairSpec"] = {
+    "demo_gentle": StairSpec(name="demo_gentle", step_height_m=0.08, step_depth_m=0.30, step_count=12, half_width_m=1.05),
+    "residential": StairSpec(name="residential", step_height_m=0.178, step_depth_m=0.279, step_count=12, half_width_m=0.55, handrail=True),
+    "commercial": StairSpec(name="commercial", step_height_m=0.150, step_depth_m=0.305, step_count=14, half_width_m=0.70, handrail=True),
+    "steep": StairSpec(name="steep", step_height_m=0.198, step_depth_m=0.254, step_count=10, half_width_m=0.50, handrail=True),
+}
+
+# Module-global active staircase. configure_stairs() swaps it at startup before
+# anything is spawned; all helpers below read ACTIVE_STAIRS so a preset change
+# propagates everywhere from one place.
+ACTIVE_STAIRS: "StairSpec" = STAIR_PRESETS["demo_gentle"]
+
+
+def configure_stairs(
+    preset: Optional[str] = None,
+    *,
+    step_height_m: Optional[float] = None,
+    step_depth_m: Optional[float] = None,
+    step_count: Optional[int] = None,
+    half_width_m: Optional[float] = None,
+    handrail: Optional[bool] = None,
+) -> "StairSpec":
+    """Select the active staircase preset and apply optional per-field overrides.
+
+    Returns the resulting StairSpec. Call once at startup before spawning the
+    scene or building the patient path. ``None`` overrides keep the preset value.
+    """
+    global ACTIVE_STAIRS
+    from dataclasses import replace
+
+    base = STAIR_PRESETS.get(preset or "demo_gentle")
+    if base is None:
+        raise ValueError(f"Unknown stair preset {preset!r}; choices: {sorted(STAIR_PRESETS)}")
+    overrides = {
+        key: value
+        for key, value in (
+            ("step_height_m", step_height_m),
+            ("step_depth_m", step_depth_m),
+            ("step_count", step_count),
+            ("half_width_m", half_width_m),
+            ("handrail", handrail),
+        )
+        if value is not None
+    }
+    ACTIVE_STAIRS = replace(base, **overrides) if overrides else base
+    return ACTIVE_STAIRS
+
+
+def get_active_stairs() -> "StairSpec":
+    return ACTIVE_STAIRS
+
+
 STAIR_LIDAR_LOOKAHEAD_M = 0.85
 STAIR_LIDAR_SAMPLE_RANGES_M = (0.15, 0.30, 0.45, 0.60, 0.75)
 
 
 def _terrain_phase(x: float, y: float) -> str:
-    if abs(y) > STAIR_HALF_WIDTH_M:
+    s = ACTIVE_STAIRS
+    if abs(y) > s.half_width_m:
         return "off_route"
-    if x < STAIR_START_X_M - 0.35:
+    if x < s.start_x_m - 0.35:
         return "flat_follow"
-    if x < STAIR_START_X_M:
+    if x < s.start_x_m:
         return "stair_approach"
-    if x < STAIR_END_X_M:
+    if x < s.end_x_m:
         return "staircase"
     return "top_landing"
 
 
 def _next_stair_edge(x: float, y: float) -> Tuple[Optional[float], float, float]:
-    if abs(y) > STAIR_HALF_WIDTH_M:
+    s = ACTIVE_STAIRS
+    if abs(y) > s.half_width_m:
         current_height = _get_analytical_terrain_height(x, y)
         return None, current_height, current_height
-    if x < STAIR_START_X_M:
-        return STAIR_START_X_M, 0.0, STAIR_STEP_HEIGHT_M
-    if x < STAIR_END_X_M:
-        step_idx = int((x - STAIR_START_X_M) / STAIR_STEP_DEPTH_M)
-        next_edge = STAIR_START_X_M + (step_idx + 1) * STAIR_STEP_DEPTH_M
-        current_height = min(STAIR_TOP_HEIGHT_M, (step_idx + 1) * STAIR_STEP_HEIGHT_M)
-        next_height = min(STAIR_TOP_HEIGHT_M, (step_idx + 2) * STAIR_STEP_HEIGHT_M)
+    if x < s.start_x_m:
+        return s.start_x_m, 0.0, s.step_height_m
+    if x < s.end_x_m:
+        step_idx = int((x - s.start_x_m) / s.step_depth_m)
+        next_edge = s.start_x_m + (step_idx + 1) * s.step_depth_m
+        current_height = min(s.top_height_m, (step_idx + 1) * s.step_height_m)
+        next_height = min(s.top_height_m, (step_idx + 2) * s.step_height_m)
         return next_edge, current_height, next_height
-    return None, STAIR_TOP_HEIGHT_M, STAIR_TOP_HEIGHT_M
+    return None, s.top_height_m, s.top_height_m
 
 
 def _build_stair_demo_telemetry(
@@ -311,6 +386,12 @@ def _build_stair_demo_telemetry(
     rl_active = bool(rl_mode in ("stair_approach", "stair_climb") and command_speed > 0.03)
     confidence = 0.96 if phase == "staircase" else 0.91 if detected else 0.42
 
+    # Real per-leg commands the RL policy issued this step (set in
+    # _step_go2_locomotion from RLLocomotionPolicy.leg_command_summary()).
+    rl_summary = state.rl_leg_summary or {}
+    rl_swing_legs = [str(leg).upper() for leg in rl_summary.get("swing_legs", [])]
+    rl_leg_commands = rl_summary.get("leg_commands", {})
+
     robot_fell = False
     robot_fall_type = "upright"
     if abs(roll) > 1.05 or abs(pitch) > 1.05:
@@ -345,30 +426,28 @@ def _build_stair_demo_telemetry(
             "distance_to_next_riser_m": (
                 None if distance_to_step_m is None else round(float(distance_to_step_m), 3)
             ),
-            "step_height_m": round(float(step_delta_m if step_delta_m > 0.0 else (STAIR_STEP_HEIGHT_M if phase == "staircase" else 0.0)), 3),
+            "step_height_m": round(float(step_delta_m if step_delta_m > 0.0 else (ACTIVE_STAIRS.step_height_m if phase == "staircase" else 0.0)), 3),
             "current_ground_m": round(float(current_h), 3),
             "next_ground_m": round(float(next_h), 3),
             "samples": samples,
         },
         "blind_rl": {
-            "policy": "synthetic_blind_rl_stair_assist",
-            "is_synthetic": True,
+            "policy": state.rl_policy_name or "go2_rl_policy",
             "mode": rl_mode,
             "active": rl_active,
             "gait_pattern": (
                 "single_leg_stair_crawl" if rl_mode in ("stair_approach", "stair_climb") else "diagonal_flat_trot"
             ),
-            "swing_legs": [str(leg).upper() for leg in state.current_swing_legs],
-            "leg_commands": _build_leg_command_summary(state, rl_mode, command_speed),
+            "swing_legs": list(rl_swing_legs),
+            "leg_commands": _build_leg_command_summary(rl_leg_commands, rl_mode),
             "commanded_speed_mps": round(float(command_speed), 3),
             "body_height_target_m": (
                 None if body_height_target_m is None else round(float(body_height_target_m), 3)
             ),
             "vertical_assist_mps": round(float(vertical_assist_mps), 3),
-            "stair_slope_deg": round(float(math.degrees(math.atan2(STAIR_STEP_HEIGHT_M, STAIR_STEP_DEPTH_M))), 2),
+            "stair_slope_deg": round(float(math.degrees(math.atan2(ACTIVE_STAIRS.step_height_m, ACTIVE_STAIRS.step_depth_m))), 2),
             "foot_clearance_m": round(float(_effective_swing_height_for_mode(rl_mode)), 3),
             "physics_contact_enabled": True,
-            "collision_cheat": "none",
             "body_height_assist_enabled": False,
             "anti_tip_assist_enabled": False,
         },
@@ -384,30 +463,26 @@ def _effective_swing_height_for_mode(mode: str) -> float:
 
 
 def _build_leg_command_summary(
-    state: Go2LocomotionState,
+    rl_leg_commands: Dict[str, Dict[str, Any]],
     rl_mode: str,
-    command_speed: float,
 ) -> Dict[str, Dict[str, Any]]:
+    """Relabel the RL policy's real per-leg commands for the stair HUD.
+
+    ``rl_leg_commands`` comes from RLLocomotionPolicy.leg_command_summary() and
+    already carries the real swing/stance state, the foot-lift estimate, and the
+    commanded joint angles. Here we only adapt the human-readable action label to
+    the current terrain mode (STEP_UP/LOAD_HOLD on stairs vs SWING/STANCE on flat).
+    """
     stair_mode = rl_mode in ("stair_approach", "stair_climb")
-    swing_height = _effective_swing_height_for_mode(rl_mode)
-    drive_mps = max(0.0, min(0.85, float(command_speed)))
-    swing_legs = {str(leg).lower() for leg in state.current_swing_legs}
     commands: Dict[str, Dict[str, Any]] = {}
-    for leg in ("fl", "fr", "rl", "rr"):
-        is_swing = leg in swing_legs
+    for leg in ("FL", "FR", "RL", "RR"):
+        cmd = dict(rl_leg_commands.get(leg, {}))
+        is_swing = cmd.get("state") == "swing"
         if stair_mode:
-            action = "STEP_UP" if is_swing else "LOAD_HOLD"
-            foot_z = swing_height if is_swing else 0.0
+            cmd["action"] = "STEP_UP" if is_swing else "LOAD_HOLD"
         else:
-            action = "SWING" if is_swing else "STANCE"
-            foot_z = min(swing_height, 0.06) if is_swing else 0.0
-        commands[leg.upper()] = {
-            "state": "swing" if is_swing else "stance",
-            "action": action,
-            "foot_lift_m": round(float(foot_z), 3),
-            "drive_mps": round(float(drive_mps if is_swing else 0.0), 3),
-            "contact_expected": not is_swing,
-        }
+            cmd["action"] = "SWING" if is_swing else "STANCE"
+        commands[leg] = cmd
     return commands
 
 
@@ -468,16 +543,17 @@ def get_stair_demo_telemetry(state: Go2LocomotionState) -> Dict[str, Any]:
 
 
 def _get_analytical_terrain_height(x: float, y: float) -> float:
-    """Return the exact terrain height at coordinate (x, y) based on spawned geometry."""
-    if not (-STAIR_HALF_WIDTH_M <= y <= STAIR_HALF_WIDTH_M):
+    """Return the exact terrain height at coordinate (x, y) for the active stairs."""
+    s = ACTIVE_STAIRS
+    if not (-s.half_width_m <= y <= s.half_width_m):
         return 0.0
-    # Stairs: 12 steps from 2.0m to 5.6m, each step 0.3m deep, 0.08m rise
-    if STAIR_START_X_M <= x < STAIR_END_X_M:
-        step_idx = int((x - STAIR_START_X_M) / STAIR_STEP_DEPTH_M)
-        return min(STAIR_TOP_HEIGHT_M, (step_idx + 1) * STAIR_STEP_HEIGHT_M)
+    # Stairs: discrete tread tops from start_x to end_x (step_height per tread).
+    if s.start_x_m <= x < s.end_x_m:
+        step_idx = int((x - s.start_x_m) / s.step_depth_m)
+        return min(s.top_height_m, (step_idx + 1) * s.step_height_m)
     # Top landing
-    if x >= STAIR_END_X_M:
-        return STAIR_TOP_HEIGHT_M
+    if x >= s.end_x_m:
+        return s.top_height_m
     # Flat ground
     return 0.0
 

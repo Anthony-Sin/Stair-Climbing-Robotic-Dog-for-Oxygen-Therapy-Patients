@@ -172,6 +172,72 @@ Always copy/export remote USD assets to a local directory (e.g., `assets/`) and 
 WHY:
 USD resolves referenced and nested assets asynchronously. For standalone scripts that query or step skeleton transforms immediately, remote assets result in loading lag where the skeleton falls back to a rest/T-pose during the initial frames of the simulation.
 
+---
+
+TRIGGER:
+Reading or trusting the gait/leg HUD (Panels 3-4, the central gait reticle) or the stair_demo `blind_rl.leg_commands` / `swing_legs` telemetry in the sim.
+
+LESSON:
+Source leg/gait telemetry from the RL policy's real joint targets via `rl_locomotion_policy.RLLocomotionPolicy.leg_command_summary()` (stored on `Go2LocomotionState.rl_leg_summary` in `_step_go2_locomotion`). Do NOT reintroduce a `current_swing_legs`-style field that the locomotion controller never fills in.
+
+WHY:
+The procedural-gait scaffolding that once populated `Go2LocomotionState.current_swing_legs` was removed, but its consumers were left reading the now-dead field (always empty), so the leg/gait HUD silently displayed static/fake data disconnected from the RL policy.
+
+---
+
+TRIGGER:
+Removing "dead" gait fields from `Go2LocomotionState` (e.g. `gait_time`, `gait_period`).
+
+LESSON:
+`gait_time` and `gait_period` are NOT locomotion gait state -- `set_front_camera_local_pose` uses them to add handheld walking shake to the robot-POV camera. Keep them when trimming procedural-gait fields; only the genuinely unreferenced ones are safe to delete.
+
+WHY:
+A field name containing "gait" looked like leftover procedural-gait code, but removing it would break the front-camera shake references in isaac_env.py.
+
+---
+
+TRIGGER:
+Changing the XT16 LiDAR polar-profile wire format (the `lidar_profile` UDP sidecar field).
+
+LESSON:
+The encoder `sim_lidar_xt16.profile_from_scan` and the decoder `core/lidar_fusion.decode_lidar_profile` are a contract pair across the Isaac->controller UDP boundary; update both together and re-run `tests/test_lidar_fusion.py` (it round-trips the real encode+decode).
+
+WHY:
+The two live in different processes (Isaac host vs Docker controller); a one-sided format change silently breaks the in-preview BEV panel and the LiDAR+YOLO distance fusion without an import error.
+
+---
+
+TRIGGER:
+Tuning the stair-climb forward command (e.g. adding a stair forward floor in `_apply_stair_command_policy`).
+
+LESSON:
+`_apply_front_obstacle_gate` runs immediately after the stair policy in the `core/main.py` loop and will zero/scale the forward command because the staircase reads as a near obstacle in the central depth ROI. It now early-returns when `debug_info["stairs_action_active"]` is set; keep that bypass or any stair forward floor is silently re-zeroed.
+
+WHY:
+The two gates are sequential and both write `trans_x_cmd`; the obstacle gate is downstream, so it wins unless it explicitly defers to the stair policy on the stairs.
+
+---
+
+TRIGGER:
+Judging whether the robot climbed from `reports/evaluation_summary.txt` / `stair_demo_report.json` (phase, x_m, "drifted/flat_follow").
+
+LESSON:
+Those are the SYNTHETIC stair-demo overlay and can report `flat_follow` / a near-spawn `x_m` even when the physics robot actually climbed. Judge real motion from the `fall diagnostic` JSONL stream in `debug/isaac_env.jsonl` (`x`, `pitch`, `policy_cmd=[vx,vy,wz]`), not the reports.
+
+WHY:
+The demo telemetry is geometry-exact scene decoration decoupled from the RL physics; trusting it hid that the robot physically climbed ~2 steps then stalled at x≈2.38.
+
+---
+
+TRIGGER:
+Reasoning about what perception drives the sim's stair climb (assuming the `demo_4d_elevation_raycast` / `_get_analytical_terrain_height` signal is the control input).
+
+LESSON:
+The live stair trigger is sensor-derived: `stairs_detected` comes from `yolo_stairs_inference` (YOLO-World on RGB, latched in `core/main.py`) and `stairs_depth_m` from the depth camera (`_depth_from_bbox_excluding_person`); `_apply_stair_command_policy` reads only those `debug_info` values. The analytical `_get_analytical_terrain_height` / `demo_4d_elevation_raycast` feeds ONLY `_build_stair_demo_telemetry` (HUD/reports) and is called with `vertical_assist_mps=0.0` / `body_height_target_m=None` — it drives no command, RL, or physics. Do not treat it as the climb's perception or "replace" it expecting behavior to change.
+
+WHY:
+The decorative overlay and the live control signal share "stair/raycast" vocabulary, so the synthetic ground-truth telemetry looks like the perception path and leads to redundant or misdirected work (e.g. "make the climb sensor-driven" when it already is).
+
 ## 9. Testing it
 
 1. The Test Command

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -49,6 +50,16 @@ POLICY_DEFAULT_BY_JOINT: Dict[str, float] = {"hip": 0.0, "thigh": 0.8, "calf": -
 # Per-joint action scale (hip is deliberately smaller than thigh/calf).
 POLICY_ACTION_SCALE_BY_JOINT: Dict[str, float] = {"hip": 0.125, "thigh": 0.25, "calf": 0.25}
 
+# Go2 leg link lengths (metres, Unitree Go2 URDF) used only to ESTIMATE how far a
+# leg has retracted for the per-leg swing/stance telemetry below. This is a
+# 2-link proxy relative to the default stance -- it is NOT used for control (the
+# policy commands the joints directly).
+GO2_THIGH_LEN_M = 0.213
+GO2_CALF_LEN_M = 0.213
+# A leg is reported "swinging" when knee flexion retracts (shortens) the leg this
+# far below its default-stance extension -- i.e. the foot has lifted off.
+SWING_CLEARANCE_THRESHOLD_M = 0.02
+
 
 @dataclass
 class RLLocomotionPolicyConfig:
@@ -72,6 +83,22 @@ class RLLocomotionPolicyConfig:
     kp: float = 20.0
     kd: float = 0.5
     torque_limit: float = 23.5
+    # Optional actuator torque slew-rate limit (Nm per control step; 0 = unlimited).
+    # Models finite actuator bandwidth so the commanded torque cannot jump
+    # instantaneously, which the ideal sim PD otherwise allows. Default 0 = off.
+    torque_rate_limit_nm: float = 0.0
+    # --- Sim-to-real observation realism (opt-in; default off => identical to the
+    # faithful clean-obs deployment). When enabled, adds Gaussian sensor noise to
+    # each observation term in physical units (before the obs scales) plus an
+    # integer observation latency so the policy acts on state from N control steps
+    # ago -- modelling the sense->actuate delay and IMU/encoder noise the real Go2
+    # has but the lockstep sim does not. Stress-tests policy robustness in sim only.
+    obs_noise_enabled: bool = False
+    obs_noise_ang_vel: float = 0.2     # rad/s   base angular velocity (IMU gyro)
+    obs_noise_gravity: float = 0.05    # unit    projected gravity (tilt/accel)
+    obs_noise_dof_pos: float = 0.01    # rad     joint position encoder
+    obs_noise_dof_vel: float = 1.5     # rad/s   joint velocity
+    obs_latency_steps: int = 0         # control steps of sensing delay (0 = none)
 
 
 class RLLocomotionPolicy:
@@ -119,12 +146,21 @@ class RLLocomotionPolicy:
         self.prev_action = np.zeros(self.n, dtype=np.float32)
         # Targets in Isaac DOF order; seeded to the default stance.
         self.last_targets_isaac = self._policy_to_isaac_vector(self.default_pos_policy)
+        # Targets in policy order (default + action*scale); seeded to the default
+        # stance. Used by leg_command_summary() to report the real per-leg command.
+        self._last_target_policy = self.default_pos_policy.copy()
         self._accumulator = 0.0
         # Diagnostics from the most recent inference (for telemetry/logging).
         self._last_obs = np.zeros(self.config.num_observations, dtype=np.float32)
         self._last_action = np.zeros(self.n, dtype=np.float32)
         self._last_torque = np.zeros(len(self.dof_names), dtype=np.float32)
         self._inference_count = 0
+        # Sim-to-real obs realism state (only used when obs_noise_enabled / a
+        # positive obs_latency_steps is configured). Dedicated RNG so injecting
+        # obs noise does not perturb the global np.random stream the image-noise
+        # caches draw from.
+        self._obs_rng = np.random.default_rng()
+        self._obs_latency_buffer: List[np.ndarray] = []
 
         self._policy_kind = self._resolve_policy_format(config.policy_format, self.policy_path)
         self._model = self._load_model(self.policy_path, self._policy_kind)
@@ -204,6 +240,7 @@ class RLLocomotionPolicy:
             self.prev_action = action
             target_policy = self.default_pos_policy + (action * self.action_scale_policy)
             self.last_targets_isaac = self._policy_to_isaac_vector(target_policy)
+            self._last_target_policy = target_policy
             self._last_obs = obs
             self._last_action = action
             self._inference_count += 1
@@ -237,6 +274,12 @@ class RLLocomotionPolicy:
         tql = float(self.config.torque_limit)
         if tql > 0.0:
             tau = np.clip(tau, -tql, tql)
+        # Optional actuator slew-rate limit: bound how far tau can move from the
+        # previously applied torque this step (finite actuator bandwidth).
+        rate = float(self.config.torque_rate_limit_nm)
+        if rate > 0.0:
+            prev = self._last_torque
+            tau = np.clip(tau, prev - rate, prev + rate)
         self._last_torque = tau.astype(np.float32)
         self._apply_joint_efforts(articulation, self._last_torque)
 
@@ -285,6 +328,70 @@ class RLLocomotionPolicy:
             out["commands"] = [round(float(v), 3) for v in obs[6:9]]
         return out
 
+    @staticmethod
+    def _leg_extension_m(calf_rad: float) -> float:
+        """Planar hip->foot distance of the (thigh, calf) 2-link vs the knee angle.
+
+        Depends only on the calf (knee) joint, so it is robust to the thigh joint's
+        zero convention. A shorter extension == a more-retracted leg == the foot
+        has lifted; the caller compares against the default-stance extension.
+        """
+        return math.sqrt(
+            GO2_THIGH_LEN_M ** 2
+            + GO2_CALF_LEN_M ** 2
+            + 2.0 * GO2_THIGH_LEN_M * GO2_CALF_LEN_M * math.cos(calf_rad)
+        )
+
+    def leg_command_summary(self) -> Dict[str, Any]:
+        """Per-leg view of what the policy is ACTUALLY commanding this step.
+
+        Sourced from the live policy target (default + action*action_scale) in
+        policy order -- NOT from any procedural gait. ``foot_lift_m`` estimates how
+        far knee flexion has retracted the leg below its default-stance extension
+        (i.e. lifted the foot); a leg is labelled ``swing`` once that exceeds
+        SWING_CLEARANCE_THRESHOLD_M. Used for telemetry/HUD only.
+        """
+        action = np.asarray(self._last_action, dtype=np.float32)
+        target_policy = np.asarray(self._last_target_policy, dtype=np.float32)
+
+        ext_default = self._leg_extension_m(float(POLICY_DEFAULT_BY_JOINT["calf"]))
+
+        # Policy slot index for each (leg, joint) in POLICY_JOINT_ORDER.
+        slot_of: Dict[Tuple[str, str], int] = {
+            key: i for i, key in enumerate(POLICY_JOINT_ORDER)
+        }
+
+        leg_commands: Dict[str, Dict[str, Any]] = {}
+        swing_legs: List[str] = []
+        # FL/FR/RL/RR is the order the HUD draws the legs in.
+        for leg in ("fl", "fr", "rl", "rr"):
+            hip_t = float(target_policy[slot_of[(leg, "hip")]])
+            thigh_t = float(target_policy[slot_of[(leg, "thigh")]])
+            calf_t = float(target_policy[slot_of[(leg, "calf")]])
+            clearance = ext_default - self._leg_extension_m(calf_t)  # +ve = lifted
+            leg_action = np.array(
+                [
+                    action[slot_of[(leg, "hip")]],
+                    action[slot_of[(leg, "thigh")]],
+                    action[slot_of[(leg, "calf")]],
+                ],
+                dtype=np.float32,
+            )
+            is_swing = bool(clearance > SWING_CLEARANCE_THRESHOLD_M)
+            if is_swing:
+                swing_legs.append(leg.upper())
+            leg_commands[leg.upper()] = {
+                "state": "swing" if is_swing else "stance",
+                "action": "SWING" if is_swing else "STANCE",
+                "foot_lift_m": round(max(0.0, float(clearance)), 3),
+                "hip_target_rad": round(hip_t, 3),
+                "thigh_target_rad": round(thigh_t, 3),
+                "calf_target_rad": round(calf_t, 3),
+                "action_norm": round(float(np.linalg.norm(leg_action)), 3),
+                "contact_expected": not is_swing,
+            }
+        return {"swing_legs": swing_legs, "leg_commands": leg_commands}
+
     def build_observation(self, articulation: Any, cmd: Sequence[float]) -> np.ndarray:
         base_ang_vel_body = self._body_frame_angular_velocity(articulation)
         projected_gravity = self._projected_gravity(articulation)
@@ -293,6 +400,25 @@ class RLLocomotionPolicy:
         dof_vel_isaac = self._safe_joint_vector(articulation, ("get_joint_velocities",), len(self.dof_names))
         dof_pos = self._isaac_to_policy_vector(dof_pos_isaac)
         dof_vel = self._isaac_to_policy_vector(dof_vel_isaac)
+
+        # Opt-in sensor noise on the physical quantities (before the obs scales),
+        # so the policy is exercised against IMU/encoder noise rather than exact
+        # ground-truth state. Commands and prev_action are left clean (intent /
+        # internal feedback, not sensed).
+        if self.config.obs_noise_enabled:
+            rng = self._obs_rng
+            base_ang_vel_body = base_ang_vel_body + rng.normal(
+                0.0, float(self.config.obs_noise_ang_vel), size=base_ang_vel_body.shape
+            ).astype(np.float32)
+            projected_gravity = projected_gravity + rng.normal(
+                0.0, float(self.config.obs_noise_gravity), size=projected_gravity.shape
+            ).astype(np.float32)
+            dof_pos = dof_pos + rng.normal(
+                0.0, float(self.config.obs_noise_dof_pos), size=dof_pos.shape
+            ).astype(np.float32)
+            dof_vel = dof_vel + rng.normal(
+                0.0, float(self.config.obs_noise_dof_vel), size=dof_vel.shape
+            ).astype(np.float32)
 
         cmd_arr = np.zeros(3, dtype=np.float32)
         for idx, value in enumerate(list(cmd)[:3]):
@@ -335,6 +461,16 @@ class RLLocomotionPolicy:
                 dof_vel_scaled=[round(float(v), 3) for v in obs[21:33]],
                 prev_action=[round(float(v), 3) for v in obs[33:45]],
             )
+
+        # Opt-in observation latency: act on state from obs_latency_steps control
+        # steps ago. Buffers the freshly built obs and returns the delayed one
+        # (the oldest available during warmup), modelling the sense->actuate delay.
+        latency = int(self.config.obs_latency_steps)
+        if latency > 0:
+            self._obs_latency_buffer.append(obs)
+            if len(self._obs_latency_buffer) > latency + 1:
+                del self._obs_latency_buffer[0]
+            return self._obs_latency_buffer[0]
         return obs
 
     def compute_action(self, obs: np.ndarray) -> np.ndarray:

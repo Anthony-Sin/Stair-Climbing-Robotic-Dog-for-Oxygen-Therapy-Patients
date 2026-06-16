@@ -278,65 +278,105 @@ class YoloPoseInference:
         height, width = orig_shape
         draw_list = tracked_dets if tracked_dets is not None else detections
 
+        MAIN_CLR = (255, 200, 0)      # BGR cyan-gold — main target brackets
+        MAIN_DIM = (160, 120, 0)      # dimmer skeleton lines
+        SEC_CLR  = (65, 65, 65)       # dim gray for secondary detections
+
         for det in draw_list:
             bbox = np.array(det['bbox'], dtype=np.float32)
             bbox[:2] = self.scale_coords_pad(bbox[:2].reshape(1, 2), r, pad_left, pad_top, orig_shape)[0]
             bbox[2:] = self.scale_coords_pad(bbox[2:].reshape(1, 2), r, pad_left, pad_top, orig_shape)[0]
             x1, y1, x2, y2 = bbox.astype(int)
+            bw_box = max(1, x2 - x1)
+            bh_box = max(1, y2 - y1)
 
             track_id = det.get("track_id")
             is_main = main_person is not None and track_id == main_person.get("track_id")
-            color = (0, 255, 0) if is_main else (0, 0, 255)
 
-            cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
-            label = f"ID {track_id}" if track_id is not None else "person"
+            if is_main:
+                # --- Tactical target-lock designator ---
+                blen = max(14, min(bw_box, bh_box) // 5)
 
-            # ✅ Draw keypoints only for main person
-            if is_main and 'keypoints' in det:
-                kpts_raw = det['keypoints']
-                if kpts_raw is not None:
-                    kpts = np.array(kpts_raw, dtype=np.float32)
-                    visibility = det.get("visibility", np.ones(len(kpts)))
-                    kpts = self.scale_coords_pad(kpts, r, pad_left, pad_top, orig_shape)
-                    kpts_int = kpts.astype(int)
+                # Very faint full-box hint
+                cv2.rectangle(img, (x1, y1), (x2, y2),
+                               (MAIN_CLR[0] // 6, MAIN_CLR[1] // 6, MAIN_CLR[2] // 6), 1)
 
-                    for i, j in KEYPOINT_PAIRS:
-                        if i >= len(kpts_int) or j >= len(kpts_int):
-                            continue
-                        if visibility[i] < 0.5 or visibility[j] < 0.5:
-                            continue
-                        pt1 = tuple(kpts_int[i])
-                        pt2 = tuple(kpts_int[j])
-                        if min(pt1) < 5 or min(pt2) < 5:
-                            continue
-                        cv2.line(img, pt1, pt2, (255, 0, 0), 2)
+                # Corner L-brackets
+                for bx, by, sx, sy in [(x1, y1, 1, 1), (x2, y1, -1, 1),
+                                        (x1, y2, 1, -1), (x2, y2, -1, -1)]:
+                    cv2.line(img, (bx, by), (bx + sx * blen, by), MAIN_CLR, 2, cv2.LINE_AA)
+                    cv2.line(img, (bx, by), (bx, by + sy * blen), MAIN_CLR, 2, cv2.LINE_AA)
 
-                    for idx, (x, y) in enumerate(kpts_int):
-                        if visibility[idx] < 0.5:
-                            continue
-                        if x < 5 or y < 5 or x >= width - 5 or y >= height - 5:
-                            continue
-                        cv2.circle(img, (x, y), 6, (0, 0, 255), -1)
+                # Center crosshair on person bounding box
+                pcx, pcy = (x1 + x2) // 2, (y1 + y2) // 2
+                cv2.line(img, (pcx - 10, pcy), (pcx + 10, pcy), MAIN_CLR, 1, cv2.LINE_AA)
+                cv2.line(img, (pcx, pcy - 10), (pcx, pcy + 10), MAIN_CLR, 1, cv2.LINE_AA)
+                cv2.circle(img, (pcx, pcy), 2, MAIN_CLR, -1, cv2.LINE_AA)
 
-                    score = det.get("score", 0)
-                    label += f" {score:.2f}"
-                    if is_main and isinstance(main_annotation, dict):
-                        avg_distance = main_annotation.get("depth_distance_m")
-                        if avg_distance is not None:
-                            label += f" {float(avg_distance):.2f}m"
+                # Top-center lock ring
+                cv2.circle(img, (pcx, y1), 4, MAIN_CLR, 1, cv2.LINE_AA)
 
-                    # Keep labels out of the top HUD area when the bbox touches the top edge.
-                    label_y = y1 - 10
-                    if label_y < 25:
-                        label_y = min(height - 10, y2 - 10 if (y2 - 10) > 25 else y2 + 20)
-                    cv2.putText(img, label, (x1, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-                    continue
+                # Data badge (below box, or above if near bottom edge)
+                score = det.get("score", 0)
+                avg_distance = (main_annotation.get("depth_distance_m")
+                                if isinstance(main_annotation, dict) else None)
+                parts = []
+                if track_id is not None:
+                    parts.append(f"ID:{track_id}")
+                if avg_distance is not None:
+                    parts.append(f"{float(avg_distance):.2f}m")
+                if score:
+                    parts.append(f"{score * 100:.0f}%")
+                badge_text = "  ".join(parts) if parts else "TARGET"
+                badge_h = 16
+                badge_tw = cv2.getTextSize(badge_text, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)[0][0]
+                badge_w = badge_tw + 10
+                badge_y = y2 + 2
+                if badge_y + badge_h > height - 5:
+                    badge_y = y1 - badge_h - 2
+                badge_x = max(0, min(x1, width - badge_w - 1))
+                cv2.rectangle(img, (badge_x, badge_y), (badge_x + badge_w, badge_y + badge_h),
+                               MAIN_CLR, -1)
+                cv2.putText(img, badge_text, (badge_x + 5, badge_y + 12),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 0, 0), 1, cv2.LINE_AA)
 
-            # ✅ If not main person or no keypoints, just show label
-            label_y = y1 - 10
-            if label_y < 25:
-                label_y = min(height - 10, y2 - 10 if (y2 - 10) > 25 else y2 + 20)
-            cv2.putText(img, label, (x1, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                # Skeleton (main person only)
+                if 'keypoints' in det:
+                    kpts_raw = det['keypoints']
+                    if kpts_raw is not None:
+                        kpts = np.array(kpts_raw, dtype=np.float32)
+                        visibility = det.get("visibility", np.ones(len(kpts)))
+                        kpts = self.scale_coords_pad(kpts, r, pad_left, pad_top, orig_shape)
+                        kpts_int = kpts.astype(int)
+
+                        for i, j in KEYPOINT_PAIRS:
+                            if i >= len(kpts_int) or j >= len(kpts_int):
+                                continue
+                            if visibility[i] < 0.5 or visibility[j] < 0.5:
+                                continue
+                            pt1, pt2 = tuple(kpts_int[i]), tuple(kpts_int[j])
+                            if min(pt1[0], pt2[0]) < 3 or min(pt1[1], pt2[1]) < 3:
+                                continue
+                            cv2.line(img, pt1, pt2, MAIN_DIM, 1, cv2.LINE_AA)
+
+                        for idx, (kx, ky) in enumerate(kpts_int):
+                            if visibility[idx] < 0.5:
+                                continue
+                            if kx < 3 or ky < 3 or kx >= width - 3 or ky >= height - 3:
+                                continue
+                            cv2.circle(img, (kx, ky), 3, MAIN_CLR, -1, cv2.LINE_AA)
+                            cv2.circle(img, (kx, ky), 3, (220, 240, 255), 1, cv2.LINE_AA)
+
+            else:
+                # --- Secondary detection: small dim corner brackets ---
+                blen = max(8, min(bw_box, bh_box) // 7)
+                for bx, by, sx, sy in [(x1, y1, 1, 1), (x2, y1, -1, 1),
+                                        (x1, y2, 1, -1), (x2, y2, -1, -1)]:
+                    cv2.line(img, (bx, by), (bx + sx * blen, by), SEC_CLR, 1, cv2.LINE_AA)
+                    cv2.line(img, (bx, by), (bx, by + sy * blen), SEC_CLR, 1, cv2.LINE_AA)
+                if track_id is not None:
+                    cv2.putText(img, str(track_id), (x1 + 2, y1 + 12),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.3, SEC_CLR, 1, cv2.LINE_AA)
 
         return img
 

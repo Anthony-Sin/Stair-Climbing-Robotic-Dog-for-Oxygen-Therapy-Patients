@@ -4,10 +4,14 @@ Visualization utilities for the person following system.
 Handles drawing overlays, debug windows, and center estimation charts.
 """
 
+import math
+
 import cv2
 import numpy as np
 from collections import deque
 from typing import Optional, Dict, Any, Deque, Tuple
+
+from lidar_fusion import decode_lidar_profile
 
 _yolo_conf_history = deque(maxlen=30)
 
@@ -268,14 +272,26 @@ def _draw_hud_reticle(img: np.ndarray, cx: int, cy: int, debug_info: Dict[str, A
     # Draw broken inner circle
     cv2.circle(img, (cx, cy), 50, border_color, 1, cv2.LINE_AA)
     
-    # Draw ticks/ladders on the outer circle
+    # Draw ticks on outer circle — longer/accented at cardinal positions
     for angle in range(0, 360, 30):
         rad = np.radians(angle)
-        x1 = int(cx + 80 * np.cos(rad))
-        y1 = int(cy + 80 * np.sin(rad))
-        x2 = int(cx + 88 * np.cos(rad))
-        y2 = int(cy + 88 * np.sin(rad))
-        cv2.line(img, (x1, y1), (x2, y2), border_color, 1, cv2.LINE_AA)
+        is_cardinal = (angle % 90 == 0)
+        inner_r = 74 if is_cardinal else 80
+        outer_r_t = 93 if is_cardinal else 88
+        tick_w = 2 if is_cardinal else 1
+        tick_c = accent_color if is_cardinal else border_color
+        x1_t = int(cx + inner_r * np.cos(rad))
+        y1_t = int(cy + inner_r * np.sin(rad))
+        x2_t = int(cx + outer_r_t * np.cos(rad))
+        y2_t = int(cy + outer_r_t * np.sin(rad))
+        cv2.line(img, (x1_t, y1_t), (x2_t, y2_t), tick_c, tick_w, cv2.LINE_AA)
+
+    # Cardinal direction labels (F=forward=up, B=back, L=left, R=right)
+    for deg, lbl in [(270, "F"), (90, "B"), (180, "L"), (0, "R")]:
+        rad = np.radians(deg)
+        lx = int(cx + 101 * np.cos(rad)) - 4
+        ly = int(cy + 101 * np.sin(rad)) + 5
+        cv2.putText(img, lbl, (lx, ly), cv2.FONT_HERSHEY_SIMPLEX, 0.32, accent_color, 1, cv2.LINE_AA)
         
     # Draw 2D Torso box outline inside the reticle
     cv2.rectangle(img, (cx - 16, cy - 25), (cx + 16, cy + 25), (100, 100, 100), 1)
@@ -440,22 +456,23 @@ def _draw_stair_boundary_overlay(
     x1, y1 = max(0, x1), max(0, y1)
     x2, y2 = min(w - 1, x2), min(h - 1, y2)
 
-    # Draw the YOLO-World detection bounding box (use a nice cyan color)
-    color_bbox = (255, 200, 0)  # BGR Cyan
-    cv2.rectangle(combined, (x1, y1), (x2, y2), color_bbox, 2)
-
-    # Label on the bounding box with brackets
-    cv2.rectangle(combined, (x1, max(0, y1 - 20)), (x1 + 180, y1), color_bbox, -1)
-    cv2.putText(
-        combined,
-        f"STAIRS YOLO ({conf * 100:.1f}%)",
-        (x1 + 5, max(15, y1 - 5)),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.4,
-        (0, 0, 0),
-        1,
-        cv2.LINE_AA
-    )
+    # Stair bracket designator — amber/gold corner-bracket style
+    STAIR_COLOR = (0, 200, 255)   # BGR: B=0, G=200, R=255 → amber/gold on display
+    blen = min(22, max(14, (x2 - x1) // 6))
+    # Faint full-box hint
+    cv2.rectangle(combined, (x1, y1), (x2, y2),
+                  (STAIR_COLOR[0] // 6, STAIR_COLOR[1] // 6, STAIR_COLOR[2] // 6), 1)
+    # Corner brackets
+    for bx, by, sx, sy in [(x1, y1, 1, 1), (x2, y1, -1, 1), (x1, y2, 1, -1), (x2, y2, -1, -1)]:
+        cv2.line(combined, (bx, by), (bx + sx * blen, by), STAIR_COLOR, 2, cv2.LINE_AA)
+        cv2.line(combined, (bx, by), (bx, by + sy * blen), STAIR_COLOR, 2, cv2.LINE_AA)
+    # Badge
+    badge = f"STAIRS  {conf * 100:.0f}%"
+    bw_est = cv2.getTextSize(badge, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)[0][0]
+    by_badge = max(0, y1 - 18)
+    cv2.rectangle(combined, (x1, by_badge), (x1 + bw_est + 10, y1), STAIR_COLOR, -1)
+    cv2.putText(combined, badge, (x1 + 4, max(13, y1 - 4)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 0, 0), 1, cv2.LINE_AA)
 
     # Extract and draw real horizontal step edges inside the YOLO box
     step_edges = _detect_stair_pixel_edges(source_frame if source_frame is not None else combined)
@@ -530,7 +547,134 @@ def _draw_stair_vision_panel(combined: np.ndarray, debug_info: Dict[str, Any],
             cv2.polylines(combined, [np.array(pts, dtype=np.int32)], False, (0, 255, 255), 1, cv2.LINE_AA)
 
 
-def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any], 
+def _draw_row_icon(img: np.ndarray, x: int, y: int, color: Tuple[int, int, int]) -> None:
+    """Small schematic-trace icon drawn between a panel label and its value."""
+    cv2.line(img, (x,      y), (x + 4,  y), color, 1)
+    cv2.line(img, (x + 4,  y - 3), (x + 4,  y + 3), color, 1)
+    cv2.line(img, (x + 4,  y), (x + 10, y), color, 1)
+    cv2.line(img, (x + 10, y - 3), (x + 10, y + 3), color, 1)
+    cv2.line(img, (x + 10, y), (x + 14, y), color, 1)
+
+
+def _draw_lidar_bev_panel(combined: np.ndarray, x: int, y: int, w: int, h: int,
+                          profile: Optional[Dict[str, Any]],
+                          active_color: Tuple[int, int, int], *,
+                          alert: bool = False,
+                          person_bearing_rad: Optional[float] = None,
+                          lidar_m: Optional[float] = None,
+                          depth_m: Optional[float] = None,
+                          confidence: Optional[float] = None,
+                          disagreement: bool = False) -> None:
+    """Draw the XT16 LiDAR bird's-eye-view (top-down, forward = up) from the polar
+    profile, with the person's bearing ray and a one-line fusion readout."""
+    _draw_hud_panel(combined, x, y, w, h, "XT16 LIDAR BEV", active_color, alert=alert)
+
+    pad = 8
+    text_strip = 16
+    ax0, ay0 = x + pad, y + 34
+    ax1, ay1 = x + w - pad, y + h - pad - text_strip
+    bw, bh = max(1, ax1 - ax0), max(1, ay1 - ay0)
+    cx, cy = ax0 + bw // 2, ay0 + bh // 2
+
+    decoded = decode_lidar_profile(profile)
+    if decoded is None:
+        cv2.putText(combined, "no lidar return", (cx - 44, cy),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (120, 120, 120), 1, cv2.LINE_AA)
+        return
+
+    view_range = max(0.5, float(decoded.get("view_range_m", 6.0)))
+    radius_px = min(bw, bh) * 0.5 - 2
+    if radius_px <= 2:
+        return
+    scale = radius_px / view_range
+
+    # --- Pure-black radar display (white/gray scatter, like real LiDAR output) ---
+    cv2.rectangle(combined, (ax0, ay0), (ax1, ay1), (0, 0, 0), -1)
+
+    ranges = decoded["ranges_m"]
+    n = int(ranges.shape[0])
+
+    # Subtle range rings (dark gray)
+    for r_ring in range(1, int(view_range) + 1):
+        rp = int(r_ring * scale)
+        if 1 < rp < int(min(bw, bh) * 0.5):
+            cv2.circle(combined, (cx, cy), rp, (32, 32, 32), 1, cv2.LINE_AA)
+            lx = cx + int(rp * 0.68)
+            ly = cy - int(rp * 0.68)
+            if ax0 + 2 < lx < ax1 - 10 and ay0 + 2 < ly < ay1 - 4:
+                cv2.putText(combined, f"{r_ring}m", (lx, ly),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.27, (50, 50, 50), 1, cv2.LINE_AA)
+
+    # Faint grid cross
+    cv2.line(combined, (cx, ay0 + 2), (cx, ay1 - 2), (28, 28, 28), 1)
+    cv2.line(combined, (ax0 + 2, cy), (ax1 - 2, cy), (28, 28, 28), 1)
+
+    # Cardinal labels (very dim)
+    _cc = (48, 48, 48)
+    _co = 6
+    cv2.putText(combined, "F", (cx - 4, ay0 + _co + 9), cv2.FONT_HERSHEY_SIMPLEX, 0.28, _cc, 1, cv2.LINE_AA)
+    cv2.putText(combined, "B", (cx - 4, ay1 - _co),     cv2.FONT_HERSHEY_SIMPLEX, 0.28, _cc, 1, cv2.LINE_AA)
+    cv2.putText(combined, "L", (ax0 + _co, cy + 4),     cv2.FONT_HERSHEY_SIMPLEX, 0.28, _cc, 1, cv2.LINE_AA)
+    cv2.putText(combined, "R", (ax1 - _co - 7, cy + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.28, _cc, 1, cv2.LINE_AA)
+
+    # White/gray scatter dots (near = bright, far = dim) — matches real LiDAR display
+    if n > 0:
+        ang = np.arange(n) * (2.0 * math.pi / n)   # CCW from forward, +left
+        xf = np.cos(ang) * ranges                   # forward component
+        yl = np.sin(ang) * ranges                   # left component
+        u = (cx - yl * scale).astype(np.int32)
+        v = (cy - xf * scale).astype(np.int32)
+        inb = (ranges > 0.0) & (u >= ax0) & (u < ax1) & (v >= ay0) & (v < ay1)
+        if np.any(inb):
+            rr = np.clip(ranges[inb] / view_range, 0.0, 1.0)
+            brightness = (70.0 + 185.0 * (1.0 - rr)).astype(np.uint8)
+            colors = np.zeros((int(np.sum(inb)), 3), dtype=np.uint8)
+            colors[:, 0] = brightness   # B — white/gray
+            colors[:, 1] = brightness   # G
+            colors[:, 2] = brightness   # R
+            uu, vv = u[inb], v[inb]
+            combined[vv, uu] = colors
+            for du, dv in ((1, 0), (0, 1), (1, 1)):
+                mu, mv = uu + du, vv + dv
+                ok = (mu >= ax0) & (mu < ax1) & (mv >= ay0) & (mv < ay1)
+                combined[mv[ok], mu[ok]] = colors[ok]
+        # Thin connecting contour line — helps visualise the scan shape
+        outline_pts = []
+        for i in range(n):
+            rng_i = float(ranges[i])
+            if rng_i > 0.0:
+                ang_i = float(ang[i])
+                px = int(round(cx - math.sin(ang_i) * min(rng_i, view_range) * scale))
+                py = int(round(cy - math.cos(ang_i) * min(rng_i, view_range) * scale))
+                if ax0 <= px < ax1 and ay0 <= py < ay1:
+                    outline_pts.append([px, py])
+        if len(outline_pts) > 2:
+            cv2.polylines(combined, [np.array(outline_pts, dtype=np.int32)],
+                          False, (55, 55, 55), 1, cv2.LINE_AA)
+
+    # Robot glyph — solid triangle, apex = forward (up), warm amber
+    tri = np.array([[cx, cy - 7], [cx - 5, cy + 4], [cx + 5, cy + 4]], dtype=np.int32)
+    cv2.fillPoly(combined, [tri], (0, 160, 255))     # BGR: amber/orange
+    cv2.polylines(combined, [tri], True, (100, 200, 255), 1, cv2.LINE_AA)
+
+    # Person bearing ray (bright green)
+    if person_bearing_rad is not None:
+        bx = cx - int(math.sin(person_bearing_rad) * radius_px)
+        by = cy - int(math.cos(person_bearing_rad) * radius_px)
+        cv2.line(combined, (cx, cy), (bx, by), (0, 220, 80), 1, cv2.LINE_AA)
+        cv2.circle(combined, (bx, by), 3, (0, 220, 80), -1, cv2.LINE_AA)
+
+    # Fusion readout
+    l_txt = f"L:{lidar_m:.2f}" if lidar_m is not None else "L:--"
+    d_txt = f"D:{depth_m:.2f}" if depth_m is not None else "D:--"
+    c_txt = f"{confidence * 100:.0f}%" if confidence is not None else "--"
+    readout = f"{l_txt}  {d_txt}  {c_txt}{'  DISAGREE' if disagreement else ''}"
+    readout_color = (0, 80, 255) if disagreement else (100, 200, 100)
+    cv2.putText(combined, readout, (ax0, y + h - 6),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.36, readout_color, 1, cv2.LINE_AA)
+
+
+def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
                         preparation_mode: bool, reacquire_active: bool,
                         camera_mode: str, is_stitched: bool = False,
                         frame_meta: dict = None,
@@ -679,7 +823,8 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
     curr_y = top_y + 45
     for label, val, val_color in p1_lines:
         cv2.putText(combined, label, (left_x + 12, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 180, 180), 1, cv2.LINE_AA)
-        cv2.putText(combined, val, (left_x + 150, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, val_color, 2 if "STATUS" in label else 1, cv2.LINE_AA)
+        _draw_row_icon(combined, left_x + 128, curr_y - 3, (65, 65, 65))
+        cv2.putText(combined, val, (left_x + 148, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, val_color, 2 if "STATUS" in label else 1, cv2.LINE_AA)
         curr_y += 24
 
     # -----------------------------------------------------------------------
@@ -715,9 +860,22 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
     else:
         sim_lidar_val = f"{lidar_ray_count or 0} rays {(_safe_float(lidar_conf) * 100.0):.0f}%"
 
+    # Distance fusion (LiDAR + depth) readout for the TARGET DIST line.
+    dist_disagree = bool(debug_info.get('distance_disagreement', False)) if debug_info else False
+    dist_conf = debug_info.get('distance_confidence') if debug_info else None
+    if target_dist is None:
+        target_dist_text = "N/A"
+    elif dist_conf is not None:
+        target_dist_text = f"{target_dist:.2f} m ({dist_conf * 100:.0f}%)"
+    else:
+        target_dist_text = f"{target_dist:.2f} m"
+    if dist_disagree:
+        target_dist_text += " !="
+    target_dist_color = (0, 165, 255) if dist_disagree else (255, 255, 255)
+
     p2_lines = [
         ("LOCK STATE:", lock_status, lock_color),
-        ("TARGET DIST:", f"{target_dist:.2f} m" if target_dist is not None else "N/A", (255, 255, 255)),
+        ("TARGET DIST:", target_dist_text, target_dist_color),
         ("BEARING:", f"{target_bear:+.1f} deg" if target_bear is not None else "N/A", (255, 255, 255)),
         ("CMD SPEED:", f"{trans_x_cmd:+.2f} m/s", active_color),
         ("CMD YAW RATE:", f"{rotation_cmd:+.2f} rad/s", active_color),
@@ -735,7 +893,8 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
     curr_y = bottom_y + 45
     for label, val, val_color in p2_lines:
         cv2.putText(combined, label, (left_x + 12, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 180, 180), 1, cv2.LINE_AA)
-        cv2.putText(combined, val, (left_x + 150, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, val_color, 2 if "LOCK" in label else 1, cv2.LINE_AA)
+        _draw_row_icon(combined, left_x + 128, curr_y - 3, (65, 65, 65))
+        cv2.putText(combined, val, (left_x + 148, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, val_color, 2 if "LOCK" in label else 1, cv2.LINE_AA)
         curr_y += 24
 
     # -----------------------------------------------------------------------
@@ -767,10 +926,30 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
         ("ANTI-TIP:", assist_str, assist_color),
     ]
     
+    # Robot dog silhouette icon (top-right corner of RL panel)
+    _dog_x = right_x + panel_w - 64
+    _dog_y = top_y + 28
+    _dog_c = (85, 85, 85)    # body fill
+    _dog_l = (120, 120, 120) # outline
+    body = np.array([[_dog_x,      _dog_y + 8],  [_dog_x + 33, _dog_y + 7],
+                      [_dog_x + 33, _dog_y + 17], [_dog_x,      _dog_y + 17]], np.int32)
+    head = np.array([[_dog_x + 29, _dog_y + 2],  [_dog_x + 44, _dog_y + 4],
+                      [_dog_x + 44, _dog_y + 14], [_dog_x + 29, _dog_y + 13]], np.int32)
+    cv2.fillPoly(combined, [body], _dog_c)
+    cv2.fillPoly(combined, [head], _dog_c)
+    cv2.polylines(combined, [body], True, _dog_l, 1, cv2.LINE_AA)
+    cv2.polylines(combined, [head], True, _dog_l, 1, cv2.LINE_AA)
+    for lx_t, lx_b in [(_dog_x + 26, _dog_x + 24), (_dog_x + 31, _dog_x + 33),
+                        (_dog_x + 5,  _dog_x + 3),  (_dog_x + 10, _dog_x + 12)]:
+        cv2.line(combined, (lx_t, _dog_y + 17), (lx_b, _dog_y + 27), _dog_l, 2, cv2.LINE_AA)
+    cv2.line(combined, (_dog_x, _dog_y + 11), (_dog_x - 7, _dog_y + 7), _dog_l, 1, cv2.LINE_AA)
+    cv2.circle(combined, (_dog_x + 40, _dog_y + 7), 1, _dog_l, -1)
+
     curr_y = top_y + 45
     for label, val, val_color in p3_lines:
         cv2.putText(combined, label, (right_x + 12, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 180, 180), 1, cv2.LINE_AA)
-        cv2.putText(combined, val, (right_x + 120, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, val_color, 1, cv2.LINE_AA)
+        _draw_row_icon(combined, right_x + 100, curr_y - 3, (65, 65, 65))
+        cv2.putText(combined, val, (right_x + 118, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, val_color, 1, cv2.LINE_AA)
         curr_y += 24
 
     # -----------------------------------------------------------------------
@@ -779,24 +958,77 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
     _draw_hud_panel(combined, right_x, bottom_y, panel_w, bottom_panel_h, "LEG ACTUATORS & COMMANDS", active_color, alert=hud_alert)
     
     curr_y = bottom_y + 45
-    detail_x = right_x + 20
+    detail_x = right_x + 8
     leg_commands = blind_rl.get("leg_commands", {})
-    
+    _bar_x   = detail_x + 60
+    _bar_w   = 110
+    _bar_h   = 9
+    _dial_r  = 10
+    _dial_cx = right_x + panel_w - 18
+
     for leg in ("FL", "FR", "RL", "RR"):
         is_swing = leg in swing_list
         action = "SWING" if is_swing else "STANCE"
         lift_m = 0.08 if is_swing else 0.0
-        
+
         if leg_commands and leg in leg_commands:
             cmd_data = leg_commands[leg]
             action = cmd_data.get("action", action)
             lift_m = cmd_data.get("foot_lift_m", lift_m)
-            
-        leg_color = active_color if is_swing else (150, 150, 150)
-        
-        cv2.putText(combined, f"LEG {leg}: {action[:10]}", (detail_x, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, leg_color, 1, cv2.LINE_AA)
-        cv2.putText(combined, f"  lift clearance: {lift_m:.2f} m", (detail_x + 10, curr_y + 13), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (180, 180, 180), 1, cv2.LINE_AA)
-        curr_y += 42
+
+        leg_color = active_color if is_swing else (130, 130, 130)
+
+        # Label
+        cv2.putText(combined, f"LEG {leg}", (detail_x, curr_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, leg_color, 1, cv2.LINE_AA)
+
+        # Actuator bar (cylinder-style fill)
+        bar_y = curr_y - 8
+        cv2.rectangle(combined, (_bar_x, bar_y), (_bar_x + _bar_w, bar_y + _bar_h), (28, 28, 28), -1)
+        cv2.rectangle(combined, (_bar_x, bar_y), (_bar_x + _bar_w, bar_y + _bar_h), (65, 65, 65),  1)
+        fill_ratio = min(lift_m / 0.12, 1.0) if is_swing else 0.0
+        fill_w = int(_bar_w * fill_ratio)
+        if fill_w > 0:
+            cv2.rectangle(combined, (_bar_x, bar_y + 1),
+                          (_bar_x + fill_w, bar_y + _bar_h - 1), leg_color, -1)
+            # Top highlight stripe
+            cv2.line(combined, (_bar_x + 1, bar_y + 1),
+                     (_bar_x + fill_w, bar_y + 1), (220, 220, 220), 1)
+
+        # Value text inside / after bar
+        val_lbl = f"{lift_m:.2f}m  {action[:6]}"
+        cv2.putText(combined, val_lbl, (_bar_x + _bar_w + 4, curr_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.34, leg_color, 1, cv2.LINE_AA)
+
+        # Mini gauge dial
+        dial_cy = curr_y - 4
+        cv2.circle(combined, (_dial_cx, dial_cy), _dial_r, (35, 35, 35), -1)
+        cv2.circle(combined, (_dial_cx, dial_cy), _dial_r, (75, 75, 75),  1)
+        _ang = math.radians(220 + int(100 * fill_ratio))
+        nx = int(_dial_cx + (_dial_r - 3) * math.cos(_ang))
+        ny = int(dial_cy   + (_dial_r - 3) * math.sin(_ang))
+        cv2.line(combined, (_dial_cx, dial_cy), (nx, ny), leg_color, 1, cv2.LINE_AA)
+
+        curr_y += 46
+
+    # -----------------------------------------------------------------------
+    # XT16 LiDAR BEV (right column, between the RL policy and leg panels)
+    # -----------------------------------------------------------------------
+    lidar_profile = debug_info.get("lidar_profile") if debug_info else None
+    if lidar_profile:
+        bev_y = top_y + top_panel_h + 16
+        bev_h = bottom_y - bev_y - 12
+        if bev_h >= 70:
+            bearing_deg = debug_info.get("lidar_bearing_deg")
+            bearing_rad = math.radians(float(bearing_deg)) if bearing_deg is not None else None
+            _draw_lidar_bev_panel(
+                combined, right_x, bev_y, panel_w, bev_h, lidar_profile, active_color,
+                alert=hud_alert, person_bearing_rad=bearing_rad,
+                lidar_m=debug_info.get("lidar_distance_m"),
+                depth_m=debug_info.get("depth_only_m"),
+                confidence=debug_info.get("distance_confidence"),
+                disagreement=bool(debug_info.get("distance_disagreement", False)),
+            )
 
     # -----------------------------------------------------------------------
     # Overlay Alerts

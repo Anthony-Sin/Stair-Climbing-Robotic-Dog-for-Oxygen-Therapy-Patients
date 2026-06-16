@@ -229,6 +229,7 @@ class SimCameraCapture:
                 gt_distractor = meta.get("gt_distractor")
                 swing_legs = meta.get("swing_legs", [])
                 stair_demo = meta.get("stair_demo", {})
+                lidar_profile = meta.get("lidar_profile", {})
                 self._last_frame_meta = {
                     "success":    True,
                     "wait_ms":    0.0,
@@ -238,6 +239,7 @@ class SimCameraCapture:
                     "gt_distractor": gt_distractor,
                     "swing_legs": swing_legs,
                     "stair_demo": stair_demo,
+                    "lidar_profile": lidar_profile,
                     "published_resolution": [rgb_w, rgb_h],
                     "output_resolution": [self.width, self.height],
                 }

@@ -6,6 +6,12 @@ from typing import Optional, Tuple, Dict, Any, Union, Sequence
 
 from pid_controller import PIDController, PIDConfig
 from depth_processor import DepthProcessor
+from lidar_fusion import (
+    decode_lidar_profile,
+    person_bearing_rad,
+    lidar_range_at_bearing,
+    fuse_distance,
+)
 
 
 @dataclass
@@ -32,6 +38,17 @@ class PersonFollowingConfig:
     # Camera intrinsics for angular error calculation
     camera_fx: float = 0.0  # Focal length in pixels (x-axis)
     camera_cx: float = 0.0  # Principal point x-coordinate
+
+    # LiDAR (XT16) + YOLO distance fusion. The controller receives a polar profile
+    # from Isaac (sim) / would receive the Hesai point cloud (real). Fusion is
+    # agreement-weighted: blend when LiDAR and depth agree, fall back to depth and
+    # flag when they disagree.
+    lidar_fusion_enabled: bool = True
+    lidar_agree_tol_m: float = 0.25
+    lidar_agree_rel_tol: float = 0.15
+    lidar_weight: float = 0.6
+    lidar_bearing_window_deg: float = 4.0
+    lidar_yaw_offset_rad: float = 0.0
 
     # Target settings
     target_distance: float = 0.0
@@ -344,15 +361,18 @@ class PersonFollower:
         self.last_rotation_error_deg = 0.0
     
     def update(self, main_person: Optional[Union[Dict[str, Any], Sequence[float]]], depth_image: np.ndarray,
-               frame_shape: Tuple[int, int], depth_mapper: Optional[Any] = None) -> Tuple[float, float, Dict[str, Any]]:
+               frame_shape: Tuple[int, int], depth_mapper: Optional[Any] = None,
+               lidar_profile: Optional[Dict[str, Any]] = None) -> Tuple[float, float, Dict[str, Any]]:
         """
         Update person following commands
-        
+
         Args:
             main_person: Detected main person with bbox information
             depth_image: Depth image in millimeters.
             frame_shape: (height, width) of the input frame
             depth_mapper: Reserved for backward compatibility; ignored in current runtime.
+            lidar_profile: Optional XT16 polar profile (from the sim frame sidecar);
+                its range at the person's bearing is fused with the depth estimate.
             
         Returns:
             Tuple of (trans_x_command, rotation_command, debug_info)
@@ -483,11 +503,50 @@ class PersonFollower:
                 depth_m = depth_mm / 1000.0
             if debug_info.get('depth_method') is None:
                 debug_info['depth_method'] = 'bbox_center_single_camera'
-        
+
+        # --- LiDAR (XT16) + YOLO distance fusion ------------------------------
+        # Sample the LiDAR range at the person's bearing and agreement-weight it
+        # with the depth-camera estimate. LiDAR can also rescue a frame where the
+        # depth estimate failed (lidar-only). debug fields drive the HUD readout.
+        lidar_m = None
+        if self.config.lidar_fusion_enabled and lidar_profile:
+            decoded = decode_lidar_profile(lidar_profile)
+            if decoded is not None:
+                bbox_cx_for_lidar = (float(x1) + float(x2)) / 2.0
+                bearing = person_bearing_rad(
+                    bbox_cx_for_lidar,
+                    self.config.camera_cx,
+                    self.config.camera_fx,
+                    self.config.lidar_yaw_offset_rad,
+                )
+                if bearing is not None:
+                    lidar_m = lidar_range_at_bearing(
+                        decoded, bearing, self.config.lidar_bearing_window_deg
+                    )
+                debug_info['lidar_distance_m'] = lidar_m
+                debug_info['lidar_bearing_deg'] = (
+                    None if bearing is None else round(math.degrees(bearing), 2)
+                )
+
+        if depth_m is not None or lidar_m is not None:
+            fusion = fuse_distance(
+                depth_m, lidar_m,
+                agree_tol_m=self.config.lidar_agree_tol_m,
+                rel_tol=self.config.lidar_agree_rel_tol,
+                lidar_weight=self.config.lidar_weight,
+            )
+            debug_info['depth_only_m'] = fusion['depth_m']
+            debug_info['fused_distance_m'] = fusion['fused_m']
+            debug_info['distance_confidence'] = fusion['confidence']
+            debug_info['distance_disagreement'] = fusion['disagreement']
+            debug_info['distance_source'] = fusion['source']
+            if fusion['fused_m'] is not None:
+                depth_m = float(fusion['fused_m'])
+
         if depth_m is None:
             debug_info['reason'] = 'Invalid depth measurement'
             return 0.0, 0.0, debug_info
-        
+
         debug_info['depth_valid'] = True
         debug_info['depth_distance_m'] = depth_m
         debug_info['target_distance'] = float(self.config.target_distance)

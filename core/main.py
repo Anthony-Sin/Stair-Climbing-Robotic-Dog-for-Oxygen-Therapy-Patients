@@ -227,24 +227,36 @@ def _apply_stair_command_policy(
     original_x = float(trans_x_cmd)
     original_wz = float(rotation_cmd)
 
-    # "Too close" guard: if the robot has already reached the stair base,
-    # cut all forward motion so it doesn't ram the first step.
-    too_close_dist = float(getattr(args, "stair_too_close_distance", 0.35))
-    if stair_depth_m is not None and float(stair_depth_m) <= too_close_dist:
-        debug_info["stairs_too_close"] = True
-        trans_x_cmd = 0.0
-    else:
-        debug_info["stairs_too_close"] = False
-        max_forward = max(0.0, float(args.trans_x_max) * float(args.stair_speed_scale))
-        if trans_x_cmd > max_forward:
-            trans_x_cmd = max_forward
+    # Forward floor while climbing: the person-follow PID collapses vx to ~0 once
+    # the dog reaches its standoff at the stair base, which strands the (blind) RL
+    # policy with no drive to step up. Hold a minimum forward command and cap it at
+    # the stair speed limit so the climb keeps advancing instead of parking.
+    max_forward = max(0.0, float(args.trans_x_max) * float(args.stair_speed_scale))
+    forward_floor = max(0.0, float(args.stair_forward_floor))
+    if max_forward > 0.0:
+        forward_floor = min(forward_floor, max_forward)
+    trans_x_cmd = max(float(trans_x_cmd), forward_floor)
+    if max_forward > 0.0 and trans_x_cmd > max_forward:
+        trans_x_cmd = max_forward
 
-    max_rot = max(0.0, float(args.rot_max))
-    rotation_cmd = float(rotation_cmd) * float(args.stair_centering_scale)
-    if max_rot > 0.0:
-        rotation_cmd = float(np.clip(rotation_cmd, -max_rot, max_rot))
+    # Tame yaw on the stairs. The follower's bbox edge/size penalty amplifies the
+    # centering error; on a step that becomes a +/-max yaw saw that twists the body
+    # and breaks the climb. Apply a small centering deadband, the (sub-unity) stair
+    # centering scale, and a lower stair-specific yaw cap.
+    rotation_error_deg = debug_info.get("rotation_error_deg")
+    yaw_deadband = max(0.0, float(args.stair_yaw_deadband_deg))
+    if rotation_error_deg is not None and abs(float(rotation_error_deg)) <= yaw_deadband:
+        rotation_cmd = 0.0
+        debug_info["stairs_yaw_deadband_active"] = True
+    else:
+        rotation_cmd = float(rotation_cmd) * float(args.stair_centering_scale)
+        debug_info["stairs_yaw_deadband_active"] = False
+    stair_rot_max = max(0.0, float(args.stair_rot_max))
+    if stair_rot_max > 0.0:
+        rotation_cmd = float(np.clip(rotation_cmd, -stair_rot_max, stair_rot_max))
 
     debug_info["stairs_action_active"] = True
+    debug_info["stairs_forward_floor_mps"] = float(forward_floor)
     debug_info["stairs_speed_limit_mps"] = float(trans_x_cmd)
     debug_info["stairs_trans_x_before"] = original_x
     debug_info["stairs_rotation_before"] = original_wz
@@ -257,6 +269,14 @@ def _apply_front_obstacle_gate(
     depth_img: np.ndarray,
     debug_info: Dict[str, Any],
 ) -> float:
+    # On the stairs the stair policy owns the forward command, and the staircase
+    # itself reads as a near "obstacle" in the central ROI -- gating here would
+    # zero the climb's forward floor. Let the stair policy govern instead.
+    if bool(debug_info.get("stairs_action_active", False)):
+        debug_info["front_obstacle_gate_active"] = False
+        debug_info["front_obstacle_skipped_on_stairs"] = True
+        return float(trans_x_cmd)
+
     if not bool(args.obstacle_stop_enabled) or trans_x_cmd <= 0.0:
         debug_info["front_obstacle_gate_active"] = False
         return float(trans_x_cmd)
@@ -822,7 +842,8 @@ def main():
                 main_person if (matched_visual_lock or recent_visual_lock) else None
             )
             trans_x_cmd, rotation_cmd, debug_info = person_follower.update(
-                follow_input_person, depth_img, (img.shape[0], img.shape[1])
+                follow_input_person, depth_img, (img.shape[0], img.shape[1]),
+                lidar_profile=frame_meta.get("lidar_profile"),
             )
             stairs_result = yolo_stairs.get_latest_result()
             if stairs_result.get("detected", False):
@@ -834,6 +855,15 @@ def main():
             stairs_detected = stair_latch_counter > 0
             if stair_latch_counter > 0:
                 stair_latch_counter -= 1
+
+            # Widen the follow standoff while on stairs so the dog trails the person
+            # by a comfortable gap instead of parking one step behind and starving
+            # the forward command. Takes effect on the next frame's follower update.
+            person_follower.config.target_distance = (
+                float(args.stair_target_distance)
+                if stairs_detected
+                else float(args.target_distance)
+            )
 
             stairs_bbox = stairs_result.get("bbox") or last_stairs_bbox
             # Measure stair depth excluding the person's footprint so the robot
@@ -928,6 +958,8 @@ def main():
                 debug_info["gt_distractor"] = frame_meta["gt_distractor"]
             if "stair_demo" in frame_meta:
                 debug_info["stair_demo"] = frame_meta["stair_demo"]
+            if "lidar_profile" in frame_meta:
+                debug_info["lidar_profile"] = frame_meta["lidar_profile"]
             # Removed hardcoded sim stair gap control override as requested by the user
             debug_info["trans_x_cmd"] = trans_x_cmd
 

@@ -30,21 +30,27 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-if ($LocomotionMode -notin @("procedural", "rl")) {
-    throw "LocomotionMode must be 'procedural' or 'rl'."
+if ($LocomotionMode -notin @("rl")) {
+    throw "LocomotionMode must be 'rl' (the procedural gait has been removed; the RL policy is the only controller)."
 }
 if ($RlPolicyFormat -notin @("auto", "torchscript", "torch", "pt", "jit", "onnx")) {
     throw "RlPolicyFormat must be one of: auto, torchscript, torch, pt, jit, onnx."
 }
-if ($RlStairsStrategy -notin @("policy", "procedural")) {
-    throw "RlStairsStrategy must be 'policy' or 'procedural'."
+if ($RlStairsStrategy -notin @("policy")) {
+    throw "RlStairsStrategy must be 'policy' (stairs are handled by the RL policy)."
 }
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $Stamp = Get-Date -Format "yyyyMMdd_HHmmss_fff"
 $RunLogDir = Join-Path $RepoRoot ("log\run_sim_" + $Stamp)
-$VisionLogDir = Join-Path $RunLogDir "vision"
-$LauncherLog = Join-Path $RunLogDir "launcher.log"
-$StatusLog = Join-Path $RunLogDir "status.jsonl"
+# Each run folder is bucketed for humans: videos/ (mp4s), reports/ (summaries,
+# verification PNGs, JSON), logs/ (launcher + console timeline), debug/ (verbose
+# raw/JSONL/ECS/trace -- open only when stuck).
+$VideosDir = Join-Path $RunLogDir "videos"
+$ReportsDir = Join-Path $RunLogDir "reports"
+$LogsDir = Join-Path $RunLogDir "logs"
+$DebugDir = Join-Path $RunLogDir "debug"
+$LauncherLog = Join-Path $LogsDir "launcher.log"
+$StatusLog = Join-Path $LogsDir "status.jsonl"
 $SummaryLog = Join-Path $RunLogDir "00_READ_ME_FIRST.txt"
 $LatestRunFile = Join-Path (Join-Path $RepoRoot "log") "latest_run.txt"
 $DockerContainerName = "go2-pose-sim-" + ($Stamp -replace '[^A-Za-z0-9_.-]', '-')
@@ -117,7 +123,10 @@ if (-not (Test-Path -LiteralPath $LogRoot)) {
 
 
 New-Item -ItemType Directory -Force -Path $RunLogDir | Out-Null
-New-Item -ItemType Directory -Force -Path $VisionLogDir | Out-Null
+New-Item -ItemType Directory -Force -Path $VideosDir | Out-Null
+New-Item -ItemType Directory -Force -Path $ReportsDir | Out-Null
+New-Item -ItemType Directory -Force -Path $LogsDir | Out-Null
+New-Item -ItemType Directory -Force -Path $DebugDir | Out-Null
 Set-Content -LiteralPath $LatestRunFile -Encoding UTF8 -Value $RunLogDir
 Set-Content -LiteralPath $SummaryLog -Encoding UTF8 -Value @(
     "run_sim log guide",
@@ -138,16 +147,18 @@ Set-Content -LiteralPath $SummaryLog -Encoding UTF8 -Value @(
     "  logs         old run-folder cleanup",
     "  summary      final launcher result",
     "",
-    "What the files mean:",
-    "  status.jsonl        machine-readable launcher stage events",
-    "  launcher.log        plain-text launcher timeline",
-    "  isaac_console.log   filtered important Isaac messages",
-    "  isaac_raw.log       full Isaac/Kit output",
-    "  isaac_env.jsonl     structured Isaac environment events",
-    "  docker_build.log    Docker build output only",
-    "  docker_run.log      robot controller container output only",
-    "  vision/             logs written from inside the controller container",
-    "  vision/opencv_preview/opencv_preview.mp4 saved OpenCV preview video from the controller",
+    "What the folders mean:",
+    "  videos/    all recorded mp4s (opencv_preview, raw_camera, topdown, lidar_preview)",
+    "  reports/   evaluation_summary.txt, stair_demo_report.json, verification_*.png",
+    "  logs/      human timeline: launcher.log, status.jsonl, isaac_console.log",
+    "  debug/     verbose dumps -- open only when stuck:",
+    "             isaac_raw.log, isaac_env.jsonl, docker_build.log, docker_run.log, ecs/, debug_trace/",
+    "",
+    "Key files:",
+    "  logs/status.jsonl                           machine-readable launcher stage events",
+    "  logs/launcher.log                           plain-text launcher timeline",
+    "  logs/isaac_console.log                      filtered important Isaac messages",
+    "  videos/opencv_preview/opencv_preview.mp4    OpenCV preview (YOLO + LiDAR BEV + fused distance)",
     "",
     "Fast diagnosis:",
     "  If isaac_wait is complete, Isaac emitted world_ready and scene loading finished.",
@@ -989,7 +1000,7 @@ if (-not (Test-ModelPreflight)) {
 }
 
 $WslRepoRoot = ConvertTo-WslPath -WindowsPath $RepoRoot
-$WslVisionLogDir = ConvertTo-WslPath -WindowsPath $VisionLogDir
+$WslRunLogDir = ConvertTo-WslPath -WindowsPath $RunLogDir
 
 if ($NoIsaac -and $NoDockerRun) {
     if (-not $FrameHost) {
@@ -1033,7 +1044,7 @@ if ($NoDockerRun) {
         command = ".\run_sim.bat --force-build"
     }
 } else {
-    $buildLog = Join-Path $RunLogDir "docker_build.log"
+    $buildLog = Join-Path $DebugDir "docker_build.log"
     $buildCommand = "cd '$WslRepoRoot' && bash docker/docker_build_x86_sim.sh"
     Write-Stage "build" "notice" "Building Docker image before Isaac launches; use --skip-build when the image is already built" @{
         log = $buildLog
@@ -1053,9 +1064,9 @@ if ($NoIsaac) {
     Write-Stage "isaac" "skipped" "Isaac launch skipped by --no-isaac"
 } else {
     $IsaacWindowScript = Join-Path $RepoRoot "sim\run_isaac_window.ps1"
-    $IsaacRawLog = Join-Path $RunLogDir "isaac_raw.log"
-    $IsaacFilteredLog = Join-Path $RunLogDir "isaac_console.log"
-    $IsaacEventLog = Join-Path $RunLogDir "isaac_env.jsonl"
+    $IsaacRawLog = Join-Path $DebugDir "isaac_raw.log"
+    $IsaacFilteredLog = Join-Path $LogsDir "isaac_console.log"
+    $IsaacEventLog = Join-Path $DebugDir "isaac_env.jsonl"
     $isaacArgs = @(
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
@@ -1063,7 +1074,7 @@ if ($NoIsaac) {
         "-IsaacSimDir", $IsaacSimDir,
         "-RepoRoot", $RepoRoot,
         "-RunLogDir", $RunLogDir,
-        "-RawVideoPath", (Join-Path $VisionLogDir "opencv_preview\raw_camera.mp4"),
+        "-RawVideoPath", (Join-Path $VideosDir "raw_camera.mp4"),
         "-FrameHost", $FrameHost,
         "-FramePort", [string]$FramePort,
         "-CmdPort", [string]$CmdPort,
@@ -1127,7 +1138,7 @@ if ($NoDockerRun) {
         -PublishedUdpPort $FramePort `
         -ExpectedContainerName $DockerContainerName
 
-    $dockerLog = Join-Path $RunLogDir "docker_run.log"
+    $dockerLog = Join-Path $DebugDir "docker_run.log"
     $visionArgs = @(
         "python3 sim/main.py",
         "--sim",
@@ -1144,9 +1155,9 @@ if ($NoDockerRun) {
         "--trans-x-alpha 0.65",
         "--kp 1.1",
         "--kd 0.15",
-        "--ecs-log-dir /workspace/run_logs/ecs",
-        "--debug-trace-dir /workspace/run_logs/debug_trace",
-        "--preview-save-dir /workspace/run_logs/opencv_preview",
+        "--ecs-log-dir /workspace/run_logs/debug/ecs",
+        "--debug-trace-dir /workspace/run_logs/debug/debug_trace",
+        "--preview-save-dir /workspace/run_logs/videos/opencv_preview",
         "--preview-save-fps 5",
         # raw_camera.mp4 is recorded by Isaac from the external scene Left view;
         # disable the controller's raw writer so the robot-POV stream isn't duplicated.
@@ -1177,9 +1188,9 @@ if ($NoDockerRun) {
         "-v",
         "${WslRepoRoot}/models:/models",
         "-v",
-        "${WslVisionLogDir}:/workspace/run_logs",
+        "${WslRunLogDir}:/workspace/run_logs",
         "-e",
-        "SIM_LOG_DIR=/workspace/run_logs",
+        "SIM_LOG_DIR=/workspace/run_logs/debug",
         "-w",
         "/workspace",
         $Image,
@@ -1242,7 +1253,7 @@ if ($NoDockerRun) {
 }
 
 # Append the detailed evaluation summary if it was generated
-$evalSummaryFile = Join-Path $RunLogDir "evaluation_summary.txt"
+$evalSummaryFile = Join-Path $ReportsDir "evaluation_summary.txt"
 if (Test-Path -LiteralPath $evalSummaryFile) {
     $evalContent = Get-Content -LiteralPath $evalSummaryFile -Raw -ErrorAction SilentlyContinue
     if ($evalContent) {

@@ -54,6 +54,11 @@ class Xt16Config:
     mount_x_m: float = 0.0
     mount_y_m: float = 0.0
     mount_z_m: float = 0.10
+    # Optional sensor realism (default 0 => exact ray hits, identical to before).
+    # range_noise_m: 1-sigma Gaussian range error per return (real XT16 ~0.02 m).
+    # dropout_prob: per-ray probability of a missing return (no echo).
+    range_noise_m: float = 0.0
+    dropout_prob: float = 0.0
 
     @property
     def n_azimuth(self) -> int:
@@ -87,6 +92,11 @@ class Xt16Scan:
         return float(np.nanmin(self.ranges))
 
 
+# Dedicated RNG for optional XT16 sensor-noise injection; keeps the global
+# np.random stream untouched. Only drawn from when range_noise_m/dropout_prob > 0.
+_NOISE_RNG = np.random.default_rng()
+
+
 def cast_scan(
     config: Xt16Config,
     origin_world: Tuple[float, float, float],
@@ -112,6 +122,8 @@ def cast_scan(
     n_hits = 0
     max_r = float(config.max_range_m)
     min_r = float(config.min_range_m)
+    range_noise_m = float(config.range_noise_m)
+    dropout_prob = float(config.dropout_prob)
 
     for ci in range(n_ch):
         elev = float(vert[ci])
@@ -127,6 +139,16 @@ def cast_scan(
             dist = raycast_fn(origin, (dx, dy, dz), max_r)
             if dist is None or dist < min_r or dist > max_r:
                 continue
+            # Optional XT16 sensor realism (default off => exact ray hits): random
+            # no-return dropouts + Gaussian range noise, so the downstream profile
+            # + person_follower fusion are exercised against noisy ranges rather
+            # than perfect geometry.
+            if dropout_prob > 0.0 and float(_NOISE_RNG.random()) < dropout_prob:
+                continue
+            if range_noise_m > 0.0:
+                dist = float(dist) + float(_NOISE_RNG.normal(0.0, range_noise_m))
+                if dist < min_r or dist > max_r:
+                    continue
             ranges[ci, ai] = dist
             n_hits += 1
             pts.append(
@@ -241,3 +263,37 @@ def render_preview(scan: Xt16Scan, view_range_m: float = 6.0) -> np.ndarray:
                 cv2.FONT_HERSHEY_SIMPLEX, 0.36, (160, 160, 160), 1, cv2.LINE_AA)
 
     return np.vstack([header, bev, rng_label, rng])
+
+
+def profile_from_scan(scan: Xt16Scan, view_range_m: float) -> dict:
+    """Compact horizontal polar profile of a scan for the vision controller.
+
+    Collapses the (channels, n_azimuth) range grid to the nearest return per
+    azimuth column (uint16 millimetres, 0 == no return), zlib+base64 encoded so it
+    fits the UDP frame packet. ``core.lidar_fusion.decode_lidar_profile`` reverses
+    it; keep the two in sync. omni-free so it stays unit-testable on its own.
+    """
+    import base64
+    import zlib
+
+    ranges = np.asarray(scan.ranges, dtype=np.float32)  # (channels, n_azimuth)
+    if ranges.size:
+        # Nearest return per azimuth column; NaN (no return) -> +inf so it loses
+        # the min, then mapped back to 0.
+        finite = np.where(np.isnan(ranges), np.inf, ranges)
+        nearest = finite.min(axis=0)
+        nearest = np.where(np.isfinite(nearest), nearest, 0.0)
+    else:
+        nearest = np.zeros((0,), dtype=np.float32)
+    nearest_mm = np.clip(nearest * 1000.0, 0, 65535).astype(np.uint16)
+    blob = base64.b64encode(zlib.compress(nearest_mm.tobytes(), level=6)).decode("ascii")
+    return {
+        "enc": "u16mm+zlib",
+        "n_azimuth": int(scan.config.n_azimuth),
+        "azimuth_step_deg": float(scan.config.azimuth_step_deg),
+        "view_range_m": float(view_range_m),
+        "min_range_m": (None if scan.min_range_m is None else round(float(scan.min_range_m), 3)),
+        "hit_count": int(scan.n_hits),
+        "ray_count": int(scan.n_rays),
+        "ranges_mm": blob,
+    }
