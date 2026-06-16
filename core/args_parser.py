@@ -53,6 +53,17 @@ def parse_args():
         '--sim-frame-timeout-exit-sec', type=float, default=30.0,
         help='Exit sim mode if no Isaac camera frame arrives for this many seconds; 0 disables'
     )
+    sim_group.add_argument(
+        '--sim-latency-ms', type=float, default=0.0,
+        help='Hold each sim frame this many ms before the perception loop sees it, modelling '
+             'the real sense->act latency the lockstep sim lacks (0 = off). Tune PID/slew and '
+             'the visual-lock/lost-person timeouts against this.'
+    )
+    sim_group.add_argument(
+        '--sim-latency-jitter-ms', type=float, default=0.0,
+        help='Uniform +/- jitter (ms) added to --sim-latency-ms per frame to model variable '
+             'pipeline timing / frame-cadence jitter (0 = constant latency).'
+    )
  
     # -----------------------------------------------------------------------
     # Inference
@@ -250,6 +261,8 @@ def parse_args():
     args.log_components = _normalize_log_components(parser, args.log_components)
     args.debug_trace_every_n_frames = max(1, int(args.debug_trace_every_n_frames))
     args.sim_frame_timeout_exit_sec = max(0.0, float(args.sim_frame_timeout_exit_sec))
+    args.sim_latency_ms = max(0.0, float(args.sim_latency_ms))
+    args.sim_latency_jitter_ms = max(0.0, float(args.sim_latency_jitter_ms))
     args.preview_save_fps = max(0.0, float(args.preview_save_fps))
     args.tracker_area_weight = max(0.0, float(args.tracker_area_weight))
     args.tracker_center_weight = max(0.0, float(args.tracker_center_weight))

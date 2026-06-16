@@ -55,6 +55,8 @@ def _build_camera(args):
             frame_port=args.frame_port,
             rotate=args.rotate,
             verbose=args.debug,
+            latency_ms=getattr(args, "sim_latency_ms", 0.0),
+            latency_jitter_ms=getattr(args, "sim_latency_jitter_ms", 0.0),
         )
     from camera_capture import CameraCapture
     return CameraCapture(
@@ -86,55 +88,11 @@ def _build_robot_controller(args):
     return ctrl
 
 
-SIM_STAIR_STEP_DEPTH_M = 0.30
-SIM_STAIR_TARGET_GAP_STEPS = 3.0
-SIM_STAIR_TARGET_GAP_M = SIM_STAIR_STEP_DEPTH_M * SIM_STAIR_TARGET_GAP_STEPS
-
-
-def _apply_sim_stair_gap_control(args, trans_x_cmd: float, debug_info: Dict[str, Any]) -> float:
-    if not bool(args.sim):
-        return float(trans_x_cmd)
-
-    stair_demo = debug_info.get("stair_demo")
-    if not isinstance(stair_demo, dict):
-        return float(trans_x_cmd)
-    phase = str(stair_demo.get("phase", "unknown"))
-    if phase not in ("stair_approach", "staircase"):
-        return float(trans_x_cmd)
-
-    gt_patient = debug_info.get("gt_patient")
-    robot = stair_demo.get("robot", {})
-    if not isinstance(gt_patient, (list, tuple)) or len(gt_patient) < 1:
-        return float(trans_x_cmd)
-    if not isinstance(robot, dict) or robot.get("x_m") is None:
-        return float(trans_x_cmd)
-
-    try:
-        patient_x = float(gt_patient[0])
-        robot_x = float(robot.get("x_m"))
-    except Exception:
-        return float(trans_x_cmd)
-
-    gap_m = patient_x - robot_x
-    target_gap_m = SIM_STAIR_TARGET_GAP_M
-    max_speed = max(0.0, float(getattr(args, "trans_x_max", 0.85)))
-    original_cmd = float(trans_x_cmd)
-    stair_cmd = original_cmd
-
-    if gap_m > target_gap_m + 0.08:
-        stair_cmd = min(max_speed, 0.30 + ((gap_m - target_gap_m) * 0.95))
-        trans_x_cmd = max(original_cmd, stair_cmd)
-    elif gap_m < target_gap_m - 0.18:
-        stair_cmd = 0.10 if gap_m > (target_gap_m - 0.42) else 0.0
-        trans_x_cmd = min(original_cmd, stair_cmd)
-
-    debug_info["stair_follow_gap_m"] = float(gap_m)
-    debug_info["stair_follow_gap_steps"] = float(gap_m / SIM_STAIR_STEP_DEPTH_M)
-    debug_info["stair_follow_target_gap_m"] = float(target_gap_m)
-    debug_info["stair_follow_target_gap_steps"] = float(SIM_STAIR_TARGET_GAP_STEPS)
-    debug_info["stair_follow_override_active"] = abs(float(trans_x_cmd) - original_cmd) > 1e-4
-    debug_info["stair_follow_cmd_mps"] = float(trans_x_cmd)
-    return float(trans_x_cmd)
+# The former _apply_sim_stair_gap_control() ground-truth stair-gap assist was
+# removed: it drove the forward command from gt_patient (a sim-only cheat the real
+# robot lacks) and was already dead code (never called). Stair approach is
+# sensor-only via _apply_stair_command_policy; gt_patient/gt_distractor are kept
+# elsewhere only as logged evaluation references, never as control inputs.
 
 
 def _depth_from_bbox(depth_img: np.ndarray, bbox: Optional[List[float]]) -> Optional[float]:

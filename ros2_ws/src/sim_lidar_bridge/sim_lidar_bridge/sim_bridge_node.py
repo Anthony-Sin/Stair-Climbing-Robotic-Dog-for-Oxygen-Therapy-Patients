@@ -81,6 +81,13 @@ class SimLidarBridge(Node):
         self.declare_parameter("mount_z_m", 0.10)
         self.declare_parameter("publish_tf", True)
         self.declare_parameter("poll_period_sec", 0.005)
+        # Odometry drift (opt-in; all zero => exact ground-truth pose passthrough).
+        # Real legged odometry accumulates unbounded error with distance travelled,
+        # worst during stair climbs (foot slip); injecting it here exercises the
+        # Nav2/costmap/MPPI stack against the drift the perfect Isaac pose hides.
+        self.declare_parameter("odom_drift_slip", 0.0)         # frac. extra translation per step
+        self.declare_parameter("odom_yaw_drift_per_m", 0.0)    # rad heading error added per metre
+        self.declare_parameter("odom_climb_drift_gain", 0.0)   # extra slip multiplier per metre |dz|
 
         gp = self.get_parameter
         self._lidar_frame = str(gp("lidar_frame").value)
@@ -88,6 +95,14 @@ class SimLidarBridge(Node):
         self._odom_frame = str(gp("odom_frame").value)
         self._publish_tf = bool(gp("publish_tf").value)
         self._isaac_cmd_dest = (str(gp("isaac_cmd_host").value), int(gp("isaac_cmd_port").value))
+
+        # Odom-drift config + accumulator state.
+        self._odom_slip = float(gp("odom_drift_slip").value)
+        self._odom_yaw_per_m = float(gp("odom_yaw_drift_per_m").value)
+        self._odom_climb_gain = float(gp("odom_climb_drift_gain").value)
+        self._odom_drift_enabled = (self._odom_slip != 0.0 or self._odom_yaw_per_m != 0.0)
+        self._gt_prev = None     # (x, y, yaw, z) ground truth at the previous packet
+        self._odom_est = None    # [x, y, yaw] drifting estimate
 
         # UDP receive socket for the Isaac cloud/odom sidecar (non-blocking poll).
         self._rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -122,6 +137,12 @@ class SimLidarBridge(Node):
             f"publishing {gp('points_topic').value} + {gp('odom_topic').value}, "
             f"forwarding {gp('cmd_topic').value} -> {self._isaac_cmd_dest}"
         )
+        if self._odom_drift_enabled:
+            self.get_logger().warn(
+                "odom drift ENABLED (sim-only): "
+                f"slip={self._odom_slip} yaw_per_m={self._odom_yaw_per_m} "
+                f"climb_gain={self._odom_climb_gain} -- /odom is NOT ground truth"
+            )
 
     # ------------------------------------------------------------------ TF
     def _publish_static_mount_tf(self, mx: float, my: float, mz: float) -> None:
@@ -201,6 +222,12 @@ class SimLidarBridge(Node):
         yaw = math.radians(float(pose.get("yaw_deg", 0.0)))
         ts = float(pkt.get("ts", 0.0))
 
+        # Apply optional odom drift. When disabled this returns the GT pose exactly,
+        # so the published /odom + TF are unchanged. The point cloud is in the LiDAR
+        # sensor frame and is intentionally NOT drifted.
+        gt_x, gt_y = x, y
+        x, y, yaw = self._apply_odom_drift(x, y, yaw, z)
+
         stamp = self.get_clock().now().to_msg()
 
         # --- Point cloud (real raycast hits, sensor frame) -------------------
@@ -243,10 +270,45 @@ class SimLidarBridge(Node):
 
         self._cloud_count += 1
         if self._cloud_count % 50 == 1:
+            drift_note = ""
+            if self._odom_drift_enabled:
+                drift_note = f" drift_err={math.hypot(x - gt_x, y - gt_y):.3f}m"
             self.get_logger().info(
                 f"bridged scan seq={seq} pts={int(pts.shape[0])} "
-                f"pose=({x:.2f},{y:.2f},yaw={math.degrees(yaw):.1f})"
+                f"pose=({x:.2f},{y:.2f},yaw={math.degrees(yaw):.1f}){drift_note}"
             )
+
+    def _apply_odom_drift(self, x: float, y: float, yaw: float, z: float):
+        """Return a drifting odom pose estimate (default: exact GT passthrough).
+
+        Integrates the ground-truth per-packet increments into a separate estimate
+        with (a) translation slip that scales the travelled distance and (b) a
+        heading error that accumulates with distance -- the dominant real legged-
+        odometry error -- optionally amplified while climbing (|dz|). With the
+        drift params zero this is an exact passthrough, so /odom + TF are unchanged.
+        """
+        if not self._odom_drift_enabled:
+            return x, y, yaw
+        if self._gt_prev is None or self._odom_est is None:
+            self._gt_prev = (x, y, yaw, z)
+            self._odom_est = [x, y, yaw]
+            return x, y, yaw
+        px, py, pyaw, pz = self._gt_prev
+        self._gt_prev = (x, y, yaw, z)
+        dx, dy = x - px, y - py
+        dyaw = math.atan2(math.sin(yaw - pyaw), math.cos(yaw - pyaw))
+        ddist = math.hypot(dx, dy)
+        slip = self._odom_slip * (1.0 + self._odom_climb_gain * abs(z - pz))
+        # Accumulate the true turn plus a distance-proportional heading error.
+        new_yaw = self._odom_est[2] + dyaw + self._odom_yaw_per_m * ddist
+        self._odom_est[2] = math.atan2(math.sin(new_yaw), math.cos(new_yaw))
+        # Rotate the GT translation increment by the accumulated heading error and
+        # scale it by the slip, then integrate into the estimate.
+        yaw_err = self._odom_est[2] - yaw
+        c, s = math.cos(yaw_err), math.sin(yaw_err)
+        self._odom_est[0] += (c * dx - s * dy) * (1.0 + slip)
+        self._odom_est[1] += (s * dx + c * dy) * (1.0 + slip)
+        return self._odom_est[0], self._odom_est[1], self._odom_est[2]
 
     def destroy_node(self) -> bool:
         try:

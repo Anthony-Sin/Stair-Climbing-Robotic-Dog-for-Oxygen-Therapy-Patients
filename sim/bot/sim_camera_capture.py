@@ -1,9 +1,11 @@
 
 import json
 import queue
+import random
 import socket
 import threading
 import time
+from collections import deque
 from typing import Dict, Optional, Tuple
 
 import cv2
@@ -100,6 +102,11 @@ class SimCameraCapture:
         timeout_sec: float = 2.0,
         verbose: bool = True,
         rotate: int = 0,
+        # Sim-to-real timing realism: hold each frame latency_ms (+/- jitter) before
+        # the perception loop can read it, modelling the sense->act latency the
+        # lockstep sim lacks. 0 = off => frames delivered immediately as before.
+        latency_ms: float = 0.0,
+        latency_jitter_ms: float = 0.0,
         # API compatibility with CameraCapture -- ignored in sim
         mode: str = "single",
         fps: int = 30,
@@ -115,6 +122,13 @@ class SimCameraCapture:
         self.mode         = "single"
         self.resolution   = (self.width, self.height)
         self.active_serial = "isaac_sim"
+
+        self._latency_sec        = max(0.0, float(latency_ms)) / 1000.0
+        self._latency_jitter_sec = max(0.0, float(latency_jitter_ms)) / 1000.0
+        self._latency_enabled    = self._latency_sec > 0.0 or self._latency_jitter_sec > 0.0
+        # (release_time, bgr, depth_frame) frames waiting out their sense->act delay.
+        self._delay_buf: "deque" = deque()
+        self._latency_rng = random.Random(0)
 
         self._frame_queue: "queue.Queue[Tuple[np.ndarray, np.ndarray]]" = queue.Queue(maxsize=1)
         self._stop_event  = threading.Event()
@@ -137,6 +151,12 @@ class SimCameraCapture:
         if self.verbose:
             print(f"[SimCameraCapture] Listening on UDP 0.0.0.0:{frame_port}")
             print(f"[SimCameraCapture] Output resolution: {width}x{height}")
+        if self._latency_enabled:
+            print(
+                f"[SimCameraCapture] Sim sense->act latency ENABLED: "
+                f"{self._latency_sec * 1000:.0f}ms +/- {self._latency_jitter_sec * 1000:.0f}ms",
+                flush=True,
+            )
 
     # ------------------------------------------------------------------
     # Background receiver thread
@@ -152,6 +172,7 @@ class SimCameraCapture:
         sock.settimeout(0.5)
 
         while not self._stop_event.is_set():
+            self._flush_delay_buf()
             try:
                 data, _ = sock.recvfrom(131072)
                 if self.verbose:
@@ -219,16 +240,8 @@ class SimCameraCapture:
                 # ground-truth depth buffer; downstream depth methods see noise.
                 depth_frame = SimDepthFrame(depth)
                 self._seq_received += 1
+                self._enqueue_frame(bgr, depth_frame)
 
-                if self._frame_queue.full():
-                    try:
-                        self._frame_queue.get_nowait()
-                        self._seq_dropped += 1
-                    except queue.Empty:
-                        pass
-
-                self._frame_queue.put_nowait((bgr, depth_frame))
-                
                 # Store ground truth positions and swing legs in frame metadata
                 gt_patient = meta.get("gt_patient")
                 gt_distractor = meta.get("gt_distractor")
@@ -256,6 +269,37 @@ class SimCameraCapture:
                     import traceback
                     traceback.print_exc()
         sock.close()
+
+    def _push_to_queue(self, item) -> None:
+        """Put a frame on the size-1 delivery queue, dropping the stale one."""
+        if self._frame_queue.full():
+            try:
+                self._frame_queue.get_nowait()
+                self._seq_dropped += 1
+            except queue.Empty:
+                pass
+        self._frame_queue.put_nowait(item)
+
+    def _enqueue_frame(self, bgr, depth_frame) -> None:
+        """Deliver immediately, or hold for the configured sense->act latency."""
+        item = (bgr, depth_frame)
+        if not self._latency_enabled:
+            self._push_to_queue(item)
+            return
+        jitter = 0.0
+        if self._latency_jitter_sec > 0.0:
+            jitter = self._latency_rng.uniform(-self._latency_jitter_sec, self._latency_jitter_sec)
+        release = time.monotonic() + max(0.0, self._latency_sec + jitter)
+        self._delay_buf.append((release, bgr, depth_frame))
+
+    def _flush_delay_buf(self) -> None:
+        """Release any held frames whose sense->act delay has elapsed (FIFO)."""
+        if not self._latency_enabled or not self._delay_buf:
+            return
+        now = time.monotonic()
+        while self._delay_buf and self._delay_buf[0][0] <= now:
+            _release, bgr, depth_frame = self._delay_buf.popleft()
+            self._push_to_queue((bgr, depth_frame))
 
     def get_frame(self):
         """

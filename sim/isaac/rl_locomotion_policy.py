@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 from dataclasses import dataclass, field
@@ -99,6 +100,14 @@ class RLLocomotionPolicyConfig:
     obs_noise_dof_pos: float = 0.01    # rad     joint position encoder
     obs_noise_dof_vel: float = 1.5     # rad/s   joint velocity
     obs_latency_steps: int = 0         # control steps of sensing delay (0 = none)
+    # --- Actuator realism (opt-in; default off => ideal PD). joint_limit_clamp
+    # saturates the position target to the articulation's REPORTED joint limits
+    # (read from the asset at runtime, never guessed). backlash_rad models lost
+    # motion as a deadband on the PD position error. torque_derate scales the
+    # commanded torque (1.0 = no effect; <1 models thermal/voltage sag).
+    joint_limit_clamp: bool = False
+    backlash_rad: float = 0.0
+    torque_derate: float = 1.0
 
 
 class RLLocomotionPolicy:
@@ -161,6 +170,12 @@ class RLLocomotionPolicy:
         # caches draw from.
         self._obs_rng = np.random.default_rng()
         self._obs_latency_buffer: List[np.ndarray] = []
+        # Actuator-realism state: joint position limits are read lazily from the
+        # articulation the first time torque control runs (None until then, and
+        # None if the asset does not report them).
+        self._limits_read = False
+        self._joint_pos_lower: Optional[np.ndarray] = None
+        self._joint_pos_upper: Optional[np.ndarray] = None
 
         self._policy_kind = self._resolve_policy_format(config.policy_format, self.policy_path)
         self._model = self._load_model(self.policy_path, self._policy_kind)
@@ -270,7 +285,25 @@ class RLLocomotionPolicy:
         q = self._safe_joint_vector(articulation, ("get_joint_positions",), n)
         qd = self._safe_joint_vector(articulation, ("get_joint_velocities",), n)
         target = np.asarray(self.last_targets_isaac, dtype=np.float32)
-        tau = (float(self.config.kp) * (target - q)) - (float(self.config.kd) * qd)
+        # Optional joint-limit saturation: clamp the position target to the real
+        # motor hard stops. Limits are READ from the articulation (lazily, once) --
+        # never guessed; a no-op if the asset does not report them.
+        if self.config.joint_limit_clamp:
+            if not self._limits_read:
+                self._read_joint_limits(articulation)
+            if self._joint_pos_lower is not None and self._joint_pos_upper is not None:
+                target = np.clip(target, self._joint_pos_lower, self._joint_pos_upper)
+        err = target - q
+        # Optional backlash/deadband: lost motion within +/- backlash_rad produces
+        # no torque, and the error past it is reduced by that band (0 = off).
+        bl = float(self.config.backlash_rad)
+        if bl > 0.0:
+            err = np.sign(err) * np.maximum(0.0, np.abs(err) - bl)
+        tau = (float(self.config.kp) * err) - (float(self.config.kd) * qd)
+        # Optional torque derate (thermal/voltage sag); 1.0 = no effect.
+        derate = float(self.config.torque_derate)
+        if derate != 1.0:
+            tau = tau * derate
         tql = float(self.config.torque_limit)
         if tql > 0.0:
             tau = np.clip(tau, -tql, tql)
@@ -282,6 +315,43 @@ class RLLocomotionPolicy:
             tau = np.clip(tau, prev - rate, prev + rate)
         self._last_torque = tau.astype(np.float32)
         self._apply_joint_efforts(articulation, self._last_torque)
+
+    def _read_joint_limits(self, articulation: Any) -> None:
+        """Cache per-DOF position limits (Isaac DOF order) from the articulation.
+
+        Tries the common Isaac APIs and leaves the cached limits as None if none
+        are usable (clamping then becomes a no-op). The limits are the asset's
+        REPORTED values -- never guessed. get_dof_limits returns them in the same
+        DOF order as get_joint_positions, so they align with target/q directly.
+        """
+        self._limits_read = True
+        n = len(self.dof_names)
+        for name in ("get_dof_limits", "get_joint_limits"):
+            method = getattr(articulation, name, None)
+            if not callable(method):
+                continue
+            try:
+                limits = np.asarray(method(), dtype=np.float32)
+            except Exception:
+                continue
+            if limits.ndim == 2 and limits.shape[0] >= n and limits.shape[1] >= 2:
+                lower = limits[:n, 0]
+                upper = limits[:n, 1]
+                if np.all(np.isfinite(lower)) and np.all(np.isfinite(upper)) and np.all(upper > lower):
+                    self._joint_pos_lower = lower
+                    self._joint_pos_upper = upper
+                    log_event(
+                        self.logger, logging.INFO, "rl_joint_limits_read",
+                        "Read articulation joint limits for RL target clamping",
+                        lower=[round(float(v), 3) for v in lower],
+                        upper=[round(float(v), 3) for v in upper],
+                    )
+                    return
+        log_event(
+            self.logger, logging.WARNING, "rl_joint_limits_unavailable",
+            "joint_limit_clamp requested but the articulation reported no usable "
+            "joint limits; clamping is a no-op this run",
+        )
 
     @staticmethod
     def _apply_joint_efforts(articulation: Any, efforts: np.ndarray) -> None:
@@ -327,6 +397,98 @@ class RLLocomotionPolicy:
             out["projected_gravity"] = [round(float(v), 3) for v in obs[3:6]]
             out["commands"] = [round(float(v), 3) for v in obs[6:9]]
         return out
+
+    def _checkpoint_sha256(self) -> Optional[str]:
+        """SHA-256 of the policy checkpoint file, or None if unreadable.
+
+        Lets the exported contract pin the exact weights this run used, so a real
+        deployment can confirm it is running the same checkpoint.
+        """
+        try:
+            h = hashlib.sha256()
+            with open(self.policy_path, "rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+            return h.hexdigest()
+        except Exception:
+            return None
+
+    def deployment_contract(self) -> Dict[str, Any]:
+        """Machine-readable export of the pinned RL deployment contract.
+
+        Single source of truth for the constants a real LowCmd controller MUST
+        reproduce to run this policy: observation layout/scales/clip, action scale,
+        default pose, joint order, the policy<->articulation joint remap, the PD
+        gains in RADIAN units, the torque limit, and the control rate. Built from
+        the same constants/attributes the running policy uses, so the manifest
+        cannot silently drift from the live policy. Consumed by the sim manifest
+        export (reports/rl_deployment_contract.json) and the parity test.
+        """
+        cfg = self.config
+        return {
+            "schema_version": 1,
+            "policy": {
+                "path": str(self.policy_path),
+                "format": str(self._policy_kind),
+                "sha256": self._checkpoint_sha256(),
+                "num_observations": int(cfg.num_observations),
+                "num_actions": int(self.n),
+            },
+            "joint_order": [f"{leg}_{joint}" for (leg, joint) in POLICY_JOINT_ORDER],
+            "joint_map": {
+                "isaac_dof_names": [str(x) for x in self.dof_names],
+                "policy_to_isaac": [int(i) for i in self.policy_to_isaac],
+                "mapped_isaac_names": [str(self.dof_names[i]) for i in self.policy_to_isaac],
+            },
+            "default_pose_rad": {
+                "by_joint": dict(POLICY_DEFAULT_BY_JOINT),
+                "vector_policy_order": [round(float(v), 6) for v in self.default_pos_policy],
+            },
+            "action": {
+                "type": "joint_position_residual",
+                "formula": "target_rad = default_pose_rad + action * action_scale_rad",
+                "scale_by_joint_rad": dict(POLICY_ACTION_SCALE_BY_JOINT),
+                "scale_vector_policy_order": [round(float(v), 6) for v in self.action_scale_policy],
+                "clip": float(cfg.clip_actions),
+            },
+            "observation": {
+                "size": int(cfg.num_observations),
+                "clip": float(cfg.clip_observations),
+                "layout": [
+                    {"name": "base_ang_vel_body", "dim": 3, "scale": float(cfg.ang_vel_scale), "units": "rad/s"},
+                    {"name": "projected_gravity", "dim": 3, "scale": 1.0, "units": "unit"},
+                    {"name": "commands", "dim": 3, "scale": [float(s) for s in cfg.commands_scale], "units": "vx[m/s],vy[m/s],wz[rad/s]"},
+                    {"name": "dof_pos_minus_default", "dim": 12, "scale": float(cfg.dof_pos_scale), "units": "rad"},
+                    {"name": "dof_vel", "dim": 12, "scale": float(cfg.dof_vel_scale), "units": "rad/s"},
+                    {"name": "prev_action", "dim": 12, "scale": 1.0, "units": "dimensionless"},
+                ],
+            },
+            "actuation": {
+                "control_mode": str(cfg.control_mode),
+                # RADIAN, not the USD DriveAPI degree default -- misapplying degrees is a 4x overtorque flip.
+                "gain_units": "radian",
+                "kp": float(cfg.kp),
+                "kd": float(cfg.kd),
+                "torque_limit_nm": float(cfg.torque_limit),
+                "torque_rate_limit_nm_per_step": float(cfg.torque_rate_limit_nm),
+                "joint_limit_clamp": bool(cfg.joint_limit_clamp),
+                "backlash_rad": float(cfg.backlash_rad),
+                "torque_derate": float(cfg.torque_derate),
+                "pd_law": "tau = kp*(target - q) - kd*qd, clipped to +/- torque_limit_nm",
+            },
+            "timing": {
+                "control_hz": float(cfg.control_hz),
+                "control_interval_sec": round(self.interval_sec, 6),
+            },
+            "obs_realism": {
+                "obs_noise_enabled": bool(cfg.obs_noise_enabled),
+                "obs_latency_steps": int(cfg.obs_latency_steps),
+                "obs_noise_ang_vel": float(cfg.obs_noise_ang_vel),
+                "obs_noise_gravity": float(cfg.obs_noise_gravity),
+                "obs_noise_dof_pos": float(cfg.obs_noise_dof_pos),
+                "obs_noise_dof_vel": float(cfg.obs_noise_dof_vel),
+            },
+        }
 
     @staticmethod
     def _leg_extension_m(calf_rad: float) -> float:

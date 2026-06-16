@@ -24,6 +24,12 @@ KEYPOINT_PAIRS = [
     (12, 14), (14, 16),
 ]
 
+YOLO_MAIN = (220, 238, 96)
+YOLO_MAIN_DIM = (86, 112, 64)
+YOLO_SECONDARY = (70, 79, 84)
+YOLO_BADGE_BG = (16, 28, 45)
+YOLO_TEXT = (205, 218, 218)
+
 class YoloPoseInference:
     def __init__(self, use_gpu_preprocessing=True, verbose=True):
         """YoloPoseInference handles preprocessing, decoding, and visualization for YOLO pose detection.
@@ -278,9 +284,9 @@ class YoloPoseInference:
         height, width = orig_shape
         draw_list = tracked_dets if tracked_dets is not None else detections
 
-        MAIN_CLR = (255, 200, 0)      # BGR cyan-gold — main target brackets
-        MAIN_DIM = (160, 120, 0)      # dimmer skeleton lines
-        SEC_CLR  = (65, 65, 65)       # dim gray for secondary detections
+        MAIN_CLR = YOLO_MAIN
+        MAIN_DIM = YOLO_MAIN_DIM
+        SEC_CLR = YOLO_SECONDARY
 
         for det in draw_list:
             bbox = np.array(det['bbox'], dtype=np.float32)
@@ -307,6 +313,12 @@ class YoloPoseInference:
                     cv2.line(img, (bx, by), (bx + sx * blen, by), MAIN_CLR, 2, cv2.LINE_AA)
                     cv2.line(img, (bx, by), (bx, by + sy * blen), MAIN_CLR, 2, cv2.LINE_AA)
 
+                rail_len = max(18, min(44, bh_box // 4))
+                cv2.line(img, (x1 - 4, y1 + bh_box // 2 - rail_len // 2),
+                         (x1 - 4, y1 + bh_box // 2 + rail_len // 2), MAIN_CLR, 1, cv2.LINE_AA)
+                cv2.line(img, (x2 + 4, y1 + bh_box // 2 - rail_len // 2),
+                         (x2 + 4, y1 + bh_box // 2 + rail_len // 2), MAIN_CLR, 1, cv2.LINE_AA)
+
                 # Center crosshair on person bounding box
                 pcx, pcy = (x1 + x2) // 2, (y1 + y2) // 2
                 cv2.line(img, (pcx - 10, pcy), (pcx + 10, pcy), MAIN_CLR, 1, cv2.LINE_AA)
@@ -314,6 +326,7 @@ class YoloPoseInference:
                 cv2.circle(img, (pcx, pcy), 2, MAIN_CLR, -1, cv2.LINE_AA)
 
                 # Top-center lock ring
+                cv2.line(img, (pcx - 14, y1 - 6), (pcx + 14, y1 - 6), MAIN_CLR, 1, cv2.LINE_AA)
                 cv2.circle(img, (pcx, y1), 4, MAIN_CLR, 1, cv2.LINE_AA)
 
                 # Data badge (below box, or above if near bottom edge)
@@ -337,8 +350,12 @@ class YoloPoseInference:
                 badge_x = max(0, min(x1, width - badge_w - 1))
                 cv2.rectangle(img, (badge_x, badge_y), (badge_x + badge_w, badge_y + badge_h),
                                MAIN_CLR, -1)
+                cv2.rectangle(img, (badge_x, badge_y), (badge_x + badge_w, badge_y + badge_h),
+                               YOLO_BADGE_BG, -1)
+                cv2.rectangle(img, (badge_x, badge_y), (badge_x + badge_w, badge_y + badge_h),
+                               MAIN_CLR, 1)
                 cv2.putText(img, badge_text, (badge_x + 5, badge_y + 12),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 0, 0), 1, cv2.LINE_AA)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, YOLO_TEXT, 1, cv2.LINE_AA)
 
                 # Skeleton (main person only)
                 if 'keypoints' in det:
@@ -365,7 +382,7 @@ class YoloPoseInference:
                             if kx < 3 or ky < 3 or kx >= width - 3 or ky >= height - 3:
                                 continue
                             cv2.circle(img, (kx, ky), 3, MAIN_CLR, -1, cv2.LINE_AA)
-                            cv2.circle(img, (kx, ky), 3, (220, 240, 255), 1, cv2.LINE_AA)
+                            cv2.circle(img, (kx, ky), 3, YOLO_TEXT, 1, cv2.LINE_AA)
 
             else:
                 # --- Secondary detection: small dim corner brackets ---

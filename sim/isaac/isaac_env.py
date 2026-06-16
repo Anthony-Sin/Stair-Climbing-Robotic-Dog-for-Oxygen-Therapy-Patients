@@ -157,6 +157,26 @@ parser.add_argument("--dr-push-interval-sec", type=float, default=4.0,
                          "--domain-rand is set (<=0 disables pushes).")
 parser.add_argument("--dr-push-vel", type=float, default=0.4,
                     help="Magnitude (m/s) of each random horizontal push disturbance.")
+parser.add_argument("--dr-lighting-pct", type=float, default=0.0,
+                    help="Fractional +/- randomization of scene light intensity when --domain-rand "
+                         "is set (0 = off). Stress-tests YOLO/pose/ReID against the lighting "
+                         "variation the fixed sim lighting otherwise hides.")
+parser.add_argument("--sim2real-validation", dest="sim2real_validation", action="store_true", default=False,
+                    help="Preset: validate the policy in a realistic regime instead of the clean "
+                         "default. Turns ON RL obs noise, a 1-step obs latency, domain "
+                         "randomization, and joint-limit clamping -- each still overridable by its "
+                         "own flag. Actuator-bandwidth/backlash numbers are NOT invented; set "
+                         "--rl-torque-rate / --rl-backlash-rad explicitly for those.")
+parser.add_argument("--rl-joint-limit-clamp", dest="rl_joint_limit_clamp", action="store_true", default=False,
+                    help="Saturate RL joint-position targets to the articulation's reported joint "
+                         "limits before the PD law (models real motor hard stops; limits are READ "
+                         "from the asset, not guessed).")
+parser.add_argument("--rl-backlash-rad", type=float, default=0.0,
+                    help="Actuator backlash/deadband half-width (rad) on the PD position error "
+                         "(0 = off). Set from real Go2 figures when available; not guessed.")
+parser.add_argument("--rl-torque-derate", type=float, default=1.0,
+                    help="Multiplier on commanded joint torque to model thermal/voltage sag "
+                         "(1.0 = no effect).")
 parser.add_argument("--fall-recovery", dest="fall_recovery", action="store_true", default=False,
                     help="On a sustained fall, kinematically re-stand the robot in place and "
                          "continue instead of ending the run. NOT a learned getup -- the single "
@@ -224,6 +244,35 @@ parser.add_argument("--raw-video-path", type=str, default="",
                          "Empty uses <log-dir>/raw_camera.mp4. run_sim points this at "
                          "the vision preview dir so it sits beside opencv_preview.mp4.")
 args = parser.parse_args()
+
+
+def _flag_passed(*names: str) -> bool:
+    """True if any of these option strings were given on the command line.
+
+    Lets the --sim2real-validation preset supply a value WITHOUT overriding an
+    explicit per-flag choice the user made.
+    """
+    return any(a == n or a.startswith(n + "=") for a in sys.argv[1:] for n in names)
+
+
+# --sim2real-validation preset: flip the realism knobs that already have
+# documented modelling defaults from opt-in to on, unless the user set them
+# explicitly. Resolved here (before the _DR block reads args.domain_rand). The
+# clean regime stays the default when the preset is off. Actuator-bandwidth and
+# backlash numbers are deliberately NOT set here -- those would be guesses.
+if args.sim2real_validation:
+    if not _flag_passed("--rl-obs-noise"):
+        args.rl_obs_noise = True
+    if not _flag_passed("--rl-obs-latency-steps"):
+        args.rl_obs_latency_steps = 1
+    if not _flag_passed("--domain-rand"):
+        args.domain_rand = True
+    if not _flag_passed("--rl-joint-limit-clamp"):
+        args.rl_joint_limit_clamp = True
+    if not _flag_passed("--lidar-range-noise-m"):
+        args.lidar_range_noise_m = 0.02   # Hesai XT16 datasheet range accuracy (~2 cm)
+    if not _flag_passed("--dr-lighting-pct"):
+        args.dr_lighting_pct = 0.3
 
 
 def _log_bucket(log_dir: str, bucket: str) -> str:
@@ -343,6 +392,9 @@ if _DR_RNG is not None:
     _DR["dynamic_friction"] = float(1.0 * (1.0 + _DR_RNG.uniform(-_fpct, _fpct)))
     _DR["kp_mult"] = float(1.0 + _DR_RNG.uniform(-_gpct, _gpct))
     _DR["kd_mult"] = float(1.0 + _DR_RNG.uniform(-_gpct, _gpct))
+    _lpct = float(args.dr_lighting_pct)
+    if _lpct > 0.0:
+        _DR["light_mult"] = float(1.0 + _DR_RNG.uniform(-_lpct, _lpct))
     log_event(
         LOGGER,
         logging.INFO,
@@ -353,9 +405,30 @@ if _DR_RNG is not None:
         dynamic_friction=round(_DR["dynamic_friction"], 3),
         kp_mult=round(_DR["kp_mult"], 3),
         kd_mult=round(_DR["kd_mult"], 3),
+        light_mult=round(_DR.get("light_mult", 1.0), 3),
         push_interval_sec=float(args.dr_push_interval_sec),
         push_vel=float(args.dr_push_vel),
     )
+
+# One-line banner so every run's logs state which sim-to-real regime it validated
+# in (clean vs the --sim2real-validation realistic profile) and the resolved knobs.
+log_event(
+    LOGGER,
+    logging.INFO,
+    "rl_realism_profile",
+    ("Realism profile: VALIDATION" if args.sim2real_validation else "Realism profile: clean (default)"),
+    sim2real_validation=bool(args.sim2real_validation),
+    rl_obs_noise=bool(args.rl_obs_noise),
+    rl_obs_latency_steps=int(args.rl_obs_latency_steps),
+    rl_torque_rate=float(args.rl_torque_rate),
+    rl_joint_limit_clamp=bool(args.rl_joint_limit_clamp),
+    rl_backlash_rad=float(args.rl_backlash_rad),
+    rl_torque_derate=float(args.rl_torque_derate),
+    domain_rand=bool(args.domain_rand),
+    lidar_range_noise_m=float(args.lidar_range_noise_m),
+    lidar_dropout_prob=float(args.lidar_dropout_prob),
+    dr_lighting_pct=float(args.dr_lighting_pct),
+)
 from rl_locomotion_policy import (
     POLICY_DEFAULT_BY_JOINT,
     RLLocomotionPolicy,
@@ -1368,25 +1441,28 @@ def _set_xform_ops(prim, translate=None, rotate_xyz=None) -> None:
         xform.AddRotateXYZOp().Set(Gf.Vec3f(float(rotate_xyz[0]), float(rotate_xyz[1]), float(rotate_xyz[2])))
 
 
-def setup_scene_lighting(stage) -> None:
+def setup_scene_lighting(stage, intensity_mult: float = 1.0) -> None:
     from pxr import UsdLux
 
+    # intensity_mult (1.0 = nominal) scales every light so domain randomization can
+    # vary overall scene brightness run-to-run; see _DR["light_mult"].
+    m = float(intensity_mult)
     try:
         if not stage.GetPrimAtPath("/World/Lighting").IsValid():
             stage.DefinePrim("/World/Lighting", "Xform")
 
         dome = UsdLux.DomeLight.Define(stage, "/World/Lighting/SoftBlueDome")
-        dome.CreateIntensityAttr().Set(420.0)
+        dome.CreateIntensityAttr().Set(420.0 * m)
         dome.CreateColorAttr().Set(Gf.Vec3f(0.72, 0.80, 1.0))
 
         key = UsdLux.DistantLight.Define(stage, "/World/Lighting/WarmKey")
-        key.CreateIntensityAttr().Set(1350.0)
+        key.CreateIntensityAttr().Set(1350.0 * m)
         key.CreateAngleAttr().Set(1.8)
         key.CreateColorAttr().Set(Gf.Vec3f(1.0, 0.92, 0.78))
         _set_xform_ops(key.GetPrim(), rotate_xyz=(-48.0, 0.0, 32.0))
 
         fill = UsdLux.RectLight.Define(stage, "/World/Lighting/WindowFill")
-        fill.CreateIntensityAttr().Set(650.0)
+        fill.CreateIntensityAttr().Set(650.0 * m)
         fill.CreateWidthAttr().Set(5.0)
         fill.CreateHeightAttr().Set(3.0)
         fill.CreateColorAttr().Set(Gf.Vec3f(0.68, 0.82, 1.0))
@@ -1394,7 +1470,7 @@ def setup_scene_lighting(stage) -> None:
 
         for idx, x_pos in enumerate((1.2, 3.6, 6.0, 8.0)):
             panel = UsdLux.RectLight.Define(stage, f"/World/Lighting/CeilingPanel_{idx}")
-            panel.CreateIntensityAttr().Set(420.0)
+            panel.CreateIntensityAttr().Set(420.0 * m)
             panel.CreateWidthAttr().Set(1.6)
             panel.CreateHeightAttr().Set(0.45)
             panel.CreateColorAttr().Set(Gf.Vec3f(0.92, 0.96, 1.0))
@@ -1408,6 +1484,7 @@ def setup_scene_lighting(stage) -> None:
             dome="/World/Lighting/SoftBlueDome",
             key="/World/Lighting/WarmKey",
             fill="/World/Lighting/WindowFill",
+            intensity_mult=round(m, 3),
         )
     except Exception as exc:
         log_event(
@@ -2800,6 +2877,9 @@ def _create_rl_locomotion_policy(go2) -> Optional[RLLocomotionPolicy]:
         torque_rate_limit_nm=float(args.rl_torque_rate),
         obs_noise_enabled=bool(args.rl_obs_noise),
         obs_latency_steps=int(args.rl_obs_latency_steps),
+        joint_limit_clamp=bool(args.rl_joint_limit_clamp),
+        backlash_rad=float(args.rl_backlash_rad),
+        torque_derate=float(args.rl_torque_derate),
     )
     policy = RLLocomotionPolicy(config, dof_names, logger=LOGGER)
     log_event(
@@ -2813,7 +2893,46 @@ def _create_rl_locomotion_policy(go2) -> Optional[RLLocomotionPolicy]:
         dof_count=len(dof_names),
         observation_size=int(config.num_observations),
     )
+    _export_rl_contract_manifest(policy)
     return policy
+
+
+def _export_rl_contract_manifest(policy: RLLocomotionPolicy) -> None:
+    """Write the RL deployment contract to reports/rl_deployment_contract.json.
+
+    The policy owns the contract (see RLLocomotionPolicy.deployment_contract); here
+    we augment it with env-level facts the policy cannot know (physics rate ->
+    decimation, and the domain-randomization state actually applied this run) and
+    persist it so a future real LowCmd controller can be checked against the exact
+    constants this sim run used.
+    """
+    try:
+        contract = policy.deployment_contract()
+        physics_hz = float(getattr(args, "physics_hz", 0.0) or 0.0)
+        control_hz = float(contract.get("timing", {}).get("control_hz", 0.0) or 0.0)
+        contract["timing"]["physics_hz"] = physics_hz
+        contract["timing"]["decimation"] = (
+            int(round(physics_hz / control_hz)) if control_hz > 0 else None
+        )
+        contract["domain_randomization"] = {
+            "enabled": bool(getattr(args, "domain_rand", False)),
+            "seed": int(getattr(args, "dr_seed", 0)),
+            "applied": {k: float(v) for k, v in _DR.items()},  # empty when --domain-rand off
+        }
+        out_path = os.path.join(_log_bucket(args.log_dir, "reports"), "rl_deployment_contract.json")
+        with open(out_path, "w") as fh:
+            json.dump(contract, fh, indent=2, sort_keys=True)
+        log_event(
+            LOGGER, logging.INFO, "rl_contract_manifest_saved",
+            f"Saved RL deployment contract to {out_path}",
+            policy_sha256=contract.get("policy", {}).get("sha256"),
+            decimation=contract["timing"]["decimation"],
+        )
+    except Exception as e:
+        log_event(
+            LOGGER, logging.WARNING, "rl_contract_manifest_failed",
+            f"Failed to write RL deployment contract: {e}",
+        )
 
 
 def _step_go2_locomotion(
@@ -3125,7 +3244,7 @@ def main() -> None:
     try:
         import omni.usd
         stage = omni.usd.get_context().get_stage()
-        setup_scene_lighting(stage)
+        setup_scene_lighting(stage, intensity_mult=_DR.get("light_mult", 1.0))
         step_paths = [f"/World/Environment/step_{i}" for i in range(5)]
         step_paths.append("/World/defaultGroundPlane")
         create_and_bind_friction_material(
