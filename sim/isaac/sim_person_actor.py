@@ -155,16 +155,19 @@ class SimPersonTarget:
                 "Animated person setup failed: walk or idle animation clip path is empty."
             )
 
-        # Re-apply idle binding after timeline pump so Fabric picks it up
+        # Re-apply the walk binding after timeline pump so Fabric picks it up
         # in case the pre-Fabric binding was snapshotted before the USD loaded.
-        if self._skel_root_path and self._idle_clip_path:
+        # Fabric locks onto whatever clip is bound at the first render pass, so we
+        # bind the looped walk cycle (always animating) rather than idle; runtime
+        # walk<->idle re-targets do not reliably re-register through Fabric.
+        if self._skel_root_path and self._walk_clip_path:
             try:
                 from pxr import UsdSkel
                 stage = omni.usd.get_context().get_stage()
                 skel_root_prim = stage.GetPrimAtPath(self._skel_root_path)
                 if skel_root_prim and skel_root_prim.IsValid():
                     binding_api = UsdSkel.BindingAPI.Apply(skel_root_prim)
-                    binding_api.GetAnimationSourceRel().SetTargets([Sdf.Path(self._idle_clip_path)])
+                    binding_api.GetAnimationSourceRel().SetTargets([Sdf.Path(self._walk_clip_path)])
                     try:
                         import omni.kit.app as _omni_kit_app
                         _omni_kit_app.get_app().update()
@@ -832,9 +835,9 @@ def spawn_sim_person(world: Any, x: float, y: float, logger: Optional[logging.Lo
                 skel_root.GetRelationship("animationGraph").ClearTargets(True)
 
             binding_api = UsdSkel.BindingAPI.Apply(skel_root)
-            binding_api.GetAnimationSourceRel().SetTargets([Sdf.Path(idle_anim)])
+            binding_api.GetAnimationSourceRel().SetTargets([Sdf.Path(walk_anim)])
             skel_root_path = str(skel_root.GetPath())
-            print(f"[person_actor] Pre-Fabric idle binding: {skel_root_path} -> {idle_anim}")
+            print(f"[person_actor] Pre-Fabric walk binding: {skel_root_path} -> {walk_anim}")
             # Store the SkelRoot path in module-level cache so ensure_animation_ready can use it
             _skel_root_path_cache["path"] = skel_root_path
         else:
@@ -880,7 +883,7 @@ def spawn_sim_person(world: Any, x: float, y: float, logger: Optional[logging.Lo
         _skel_root_path=_skel_root_path_cache.get("path", ""),
         _walk_clip_path=walk_anim or "",
         _idle_clip_path=idle_anim or "",
-        _anim_clip_state="idle",
+        _anim_clip_state="walk",
     )
 
     if logger is not None:

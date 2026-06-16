@@ -21,7 +21,7 @@ param(
     [int]$IsaacReadyTimeoutSec = 420,
     [int]$KeepRunLogs = 1,
     [int]$MaxRunTimeSec = 900,
-    [string]$LocomotionMode = "procedural",
+    [string]$LocomotionMode = "rl",
     [string]$RlPolicyPath = "",
     [string]$RlPolicyFormat = "auto",
     [double]$RlControlHz = 50.0,
@@ -1063,6 +1063,7 @@ if ($NoIsaac) {
         "-IsaacSimDir", $IsaacSimDir,
         "-RepoRoot", $RepoRoot,
         "-RunLogDir", $RunLogDir,
+        "-RawVideoPath", (Join-Path $VisionLogDir "opencv_preview\raw_camera.mp4"),
         "-FrameHost", $FrameHost,
         "-FramePort", [string]$FramePort,
         "-CmdPort", [string]$CmdPort,
@@ -1146,7 +1147,10 @@ if ($NoDockerRun) {
         "--ecs-log-dir /workspace/run_logs/ecs",
         "--debug-trace-dir /workspace/run_logs/debug_trace",
         "--preview-save-dir /workspace/run_logs/opencv_preview",
-        "--preview-save-fps 5"
+        "--preview-save-fps 5",
+        # raw_camera.mp4 is recorded by Isaac from the external scene Left view;
+        # disable the controller's raw writer so the robot-POV stream isn't duplicated.
+        "--no-raw-video"
     )
     if (-not $VisionPreview) {
         $visionArgs += "--headless"

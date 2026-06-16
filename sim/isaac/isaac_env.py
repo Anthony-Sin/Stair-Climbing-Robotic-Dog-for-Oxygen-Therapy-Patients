@@ -30,10 +30,15 @@ parser.add_argument("--cmd-port", type=int, default=55001,
                     help="UDP port for incoming velocity commands")
 parser.add_argument("--frame-port", type=int, default=55002,
                     help="UDP port for outgoing camera frames")
-parser.add_argument("--physics-hz", type=int, default=60,
-                    help="Physics simulation rate in Hz")
-parser.add_argument("--render-every", type=int, default=2,
-                    help="Publish a camera frame every N physics steps")
+parser.add_argument("--physics-hz", type=int, default=200,
+                    help="Physics simulation rate in Hz. 200 Hz gives integer decimation "
+                         "4 against the 50 Hz RL control rate and fine enough torque "
+                         "integration for a stable gait; lower rates (e.g. 60) make the "
+                         "explicit-PD locomotion unstable. Rendering is decoupled (see "
+                         "--render-every) so the GUI does not pay for 200 fps.")
+parser.add_argument("--render-every", type=int, default=7,
+                    help="Render + publish a camera frame every N physics steps. With "
+                         "--physics-hz 200 this also sets the GUI/render rate; 7 -> ~28 fps.")
 parser.add_argument("--person-x", type=float, default=1.4,
                     help="Initial X position of the person target (kept well beyond "
                          "target_distance from the robot so the robot has forward-follow "
@@ -69,12 +74,12 @@ parser.add_argument("--verification-image", type=str, default="",
                     help="Write a wide scene verification PNG showing robot, person, and stairs")
 parser.add_argument("--exit-after-verification", action="store_true",
                     help="Exit after writing --verification-image")
-parser.add_argument("--locomotion-mode", type=str, default="procedural",
-                    choices=("procedural", "rl"),
-                    help="Low-level Go2 locomotion controller")
+parser.add_argument("--locomotion-mode", type=str, default="rl",
+                    choices=("rl",),
+                    help="Low-level Go2 locomotion controller (RL policy only)")
 parser.add_argument("--rl-policy-path", type=str,
-                    default=str(REPO_ROOT / "sim" / "isaac" / "assets" / "policies" / "go2_policy.pt"),
-                    help="Local TorchScript/ONNX Go2 policy path used when --locomotion-mode rl")
+                    default=str(REPO_ROOT / "sim" / "isaac" / "assets" / "policies" / "go2_robot_lab_policy.pt"),
+                    help="Local TorchScript/ONNX Go2 policy path (rl_sar go2 robot_lab)")
 parser.add_argument("--rl-policy-format", type=str, default="auto",
                     choices=("auto", "torchscript", "torch", "pt", "jit", "onnx"),
                     help="Policy loader format for --rl-policy-path")
@@ -87,6 +92,68 @@ parser.add_argument("--rl-stairs-strategy", type=str, default="policy",
                     help="Use the RL policy on stairs, or switch stairs to procedural crawl")
 parser.add_argument("--spawn-settle-steps", type=int, default=50,
                     help="Zero-command policy/hold steps after spawn before world_ready")
+# Go2 joint PD gains. These are the deployment contract for the rl_sar go2
+# robot_lab policy (policy/go2/robot_lab/config.yaml). The policy was trained
+# with and runs on rl_kp=20, rl_kd=0.5 -- NOT the fixed_kp=80/fixed_kd=3.0, which
+# in rl_sar are only the stiff "getup"/stand gains used to interpolate to the
+# default pose before the policy takes over. Using 80/3.0 for RL control is ~4x
+# too stiff and the policy's position targets then produce violent torques that
+# flip the robot. The gains MUST be applied in radian units (PhysX native) via
+# the articulation API, not only as a degrees-based USD DriveAPI. See
+# _apply_rl_drive_gains().
+parser.add_argument("--rl-kp", type=float, default=20.0,
+                    help="Go2 joint position gain (Nm/rad) for RL control (rl_sar go2 config.yaml rl_kp)")
+parser.add_argument("--rl-kd", type=float, default=0.5,
+                    help="Go2 joint velocity gain (Nm/(rad/s)) for RL control (rl_sar go2 config.yaml rl_kd)")
+parser.add_argument("--rl-torque-limit", type=float, default=23.5,
+                    help="Go2 per-joint torque saturation (Nm) the policy was trained with")
+parser.add_argument("--rl-control-mode", type=str, default="torque",
+                    choices=("torque", "position"),
+                    help="Low-level actuation. 'torque' applies the rl_sar explicit PD law "
+                         "tau=kp*(target-q)-kd*qd clipped to the torque limit (faithful to "
+                         "training); 'position' uses the PhysX implicit position drive.")
+# Headless locomotion self-test: drive a constant forward command directly into
+# the RL policy (no Docker/vision needed) so flat-ground walking and balance can
+# be verified in isolation, then auto-exit and write the evaluation summary.
+parser.add_argument("--self-test-walk", action="store_true",
+                    help="Inject a constant forward velocity command into the RL policy and auto-exit (no controller needed)")
+parser.add_argument("--self-test-vx", type=float, default=0.5,
+                    help="Forward velocity command (m/s) used by --self-test-walk")
+parser.add_argument("--self-test-sec", type=float, default=15.0,
+                    help="Simulated seconds to run --self-test-walk before exiting")
+parser.add_argument("--self-test-no-policy", action="store_true",
+                    help="During self-test, do NOT run the RL policy: hold the default pose via the "
+                         "PD drives only. Isolates whether physics/gains/asset alone can stand.")
+parser.add_argument("--front-cam-out", type=str, default="",
+                    help="Debug: save the robot's FRONT (D435) camera RGB to this PNG after "
+                         "--front-cam-after steps (with the robot frozen at spawn), then exit. "
+                         "Used to check whether the person renders into the front camera YOLO sees.")
+parser.add_argument("--front-cam-after", type=int, default=120,
+                    help="Steps to run before capturing --front-cam-out")
+parser.add_argument("--front-cam-pitch-deg", type=float, default=0.0,
+                    help="Upward tilt (deg) of the manually-placed fallback camera. Default 0 "
+                         "(no tilt) to match the real Go2 camera mounting position. Has no "
+                         "effect when the Go2 USD left perspective camera is used (preferred).")
+# Simulated Hesai XT16 LiDAR (real PhysX raycast against scene geometry, rendered
+# to log_dir/lidar_preview.mp4). See sim_lidar_xt16.py.
+parser.add_argument("--no-lidar-preview", action="store_true",
+                    help="Disable the simulated XT16 LiDAR raycast + preview video.")
+parser.add_argument("--lidar-hz", type=float, default=10.0,
+                    help="XT16 scan rate (Hz). The real XT16 spins at 10/20 Hz.")
+parser.add_argument("--lidar-azimuth-step-deg", type=float, default=3.0,
+                    help="Horizontal angular step between rays (deg). Smaller = denser "
+                         "scan but many more PhysX raycasts per scan (cost scales as "
+                         "16 x 360/step).")
+parser.add_argument("--lidar-view-range-m", type=float, default=6.0,
+                    help="Plot radius (m) for the BEV/range-image colour scale.")
+parser.add_argument("--lidar-max-range-m", type=float, default=50.0,
+                    help="Max ray distance (m) before a return is dropped as no-hit.")
+# raw_camera.mp4 = the external Isaac-Sim scene Left view, recorded sim-side
+# (the robot's own front POV is streamed to the controller for opencv_preview).
+parser.add_argument("--raw-video-path", type=str, default="",
+                    help="MP4 path for the external Isaac scene Left 'raw' view. "
+                         "Empty uses <log-dir>/raw_camera.mp4. run_sim points this at "
+                         "the vision preview dir so it sits beside opencv_preview.mp4.")
 args = parser.parse_args()
 
 # Setup logger
@@ -147,27 +214,31 @@ from isaacsim.sensors.camera import Camera
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
 from sim_go2_locomotion import (
-    GO2_STAND_POSE_RAD,
     Go2LocomotionState,
-    apply_go2_velocity,
     get_stair_demo_telemetry,
-    hold_go2_stable,
+    record_go2_telemetry,
     _extract_roll_pitch_yaw,
 )
 from rl_locomotion_policy import (
+    POLICY_DEFAULT_BY_JOINT,
     RLLocomotionPolicy,
     RLLocomotionPolicyConfig,
     get_dof_names,
 )
 from sim_person_actor import spawn_sim_person
+from sim_lidar_xt16 import Xt16Config, cast_scan, render_preview
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 GO2_USD_PATH   = "/World/Go2"
-# Spawn height (m): ~1 cm above the GO2_STAND_POSE_RAD standing height (0.32 m) so
-# the feet touch down gently instead of dropping and tipping the robot at startup.
-GO2_SPAWN_Z    = 0.40
+# Spawn height (m) of the Go2 body root. With the RL default pose
+# (POLICY_DEFAULT_BY_JOINT: thigh 0.8, calf -1.5) the base stands ~0.33 m above
+# the feet. The RL policy runs with soft kp=20 drives (as trained) which cannot
+# absorb a hard drop, so spawn just above the stand height (~1.5 cm) for a gentle
+# touchdown — a tall drop makes the soft legs splay sideways before the policy
+# can stabilise.
+GO2_SPAWN_Z    = 0.345
 CAMERA_PRIM    = "/World/Sensors/Go2FrontCamera"
 VIEW_CAMERA_PRIM = "/World/View/Go2FollowCamera"
 VERIFICATION_CAMERA_PRIM = "/World/View/SceneVerificationCamera"
@@ -186,7 +257,18 @@ LOCAL_GO2_CANDIDATES = (
 # while older notes/scripts called it "trunk".
 BASE_LINK_NAME = "base"
 
-_go2_locomotion_state = Go2LocomotionState(target_height_m=0.32, use_physics_gait=True)
+# Robot fall thresholds. Shared by the live mid-run watchdog and the post-hoc
+# trajectory evaluator so both agree on what "fell" means.
+#   ROBOT_FALL_TILT_RAD     body roll/pitch beyond this => flipped over (~60 deg)
+#   ROBOT_COLLAPSE_HEIGHT_M body height above terrain below this => collapsed
+ROBOT_FALL_TILT_RAD = 1.05
+ROBOT_COLLAPSE_HEIGHT_M = 0.18
+# Sustain the fall condition this long (sim seconds) before the live watchdog
+# exits, so a transient deep stair step or single bad frame is not a false fall.
+ROBOT_FALL_SUSTAIN_SEC = 0.4
+
+# Telemetry-only state for the stair demo; the RL policy owns joint control.
+_go2_locomotion_state = Go2LocomotionState()
 
 # ---------------------------------------------------------------------------
 # Shared state between threads
@@ -203,6 +285,9 @@ _cmd_vel    = {
 }
 _running    = True
 _front_camera_smoothed_position = None
+# True when add_camera() found and selected the Go2 USD's left perspective camera.
+# In that case the camera is USD-parented to the robot and needs no manual pose updates.
+_using_go2_builtin_camera: bool = False
 
 # ---------------------------------------------------------------------------
 # UDP command receiver  (background thread)
@@ -421,11 +506,11 @@ def load_go2(world: World):
     if changed_count > 0:
         print(f"[load_go2] Changed purpose to 'default' on {changed_count} prims (local URDF asset).")
 
-    # Go2 default standing joint positions (in radians).  Shared with the
-    # settle/hold and gait-neutral pose (sim_go2_locomotion.GO2_STAND_POSE_RAD) so
-    # spawn -> settle -> first command is posture-continuous; a mismatch snaps the
-    # legs mid-drop and tips the robot over backward at startup.
-    STANDING_POSE_RAD = GO2_STAND_POSE_RAD
+    # Go2 spawn joint positions (radians) = the RL policy's neutral/default pose
+    # (rl_locomotion_policy.POLICY_DEFAULT_BY_JOINT: hip 0, thigh 0.8, calf -1.5).
+    # Spawning at the policy's default stance means the first observation starts
+    # from the in-distribution pose the policy was trained around.
+    STANDING_POSE_RAD = POLICY_DEFAULT_BY_JOINT
 
     art_path = ""
     if go2_prim and go2_prim.IsValid():
@@ -437,6 +522,11 @@ def load_go2(world: World):
             if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
                 art_path = str(prim.GetPath())
                 break
+
+        # PhysX articulation solver iterations: keep PhysX/Isaac defaults. An
+        # earlier attempt to raise them (16/4) regressed flat-ground walking (the
+        # marginally-stable policy veered and fell sooner), so we leave the solver
+        # config untouched and rely on the matched control rate + gains instead.
 
         # The base link of a PhysX Reduced Coordinate Articulation MUST be dynamic (non-kinematic).
         # Otherwise, PhysX rejects the articulation root. We set it to False.
@@ -453,8 +543,13 @@ def load_go2(world: World):
                 base_link_path=base_link_path,
             )
 
-        drive_stiffness = 20.0 if args.locomotion_mode == "rl" else 800.0
-        drive_damping = 0.5 if args.locomotion_mode == "rl" else 40.0
+        # RL: author the policy's trained RL control gains (rl_sar go2
+        # config.yaml rl_kp=20, rl_kd=0.5). These USD values seed the drive before
+        # world.reset(); the authoritative radian-unit gains are (re)applied via
+        # _apply_rl_drive_gains() after reset so the degrees-vs-radians USD
+        # ambiguity cannot soften/stiffen them.
+        drive_stiffness = float(args.rl_kp) if args.locomotion_mode == "rl" else 800.0
+        drive_damping = float(args.rl_kd) if args.locomotion_mode == "rl" else 40.0
 
         # Apply joint drives and set initial standing joint positions in USD.
         # USD Physics angular drive targets are in degrees.
@@ -472,7 +567,8 @@ def load_go2(world: World):
                 drive_api.CreateStiffnessAttr(drive_stiffness)
                 drive_api.CreateDampingAttr(drive_damping)
                 drive_api.CreateTargetPositionAttr(target_deg)
-                drive_api.CreateMaxForceAttr(1000.0)
+                max_force = float(args.rl_torque_limit) if args.locomotion_mode == "rl" else 1000.0
+                drive_api.CreateMaxForceAttr(max_force)
 
                 # Set initial joint state so PhysX starts from the standing pose
                 try:
@@ -567,8 +663,16 @@ def _quat_xyzw_from_rpy(roll_rad: float, pitch_rad: float, yaw_rad: float) -> np
 
 
 def set_front_camera_local_pose(camera, *, stage=None, gait_time: float = 0.0, moving: bool = False) -> None:
-    """Keep the simulated D435 visually mounted to Go2 without parenting inside the articulation."""
+    """Manually track the fallback camera to the Go2 body each render step.
+
+    No-op when the Go2 USD's built-in left perspective camera is in use — that
+    camera is USD-parented to the robot and moves with it automatically.
+    """
     global _front_camera_smoothed_position
+    # User specifically requested: use Go2's left perspective camera from its USD so
+    # camera placement matches real hardware exactly (no manual tracking needed).
+    if _using_go2_builtin_camera:
+        return
 
     dx = dy = dz = 0.0
     roll_shake = pitch_shake = yaw_shake = 0.0
@@ -623,7 +727,9 @@ def set_front_camera_local_pose(camera, *, stage=None, gait_time: float = 0.0, m
             alpha = 0.12 if on_stairs else (0.18 if moving else 0.35)
             _front_camera_smoothed_position = _front_camera_smoothed_position + (alpha * delta)
     world_position = _front_camera_smoothed_position.copy()
-    orientation = _quat_xyzw_from_rpy(roll_shake, pitch_shake, yaw + yaw_shake)
+    # No tilt — camera at natural mounting position matching real Go2 hardware.
+    mount_pitch = 0.0
+    orientation = _quat_xyzw_from_rpy(roll_shake, pitch_shake + mount_pitch, yaw + yaw_shake)
 
     try:
         camera.set_world_pose(position=world_position, orientation=orientation)
@@ -642,8 +748,64 @@ def set_front_camera_local_pose(camera, *, stage=None, gait_time: float = 0.0, m
         )
 
 
+def _find_isaac_scene_left_camera(stage) -> Optional[str]:
+    """Find Isaac Sim's built-in Left perspective scene camera.
+
+    # USER-REQUESTED: the raw feed must use the Left perspective camera from the
+    # Isaac Sim scene — NOT from the robot's USD hierarchy. Isaac Sim exposes
+    # viewport cameras at the stage root (e.g. OmniverseKit_Left). We prefer the
+    # Left camera; fall back to Perspective if Left is absent.
+    """
+    from pxr import UsdGeom as _UsdGeom
+
+    # Known Isaac Sim viewport camera prim paths, left-preference order.
+    known_candidates = (
+        "/OmniverseKit_Left",
+        "/OmniverseKit_Persp",
+        "/OmniverseKit_Perspective",
+        "/OmniverseKit_Front",
+        "/OmniverseKit_Right",
+        "/OmniverseKit_Top",
+    )
+    for path in known_candidates:
+        prim = stage.GetPrimAtPath(path)
+        if prim and prim.IsValid() and prim.IsA(_UsdGeom.Camera):
+            return path
+
+    # Fallback: scan stage root children for any camera named "left" first.
+    left_path: Optional[str] = None
+    any_path: Optional[str] = None
+    for prim in stage.GetPseudoRoot().GetChildren():
+        if not prim.IsA(_UsdGeom.Camera):
+            continue
+        path = str(prim.GetPath())
+        if any_path is None:
+            any_path = path
+        if "left" in prim.GetName().lower() and left_path is None:
+            left_path = path
+    return left_path or any_path
+
+
 def add_camera(stage, resolution: tuple = (1280, 720)) -> Camera:
-    """Create a front-facing RGB-D camera that tracks the Go2 body."""
+    """Attach the robot's onboard front D435 perception camera.
+
+    This is the robot's own POV (the camera the real Go2 carries): a manually
+    placed camera tracked to the Go2 body each render step by
+    set_front_camera_local_pose, with D435 intrinsics and no tilt. It is the
+    frame streamed to the controller for YOLO + the OpenCV preview HUD.
+
+    The Isaac Sim scene Left perspective camera is NOT streamed here — it is
+    recorded separately as the external raw_camera.mp4 view via
+    add_scene_left_camera().
+    """
+    global CAMERA_PRIM, _using_go2_builtin_camera
+
+    # Robot front camera: manually-placed, tracked to the body each frame, no tilt.
+    _using_go2_builtin_camera = False
+    log_event(
+        LOGGER, logging.INFO, "front_camera_selected",
+        "Streaming the robot's front D435 onboard camera for perception/preview",
+    )
     log_event(LOGGER, logging.INFO, "camera_stage_ready", "Using existing USD stage for front camera")
     if not stage.GetPrimAtPath("/World/Sensors").IsValid():
         log_event(LOGGER, logging.INFO, "camera_sensor_parent_define_start", "Defining /World/Sensors camera parent prim")
@@ -651,9 +813,7 @@ def add_camera(stage, resolution: tuple = (1280, 720)) -> Camera:
         log_event(LOGGER, logging.INFO, "camera_sensor_parent_define_complete", "Defined /World/Sensors camera parent prim")
     parent_path = resolve_go2_body_prim_path(stage)
     log_event(
-        LOGGER,
-        logging.INFO,
-        "camera_parent_ready",
+        LOGGER, logging.INFO, "camera_parent_ready",
         "Resolved front camera tracking parent",
         camera_path=CAMERA_PRIM,
         tracked_body_prim=parent_path,
@@ -663,36 +823,53 @@ def add_camera(stage, resolution: tuple = (1280, 720)) -> Camera:
         UsdGeom.Camera.Define(stage, CAMERA_PRIM)
         log_event(LOGGER, logging.INFO, "camera_usd_prim_define_complete", "Defined USD camera prim")
     log_event(LOGGER, logging.INFO, "camera_constructor_start", "Constructing Isaac front camera sensor")
-    camera = Camera(
-        prim_path=CAMERA_PRIM,
-        name="front_camera",
-        resolution=resolution,
-    )
+    camera = Camera(prim_path=CAMERA_PRIM, name="front_camera", resolution=resolution)
     log_event(LOGGER, logging.INFO, "camera_constructor_complete", "Isaac front camera sensor constructed")
-    log_event(LOGGER, logging.INFO, "camera_pose_seed_start", "Seeding front camera mount pose")
     set_front_camera_local_pose(camera, stage=stage)
-    log_event(LOGGER, logging.INFO, "camera_pose_seed_complete", "Seeded front camera mount pose")
     log_event(
-        LOGGER,
-        logging.INFO,
-        "camera_attached_to_go2",
+        LOGGER, logging.INFO, "camera_attached_to_go2",
         "Front perception camera tracks the Go2 moving body prim from a safe sensor prim",
         camera_path=CAMERA_PRIM,
         tracked_body_prim=parent_path,
     )
 
-    # Configure physical camera sensor properties to match RealSense D435
-    # 36mm horizontal sensor, 26mm focal length -> ~69.4 deg hFOV
+    # Configure D435 intrinsics for the robot front camera.
     try:
         prim = camera.prim
         prim.GetAttribute("focalLength").Set(26.0)
         prim.GetAttribute("horizontalAperture").Set(36.0)
         prim.GetAttribute("verticalAperture").Set(20.25)
-        log_event(LOGGER, logging.INFO, "camera_intrinsics_configured", "Set D435 camera intrinsics: 36mm aperture, 26mm focal length")
+        prim.GetAttribute("clippingRange").Set(Gf.Vec2f(0.05, 1.0e6))
+        log_event(LOGGER, logging.INFO, "camera_intrinsics_configured",
+                  "Set D435 camera intrinsics: 36mm aperture, 26mm focal length, near clip 0.05m")
     except Exception as e:
         log_event(LOGGER, logging.WARNING, "camera_intrinsics_failed", f"Failed to set camera intrinsics on USD prim: {e}")
 
     return camera
+
+
+def add_scene_left_camera(stage, resolution: tuple = (1280, 720)) -> Optional[Camera]:
+    """Camera sensor on the Isaac Sim scene Left perspective viewport camera.
+
+    Used only to record the external raw_camera.mp4 view (the Isaac-Sim left-side
+    display) — a fixed scene camera, separate from the robot's streamed front POV.
+    Returns None if no scene camera is available (raw recording is then skipped).
+    """
+    path = _find_isaac_scene_left_camera(stage)
+    if path is None:
+        log_event(LOGGER, logging.WARNING, "scene_left_camera_not_found",
+                  "Isaac Sim scene Left camera not found; raw_camera.mp4 recording will be skipped")
+        return None
+    try:
+        camera = Camera(prim_path=path, name="scene_left_camera", resolution=resolution)
+        log_event(LOGGER, logging.INFO, "scene_left_camera_selected",
+                  "Recording external raw view from Isaac Sim scene Left perspective camera",
+                  camera_path=path)
+        return camera
+    except Exception as exc:
+        log_event(LOGGER, logging.WARNING, "scene_left_camera_failed",
+                  "Could not attach Isaac scene Left camera for raw recording", error=str(exc))
+        return None
 
 
 def add_verification_camera(stage, resolution: tuple = (1280, 720)) -> Camera:
@@ -815,8 +992,7 @@ def capture_verification_image(
                 try:
                     if rl_policy is not None:
                         _step_go2_locomotion(go2, rl_policy, 0.0, 0.0, 0.0, dt, stairs_detected=False)
-                    else:
-                        hold_go2_stable(go2, _go2_locomotion_state, dt, logger=None)
+                    # else: USD joint drives hold the spawned default pose.
                 except Exception:
                     pass
             if person is not None:
@@ -831,8 +1007,7 @@ def capture_verification_image(
                 try:
                     if rl_policy is not None:
                         _step_go2_locomotion(go2, rl_policy, 0.0, 0.0, 0.0, dt, stairs_detected=False)
-                    else:
-                        hold_go2_stable(go2, _go2_locomotion_state, dt, logger=None)
+                    # else: USD joint drives hold the spawned default pose.
                 except Exception:
                     pass
             if person is not None:
@@ -904,6 +1079,80 @@ def get_terrain_height(x: float, y: float) -> float:
         return 0.96
     # Flat ground
     return 0.0
+
+
+_PHYSX_QUERY_IFACE = None
+_PHYSX_QUERY_RESOLVED = False
+
+
+def _get_physx_query_iface():
+    """Lazily resolve a PhysX scene-query interface usable for raycasts."""
+    global _PHYSX_QUERY_IFACE, _PHYSX_QUERY_RESOLVED
+    if _PHYSX_QUERY_RESOLVED:
+        return _PHYSX_QUERY_IFACE
+    _PHYSX_QUERY_RESOLVED = True
+    try:
+        from omni.physx import get_physx_scene_query_interface
+        _PHYSX_QUERY_IFACE = get_physx_scene_query_interface()
+    except Exception:
+        try:
+            import omni.physx
+            _PHYSX_QUERY_IFACE = omni.physx.get_physx_interface()
+        except Exception as exc:
+            log_event(LOGGER, logging.WARNING, "lidar_physx_iface_missing",
+                      "No PhysX scene-query interface available; XT16 LiDAR will return no hits",
+                      error=str(exc))
+            _PHYSX_QUERY_IFACE = None
+    return _PHYSX_QUERY_IFACE
+
+
+def _physx_raycast_distance(origin, direction, max_dist):
+    """raycast_fn for sim_lidar_xt16: cast one ray, return hit distance or None.
+
+    Tolerates the different shapes raycast_closest returns across Isaac builds
+    (dict with hit/distance/position, or a (hit_bool, hit_info) tuple).
+    """
+    iface = _get_physx_query_iface()
+    if iface is None:
+        return None
+    try:
+        hit = iface.raycast_closest(
+            (float(origin[0]), float(origin[1]), float(origin[2])),
+            (float(direction[0]), float(direction[1]), float(direction[2])),
+            float(max_dist),
+        )
+    except Exception:
+        return None
+    if not hit:
+        return None
+
+    def _from_position(pos):
+        dx = float(pos[0]) - float(origin[0])
+        dy = float(pos[1]) - float(origin[1])
+        dz = float(pos[2]) - float(origin[2])
+        return math.sqrt(dx * dx + dy * dy + dz * dz)
+
+    if isinstance(hit, dict):
+        if not hit.get("hit"):
+            return None
+        if hit.get("distance") is not None:
+            return float(hit["distance"])
+        if hit.get("position") is not None:
+            return _from_position(hit["position"])
+        return None
+    if isinstance(hit, (list, tuple)) and len(hit) >= 2:
+        if not hit[0]:
+            return None
+        info = hit[1]
+        dist = getattr(info, "distance", None)
+        if dist is not None:
+            return float(dist)
+        pos = getattr(info, "position", None)
+        if pos is None and isinstance(info, dict):
+            pos = info.get("position")
+        if pos is not None:
+            return _from_position(pos)
+    return None
 
 
 def _add_visual_box(world: World, prim_path: str, name: str, position, scale, color, orientation=None) -> bool:
@@ -1768,11 +2017,6 @@ class FramePublisher:
         self._sock.close()
 
 
-def apply_velocity_to_go2(go2: Articulation, vx: float, vy: float, wz: float, dt: float, stairs_detected: bool = False) -> None:
-    vx = max(0.0, float(vx))
-    apply_go2_velocity(go2, vx, vy, wz, dt, state=_go2_locomotion_state, base_link_name=BASE_LINK_NAME, logger=LOGGER, stairs_detected=stairs_detected)
-
-
 def create_and_bind_friction_material(stage, prim_paths: list, material_path: str = "/World/PhysicsMaterials/HighFrictionMaterial"):
     from pxr import UsdPhysics, Sdf
     material_prim = stage.GetPrimAtPath(material_path)
@@ -1972,56 +2216,192 @@ def ensure_person_animation_loaded(world: World, person, *, render: bool, attemp
 
 
 # ---------------------------------------------------------------------------
+# Go2 RL joint PD gains (called after world.reset())
+# ---------------------------------------------------------------------------
+def _set_go2_drive_gains(go2, kp: float, kd: float, torque_limit: float, *, reason: str) -> None:
+    """Set the Go2 articulation PhysX drive gains directly, in radian units.
+
+    Authoring gains only as a USD angular DriveAPI is ambiguous because USD
+    angular drive targets are in DEGREES, so the effective stiffness can be ~57x
+    off. After world.reset() the PhysX articulation is live and its gains can be
+    set directly in radian units (what set_joint_position_targets uses), so this is
+    the source of truth. Used both to install the rl_sar position-hold gains
+    (rl_kp=20, rl_kd=0.5) before the policy starts and to zero them for explicit
+    torque control (the policy then applies its own PD as joint efforts).
+    """
+    dof_names = get_dof_names(go2)
+    n = len(dof_names) or int(getattr(go2, "num_dof", 0) or 0)
+    if n <= 0:
+        log_event(LOGGER, logging.WARNING, "rl_gains_skipped",
+                  "Could not determine Go2 DOF count; drive gains not applied")
+        return
+    kps = np.full(n, float(kp), dtype=np.float32)
+    kds = np.full(n, float(kd), dtype=np.float32)
+    efforts = np.full(n, float(torque_limit), dtype=np.float32)
+
+    applied_via = None
+    try:
+        controller = go2.get_articulation_controller()
+        if controller is not None:
+            controller.set_gains(kps=kps, kds=kds)
+            applied_via = "articulation_controller.set_gains"
+            try:
+                controller.set_max_efforts(efforts)
+            except Exception:
+                pass
+    except Exception as exc:
+        log_event(LOGGER, logging.DEBUG, "rl_gains_controller_failed",
+                  "ArticulationController.set_gains unavailable", error=str(exc))
+
+    if applied_via is None:
+        for setter in ("set_gains", "set_joint_gains"):
+            method = getattr(go2, setter, None)
+            if callable(method):
+                try:
+                    method(kps=kps, kds=kds)
+                    applied_via = f"go2.{setter}"
+                    break
+                except Exception:
+                    try:
+                        method(kps, kds)
+                        applied_via = f"go2.{setter}"
+                        break
+                    except Exception:
+                        pass
+
+    # Read the gains back so the log reflects what PhysX actually holds.
+    readback_kp = readback_kd = None
+    try:
+        gains = go2.get_articulation_controller().get_gains()
+        if gains is not None:
+            readback_kp = float(np.asarray(gains[0]).reshape(-1)[0])
+            readback_kd = float(np.asarray(gains[1]).reshape(-1)[0])
+    except Exception:
+        pass
+
+    log_event(
+        LOGGER, logging.INFO, "rl_drive_gains_applied",
+        "Set Go2 articulation drive gains (radian units)",
+        reason=reason, applied_via=applied_via or "none", dof_count=int(n),
+        kp=float(kp), kd=float(kd), torque_limit_nm=float(torque_limit),
+        readback_kp=readback_kp, readback_kd=readback_kd,
+    )
+    if applied_via is None:
+        log_event(LOGGER, logging.WARNING, "rl_drive_gains_fallback_usd",
+                  "No runtime gain API succeeded; relying on USD DriveAPI authoring (degrees)")
+
+
+def _apply_rl_drive_gains(go2) -> None:
+    """Install the rl_sar position-hold gains (rl_kp/rl_kd) after world.reset().
+
+    These hold the robot at the standing pose through the remaining setup steps
+    (person animation, verification). In torque control mode the gains are later
+    zeroed at the start of the settle loop (see _settle_go2_spawn) so the policy's
+    explicit PD torque is the sole actuation.
+    """
+    if args.locomotion_mode != "rl":
+        return
+    _set_go2_drive_gains(go2, float(args.rl_kp), float(args.rl_kd),
+                         float(args.rl_torque_limit), reason="position_hold_pre_policy")
+
+
+def _go2_standing_joint_targets(go2):
+    """Return (standing_rad, dof_names): the policy default pose in the
+    articulation's own DOF order, matched BY JOINT NAME.
+
+    The Nucleus Go2 reports its DOFs joint-type-major (all hips, then thighs, then
+    calves), so a positional [hip,thigh,calf]x4 array would scramble the pose.
+    """
+    dof_names = get_dof_names(go2)
+    standing_rad = np.zeros(len(dof_names), dtype=float)
+    unmatched = []
+    for idx, raw in enumerate(dof_names):
+        low = str(raw).lower()
+        joint = next((j for j in ("hip", "thigh", "calf") if j in low), None)
+        if joint is None:
+            unmatched.append(str(raw))
+            continue
+        standing_rad[idx] = float(POLICY_DEFAULT_BY_JOINT.get(joint, 0.0))
+    return standing_rad, dof_names, unmatched
+
+
+def _freeze_go2_at_spawn(go2) -> None:
+    """Hold the robot perfectly still at its spawn pose facing the person (+X).
+
+    Used while the demo is gated waiting for the first controller command. Sets the
+    joints to the default pose, pins the base at (go2_x, 0, spawn_z) with identity
+    orientation, and zeroes all velocities -- a clean kinematic freeze. This keeps
+    the robot's forward camera pointed at the person so YOLO can detect it and send
+    the first command (a free RL stand would slowly drift/yaw out of frame). The
+    policy takes over the instant scene motion is released.
+    """
+    try:
+        standing_rad, _names, _ = _go2_standing_joint_targets(go2)
+        setter = getattr(go2, "set_joint_positions", None)
+        if callable(setter):
+            setter(standing_rad)
+        vz = getattr(go2, "set_joint_velocities", None)
+        if callable(vz):
+            vz(np.zeros(len(standing_rad)))
+    except Exception:
+        pass
+    try:
+        if hasattr(go2, "set_world_pose"):
+            go2.set_world_pose(
+                position=np.array([float(args.go2_x), 0.0, float(GO2_SPAWN_Z)]),
+                orientation=np.array([1.0, 0.0, 0.0, 0.0]),  # (w,x,y,z) identity -> faces +X
+            )
+        if hasattr(go2, "set_linear_velocity"):
+            go2.set_linear_velocity(np.zeros(3))
+        if hasattr(go2, "set_angular_velocity"):
+            go2.set_angular_velocity(np.zeros(3))
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Go2 standing pose initialisation (called after world.reset())
 # ---------------------------------------------------------------------------
 def _init_go2_standing_pose(go2) -> None:
     """Set Go2 joint positions to the standing pose immediately after world.reset().
 
-    This prevents the robot from collapsing on the first simulation step.
-    Joint order for the Nucleus Go2:
-      FL_hip, FL_thigh, FL_calf, FR_hip, FR_thigh, FR_calf,
-      RL_hip, RL_thigh, RL_calf, RR_hip, RR_thigh, RR_calf
+    This prevents the robot from collapsing on the first simulation step AND, just
+    as important, starts the robot at the RL policy's exact default pose so the
+    policy's first observation (dof_pos - default) is ~zero. The pose is applied
+    BY JOINT NAME (see _go2_standing_joint_targets).
     """
-    import math as _math
-    # Standing pose in radians (Isaac Lab training defaults)
-    HIP_RAD   = 0.0
-    THIGH_RAD = 0.9     # ~51.6°
-    CALF_RAD  = -1.8    # ~-103°
-
-    standing_rad = np.array([
-        HIP_RAD, THIGH_RAD, CALF_RAD,   # FL
-        HIP_RAD, THIGH_RAD, CALF_RAD,   # FR
-        HIP_RAD, THIGH_RAD, CALF_RAD,   # RL
-        HIP_RAD, THIGH_RAD, CALF_RAD,   # RR
-    ], dtype=float)
-
     try:
         go2.initialize()
     except Exception:
         pass  # may already be initialised
 
-    # Try to set joint positions via the articulation API
+    standing_rad, dof_names, unmatched = _go2_standing_joint_targets(go2)
+    if not dof_names:
+        log_event(LOGGER, logging.WARNING, "go2_standing_pose_no_dofs",
+                  "Could not read Go2 DOF names; standing pose not applied")
+        return
+    if unmatched:
+        log_event(LOGGER, logging.WARNING, "go2_standing_pose_unmatched_dofs",
+                  "Some Go2 DOFs did not match hip/thigh/calf; left at 0",
+                  unmatched=unmatched)
+
+    applied = False
+    # Seed both the measured state (set_joint_positions) and the drive target
+    # (set_joint_position_targets) so PhysX neither snaps from a different pose
+    # nor immediately drives away from the one we just set.
     for method_name in ("set_joint_positions", "set_joint_position_targets"):
         method = getattr(go2, method_name, None)
         if callable(method):
             try:
-                # Try with matching DOF count
-                n_dof = getattr(go2, "num_dof", None)
-                if n_dof is not None and int(n_dof) > 0:
-                    n = int(n_dof)
-                    padded = np.tile(
-                        standing_rad, int(n / len(standing_rad)) + 1
-                    )[:n]
-                    method(padded)
-                else:
-                    method(standing_rad)
+                method(standing_rad)
+                applied = True
                 log_event(
                     LOGGER,
                     logging.INFO,
                     "go2_standing_pose_set",
-                    f"Go2 standing joint pose applied via {method_name}",
+                    f"Go2 standing joint pose applied by name via {method_name}",
+                    dof_count=len(dof_names),
                 )
-                break
             except Exception as exc:
                 log_event(
                     LOGGER,
@@ -2029,6 +2409,9 @@ def _init_go2_standing_pose(go2) -> None:
                     "go2_standing_pose_attempt",
                     f"{method_name} failed: {exc}",
                 )
+    if not applied:
+        log_event(LOGGER, logging.WARNING, "go2_standing_pose_failed",
+                  "No joint-position API succeeded for the Go2 standing pose")
 
     # Align the root xform with the spawn position so the USD visual matches physics.
     try:
@@ -2042,23 +2425,20 @@ def _init_go2_standing_pose(go2) -> None:
 
 
 def _create_rl_locomotion_policy(go2) -> Optional[RLLocomotionPolicy]:
-    if args.locomotion_mode != "rl":
-        return None
-
     dof_names = get_dof_names(go2)
     policy_path = Path(args.rl_policy_path)
     if not policy_path.is_absolute():
         policy_path = (REPO_ROOT / policy_path).resolve()
-    policy = RLLocomotionPolicy(
-        RLLocomotionPolicyConfig(
-            policy_path=str(policy_path),
-            policy_format=args.rl_policy_format,
-            control_hz=float(args.rl_control_hz),
-            action_scale=float(args.rl_action_scale),
-        ),
-        dof_names,
-        logger=LOGGER,
+    config = RLLocomotionPolicyConfig(
+        policy_path=str(policy_path),
+        policy_format=args.rl_policy_format,
+        control_hz=float(args.rl_control_hz),
+        control_mode=str(args.rl_control_mode),
+        kp=float(args.rl_kp),
+        kd=float(args.rl_kd),
+        torque_limit=float(args.rl_torque_limit),
     )
+    policy = RLLocomotionPolicy(config, dof_names, logger=LOGGER)
     log_event(
         LOGGER,
         logging.INFO,
@@ -2067,9 +2447,8 @@ def _create_rl_locomotion_policy(go2) -> Optional[RLLocomotionPolicy]:
         policy_path=str(policy_path),
         policy_format=args.rl_policy_format,
         control_hz=float(args.rl_control_hz),
-        action_scale=float(args.rl_action_scale),
         dof_count=len(dof_names),
-        observation_size=12 + (3 * len(dof_names)),
+        observation_size=int(config.num_observations),
     )
     return policy
 
@@ -2085,29 +2464,52 @@ def _step_go2_locomotion(
     stairs_detected: bool = False,
 ) -> None:
     vx = max(0.0, float(vx))
-    if (
-        rl_policy is not None
-        and not (stairs_detected and args.rl_stairs_strategy == "procedural")
-    ):
-        telemetry = rl_policy.step(go2, (vx, vy, wz), dt)
-        if not getattr(rl_policy, "_active_logged", False):
-            setattr(rl_policy, "_active_logged", True)
-            log_event(
-                LOGGER,
-                logging.INFO,
-                "rl_locomotion_policy_active",
-                "Go2 RL policy is writing joint targets",
-                **telemetry,
-            )
+    if rl_policy is None:
         return
-
-    apply_velocity_to_go2(go2, vx, vy, wz, dt, stairs_detected=stairs_detected)
+    if getattr(args, "self_test_no_policy", False):
+        # Diagnostic A/B: skip inference so the PD drives hold the authored
+        # default pose. If the robot stands here but flips with the policy on,
+        # the obs/policy path is at fault, not physics/gains/asset.
+        record_go2_telemetry(
+            go2, _go2_locomotion_state, base_link_name=BASE_LINK_NAME,
+            logger=LOGGER, vx=vx, vy=vy, wz=wz,
+        )
+        return
+    telemetry = rl_policy.step(go2, (vx, vy, wz), dt)
+    if not getattr(rl_policy, "_active_logged", False):
+        setattr(rl_policy, "_active_logged", True)
+        log_event(
+            LOGGER,
+            logging.INFO,
+            "rl_locomotion_policy_active",
+            "Go2 RL policy is writing joint targets",
+            **telemetry,
+        )
+    # Rebuild the stair-demo telemetry from the policy-driven body pose so the
+    # perception/stair report stays populated (the policy moves the joints; this
+    # only observes the resulting motion).
+    record_go2_telemetry(
+        go2,
+        _go2_locomotion_state,
+        base_link_name=BASE_LINK_NAME,
+        logger=LOGGER,
+        vx=vx,
+        vy=vy,
+        wz=wz,
+    )
 
 
 def _settle_go2_spawn(world: World, go2, rl_policy: Optional[RLLocomotionPolicy], steps: int, dt: float) -> None:
     settle_steps = max(0, int(steps))
     if settle_steps <= 0:
         return
+    # Hand the joints over to the policy. In torque mode the policy applies its own
+    # PD as explicit joint efforts, so the PhysX position drive is zeroed here -- at
+    # the start of the loop that applies torque every step -- to avoid double
+    # control. Until this point the position-hold gains kept the robot standing.
+    if args.locomotion_mode == "rl" and str(args.rl_control_mode).lower() == "torque":
+        _set_go2_drive_gains(go2, 0.0, 0.0, float(args.rl_torque_limit),
+                             reason="zeroed_for_explicit_torque_control")
     log_event(
         LOGGER,
         logging.INFO,
@@ -2116,12 +2518,35 @@ def _settle_go2_spawn(world: World, go2, rl_policy: Optional[RLLocomotionPolicy]
         steps=settle_steps,
         locomotion_mode=args.locomotion_mode,
     )
-    for _ in range(settle_steps):
+    for i in range(settle_steps):
         if rl_policy is not None:
             _step_go2_locomotion(go2, rl_policy, 0.0, 0.0, 0.0, dt, stairs_detected=False)
-        else:
-            hold_go2_stable(go2, _go2_locomotion_state, dt, logger=LOGGER)
         world.step(render=not args.headless)
+        # Diagnostic: watch the robot's posture settle (or splay) at zero command
+        # before world_ready, so a spawn-time collapse is visible without motion.
+        if i % 10 == 0:
+            robot = get_stair_demo_telemetry(_go2_locomotion_state).get("robot", {})
+            pdiag = {}
+            if rl_policy is not None:
+                try:
+                    pdiag = rl_policy.diagnostics()
+                except Exception:
+                    pdiag = {}
+            log_event(
+                LOGGER, logging.INFO, "go2_settle_diag",
+                "settle diagnostic",
+                step=int(i),
+                height_m=robot.get("height_m"),
+                roll_deg=robot.get("roll_deg"),
+                pitch_deg=robot.get("pitch_deg"),
+                fell=robot.get("fell"),
+                # Policy view at zero command: action should stay small and
+                # projected_gravity ~ [0,0,-1] while standing.
+                action_norm=pdiag.get("action_norm"),
+                action_max_abs=pdiag.get("action_max_abs"),
+                proj_gravity=pdiag.get("projected_gravity"),
+                ang_vel_body=pdiag.get("ang_vel_body"),
+            )
     log_event(
         LOGGER,
         logging.INFO,
@@ -2179,23 +2604,23 @@ def _run_evaluation_and_save_images(
             roll, pitch, yaw = pt["rpy"]
             terrain_z = get_terrain_height(rx, ry)
             height = rz - terrain_z
-            if abs(roll) > 1.05 or abs(pitch) > 1.05:
+            if abs(roll) > ROBOT_FALL_TILT_RAD or abs(pitch) > ROBOT_FALL_TILT_RAD:
                 robot_fell = True
                 robot_fall_type = "flipped over"
                 break
-            if height < 0.18:
+            if height < ROBOT_COLLAPSE_HEIGHT_M:
                 robot_fell = True
                 robot_fall_type = "collapsed"
-                
+
         # Analyze final state details
         last_pt = robot_trajectory[-1]
         rx, ry, rz = last_pt["pos"]
         roll, pitch, yaw = last_pt["rpy"]
         terrain_z = get_terrain_height(rx, ry)
         height = rz - terrain_z
-        
+
         if robot_fell:
-            if abs(roll) > 1.05 or abs(pitch) > 1.05:
+            if abs(roll) > ROBOT_FALL_TILT_RAD or abs(pitch) > ROBOT_FALL_TILT_RAD:
                 robot_fall_type = "flipped over"
             else:
                 robot_fall_type = "collapsed"
@@ -2372,6 +2797,7 @@ def main() -> None:
     camera = add_camera(stage)
     verification_camera = add_verification_camera(stage) if (args.verification_image or args.log_dir) else None
     topdown_camera = add_topdown_camera(stage)
+    scene_left_camera = add_scene_left_camera(stage)
 
     log_event(LOGGER, logging.INFO, "person_spawn_start", "Spawning person target")
     person = spawn_person(world, x=args.person_x, y=args.person_y)
@@ -2390,13 +2816,34 @@ def main() -> None:
                   error=str(_td_exc))
         topdown_camera = None
 
+    if scene_left_camera is not None:
+        try:
+            scene_left_camera.initialize()
+            scene_left_camera.add_rgb_to_frame()
+            log_event(LOGGER, logging.INFO, "scene_left_camera_initialized",
+                      "Isaac scene Left camera sensor initialized for raw recording")
+        except Exception as _sl_exc:
+            log_event(LOGGER, logging.WARNING, "scene_left_camera_init_failed",
+                      "Scene Left camera init failed; raw_camera.mp4 recording will be skipped",
+                      error=str(_sl_exc))
+            scene_left_camera = None
+
     # After world.reset() the articulation is fully initialised; set the Go2
     # joints to the standing pose so the robot doesn't collapse.
     _init_go2_standing_pose(go2)
+    # Install the rl_sar position-hold gains in radian units (overrides the USD
+    # degree-unit DriveAPI authoring). These hold the robot standing through the
+    # remaining setup; torque mode zeroes them at the start of the settle loop.
+    _apply_rl_drive_gains(go2)
     rl_policy = _create_rl_locomotion_policy(go2)
-    _settle_go2_spawn(world, go2, rl_policy, args.spawn_settle_steps, 1.0 / max(1, int(args.physics_hz)))
 
+    # Load the person animation BEFORE the settle. ensure_person_animation_loaded
+    # may step the world, and the settle hands the joints to the policy (zeroing
+    # the position-hold drive in torque mode) -- so the robot must still be held by
+    # the drive while the animation graph loads.
     animation_ready = ensure_person_animation_loaded(world, person, render=not args.headless, attempts=4)
+
+    _settle_go2_spawn(world, go2, rl_policy, args.spawn_settle_steps, 1.0 / max(1, int(args.physics_hz)))
 
     if verification_camera is not None and args.verification_image and args.exit_after_verification:
         capture_verification_image(world, verification_camera, args.verification_image, go2=go2, person=person, rl_policy=rl_policy)
@@ -2465,6 +2912,40 @@ def main() -> None:
         if topdown_video_dir:
             os.makedirs(topdown_video_dir, exist_ok=True)
 
+    # Raw external view (Isaac scene Left camera) -> raw_camera.mp4. run_sim points
+    # --raw-video-path at the vision preview dir so it sits beside opencv_preview.mp4
+    # (the controller's raw writer is disabled via --no-raw-video). Starts with the
+    # top-down recorder once scene motion is released.
+    raw_video_path = args.raw_video_path or (
+        os.path.join(args.log_dir, "raw_camera.mp4") if args.log_dir else "")
+    raw_video_writer = None
+    if scene_left_camera is not None and raw_video_path:
+        raw_video_dir = os.path.dirname(raw_video_path)
+        if raw_video_dir:
+            os.makedirs(raw_video_dir, exist_ok=True)
+    else:
+        raw_video_path = ""
+
+    # Simulated Hesai XT16 LiDAR: real PhysX raycasts against the scene geometry,
+    # rendered to log_dir/lidar_preview.mp4 (BEV scatter + range image). Scanned at
+    # --lidar-hz, throttled relative to the camera render rate.
+    lidar_enabled = bool(args.log_dir) and not args.no_lidar_preview
+    lidar_video_path = os.path.join(args.log_dir, "lidar_preview.mp4") if lidar_enabled else ""
+    lidar_video_writer = None
+    lidar_config = Xt16Config(
+        azimuth_step_deg=float(args.lidar_azimuth_step_deg),
+        max_range_m=float(args.lidar_max_range_m),
+    )
+    _render_rate_hz = args.physics_hz / max(1, args.render_every)
+    lidar_scan_stride = max(1, int(round(_render_rate_hz / max(0.1, args.lidar_hz))))
+    if lidar_enabled:
+        log_event(LOGGER, logging.INFO, "lidar_preview_configured",
+                  "Simulated XT16 LiDAR enabled",
+                  path=lidar_video_path,
+                  scan_hz=round(_render_rate_hz / lidar_scan_stride, 2),
+                  rays_per_scan=lidar_config.channels * lidar_config.n_azimuth,
+                  azimuth_step_deg=lidar_config.azimuth_step_deg)
+
     # Stale command timeout: stop robot if no command received for this long
     CMD_TIMEOUT_SEC = 1.0
     motion_wait_logged = False
@@ -2480,6 +2961,8 @@ def main() -> None:
     robot_stair_phase_sim_sec = 0.0
     robot_top_landing_seen = False
     robot_stair_visibility_logged = False
+    # Live fall watchdog: sim-time at which the robot first looked fallen (None when upright)
+    robot_fall_since_sim_sec = None
     evaluation_exit_reason = "not_recorded"
     evaluation_done = False
     DEMO_SIM_TIMEOUT_SEC = 120.0
@@ -2490,8 +2973,15 @@ def main() -> None:
             if stage is not None:
                 update_scene_lighting(stage, time.monotonic())
 
-            world.step(render=not args.headless)
+            # Decouple rendering from the physics/control rate. Physics + RL torque
+            # run every step (200 Hz) for a stable gait, but we only render on the
+            # frame-publish cadence (--render-every) so the GUI/RTX renderer does
+            # not have to draw 200 fps. The camera frame block below uses the same
+            # cadence, so a fresh render is available exactly when it reads RGB.
             step_count += 1
+            _render_enabled = (not args.headless) or bool(args.front_cam_out)
+            render_now = _render_enabled and (step_count % args.render_every == 0)
+            world.step(render=render_now)
 
             # Read latest velocity command (zero out if stale)
             with _cmd_lock:
@@ -2508,6 +2998,15 @@ def main() -> None:
                     wz = _cmd_vel["wz"]
                     stairs_detected = _cmd_vel.get("stairs_detected", False)
                     command_fresh = True
+            # Self-test: bypass the Docker/vision controller entirely and drive a
+            # constant forward command straight into the RL policy. Lets us verify
+            # flat-ground walking and balance in isolation (headless, no UDP).
+            if args.self_test_walk:
+                vx, vy, wz = float(args.self_test_vx), 0.0, 0.0
+                stairs_detected = False
+                command_fresh = True
+                cmd_count = max(cmd_count, 1)
+                active_count = max(active_count, 1)
             controller_stream_seen = cmd_count > 0
             nonzero_command_fresh = (
                 command_fresh
@@ -2537,15 +3036,27 @@ def main() -> None:
                 )
  
             _loco_ts = time.monotonic()
-            if rl_policy is not None:
-                if controller_ready and nonzero_command_fresh:
-                    _step_go2_locomotion(go2, rl_policy, vx, vy, wz, dt, stairs_detected=stairs_detected)
-                else:
-                    _step_go2_locomotion(go2, rl_policy, 0.0, 0.0, 0.0, dt, stairs_detected=False)
+            if not scene_motion_allowed:
+                # Demo has not started yet (waiting for the first controller command).
+                # FREEZE the robot at its spawn pose facing the person (+X) instead of
+                # running the RL policy. A free RL stand has no absolute position/yaw
+                # feedback, so at zero command it slowly drifts and yaws -- which turns
+                # the robot's forward camera off the person, so YOLO never detects the
+                # person, never sends a command, and the motion gate never releases
+                # (deadlock). Freezing keeps the person centred in frame until the
+                # controller sends the first command, then the policy takes over.
+                _freeze_go2_at_spawn(go2)
+                record_go2_telemetry(
+                    go2, _go2_locomotion_state, base_link_name=BASE_LINK_NAME,
+                    logger=LOGGER, vx=0.0, vy=0.0, wz=0.0,
+                )
             elif controller_ready and nonzero_command_fresh:
-                apply_velocity_to_go2(go2, vx, vy, wz, dt, stairs_detected=stairs_detected)
+                _step_go2_locomotion(go2, rl_policy, vx, vy, wz, dt, stairs_detected=stairs_detected)
             else:
-                hold_go2_stable(go2, _go2_locomotion_state, dt, logger=LOGGER)
+                # Demo running, momentarily no fresh command: hold a balanced stand
+                # with the policy (the robot has already started walking, so do not
+                # re-freeze -- that would teleport it back).
+                _step_go2_locomotion(go2, rl_policy, 0.0, 0.0, 0.0, dt, stairs_detected=False)
             log_event(
                 LOGGER,
                 logging.DEBUG,
@@ -2557,21 +3068,11 @@ def main() -> None:
                 vy=round(float(vy), 4),
                 wz=round(float(wz), 4),
                 cmd_active=bool(controller_ready and nonzero_command_fresh),
+                scene_motion_allowed=bool(scene_motion_allowed),
                 gait_phase=round(float(_go2_locomotion_state.gait_phase), 4),
                 gait_time=round(float(_go2_locomotion_state.gait_time), 4),
                 swing_legs=list(getattr(_go2_locomotion_state, "current_swing_legs", [])),
             )
- 
-            # Centerline clamping removed to enable real physics and dynamic steering.
-            # We only zero out velocities to hold position until autonomous scene motion is released.
-            try:
-                if not scene_motion_allowed:
-                    if hasattr(go2, "set_linear_velocity"):
-                        go2.set_linear_velocity(np.zeros(3))
-                    if hasattr(go2, "set_angular_velocity"):
-                        go2.set_angular_velocity(np.zeros(3))
-            except Exception:
-                pass
 
             if view_camera is not None:
                 view_camera.update(go2, dt)
@@ -2595,6 +3096,20 @@ def main() -> None:
                 if motion_start_time is None:
                     motion_start_time = time.monotonic()
                 motion_elapsed_sim_sec += dt
+                # Self-test: stop after the requested walk duration and report.
+                if args.self_test_walk and motion_elapsed_sim_sec >= float(args.self_test_sec):
+                    evaluation_done = True
+                    evaluation_exit_reason = "self_test_walk_complete"
+                    log_event(
+                        LOGGER,
+                        logging.INFO,
+                        "evaluation_exit",
+                        "Self-test walk duration reached; stopping run",
+                        reason=evaluation_exit_reason,
+                        motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
+                        self_test_vx=float(args.self_test_vx),
+                    )
+                    break
                 stair_demo_now = get_stair_demo_telemetry(_go2_locomotion_state)
                 stair_phase_now = str(stair_demo_now.get("phase", "unknown"))
                 if stair_phase_now == "staircase":
@@ -2654,7 +3169,71 @@ def main() -> None:
                 # Monitor end conditions
                 now_mono = time.monotonic()
                 elapsed_motion = motion_elapsed_sim_sec
-                
+
+                # Condition 0: live fall watchdog. If the robot has flipped or
+                # collapsed and stays that way for ROBOT_FALL_SUSTAIN_SEC, stop the
+                # run immediately instead of burning the rest of the time budget.
+                if _robot_positions_over_time:
+                    last_robot = _robot_positions_over_time[-1]
+                    lrx, lry, lrz = last_robot["pos"]
+                    lroll, lpitch, _lyaw = last_robot["rpy"]
+                    robot_height_now = lrz - get_terrain_height(lrx, lry)
+                    robot_fallen_now = (
+                        abs(lroll) > ROBOT_FALL_TILT_RAD
+                        or abs(lpitch) > ROBOT_FALL_TILT_RAD
+                        or robot_height_now < ROBOT_COLLAPSE_HEIGHT_M
+                    )
+                    if step_count % 15 == 0:
+                        policy_diag = {}
+                        if rl_policy is not None:
+                            try:
+                                policy_diag = rl_policy.diagnostics()
+                            except Exception:
+                                policy_diag = {}
+                        log_event(
+                            LOGGER, logging.INFO, "fall_diag",
+                            "fall diagnostic",
+                            t=round(float(motion_elapsed_sim_sec), 3),
+                            x=round(float(lrx), 3), y=round(float(lry), 3),
+                            h=round(float(robot_height_now), 3),
+                            roll=round(math.degrees(lroll), 1),
+                            pitch=round(math.degrees(lpitch), 1),
+                            yaw=round(math.degrees(_lyaw), 1),
+                            vx=round(float(vx), 3), wz=round(float(wz), 3),
+                            # Measured base velocity in the robot heading frame.
+                            # body_vx>0 => actually moving forward; compare to vx.
+                            body_vx=round(float(_go2_locomotion_state.diag_body_vx), 3),
+                            body_vy=round(float(_go2_locomotion_state.diag_body_vy), 3),
+                            # RL policy view: what it saw and how hard it acted.
+                            action_norm=policy_diag.get("action_norm"),
+                            action_max_abs=policy_diag.get("action_max_abs"),
+                            proj_gravity=policy_diag.get("projected_gravity"),
+                            ang_vel_body=policy_diag.get("ang_vel_body"),
+                            policy_cmd=policy_diag.get("commands"),
+                            inferences=policy_diag.get("inference_count"),
+                        )
+                    if not robot_fallen_now:
+                        robot_fall_since_sim_sec = None
+                    else:
+                        if robot_fall_since_sim_sec is None:
+                            robot_fall_since_sim_sec = motion_elapsed_sim_sec
+                        elif (motion_elapsed_sim_sec - robot_fall_since_sim_sec) >= ROBOT_FALL_SUSTAIN_SEC:
+                            evaluation_done = True
+                            evaluation_exit_reason = "robot_fell"
+                            log_event(
+                                LOGGER,
+                                logging.WARNING,
+                                "evaluation_exit",
+                                "Robot fell (flipped or collapsed); stopping run early",
+                                reason=evaluation_exit_reason,
+                                robot_height_m=round(float(robot_height_now), 3),
+                                roll_rad=round(float(lroll), 3),
+                                pitch_rad=round(float(lpitch), 3),
+                                motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
+                                stair_phase=stair_phase_now,
+                            )
+                            break
+
                 # Condition 1: reached destination (patient stops)
                 if _patient_state is not None and _patient_state.at_destination:
                     if destination_reached_time is None:
@@ -2730,6 +3309,20 @@ def main() -> None:
                             )
                     rgb_data   = camera.get_rgb()
                     depth_data = camera.get_depth()
+                    # Debug: dump the front-camera RGB (what YOLO sees) and exit.
+                    # Used to confirm the person is rendered and framed for detection.
+                    if args.front_cam_out and step_count >= int(args.front_cam_after) and rgb_data is not None:
+                        try:
+                            import cv2 as _cv2dbg
+                            _img = np.asarray(rgb_data)
+                            if _img.ndim == 3 and _img.shape[2] == 4:
+                                _img = _img[:, :, :3]
+                            _cv2dbg.imwrite(args.front_cam_out, _cv2dbg.cvtColor(_img.astype(np.uint8), _cv2dbg.COLOR_RGB2BGR))
+                            log_event(LOGGER, logging.INFO, "front_cam_captured",
+                                      "Saved front camera debug image", path=args.front_cam_out, step=int(step_count))
+                        except Exception as _e:
+                            log_event(LOGGER, logging.WARNING, "front_cam_capture_failed", "front cam debug save failed", error=str(_e))
+                        break
                     if rgb_data is not None and depth_data is not None:
                         # depth_data is in metres; convert to uint16 millimetres
                         depth_mm = (depth_data * 1000.0).clip(0, 65535).astype(np.uint16)
@@ -2739,7 +3332,66 @@ def main() -> None:
                         gt_distractor = None
                         stair_demo = get_stair_demo_telemetry(_go2_locomotion_state)
                         swing_legs = list(getattr(_go2_locomotion_state, "current_swing_legs", []))
-                        
+
+                        # Simulated XT16 LiDAR: real raycast against scene geometry,
+                        # rendered to lidar_preview.mp4. Throttled to ~--lidar-hz and
+                        # merged into the HUD telemetry so "SIM LIDAR" shows real hits.
+                        if lidar_enabled and (step_count // args.render_every) % lidar_scan_stride == 0:
+                            try:
+                                robot_pose = stair_demo.get("robot", {})
+                                scan = cast_scan(
+                                    lidar_config,
+                                    (
+                                        float(robot_pose.get("x_m", 0.0)),
+                                        float(robot_pose.get("y_m", 0.0)),
+                                        float(robot_pose.get("z_m", 0.0)),
+                                    ),
+                                    math.radians(float(robot_pose.get("yaw_deg", 0.0))),
+                                    _physx_raycast_distance,
+                                )
+                                lidar_block = dict(stair_demo.get("lidar", {}))
+                                lidar_block.update({
+                                    "model": "hesai_xt16_sim_raycast",
+                                    "ray_count": int(scan.n_rays),
+                                    "hit_count": int(scan.n_hits),
+                                    "hit_ratio": round(float(scan.hit_ratio), 3),
+                                    "min_range_m": (None if scan.min_range_m is None
+                                                    else round(float(scan.min_range_m), 3)),
+                                })
+                                stair_demo = dict(stair_demo)
+                                stair_demo["lidar"] = lidar_block
+
+                                import cv2 as _cv2_lidar
+                                preview = render_preview(scan, float(args.lidar_view_range_m))
+                                if lidar_video_writer is None:
+                                    lh, lw = preview.shape[:2]
+                                    import platform as _ld_plat
+                                    _ld_codecs = ("avc1", "mp4v") if _ld_plat.system() == "Windows" else ("mp4v",)
+                                    _ldvw = None
+                                    for _codec in _ld_codecs:
+                                        _ldvw = _cv2_lidar.VideoWriter(
+                                            lidar_video_path,
+                                            _cv2_lidar.VideoWriter_fourcc(*_codec),
+                                            max(1.0, float(args.lidar_hz)),
+                                            (int(lw), int(lh)),
+                                        )
+                                        if _ldvw.isOpened():
+                                            break
+                                        _ldvw.release(); _ldvw = None
+                                    if _ldvw is not None and _ldvw.isOpened():
+                                        lidar_video_writer = _ldvw
+                                        log_event(LOGGER, logging.INFO, "lidar_video_started",
+                                                  "XT16 LiDAR preview recording started",
+                                                  path=lidar_video_path)
+                                if lidar_video_writer is not None:
+                                    lidar_video_writer.write(preview)
+                            except Exception as exc:
+                                _warn_lidar = getattr(main, "_lidar_warned", False)
+                                if not _warn_lidar:
+                                    main._lidar_warned = True
+                                    log_event(LOGGER, logging.WARNING, "lidar_scan_failed",
+                                              "XT16 LiDAR scan/render failed", error=str(exc))
+
                         # Depth noise is applied inside publisher.send after downsampling
                         publisher.send(rgb_data, depth_mm, vx, vy, wz, gt_patient, gt_distractor, stair_demo, swing_legs)
                 except Exception as exc:
@@ -2783,6 +3435,41 @@ def main() -> None:
                     except Exception:
                         pass
 
+                # Raw external view recording (Isaac scene Left camera) -> raw_camera.mp4
+                if scene_left_camera is not None and raw_video_path and topdown_recording_released:
+                    try:
+                        import cv2 as _cv2_raw
+                        sl_rgb = scene_left_camera.get_rgb()
+                        if sl_rgb is not None:
+                            sl_arr = np.asarray(sl_rgb)
+                            if sl_arr.ndim == 3 and sl_arr.shape[2] == 4:
+                                sl_arr = sl_arr[:, :, :3]
+                            sl_bgr = _cv2_raw.cvtColor(sl_arr.astype(np.uint8), _cv2_raw.COLOR_RGB2BGR)
+                            if raw_video_writer is None:
+                                sl_h, sl_w = sl_bgr.shape[:2]
+                                import platform as _raw_plat
+                                _raw_codecs = ("avc1", "mp4v") if _raw_plat.system() == "Windows" else ("mp4v",)
+                                _rvw = None
+                                for _codec in _raw_codecs:
+                                    _rvw = _cv2_raw.VideoWriter(
+                                        raw_video_path,
+                                        _cv2_raw.VideoWriter_fourcc(*_codec),
+                                        max(1.0, args.physics_hz / max(1, args.render_every)),
+                                        (int(sl_w), int(sl_h)),
+                                    )
+                                    if _rvw.isOpened():
+                                        break
+                                    _rvw.release(); _rvw = None
+                                if _rvw is not None and _rvw.isOpened():
+                                    raw_video_writer = _rvw
+                                    log_event(LOGGER, logging.INFO, "raw_video_started",
+                                              "Raw external (Isaac scene Left) recording started",
+                                              path=raw_video_path)
+                            if raw_video_writer is not None:
+                                raw_video_writer.write(sl_bgr)
+                    except Exception:
+                        pass
+
         # After loop exits, run evaluation and capture final image
         if evaluation_done or (_robot_positions_over_time or _person_positions_over_time):
             _run_evaluation_and_save_images(
@@ -2805,6 +3492,20 @@ def main() -> None:
                 topdown_video_writer.release()
                 log_event(LOGGER, logging.INFO, "topdown_video_saved", "Top-down video recording finalized",
                           path=topdown_video_path)
+            except Exception:
+                pass
+        if lidar_video_writer is not None:
+            try:
+                lidar_video_writer.release()
+                log_event(LOGGER, logging.INFO, "lidar_video_saved", "XT16 LiDAR preview recording finalized",
+                          path=lidar_video_path)
+            except Exception:
+                pass
+        if raw_video_writer is not None:
+            try:
+                raw_video_writer.release()
+                log_event(LOGGER, logging.INFO, "raw_video_saved", "Raw external (Isaac scene Left) recording finalized",
+                          path=raw_video_path)
             except Exception:
                 pass
         simulation_app.close()

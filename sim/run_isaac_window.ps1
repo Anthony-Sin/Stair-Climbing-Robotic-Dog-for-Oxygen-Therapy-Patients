@@ -2,10 +2,11 @@ param(
     [Parameter(Mandatory = $true)][string]$IsaacSimDir,
     [Parameter(Mandatory = $true)][string]$RepoRoot,
     [Parameter(Mandatory = $true)][string]$RunLogDir,
+    [string]$RawVideoPath = "",
     [Parameter(Mandatory = $true)][string]$FrameHost,
     [int]$FramePort = 55002,
     [int]$CmdPort = 55001,
-    [string]$LocomotionMode = "procedural",
+    [string]$LocomotionMode = "rl",
     [string]$RlPolicyPath = "",
     [string]$RlPolicyFormat = "auto",
     [double]$RlControlHz = 50.0,
@@ -77,7 +78,13 @@ if ($RlPolicyPath) {
     $rlArgs = "$rlArgs --rl-policy-path `"$RlPolicyPath`""
 }
 
-$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" --person-move --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera $rlArgs > `"$RawLog`" 2>&1`""
+# Isaac records the external scene Left view to raw_camera.mp4 (beside opencv_preview.mp4).
+$rawArg = ""
+if ($RawVideoPath) {
+    $rawArg = "--raw-video-path `"$RawVideoPath`""
+}
+
+$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" --person-move --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera $rawArg $rlArgs > `"$RawLog`" 2>&1`""
 
 # Start the process with direct OS redirection to prevent pipeline blocking
 $process = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs -PassThru -NoNewWindow

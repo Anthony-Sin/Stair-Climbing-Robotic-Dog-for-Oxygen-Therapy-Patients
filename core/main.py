@@ -615,7 +615,11 @@ def main():
     preview_video_writer = None
 
     raw_video_path = getattr(args, "raw_video_path", "")
-    if not raw_video_path and args.preview_save_dir:
+    if getattr(args, "no_raw_video", False):
+        # In sim, Isaac records raw_camera.mp4 from the external scene Left view,
+        # so the controller's raw writer is disabled to avoid a duplicate file.
+        raw_video_path = ""
+    elif not raw_video_path and args.preview_save_dir:
         raw_video_path = os.path.join(args.preview_save_dir, "raw_camera.mp4")
     if raw_video_path and not args.preview_save_dir:
         raw_video_dir = os.path.dirname(raw_video_path)

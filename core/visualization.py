@@ -646,7 +646,8 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
     has_sim_telemetry = bool(stair_demo)
     stair_lidar = stair_demo.get("lidar", {}) if stair_demo else {}
     lidar_ok = bool(stair_lidar.get("ray_count", 0))
-    lidar_str = "SYNTH OK" if lidar_ok else "STANDBY"
+    lidar_is_real = str(stair_lidar.get("model", "")).startswith("hesai")
+    lidar_str = ("XT16 SIM" if lidar_is_real else "SYNTH OK") if lidar_ok else "STANDBY"
     imu_str = "TELEM OK" if robot_data else "STANDBY"
     roll_deg = _safe_float(robot_data.get("roll_deg"), 0.0)
     pitch_deg = _safe_float(robot_data.get("pitch_deg"), 0.0)
@@ -705,6 +706,14 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
     stair_conf_text = f"{stairs_conf * 100:.1f}%" if stairs_detected else "0.0%"
     lidar_conf = stair_lidar.get("confidence")
     lidar_ray_count = stair_lidar.get("ray_count")
+    lidar_hit_count = stair_lidar.get("hit_count")
+    lidar_min_range = stair_lidar.get("min_range_m")
+    if lidar_hit_count is not None:
+        # Real XT16 raycast: show returns / total and nearest echo.
+        near_txt = f"@{_safe_float(lidar_min_range):.1f}m" if lidar_min_range is not None else "no echo"
+        sim_lidar_val = f"{lidar_hit_count}/{lidar_ray_count or 0} {near_txt}"
+    else:
+        sim_lidar_val = f"{lidar_ray_count or 0} rays {(_safe_float(lidar_conf) * 100.0):.0f}%"
 
     p2_lines = [
         ("LOCK STATE:", lock_status, lock_color),
@@ -713,7 +722,7 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
         ("CMD SPEED:", f"{trans_x_cmd:+.2f} m/s", active_color),
         ("CMD YAW RATE:", f"{rotation_cmd:+.2f} rad/s", active_color),
         ("STAIRS:", f"{stair_status} {stair_conf_text}", (0, 255, 255) if stairs_detected else (150, 150, 150)),
-        ("SIM LIDAR:", f"{lidar_ray_count or 0} rays {(_safe_float(lidar_conf) * 100.0):.0f}%", active_color if lidar_ok else (150, 150, 150)),
+        ("SIM LIDAR:", sim_lidar_val, active_color if lidar_ok else (150, 150, 150)),
     ]
     
     stair_gap_steps = debug_info.get("stair_follow_gap_steps")

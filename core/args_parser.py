@@ -216,6 +216,9 @@ def parse_args():
                         help='Yaw command scale while stairs are detected nearby')
     parser.add_argument('--raw-video-path', type=str, default='',
                         help='MP4 path for raw camera frame recording (no overlays); empty disables')
+    parser.add_argument('--no-raw-video', action='store_true',
+                        help='Disable the controller-side raw_camera.mp4 writer. Used in sim, '
+                             'where Isaac records raw_camera.mp4 from the external scene Left view.')
     parser.add_argument('--stair-too-close-distance', type=float, default=0.35,
                         help='Stop all forward motion when stair depth is at/below this distance (meters)')
     parser.add_argument('--no-obstacle-stop', dest='obstacle_stop_enabled',
