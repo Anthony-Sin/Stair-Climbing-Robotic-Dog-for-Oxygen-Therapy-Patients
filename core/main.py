@@ -845,6 +845,11 @@ def main():
                 follow_input_person, depth_img, (img.shape[0], img.shape[1]),
                 lidar_profile=frame_meta.get("lidar_profile"),
             )
+            # LIVE stair trigger (sensor-derived): YOLO-World detection on RGB
+            # (yolo_stairs_inference) + depth-camera distance below. This is what
+            # _apply_stair_command_policy gates on -- NOT the sim_go2_locomotion
+            # demo_4d_elevation_raycast / stair_demo overlay, which is HUD/report
+            # decoration computed from ground-truth pose and drives nothing.
             stairs_result = yolo_stairs.get_latest_result()
             if stairs_result.get("detected", False):
                 stair_latch_counter = int(args.stairs_latch_frames)

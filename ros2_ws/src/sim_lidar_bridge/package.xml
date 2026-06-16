@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://relaxng.org/ns/structure/1.0"?>
+<package format="3">
+  <name>sim_lidar_bridge</name>
+  <version>0.1.0</version>
+  <description>
+    Sim-side bridge for the Isaac Go2 environment. Receives the real XT16 raycast
+    point cloud + robot pose from isaac_env over UDP and republishes them on the
+    SAME ROS2 topics the real robot uses (/xt16/lidar_points PointCloud2, /odom,
+    TF), and forwards Nav2's /cmd_vel_smoothed back to Isaac over UDP. This lets the
+    real Nav2 / costmap / MPPI stack run unchanged against sim data. On the real
+    robot this node is not run: the Hesai driver publishes /xt16/lidar_points and
+    go2_nav_bridge publishes /odom + drives the robot, on the identical topics.
+  </description>
+  <maintainer email="codex@example.com">Codex</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

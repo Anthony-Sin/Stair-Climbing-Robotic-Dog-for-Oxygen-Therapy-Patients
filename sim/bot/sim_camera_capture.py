@@ -212,6 +212,11 @@ class SimCameraCapture:
                     bgr   = rotate_image(bgr,   self.rotate)
                     depth = rotate_image(depth, self.rotate)
 
+                # NOTE: this sim depth already carries RealSense D435 realism
+                # applied sender-side in isaac_env.FramePublisher.send
+                # (apply_realsense_depth_noise: range-dependent noise, edge
+                # dropouts, holes + apply_lens_distortion). It is NOT a clean
+                # ground-truth depth buffer; downstream depth methods see noise.
                 depth_frame = SimDepthFrame(depth)
                 self._seq_received += 1
 

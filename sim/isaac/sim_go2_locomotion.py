@@ -345,6 +345,21 @@ def _build_stair_demo_telemetry(
     body_height_target_m: Optional[float],
     vertical_assist_mps: float,
 ) -> Dict[str, Any]:
+    """Build the synthetic stair-demo HUD/report overlay. DECORATION ONLY.
+
+    This (and its helpers `_terrain_phase` / `_next_stair_edge` /
+    `_get_analytical_terrain_height`) is derived from the robot's exact
+    ground-truth pose and the hard-coded stair geometry. It populates the
+    `stair_demo` telemetry for the HUD/reports and drives NOTHING: not the
+    command, not the RL policy, not physics (it is recorded with
+    `vertical_assist_mps=0.0` / `body_height_target_m=None`).
+
+    The LIVE stair trigger is sensor-derived and lives elsewhere:
+    `core/main.py` sets `debug_info["stairs_detected"]` from
+    `yolo_stairs_inference` (YOLO-World on RGB) + the depth camera, and
+    `_apply_stair_command_policy` gates on that. Do not mistake this overlay's
+    `lidar.detected` for the real signal (see CLAUDE.md incident ledger).
+    """
     phase = _terrain_phase(rx, ry)
     edge_x, current_h, next_h = _next_stair_edge(rx, ry)
     distance_to_step_m = None if edge_x is None else max(0.0, edge_x - rx)

@@ -207,6 +207,16 @@ parser.add_argument("--lidar-view-range-m", type=float, default=6.0,
                     help="Plot radius (m) for the BEV/range-image colour scale.")
 parser.add_argument("--lidar-max-range-m", type=float, default=50.0,
                     help="Max ray distance (m) before a return is dropped as no-hit.")
+parser.add_argument("--ros2-bridge", dest="ros2_bridge", action="store_true", default=False,
+                    help="Emit the real XT16 point cloud + robot pose over UDP to the "
+                         "sim_lidar_bridge ROS2 node, which republishes /xt16/lidar_points "
+                         "(PointCloud2) + /odom + TF and forwards Nav2's /cmd_vel_smoothed back "
+                         "here. Runs the real Nav2/costmap/MPPI stack against sim data; on the "
+                         "real robot the Hesai driver publishes that topic directly instead.")
+parser.add_argument("--ros2-bridge-host", type=str, default="127.0.0.1",
+                    help="Destination host for the ROS2 bridge cloud/odom UDP sidecar.")
+parser.add_argument("--ros2-bridge-port", type=int, default=55003,
+                    help="Destination UDP port for the ROS2 bridge cloud/odom sidecar.")
 # raw_camera.mp4 = the external Isaac-Sim scene Left view, recorded sim-side
 # (the robot's own front POV is streamed to the controller for opencv_preview).
 parser.add_argument("--raw-video-path", type=str, default="",
@@ -2271,6 +2281,66 @@ class FramePublisher:
         self._sock.close()
 
 
+class Ros2BridgeCloudSender:
+    """Send the real XT16 point cloud + robot pose to the sim_lidar_bridge ROS2 node.
+
+    Isaac's bundled Python cannot host rclpy, so the genuine cast_scan() cloud crosses
+    to ROS2 over this UDP sidecar; the bridge republishes it as the real
+    /xt16/lidar_points (PointCloud2) + /odom + TF. This is NOT a fake/stub source --
+    it carries the actual raycast hits. On the real robot this hop disappears: the
+    Hesai driver publishes /xt16/lidar_points directly and Nav2 is unchanged.
+    """
+
+    MAX_UDP_PAYLOAD_BYTES = 60000
+
+    def __init__(self, host: str, port: int) -> None:
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 21)
+        self._dest = (host, int(port))
+        self._seq = 0
+        log_event(LOGGER, logging.INFO, "ros2_bridge_sender_started",
+                  "ROS2 bridge cloud/odom UDP sidecar ready", host=host, port=int(port))
+
+    def send(self, points_sensor: np.ndarray, robot_pose: dict) -> None:
+        import base64
+        import zlib
+
+        seq = self._seq
+        self._seq += 1
+        pts = np.asarray(points_sensor, dtype=np.float32).reshape(-1, 3)
+        # Keep the packet inside one UDP datagram; decimate the (real) cloud if a
+        # very dense scan would overflow -- a real LiDAR has finite density too.
+        while pts.shape[0] > 0:
+            blob = base64.b64encode(zlib.compress(pts.tobytes(), level=6)).decode("ascii")
+            if len(blob) <= self.MAX_UDP_PAYLOAD_BYTES or pts.shape[0] <= 1:
+                break
+            pts = pts[::2]
+        payload = {
+            "seq": int(seq),
+            "ts": float(time.time()),
+            "frame_id": "hesai_xt16",
+            "pose": {
+                "x": float(robot_pose.get("x_m", 0.0)),
+                "y": float(robot_pose.get("y_m", 0.0)),
+                "z": float(robot_pose.get("z_m", 0.0)),
+                "yaw_deg": float(robot_pose.get("yaw_deg", 0.0)),
+            },
+            "n_points": int(pts.shape[0]),
+            "points": blob,
+        }
+        try:
+            self._sock.sendto(json.dumps(payload).encode("utf-8"), self._dest)
+        except Exception as exc:
+            log_event(LOGGER, logging.WARNING, "ros2_bridge_send_failed",
+                      "ROS2 bridge cloud send failed", error=str(exc))
+
+    def close(self) -> None:
+        try:
+            self._sock.close()
+        except Exception:
+            pass
+
+
 def create_and_bind_friction_material(stage, prim_paths: list, material_path: str = "/World/PhysicsMaterials/HighFrictionMaterial",
                                        *, dynamic_friction: float = 1.0, static_friction: float = 1.2, restitution: float = 0.0):
     from pxr import UsdPhysics, Sdf
@@ -3202,6 +3272,10 @@ def main() -> None:
     cmd_thread.start()
 
     publisher  = FramePublisher(host=args.frame_host, port=args.frame_port)
+    ros2_bridge_sender = (
+        Ros2BridgeCloudSender(args.ros2_bridge_host, args.ros2_bridge_port)
+        if args.ros2_bridge else None
+    )
     dt         = 1.0 / args.physics_hz
     step_count = 0
 
@@ -3736,6 +3810,11 @@ def main() -> None:
                                 lidar_profile_latest = profile_from_scan(
                                     scan, float(args.lidar_view_range_m)
                                 )
+
+                                # Full 3D cloud + pose to the ROS2 bridge (real
+                                # /xt16/lidar_points + /odom + TF for Nav2/costmap).
+                                if ros2_bridge_sender is not None:
+                                    ros2_bridge_sender.send(scan.points_sensor, robot_pose)
 
                                 if lidar_video_path:
                                     import cv2 as _cv2_lidar
