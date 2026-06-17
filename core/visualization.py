@@ -927,116 +927,145 @@ def _draw_lidar_bev_panel(combined: np.ndarray, x: int, y: int, w: int, h: int,
                           depth_m: Optional[float] = None,
                           confidence: Optional[float] = None,
                           disagreement: bool = False) -> None:
-    """Draw the XT16 polar profile as a real top-down range view."""
+    """Forward-arc XT16 view: robot at bottom, forward=up, front 180° with distance zones."""
     accent = HUD_ALERT if alert else active_color
-    _draw_hud_panel(combined, x, y, w, h, "XT16 LIDAR BEV", accent, alert=alert)
+    _draw_hud_panel(combined, x, y, w, h, "XT16 LIDAR FRONT VIEW", accent, alert=alert)
 
-    pad = 10
+    pad = 8
     readout_h = 20
     ax0, ay0 = x + pad, y + 36
     ax1, ay1 = x + w - pad, y + h - pad - readout_h
     if ax1 <= ax0 + 10 or ay1 <= ay0 + 10:
         return
 
-    bev_bg = (82, 128, 163)
-    bev_ink = (10, 20, 25)
-    cv2.rectangle(combined, (ax0, ay0), (ax1, ay1), bev_bg, -1)
+    cv2.rectangle(combined, (ax0, ay0), (ax1, ay1), (8, 12, 14), -1)
     cv2.rectangle(combined, (ax0, ay0), (ax1, ay1), HUD_INK, 1, cv2.LINE_AA)
+
     decoded = decode_lidar_profile(profile)
     if decoded is None:
         cv2.putText(combined, "LIDAR PROFILE: N/A", (ax0 + 10, (ay0 + ay1) // 2),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, HUD_MUTED, 1, cv2.LINE_AA)
         return
 
-    bw, bh = ax1 - ax0, ay1 - ay0
-    cx, cy = ax0 + bw // 2, ay0 + bh // 2
+    bw = ax1 - ax0
+    cx = ax0 + bw // 2
+    cy = ay1 - 8   # robot at bottom-center; arc extends upward
+
     view_range = max(0.5, float(decoded.get("view_range_m", 6.0)))
-    radius_px = max(2.0, min(bw, bh) * 0.5 - 4)
+    radius_px = max(5.0, float(min(bw // 2 - 4, cy - ay0 - 4)))
     scale = radius_px / view_range
 
-    for r_ring in range(1, int(math.floor(view_range)) + 1):
+    # Distance-zone filled semicircles (largest first so smaller override)
+    for rng_m, fill_col in [
+        (view_range, (14, 22, 16)),   # dark green — clear zone
+        (3.0,        (18, 32, 12)),   # green — moderate zone
+        (1.5,        (32, 40, 10)),   # olive — caution zone
+        (0.8,        (44, 14, 10)),   # dark red — danger zone
+    ]:
+        rp = int(min(rng_m, view_range) * scale)
+        if rp >= 3:
+            cv2.ellipse(combined, (cx, cy), (rp, rp), 0, 180, 360, fill_col, -1)
+
+    # Range ring outlines with distance labels
+    for r_ring in range(1, int(math.ceil(view_range)) + 1):
         rp = int(round(r_ring * scale))
-        if 1 < rp < radius_px:
-            cv2.circle(combined, (cx, cy), rp, (66, 88, 96), 1, cv2.LINE_AA)
-            cv2.putText(combined, f"{r_ring}m", (cx + rp - 18, cy - 4),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.25, (56, 76, 82), 1, cv2.LINE_AA)
+        if 2 < rp <= int(radius_px) + 2:
+            ring_col = (80, 22, 18) if r_ring == 1 else ((55, 72, 18) if r_ring <= 3 else (34, 48, 36))
+            cv2.ellipse(combined, (cx, cy), (rp, rp), 0, 180, 360, ring_col, 1, cv2.LINE_AA)
+            lx = min(ax1 - 16, cx + rp + 2)
+            if ax0 < lx < ax1:
+                cv2.putText(combined, f"{r_ring}m", (lx, cy - 4),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.24, (54, 68, 54), 1, cv2.LINE_AA)
 
-    for deg in range(0, 360, 30):
-        rad = math.radians(deg)
-        x2 = int(round(cx - math.sin(rad) * radius_px))
-        y2 = int(round(cy - math.cos(rad) * radius_px))
-        cv2.line(combined, (cx, cy), (x2, y2), (62, 81, 88), 1, cv2.LINE_AA)
+    # Azimuth spokes every 30° across front 180°
+    for deg in range(-90, 91, 30):
+        rad_ang = math.radians(deg)
+        sx = int(cx - math.sin(rad_ang) * radius_px)
+        sy = int(cy - math.cos(rad_ang) * radius_px)
+        cv2.line(combined, (cx, cy), (sx, max(ay0, sy)), (28, 38, 30), 1, cv2.LINE_AA)
 
-    ranges = np.asarray(decoded.get("ranges_m"), dtype=np.float32)
-    if ranges.size:
-        n = int(ranges.shape[0])
-        ang = np.arange(n, dtype=np.float32) * (2.0 * math.pi / max(1, n))
-        valid = ranges > 0.0
-        if np.any(valid):
-            valid_ranges = ranges[valid]
-            valid_ang = ang[valid]
-            u = (cx - np.sin(valid_ang) * valid_ranges * scale).astype(np.int32)
-            v = (cy - np.cos(valid_ang) * valid_ranges * scale).astype(np.int32)
-            inb = (u >= ax0) & (u < ax1) & (v >= ay0) & (v < ay1)
-            if np.any(inb):
-                rr = np.clip(valid_ranges[inb] / view_range, 0.0, 1.0)
-                brightness = (60.0 + 120.0 * (1.0 - rr)).astype(np.uint8)
-                colors = np.zeros((int(np.sum(inb)), 3), dtype=np.uint8)
-                colors[:, 0] = np.clip(brightness * 0.45, 24, 90)
-                colors[:, 1] = np.clip(brightness * 0.70, 35, 135)
-                colors[:, 2] = np.clip(brightness * 0.95, 45, 190)
-                uu, vv = u[inb], v[inb]
-                combined[vv, uu] = colors
-                for du, dv in ((1, 0), (0, 1), (1, 1)):
-                    mu, mv = uu + du, vv + dv
-                    ok = (mu >= ax0) & (mu < ax1) & (mv >= ay0) & (mv < ay1)
-                    combined[mv[ok], mu[ok]] = colors[ok]
-                step = max(1, len(uu) // 96)
-                for px, py in zip(uu[::step], vv[::step]):
-                    cv2.circle(combined, (int(px), int(py)), 2, bev_ink, -1, cv2.LINE_AA)
+    # LiDAR returns — front 180° only, color-coded by distance
+    ranges = np.asarray(decoded.get("ranges_m", []), dtype=np.float32)
+    n = int(ranges.size)
+    min_fwd = None  # nearest hit within ±30° forward cone
 
-            outline = []
-            for rng_i, ang_i in zip(ranges, ang):
-                if float(rng_i) <= 0.0:
-                    continue
-                px = int(round(cx - math.sin(float(ang_i)) * min(float(rng_i), view_range) * scale))
-                py = int(round(cy - math.cos(float(ang_i)) * min(float(rng_i), view_range) * scale))
-                if ax0 <= px < ax1 and ay0 <= py < ay1:
-                    outline.append([px, py])
-            if len(outline) > 2:
-                cv2.polylines(combined, [np.array(outline, dtype=np.int32)],
-                              False, bev_ink, 2, cv2.LINE_AA)
+    if n > 0:
+        ang_step = 2.0 * math.pi / max(1, n)
+        for i in range(n):
+            ang = i * ang_step
+            ang_w = ang if ang <= math.pi else ang - 2.0 * math.pi  # wrap to -π..+π
+            if abs(ang_w) > math.pi * 0.5:
+                continue  # skip rear 180°
+            rng = float(ranges[i])
+            if rng <= 0.0:
+                continue
+            pu = int(cx - math.sin(ang) * min(rng, view_range) * scale)
+            pv = int(cy - math.cos(ang) * min(rng, view_range) * scale)
+            if not (ax0 <= pu < ax1 and ay0 <= pv < ay1):
+                continue
+            if rng < 0.8:
+                dot_c = (40, 40, 220)    # red — danger
+            elif rng < 1.5:
+                dot_c = (30, 155, 230)   # orange — caution
+            elif rng < 3.0:
+                dot_c = (30, 215, 120)   # yellow-green — moderate
+            else:
+                dot_c = (60, 200, 70)    # green — clear
+            cv2.circle(combined, (pu, pv), 2, dot_c, -1, cv2.LINE_AA)
+            if abs(ang_w) <= math.radians(30):
+                if min_fwd is None or rng < min_fwd:
+                    min_fwd = rng
 
-    robot = np.array([[cx, cy - 8], [cx - 6, cy + 6], [cx + 6, cy + 6]], dtype=np.int32)
+    # Outer arc boundary + forward heading line
+    arc_rp = int(radius_px)
+    if arc_rp > 3:
+        cv2.ellipse(combined, (cx, cy), (arc_rp, arc_rp), 0, 180, 360, HUD_EDGE_DIM, 1, cv2.LINE_AA)
+    cv2.line(combined, (cx, cy), (cx, max(ay0 + 2, cy - arc_rp)), (44, 60, 50), 1, cv2.LINE_AA)
+
+    # Robot glyph: gold triangle pointing up (forward)
+    robot = np.array([[cx, cy - 8], [cx - 5, cy + 3], [cx + 5, cy + 3]], dtype=np.int32)
     cv2.fillPoly(combined, [robot], HUD_GOLD)
     cv2.polylines(combined, [robot], True, HUD_INK, 1, cv2.LINE_AA)
-    cv2.putText(combined, "F", (cx - 4, ay0 + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.28,
-                bev_ink, 1, cv2.LINE_AA)
 
+    # Cardinal labels
+    cv2.putText(combined, "FWD", (cx - 12, ay0 + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.28, HUD_CYAN, 1, cv2.LINE_AA)
+    if cx - arc_rp > ax0 + 2:
+        cv2.putText(combined, "L", (ax0 + 3, cy - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.28, HUD_MUTED, 1, cv2.LINE_AA)
+    if cx + arc_rp < ax1 - 8:
+        cv2.putText(combined, "R", (ax1 - 10, cy - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.28, HUD_MUTED, 1, cv2.LINE_AA)
+
+    # Person bearing ray
     if person_bearing_rad is not None:
-        target_range = float(lidar_m) if lidar_m is not None and float(lidar_m) > 0.0 else view_range
-        ray_len = min(target_range, view_range) * scale
-        tx = int(round(cx - math.sin(person_bearing_rad) * ray_len))
-        ty = int(round(cy - math.cos(person_bearing_rad) * ray_len))
-        target_color = HUD_ALERT if disagreement else HUD_GOLD
-        cv2.line(combined, (cx, cy), (tx, ty), target_color, 1, cv2.LINE_AA)
-        cv2.circle(combined, (tx, ty), 4, target_color, -1, cv2.LINE_AA)
+        pr_rng = float(lidar_m) if lidar_m is not None and float(lidar_m) > 0.0 else view_range
+        pr_len = min(pr_rng, view_range) * scale
+        tx = int(cx - math.sin(person_bearing_rad) * pr_len)
+        ty = int(cy - math.cos(person_bearing_rad) * pr_len)
+        if ax0 <= tx < ax1 and ay0 <= ty < ay1:
+            tgt_c = HUD_ALERT if disagreement else HUD_GOLD
+            cv2.line(combined, (cx, cy), (tx, ty), tgt_c, 1, cv2.LINE_AA)
+            cv2.circle(combined, (tx, ty), 4, tgt_c, -1, cv2.LINE_AA)
 
+    # Readout: nearest-ahead distance + zone status
     hit_count = int(decoded.get("hit_count", 0))
     ray_count = int(decoded.get("ray_count", 0))
-    min_range = decoded.get("min_range_m")
-    near_txt = f"{float(min_range):.2f}m" if min_range is not None else "--"
-    l_txt = f"L {float(lidar_m):.2f}m" if lidar_m is not None else "L --"
-    d_txt = f"D {float(depth_m):.2f}m" if depth_m is not None else "D --"
-    c_txt = f"{float(confidence) * 100:.0f}%" if confidence is not None else "--"
+    if min_fwd is not None:
+        if min_fwd < 0.8:
+            fwd_col, fwd_lbl = (40, 40, 230), "DANGER"
+        elif min_fwd < 1.5:
+            fwd_col, fwd_lbl = (30, 155, 230), "CAUTION"
+        else:
+            fwd_col, fwd_lbl = (80, 210, 80), "CLEAR"
+        cv2.putText(combined, f"AHEAD {min_fwd:.2f}m  [{fwd_lbl}]",
+                    (ax0, y + h - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.33, fwd_col, 1, cv2.LINE_AA)
+    else:
+        cv2.putText(combined, f"HITS {hit_count}/{ray_count}  AHEAD --",
+                    (ax0, y + h - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.33, HUD_MUTED, 1, cv2.LINE_AA)
+
     status = "DISAGREE" if disagreement else "OK"
-    status_color = HUD_ALERT if disagreement else HUD_MINT
-    readout = f"HITS {hit_count}/{ray_count}  NEAR {near_txt}  {l_txt}  {d_txt}  {c_txt}"
-    cv2.putText(combined, readout, (ax0, y + h - 8),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.33, HUD_GOLD, 1, cv2.LINE_AA)
-    status_w = cv2.getTextSize(status, cv2.FONT_HERSHEY_SIMPLEX, 0.33, 1)[0][0]
-    cv2.putText(combined, status, (max(ax0, ax1 - status_w - 2), y + h - 8),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.33, status_color, 1, cv2.LINE_AA)
+    status_col = HUD_ALERT if disagreement else HUD_MINT
+    sw = cv2.getTextSize(status, cv2.FONT_HERSHEY_SIMPLEX, 0.33, 1)[0][0]
+    cv2.putText(combined, status, (max(ax0, ax1 - sw - 2), y + h - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.33, status_col, 1, cv2.LINE_AA)
 
 
 def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
@@ -1071,17 +1100,14 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
     
     frame_center_x = w_f // 2
     frame_center_y = h_f // 2
-    cv2.line(combined, (frame_center_x, 0), (frame_center_x, h_f - 1), HUD_EDGE_DIM, 1)
     _draw_reference_guides(combined, frame_center_x, frame_center_y, w_f, h_f)
     _draw_stair_boundary_overlay(combined, debug_info, source_frame=source_frame)
-    
-    # Get swing legs for gait reticle animation
+
+    # Swing legs for the LEG ACTUATORS panel (Panel 4) below.
     swing_list = []
     if frame_meta is not None:
         swing_list = [leg.upper() for leg in frame_meta.get("swing_legs", [])]
 
-    # Draw central HUD target crosshair/reticle with centered gait chassis
-    _draw_hud_reticle(combined, frame_center_x, frame_center_y, debug_info, active_color, alert=hud_alert, swing_list=swing_list)
     _draw_center_instrument_bar(
         combined,
         frame_center_x,

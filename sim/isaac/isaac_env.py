@@ -83,8 +83,29 @@ parser.add_argument("--verification-image", type=str, default="",
 parser.add_argument("--exit-after-verification", action="store_true",
                     help="Exit after writing --verification-image")
 parser.add_argument("--locomotion-mode", type=str, default="rl",
-                    choices=("rl",),
-                    help="Low-level Go2 locomotion controller (RL policy only)")
+                    choices=("rl", "parkour"),
+                    help="Low-level Go2 locomotion controller: 'rl' (blind rl_sar flat trot) "
+                         "or 'parkour' (Extreme-Parkour-Onboard perceptive depth-camera policy)")
+parser.add_argument("--parkour-base-model", type=str,
+                    default=str(REPO_ROOT / "sim" / "isaac" / "assets" / "policies" / "parkour" / "base_jit.pt"),
+                    help="Extreme-Parkour base_jit.pt (TorchScript actor+estimator) for --locomotion-mode parkour")
+parser.add_argument("--parkour-vision-model", type=str,
+                    default=str(REPO_ROOT / "sim" / "isaac" / "assets" / "policies" / "parkour" / "vision_weight.pt"),
+                    help="Extreme-Parkour vision_weight.pt (depth-encoder state_dict) for --locomotion-mode parkour")
+parser.add_argument("--parkour-depth-hz", type=float, default=10.0,
+                    help="Rate (Hz) the rigid depth camera is rendered/submitted to the parkour policy")
+parser.add_argument("--parkour-depth-noise-mult", type=float, default=0.0,
+                    help="RealSense D435 depth-sensor noise multiplier applied to the parkour "
+                         "depth-camera ML input before submit_depth (0 = clean exact depth, the "
+                         "default). >0 routes the depth through the SAME documented D435 model "
+                         "(apply_realsense_depth_noise: depth-dependent Gaussian + stereo edge "
+                         "shadows + range holes) the YOLO/fusion stream already uses, so the "
+                         "perceptive policy sees the noisy depth the real camera produces. "
+                         "Set by the --sim2real-validation-cam preset to 1.0 (nominal D435).")
+parser.add_argument("--parkour-heading-mode", type=str, default="vision",
+                    choices=("vision", "command"),
+                    help="Parkour steering: 'vision' (policy self-steers from depth) or "
+                         "'command' (steer toward the person-follow bearing)")
 parser.add_argument("--rl-policy-path", type=str,
                     default=str(REPO_ROOT / "sim" / "isaac" / "assets" / "policies" / "go2_robot_lab_policy.pt"),
                     help="Local TorchScript/ONNX Go2 policy path (rl_sar go2 robot_lab)")
@@ -175,6 +196,15 @@ parser.add_argument("--sim2real-validation", dest="sim2real_validation", action=
                          "randomization, and joint-limit clamping -- each still overridable by its "
                          "own flag. Actuator-bandwidth/backlash numbers are NOT invented; set "
                          "--rl-torque-rate / --rl-backlash-rad explicitly for those.")
+parser.add_argument("--sim2real-validation-cam", dest="sim2real_validation_cam", action="store_true", default=False,
+                    help="Preset (camera/perception twin of --sim2real-validation): validate the "
+                         "PERCEPTIVE pipeline against realistic camera input instead of the clean "
+                         "default, WITHOUT perturbing the RL/physics model. Turns ON the RealSense "
+                         "D435 depth-noise model on the parkour depth-camera ML input "
+                         "(--parkour-depth-noise-mult 1.0), still overridable by its own flag. Only "
+                         "meaningful with --locomotion-mode parkour (rl mode is blind; its YOLO RGB "
+                         "stream is already noisy). Leaves all RL knobs (obs noise/latency/domain "
+                         "rand/torque) untouched.")
 parser.add_argument("--rl-joint-limit-clamp", dest="rl_joint_limit_clamp", action="store_true", default=False,
                     help="Saturate RL joint-position targets to the articulation's reported joint "
                          "limits before the PD law (models real motor hard stops; limits are READ "
@@ -281,6 +311,14 @@ if args.sim2real_validation:
         args.lidar_range_noise_m = 0.02   # Hesai XT16 datasheet range accuracy (~2 cm)
     if not _flag_passed("--dr-lighting-pct"):
         args.dr_lighting_pct = 0.3
+
+# --sim2real-validation-cam preset: the perception twin of the above. Turns the
+# parkour depth-camera ML input from clean to the nominal RealSense D435 noise
+# model, and touches NOTHING on the RL/physics side. The magnitude is not a new
+# invented number -- 1.0 is the existing apply_realsense_depth_noise nominal.
+if args.sim2real_validation_cam:
+    if not _flag_passed("--parkour-depth-noise-mult"):
+        args.parkour_depth_noise_mult = 1.0
 
 
 def _log_bucket(log_dir: str, bucket: str) -> str:
@@ -437,6 +475,19 @@ log_event(
     lidar_dropout_prob=float(args.lidar_dropout_prob),
     dr_lighting_pct=float(args.dr_lighting_pct),
 )
+
+# Camera/perception realism banner -- the twin of rl_realism_profile, for the
+# depth-camera ML (parkour). Independent of the RL profile above.
+log_event(
+    LOGGER,
+    logging.INFO,
+    "camera_realism_profile",
+    ("Camera realism profile: VALIDATION" if args.sim2real_validation_cam or args.parkour_depth_noise_mult > 0.0
+     else "Camera realism profile: clean (default)"),
+    sim2real_validation_cam=bool(args.sim2real_validation_cam),
+    parkour_depth_noise_mult=float(args.parkour_depth_noise_mult),
+    locomotion_mode=args.locomotion_mode,
+)
 from rl_locomotion_policy import (
     POLICY_DEFAULT_BY_JOINT,
     RLLocomotionPolicy,
@@ -461,6 +512,12 @@ CAMERA_PRIM    = "/World/Sensors/Go2FrontCamera"
 VIEW_CAMERA_PRIM = "/World/View/Go2FollowCamera"
 VERIFICATION_CAMERA_PRIM = "/World/View/SceneVerificationCamera"
 TOPDOWN_CAMERA_PRIM = "/World/View/TopDownCamera"
+# Real RealSense D435 front-camera mount in the Go2 BODY frame (forward-facing).
+# ONE physical device: its COLOR stream feeds YOLO/preview (add_camera) and its DEPTH
+# stream feeds the parkour policy (add_parkour_depth_camera). Anchored at the
+# Extreme-Parkour training pose so the frozen depth policy stays in-distribution; the
+# RGB/depth FOVs differ (69 vs 87 deg) because the D435's color/depth sensors do.
+FRONT_D435_MOUNT = (0.24, 0.0, 0.12)
 PERSON_PRIM    = "/World/Person"
 # Official Isaac Sim 6.0 Go2 asset on Nucleus CDN (mesh-based, preferred)
 NUCLEUS_GO2    = "/Isaac/Robots/Unitree/Go2/go2.usd"
@@ -496,6 +553,7 @@ _cmd_vel    = {
     "vx": 0.0,
     "vy": 0.0,
     "wz": 0.0,
+    "yaw_err": 0.0,
     "ts": 0.0,
     "count": 0,
     "active_count": 0,
@@ -503,8 +561,9 @@ _cmd_vel    = {
 }
 _running    = True
 _front_camera_smoothed_position = None
-# True when add_camera() found and selected the Go2 USD's left perspective camera.
-# In that case the camera is USD-parented to the robot and needs no manual pose updates.
+# True once add_camera() rigidly USD-parents the front camera under the Go2 body.
+# In that case the camera moves with the body from physics, so the manual per-frame
+# tracker set_front_camera_local_pose() is a no-op (no EMA smoothing / synthetic shake).
 _using_go2_builtin_camera: bool = False
 
 # ---------------------------------------------------------------------------
@@ -533,6 +592,9 @@ def _cmd_receiver_thread(port: int) -> None:
             vx = max(0.0, vx_raw)
             vy = float(payload.get("vy", 0.0))
             wz = float(payload.get("wz", 0.0))
+            # Person-follow heading error (rad), used as the parkour policy's delta_yaw
+            # command when --parkour-heading-mode command. Ignored by the blind RL path.
+            yaw_err = float(payload.get("yaw_err", 0.0))
             stairs_detected = bool(payload.get("stairs_detected", False))
             if vx_raw < 0.0:
                 now = time.monotonic()
@@ -551,6 +613,7 @@ def _cmd_receiver_thread(port: int) -> None:
                 _cmd_vel["vx"] = vx
                 _cmd_vel["vy"] = vy
                 _cmd_vel["wz"] = wz
+                _cmd_vel["yaw_err"] = yaw_err
                 _cmd_vel["stairs_detected"] = stairs_detected
                 _cmd_vel["ts"] = time.monotonic()
                 _cmd_vel["count"] = int(_cmd_vel.get("count", 0)) + 1
@@ -1005,12 +1068,14 @@ def _find_isaac_scene_left_camera(stage) -> Optional[str]:
 
 
 def add_camera(stage, resolution: tuple = (1280, 720)) -> Camera:
-    """Attach the robot's onboard front D435 perception camera.
+    """Attach the front D435 RGB perception camera (the real Go2's color stream).
 
-    This is the robot's own POV (the camera the real Go2 carries): a manually
-    placed camera tracked to the Go2 body each render step by
-    set_front_camera_local_pose, with D435 intrinsics and no tilt. It is the
-    frame streamed to the controller for YOLO + the OpenCV preview HUD.
+    This is the COLOR stream of the single real RealSense D435 -- the SAME physical
+    device whose depth stream feeds the parkour policy (see add_parkour_depth_camera).
+    It is rigidly USD-parented under the Go2 body at the shared FRONT_D435_MOUNT, so
+    its pose comes 100% from physics: it inherits the body's true gait pitch/roll/bob
+    (the real camera shake), identical to the depth cam -- no EMA smoothing, no
+    synthetic gait-shake. Streamed to the controller for YOLO + the OpenCV preview HUD.
 
     The Isaac Sim scene Left perspective camera is NOT streamed here — it is
     recorded separately as the external scene_view.mp4 view via
@@ -1018,40 +1083,38 @@ def add_camera(stage, resolution: tuple = (1280, 720)) -> Camera:
     """
     global CAMERA_PRIM, _using_go2_builtin_camera
 
-    # Robot front camera: manually-placed, tracked to the body each frame, no tilt.
-    _using_go2_builtin_camera = False
+    body_path = resolve_go2_body_prim_path(stage)
+    CAMERA_PRIM = body_path.rstrip("/") + "/Go2FrontCameraRGB"
+    # Rigidly body-parented => pose is 100% physics (real gait shake), so the
+    # per-frame tracker set_front_camera_local_pose is a no-op for this camera.
+    _using_go2_builtin_camera = True
     log_event(
         LOGGER, logging.INFO, "front_camera_selected",
-        "Streaming the robot's front D435 onboard camera for perception/preview",
-    )
-    log_event(LOGGER, logging.INFO, "camera_stage_ready", "Using existing USD stage for front camera")
-    if not stage.GetPrimAtPath("/World/Sensors").IsValid():
-        log_event(LOGGER, logging.INFO, "camera_sensor_parent_define_start", "Defining /World/Sensors camera parent prim")
-        stage.DefinePrim("/World/Sensors", "Xform")
-        log_event(LOGGER, logging.INFO, "camera_sensor_parent_define_complete", "Defined /World/Sensors camera parent prim")
-    parent_path = resolve_go2_body_prim_path(stage)
-    log_event(
-        LOGGER, logging.INFO, "camera_parent_ready",
-        "Resolved front camera tracking parent",
-        camera_path=CAMERA_PRIM,
-        tracked_body_prim=parent_path,
-    )
-    if not stage.GetPrimAtPath(CAMERA_PRIM).IsValid():
-        log_event(LOGGER, logging.INFO, "camera_usd_prim_define_start", "Defining USD camera prim")
-        UsdGeom.Camera.Define(stage, CAMERA_PRIM)
-        log_event(LOGGER, logging.INFO, "camera_usd_prim_define_complete", "Defined USD camera prim")
-    log_event(LOGGER, logging.INFO, "camera_constructor_start", "Constructing Isaac front camera sensor")
-    camera = Camera(prim_path=CAMERA_PRIM, name="front_camera", resolution=resolution)
-    log_event(LOGGER, logging.INFO, "camera_constructor_complete", "Isaac front camera sensor constructed")
-    set_front_camera_local_pose(camera, stage=stage)
-    log_event(
-        LOGGER, logging.INFO, "camera_attached_to_go2",
-        "Front perception camera tracks the Go2 moving body prim from a safe sensor prim",
-        camera_path=CAMERA_PRIM,
-        tracked_body_prim=parent_path,
+        "Streaming the RGB stream of the robot's front RealSense D435 (rigid body-parented)",
+        camera_path=CAMERA_PRIM, tracked_body_prim=body_path,
     )
 
-    # Configure D435 intrinsics for the robot front camera.
+    camera_prim = UsdGeom.Camera.Define(stage, CAMERA_PRIM).GetPrim()
+
+    # Same mount + forward aim as the D435 depth cam -> one physical device.
+    pitch = math.radians(0.5)
+    eye = Gf.Vec3d(*FRONT_D435_MOUNT)
+    fwd = Gf.Vec3d(math.cos(pitch), 0.0, -math.sin(pitch))
+    view_matrix = Gf.Matrix4d(1.0)
+    view_matrix.SetLookAt(eye, eye + fwd, Gf.Vec3d(0.0, 0.0, 1.0))
+    xform = UsdGeom.Xformable(camera_prim)
+    xform.ClearXformOpOrder()
+    xform.AddTransformOp().Set(view_matrix.GetInverse())
+
+    camera = Camera(prim_path=CAMERA_PRIM, name="front_camera", resolution=resolution)
+    log_event(
+        LOGGER, logging.INFO, "camera_attached_to_go2",
+        "Front D435 RGB camera rigidly parented under the Go2 body (inherits real gait shake)",
+        camera_path=CAMERA_PRIM,
+        tracked_body_prim=body_path,
+    )
+
+    # D435 COLOR intrinsics (~69 deg hFOV; the D435 depth stream is wider at 87 deg).
     try:
         prim = camera.prim
         prim.GetAttribute("focalLength").Set(26.0)
@@ -1059,10 +1122,56 @@ def add_camera(stage, resolution: tuple = (1280, 720)) -> Camera:
         prim.GetAttribute("verticalAperture").Set(20.25)
         prim.GetAttribute("clippingRange").Set(Gf.Vec2f(0.05, 1.0e6))
         log_event(LOGGER, logging.INFO, "camera_intrinsics_configured",
-                  "Set D435 camera intrinsics: 36mm aperture, 26mm focal length, near clip 0.05m")
+                  "Set D435 color intrinsics: 36mm aperture, 26mm focal length, near clip 0.05m")
     except Exception as e:
         log_event(LOGGER, logging.WARNING, "camera_intrinsics_failed", f"Failed to set camera intrinsics on USD prim: {e}")
 
+    return camera
+
+
+def add_parkour_depth_camera(stage, resolution: tuple = (106, 60)) -> Camera:
+    """Rigid, body-parented depth camera matching the real Go2 D435 parkour mount.
+
+    Parented UNDER the Go2 body prim so its pose comes entirely from physics -- it
+    inherits the body's true gait pitch/roll/bob (the real camera shake), unlike the
+    EMA-smoothed front perception camera (set_front_camera_local_pose). Mount +
+    intrinsics come from the Extreme-Parkour Go2 TRAINING config (config.json ->
+    depth), NOT the asset's cosmetic front_camera site: body-frame position
+    [0.24, 0, 0.12], forward-facing (training randomizes pitch in [0, 1] deg, so
+    ~0.5 deg down), 87 deg hFOV, near 0.05 m, rendered at 106x60. Matching the
+    trained extrinsics keeps the depth in-distribution for the frozen weights.
+    Exposes distance_to_image_plane (metres) which the parkour policy preprocesses
+    to [1, 58, 87]. See [[project_parkour_policy_contract]].
+    """
+    body_path = resolve_go2_body_prim_path(stage)
+    cam_path = body_path.rstrip("/") + "/ParkourDepthCam"
+    camera_prim = UsdGeom.Camera.Define(stage, cam_path).GetPrim()
+
+    # Local look transform in the BODY frame at the shared D435 mount (same physical
+    # device as the RGB cam in add_camera): forward-facing pitched down ~0.5 deg
+    # (config depth.angle [0,1]).
+    pitch = math.radians(0.5)
+    eye = Gf.Vec3d(*FRONT_D435_MOUNT)
+    fwd = Gf.Vec3d(math.cos(pitch), 0.0, -math.sin(pitch))
+    view_matrix = Gf.Matrix4d(1.0)
+    view_matrix.SetLookAt(eye, eye + fwd, Gf.Vec3d(0.0, 0.0, 1.0))
+    xform = UsdGeom.Xformable(camera_prim)
+    xform.ClearXformOpOrder()
+    xform.AddTransformOp().Set(view_matrix.GetInverse())
+
+    # 87 deg hFOV (config depth.horizontal_fov): hFOV = 2*atan(hAperture/(2*focalLength)).
+    cam = UsdGeom.Camera(camera_prim)
+    cam.CreateFocalLengthAttr().Set(18.97)
+    cam.CreateHorizontalApertureAttr().Set(36.0)
+    cam.CreateVerticalApertureAttr().Set(36.0 * float(resolution[1]) / float(resolution[0]))
+    cam.CreateClippingRangeAttr().Set(Gf.Vec2f(0.05, 1.0e5))
+
+    camera = Camera(prim_path=cam_path, name="parkour_depth_camera", resolution=resolution)
+    log_event(
+        LOGGER, logging.INFO, "parkour_depth_camera_added",
+        "Rigid body-parented parkour depth camera attached to the Go2 body",
+        camera_path=cam_path, body_prim=body_path, resolution=list(resolution),
+    )
     return camera
 
 
@@ -1286,6 +1395,28 @@ def initialize_camera_streams(camera: Camera) -> None:
     camera.add_rgb_to_frame()
     camera.add_distance_to_image_plane_to_frame()
     log_event(LOGGER, logging.INFO, "camera_depth_stream_complete", "RGB and Depth streams are active and available on initialized camera")
+
+
+# Per-frame size ceiling for the topdown/scene_view recordings. The Isaac env's
+# bundled FFMPEG mpeg4 (mp4v) encoder rejects a 1920x1080 (~8160 macroblock)
+# VideoWriter with -22 (EINVAL), and avc1/H.264 is unavailable (wrong openh264
+# DLL). The XT16 LiDAR preview at 480x730 (~1369 macroblocks) DOES open with
+# mp4v, so we cap recording frames at ~768x432 (~1296 macroblocks) -- just under
+# the proven-good envelope -- preserving aspect ratio and even dimensions.
+_RECORD_MAX_PIXELS = 768 * 432
+
+
+def _downscale_for_recording(frame: np.ndarray, max_pixels: int = _RECORD_MAX_PIXELS) -> np.ndarray:
+    """Shrink a BGR frame to <= max_pixels (aspect-preserving, even dims) so the
+    mpeg4 VideoWriter can open. Frames already within budget are returned as-is."""
+    import cv2
+    h, w = frame.shape[:2]
+    if w <= 0 or h <= 0 or (w * h) <= max_pixels:
+        return frame
+    scale = (max_pixels / float(w * h)) ** 0.5
+    new_w = max(2, (int(round(w * scale)) // 2) * 2)
+    new_h = max(2, (int(round(h * scale)) // 2) * 2)
+    return cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
 
 def get_terrain_height(x: float, y: float) -> float:
@@ -1760,6 +1891,25 @@ def apply_realsense_depth_noise(depth_mm: np.ndarray, noise_multiplier: float = 
     noisy_depth[noisy_depth > 10000.0] = 0.0
     
     return np.clip(noisy_depth, 0.0, 65535.0).astype(np.uint16)
+
+
+def apply_parkour_depth_noise(depth_m: np.ndarray, noise_multiplier: float = 1.0) -> np.ndarray:
+    """Route a parkour depth frame (metres) through the RealSense D435 noise model.
+
+    The parkour policy reads distance_to_image_plane in POSITIVE metres, while
+    apply_realsense_depth_noise works in uint16 millimetres, so convert m->mm,
+    apply the shared D435 model (depth-dependent Gaussian + stereo edge shadows +
+    range holes), then convert back to metres. inf/nan (sky / no stereo return)
+    become 0 (a hole), which preprocess_depth already maps to far_clip -- exactly
+    how a real depth camera reports a missing return. Used only when
+    --parkour-depth-noise-mult > 0 (the --sim2real-validation-cam preset).
+    """
+    arr = np.nan_to_num(np.asarray(depth_m, dtype=np.float32),
+                        nan=0.0, posinf=0.0, neginf=0.0)
+    mm = np.clip(arr * 1000.0, 0.0, 65535.0).astype(np.uint16)
+    noisy_mm = apply_realsense_depth_noise(mm, noise_multiplier=float(noise_multiplier))
+    return noisy_mm.astype(np.float32) / 1000.0
+
 
 def attach_robot_o2_tank(stage, trunk_prim_path: str):
     """
@@ -2909,6 +3059,42 @@ def _create_rl_locomotion_policy(go2) -> Optional[RLLocomotionPolicy]:
     return policy
 
 
+def _create_parkour_locomotion_policy(go2):
+    """Construct the Extreme-Parkour perceptive policy (--locomotion-mode parkour).
+
+    Lazy-imports the parkour runner so 'rl' mode never pulls in torch/the depth
+    backbone. Same step()/leg_command_summary()/policy_path surface as the blind
+    RLLocomotionPolicy, so the main loop and telemetry need no special-casing.
+    """
+    from parkour_locomotion_policy import ParkourLocomotionPolicy, ParkourPolicyConfig
+
+    dof_names = get_dof_names(go2)
+    base_path = Path(args.parkour_base_model)
+    vision_path = Path(args.parkour_vision_model)
+    if not base_path.is_absolute():
+        base_path = (REPO_ROOT / base_path).resolve()
+    if not vision_path.is_absolute():
+        vision_path = (REPO_ROOT / vision_path).resolve()
+    # Depth is encoded every Nth control step (50 Hz control / 10 Hz depth = 5).
+    depth_interval = max(1, int(round(float(args.rl_control_hz) / max(1e-3, float(args.parkour_depth_hz)))))
+    config = ParkourPolicyConfig(
+        base_model_path=str(base_path),
+        vision_model_path=str(vision_path),
+        control_hz=float(args.rl_control_hz),
+        depth_update_interval=depth_interval,
+        heading_mode=str(args.parkour_heading_mode),
+    )
+    policy = ParkourLocomotionPolicy(config, dof_names, logger=LOGGER)
+    log_event(
+        LOGGER, logging.INFO, "parkour_locomotion_policy_loaded",
+        "Loaded Extreme-Parkour Go2 perceptive locomotion policy",
+        base_model=str(base_path), vision_model=str(vision_path),
+        control_hz=float(args.rl_control_hz), depth_update_interval=depth_interval,
+        heading_mode=str(args.parkour_heading_mode), dof_count=len(dof_names),
+    )
+    return policy
+
+
 def _export_rl_contract_manifest(policy: RLLocomotionPolicy) -> None:
     """Write the RL deployment contract to reports/rl_deployment_contract.json.
 
@@ -2956,6 +3142,7 @@ def _step_go2_locomotion(
     dt: float,
     *,
     stairs_detected: bool = False,
+    yaw_err: float = 0.0,
 ) -> None:
     vx = max(0.0, float(vx))
     if rl_policy is None:
@@ -2969,7 +3156,13 @@ def _step_go2_locomotion(
             logger=LOGGER, vx=vx, vy=vy, wz=wz,
         )
         return
-    telemetry = rl_policy.step(go2, (vx, vy, wz), dt)
+    # Parkour accepts an external heading command (delta_yaw); it is only consumed when
+    # the policy's heading_mode == "command" (else the depth self-steer yaw wins). The
+    # blind RLLocomotionPolicy.step has no delta_yaw kwarg, so only pass it for parkour.
+    if args.locomotion_mode == "parkour":
+        telemetry = rl_policy.step(go2, (vx, vy, wz), dt, delta_yaw=float(yaw_err))
+    else:
+        telemetry = rl_policy.step(go2, (vx, vy, wz), dt)
     # The policy just moved the joints; capture its real per-leg command so the
     # stair-demo telemetry and HUD reflect what the RL policy actually did this
     # step (replaces the removed procedural-gait swing bookkeeping).
@@ -3006,8 +3199,12 @@ def _settle_go2_spawn(world: World, go2, rl_policy: Optional[RLLocomotionPolicy]
     # PD as explicit joint efforts, so the PhysX position drive is zeroed here -- at
     # the start of the loop that applies torque every step -- to avoid double
     # control. Until this point the position-hold gains kept the robot standing.
-    if args.locomotion_mode == "rl" and str(args.rl_control_mode).lower() == "torque":
-        _set_go2_drive_gains(go2, 0.0, 0.0, float(args.rl_torque_limit),
+    _parkour_mode = args.locomotion_mode == "parkour"
+    if _parkour_mode or (args.locomotion_mode == "rl" and str(args.rl_control_mode).lower() == "torque"):
+        # Parkour always uses explicit-PD torque (kp40/kd1 inside the policy), like
+        # rl torque mode -- zero the PhysX position drive so it does not double-control.
+        _zero_torque_limit = float(args.rl_torque_limit) if not _parkour_mode else 40.0
+        _set_go2_drive_gains(go2, 0.0, 0.0, _zero_torque_limit,
                              reason="zeroed_for_explicit_torque_control")
     log_event(
         LOGGER,
@@ -3190,7 +3387,6 @@ def _run_evaluation_and_save_images(
         print(detail, flush=True)
     stair_demo = get_stair_demo_telemetry(_go2_locomotion_state)
     stair_phase = stair_demo.get("phase", "not_reported")
-    stair_lidar = stair_demo.get("lidar", {})
     stair_rl = stair_demo.get("blind_rl", {})
     print(f"Stair demo data: synthetic ({stair_phase})", flush=True)
     print(f"Exit reason: {evaluation_exit_reason}", flush=True)
@@ -3209,8 +3405,8 @@ def _run_evaluation_and_save_images(
                 f.write(f"Sim motion elapsed: {float(motion_elapsed_sim_sec):.2f} s\n")
                 f.write(f"Robot stair-visible time: {float(robot_stair_phase_sim_sec):.2f} s\n")
                 f.write(f"Stair demo phase: {stair_phase}\n")
-                f.write("Stair data source: synthetic Isaac ground-truth raycast, not hardware LiDAR\n")
-                f.write(f"Synthetic LiDAR detected: {bool(stair_lidar.get('detected', False))}\n")
+                f.write("Stair phase/mode source: synthetic Isaac ground-truth pose+geometry (HUD label only)\n")
+                f.write("LiDAR source: real PhysX-raycast XT16 (see lidar_preview.mp4 / lidar_scan logs)\n")
                 f.write(f"Synthetic blind-RL mode: {stair_rl.get('mode', 'not_reported')}\n")
             log_event(LOGGER, logging.INFO, "evaluation_summary_saved", f"Saved evaluation summary to {summary_path}")
         except Exception as e:
@@ -3298,6 +3494,7 @@ def main() -> None:
 
     log_event(LOGGER, logging.INFO, "camera_add_start", "Adding front camera")
     camera = add_camera(stage)
+    parkour_depth_camera = add_parkour_depth_camera(stage) if args.locomotion_mode == "parkour" else None
     verification_camera = add_verification_camera(stage) if (args.verification_image or args.log_dir) else None
     topdown_camera = add_topdown_camera(stage)
     scene_left_camera = add_scene_left_camera(stage)
@@ -3309,6 +3506,16 @@ def main() -> None:
 
     world.reset()
     initialize_camera_streams(camera)
+    if parkour_depth_camera is not None:
+        try:
+            parkour_depth_camera.initialize()
+            parkour_depth_camera.add_distance_to_image_plane_to_frame()
+            log_event(LOGGER, logging.INFO, "parkour_depth_camera_initialized",
+                      "Parkour depth camera sensor initialized (distance_to_image_plane)")
+        except Exception as _pk_exc:
+            log_event(LOGGER, logging.WARNING, "parkour_depth_camera_init_failed",
+                      "Parkour depth camera init failed; the policy will run without depth "
+                      "(degraded). Investigate before trusting the run.", error=str(_pk_exc))
     try:
         topdown_camera.initialize()
         topdown_camera.add_rgb_to_frame()
@@ -3338,7 +3545,11 @@ def main() -> None:
     # degree-unit DriveAPI authoring). These hold the robot standing through the
     # remaining setup; torque mode zeroes them at the start of the settle loop.
     _apply_rl_drive_gains(go2)
-    rl_policy = _create_rl_locomotion_policy(go2)
+    rl_policy = (
+        _create_parkour_locomotion_policy(go2)
+        if args.locomotion_mode == "parkour"
+        else _create_rl_locomotion_policy(go2)
+    )
 
     # Load the person animation BEFORE the settle. ensure_person_animation_loaded
     # may step the world, and the settle hands the joints to the policy (zeroing
@@ -3347,6 +3558,10 @@ def main() -> None:
     animation_ready = ensure_person_animation_loaded(world, person, render=not args.headless, attempts=4)
 
     _settle_go2_spawn(world, go2, rl_policy, args.spawn_settle_steps, 1.0 / max(1, int(args.physics_hz)))
+    if args.locomotion_mode == "parkour":
+        # Clear the depth GRU hidden state + proprio history accumulated during the
+        # zero-command settle so the recurrent policy starts each run clean.
+        rl_policy.reset()
 
     if verification_camera is not None and args.verification_image and args.exit_after_verification:
         capture_verification_image(world, verification_camera, args.verification_image, go2=go2, person=person, rl_policy=rl_policy)
@@ -3415,6 +3630,16 @@ def main() -> None:
     # perception/control loop (which stays on --render-every). Clamp to >=1 and never
     # coarser than the perception cadence (a higher record-every would be a downgrade).
     record_every = max(1, min(int(args.record_every), int(args.render_every)))
+    # Parkour's perceptive policy runs a Torch depth backbone on the GPU and adds a depth
+    # render product. With the default fine record cadence, the two 1080p recording render
+    # products (topdown + scene_view) get starved -- their get_rgb() returns no frame every
+    # record tick, so topdown.mp4 / scene_view.mp4 silently never record (the rl path, with
+    # no depth backbone, has the GPU headroom to service them). Fold recording onto the
+    # perception render cadence in parkour mode so NO extra 1080p renders are issued beyond
+    # the ones the perception loop already performs -- the front camera proves those still
+    # complete under parkour load, so the recording cameras ride the same renders.
+    if args.locomotion_mode == "parkour":
+        record_every = int(args.render_every)
     record_fps = args.physics_hz / max(1, record_every)
 
     # Top-down video writer — starts when scene_motion_released becomes True
@@ -3467,7 +3692,8 @@ def main() -> None:
               perception_fps=round(float(_render_rate_hz), 2),
               record_every=int(record_every),
               render_every=int(args.render_every),
-              recording_resolution="1920x1080")
+              recording_resolution="768x432 (16:9 source downscaled to fit the mpeg4 encoder)",
+              recording_max_pixels=int(_RECORD_MAX_PIXELS))
     lidar_scan_stride = max(1, int(round(_render_rate_hz / max(0.1, args.lidar_hz))))
     if lidar_scan_enabled:
         log_event(LOGGER, logging.INFO, "lidar_preview_configured",
@@ -3481,6 +3707,11 @@ def main() -> None:
     CMD_TIMEOUT_SEC = 1.0
     motion_wait_logged = False
     motion_start_logged = False
+
+    # Parkour depth-camera submit cadence (physics steps between depth submissions,
+    # ~parkour_depth_hz). The policy itself only re-encodes every Nth control step.
+    _parkour_submit_every = max(1, int(round(float(args.physics_hz) / max(1e-3, float(args.parkour_depth_hz)))))
+    _parkour_depth_step = 0
 
     # Track trajectories and state for straight-line walking and balance verification
     _robot_positions_over_time = []
@@ -3499,6 +3730,15 @@ def main() -> None:
     _fall_recoveries_done = 0  # count of in-place re-stand recoveries (--fall-recovery)
     evaluation_exit_reason = "not_recorded"
     evaluation_done = False
+    # Fail-loud telemetry for the recording cameras: count record-ticks where the camera
+    # returned no frame (None/empty) while its writer has not started yet, so a starved
+    # topdown/scene_view recording surfaces in the logs instead of producing no mp4 silently.
+    _topdown_empty_record_ticks = 0
+    _raw_empty_record_ticks = 0
+    _topdown_starved_logged = False
+    _raw_starved_logged = False
+    _topdown_codec_failed_logged = False
+    _raw_codec_failed_logged = False
     DEMO_SIM_TIMEOUT_SEC = 120.0
     ROBOT_STAIR_VISIBLE_HOLD_SEC = 8.0
 
@@ -3532,12 +3772,14 @@ def main() -> None:
                 active_count = int(_cmd_vel.get("active_count", 0))
                 if age > CMD_TIMEOUT_SEC:
                     vx, vy, wz = 0.0, 0.0, 0.0
+                    yaw_err = 0.0
                     stairs_detected = False
                     command_fresh = False
                 else:
                     vx = _cmd_vel["vx"]
                     vy = _cmd_vel["vy"]
                     wz = _cmd_vel["wz"]
+                    yaw_err = _cmd_vel.get("yaw_err", 0.0)
                     stairs_detected = _cmd_vel.get("stairs_detected", False)
                     command_fresh = True
             # Self-test: bypass the Docker/vision controller entirely and drive a
@@ -3545,6 +3787,7 @@ def main() -> None:
             # flat-ground walking and balance in isolation (headless, no UDP).
             if args.self_test_walk:
                 vx, vy, wz = float(args.self_test_vx), 0.0, 0.0
+                yaw_err = 0.0
                 stairs_detected = False
                 command_fresh = True
                 cmd_count = max(cmd_count, 1)
@@ -3577,6 +3820,25 @@ def main() -> None:
                     active_command_count=active_count,
                 )
  
+            # Parkour: feed the rigid depth camera to the policy at ~parkour_depth_hz,
+            # only while it is actually driving the robot. submit_depth() preprocesses
+            # to [1,58,87]; the policy re-encodes it every Nth control step.
+            if parkour_depth_camera is not None and scene_motion_allowed:
+                if _parkour_depth_step % _parkour_submit_every == 0:
+                    try:
+                        _depth_hw = parkour_depth_camera.get_depth()
+                        if _depth_hw is not None:
+                            # Camera sim2real: feed the ML the noisy depth the real
+                            # D435 produces (clean by default; on with the preset).
+                            if args.parkour_depth_noise_mult > 0.0:
+                                _depth_hw = apply_parkour_depth_noise(
+                                    _depth_hw, args.parkour_depth_noise_mult)
+                            rl_policy.submit_depth(_depth_hw)
+                    except Exception as _pk_dexc:
+                        log_event(LOGGER, logging.WARNING, "parkour_depth_read_failed",
+                                  "Failed to read parkour depth frame this tick", error=str(_pk_dexc))
+                _parkour_depth_step += 1
+
             _loco_ts = time.monotonic()
             if not scene_motion_allowed:
                 # Demo has not started yet (waiting for the first controller command).
@@ -3593,7 +3855,8 @@ def main() -> None:
                     logger=LOGGER, vx=0.0, vy=0.0, wz=0.0,
                 )
             elif controller_ready and nonzero_command_fresh:
-                _step_go2_locomotion(go2, rl_policy, vx, vy, wz, dt, stairs_detected=stairs_detected)
+                _step_go2_locomotion(go2, rl_policy, vx, vy, wz, dt,
+                                     stairs_detected=stairs_detected, yaw_err=yaw_err)
             else:
                 # Demo running, momentarily no fresh command: hold a balanced stand
                 # with the policy (the robot has already started walking, so do not
@@ -3779,6 +4042,11 @@ def main() -> None:
                             proj_gravity=policy_diag.get("projected_gravity"),
                             ang_vel_body=policy_diag.get("ang_vel_body"),
                             policy_cmd=policy_diag.get("commands"),
+                            # Steering: injected heading command vs. depth self-steer yaw
+                            # (validate the parkour heading-command sign/scale from these).
+                            injected_yaw=policy_diag.get("injected_yaw"),
+                            vision_yaw=policy_diag.get("vision_yaw"),
+                            heading_mode=policy_diag.get("heading_mode"),
                             inferences=policy_diag.get("inference_count"),
                         )
                     if not robot_fallen_now:
@@ -3947,15 +4215,17 @@ def main() -> None:
                                     math.radians(float(robot_pose.get("yaw_deg", 0.0))),
                                     _physx_raycast_distance,
                                 )
-                                lidar_block = dict(stair_demo.get("lidar", {}))
-                                lidar_block.update({
+                                # Real XT16 returns only -- the synthetic
+                                # demo_4d_elevation_raycast block was removed, so
+                                # this is built fresh, not merged onto fake data.
+                                lidar_block = {
                                     "model": "hesai_xt16_sim_raycast",
                                     "ray_count": int(scan.n_rays),
                                     "hit_count": int(scan.n_hits),
                                     "hit_ratio": round(float(scan.hit_ratio), 3),
                                     "min_range_m": (None if scan.min_range_m is None
                                                     else round(float(scan.min_range_m), 3)),
-                                })
+                                }
                                 stair_demo = dict(stair_demo)
                                 stair_demo["lidar"] = lidar_block
 
@@ -3969,9 +4239,9 @@ def main() -> None:
                                 if ros2_bridge_sender is not None:
                                     ros2_bridge_sender.send(scan.points_sensor, robot_pose)
 
+                                import cv2 as _cv2_lidar
+                                preview = render_preview(scan, float(args.lidar_view_range_m))
                                 if lidar_video_path:
-                                    import cv2 as _cv2_lidar
-                                    preview = render_preview(scan, float(args.lidar_view_range_m))
                                     if lidar_video_writer is None:
                                         lh, lw = preview.shape[:2]
                                         import platform as _ld_plat
@@ -4023,8 +4293,10 @@ def main() -> None:
                     try:
                         import cv2 as _cv2
                         td_rgb = topdown_camera.get_rgb()
-                        if td_rgb is not None:
+                        if td_rgb is not None and getattr(td_rgb, "size", 1) != 0:
                             td_bgr = _cv2.cvtColor(td_rgb, _cv2.COLOR_RGB2BGR)
+                            # Shrink so the mpeg4 writer can open (mp4v -22 at 1080p)
+                            td_bgr = _downscale_for_recording(td_bgr)
                             if topdown_video_writer is None:
                                 td_h, td_w = td_bgr.shape[:2]
                                 import platform as _td_plat
@@ -4046,21 +4318,47 @@ def main() -> None:
                                               "Top-down video recording started",
                                               path=topdown_video_path, fps=round(float(record_fps), 2),
                                               resolution=f"{int(td_w)}x{int(td_h)}")
+                                elif not _topdown_codec_failed_logged:
+                                    _topdown_codec_failed_logged = True
+                                    log_event(LOGGER, logging.WARNING, "topdown_recording_codec_failed",
+                                              "No codec could open the top-down VideoWriter; topdown.mp4 will be missing. "
+                                              "See isaac_raw.log for the FFMPEG/codec error.",
+                                              codecs_tried=list(_td_codecs),
+                                              resolution=f"{int(td_w)}x{int(td_h)}",
+                                              fps=round(float(record_fps), 2))
                             if topdown_video_writer is not None:
                                 topdown_video_writer.write(td_bgr)
-                    except Exception:
-                        pass
+                        elif topdown_video_writer is None:
+                            # No frame yet and recording never started: the render product
+                            # is being starved. The first few empties are warmup, so warn
+                            # once past that so a silently-empty topdown.mp4 is visible mid-run.
+                            _topdown_empty_record_ticks += 1
+                            if not _topdown_starved_logged and _topdown_empty_record_ticks == 30:
+                                _topdown_starved_logged = True
+                                log_event(LOGGER, logging.WARNING, "topdown_recording_starved",
+                                          "Top-down recording camera returned no frame on 30 record ticks; "
+                                          "its RTX render product is being starved and topdown.mp4 will be empty.",
+                                          empty_record_ticks=int(_topdown_empty_record_ticks),
+                                          locomotion_mode=args.locomotion_mode)
+                    except Exception as _td_exc:
+                        if not _topdown_starved_logged:
+                            _topdown_starved_logged = True
+                            log_event(LOGGER, logging.WARNING, "topdown_recording_failed",
+                                      "Top-down recording capture raised; topdown.mp4 may be empty",
+                                      error=str(_td_exc))
 
                 # External scene_view recording (Isaac scene Left camera) -> scene_view.mp4
                 if scene_left_camera is not None and raw_video_path:
                     try:
                         import cv2 as _cv2_raw
                         sl_rgb = scene_left_camera.get_rgb()
-                        if sl_rgb is not None:
-                            sl_arr = np.asarray(sl_rgb)
+                        sl_arr = np.asarray(sl_rgb) if sl_rgb is not None else None
+                        if sl_arr is not None and sl_arr.size != 0:
                             if sl_arr.ndim == 3 and sl_arr.shape[2] == 4:
                                 sl_arr = sl_arr[:, :, :3]
                             sl_bgr = _cv2_raw.cvtColor(sl_arr.astype(np.uint8), _cv2_raw.COLOR_RGB2BGR)
+                            # Shrink so the mpeg4 writer can open (mp4v -22 at 1080p)
+                            sl_bgr = _downscale_for_recording(sl_bgr)
                             if raw_video_writer is None:
                                 sl_h, sl_w = sl_bgr.shape[:2]
                                 import platform as _raw_plat
@@ -4082,10 +4380,34 @@ def main() -> None:
                                               "External scene_view (Isaac scene Left) recording started",
                                               path=raw_video_path, fps=round(float(record_fps), 2),
                                               resolution=f"{int(sl_w)}x{int(sl_h)}")
+                                elif not _raw_codec_failed_logged:
+                                    _raw_codec_failed_logged = True
+                                    log_event(LOGGER, logging.WARNING, "scene_view_recording_codec_failed",
+                                              "No codec could open the scene_view VideoWriter; scene_view.mp4 will be missing. "
+                                              "See isaac_raw.log for the FFMPEG/codec error.",
+                                              codecs_tried=list(_raw_codecs),
+                                              resolution=f"{int(sl_w)}x{int(sl_h)}",
+                                              fps=round(float(record_fps), 2))
                             if raw_video_writer is not None:
                                 raw_video_writer.write(sl_bgr)
-                    except Exception:
-                        pass
+                        elif raw_video_writer is None:
+                            # No frame yet and recording never started: the render product
+                            # is being starved. Warn once past warmup so a silently-empty
+                            # scene_view.mp4 is visible mid-run.
+                            _raw_empty_record_ticks += 1
+                            if not _raw_starved_logged and _raw_empty_record_ticks == 30:
+                                _raw_starved_logged = True
+                                log_event(LOGGER, logging.WARNING, "scene_view_recording_starved",
+                                          "Scene_view recording camera returned no frame on 30 record ticks; "
+                                          "its RTX render product is being starved and scene_view.mp4 will be empty.",
+                                          empty_record_ticks=int(_raw_empty_record_ticks),
+                                          locomotion_mode=args.locomotion_mode)
+                    except Exception as _raw_exc:
+                        if not _raw_starved_logged:
+                            _raw_starved_logged = True
+                            log_event(LOGGER, logging.WARNING, "scene_view_recording_failed",
+                                      "Scene_view recording capture raised; scene_view.mp4 may be empty",
+                                      error=str(_raw_exc))
 
         # After loop exits, run evaluation and capture final image
         if evaluation_done or (_robot_positions_over_time or _person_positions_over_time):
@@ -4111,6 +4433,11 @@ def main() -> None:
                           path=topdown_video_path)
             except Exception:
                 pass
+        elif topdown_video_path and _topdown_empty_record_ticks > 0:
+            log_event(LOGGER, logging.WARNING, "topdown_recording_missing",
+                      "topdown.mp4 was never recorded: the top-down render product returned no frame on every record tick",
+                      empty_record_ticks=int(_topdown_empty_record_ticks),
+                      locomotion_mode=args.locomotion_mode)
         if lidar_video_writer is not None:
             try:
                 lidar_video_writer.release()
@@ -4125,6 +4452,11 @@ def main() -> None:
                           path=raw_video_path)
             except Exception:
                 pass
+        elif raw_video_path and _raw_empty_record_ticks > 0:
+            log_event(LOGGER, logging.WARNING, "scene_view_recording_missing",
+                      "scene_view.mp4 was never recorded: the scene_view render product returned no frame on every record tick",
+                      empty_record_ticks=int(_raw_empty_record_ticks),
+                      locomotion_mode=args.locomotion_mode)
         simulation_app.close()
         log_event(LOGGER, logging.INFO, "simulation_shutdown", "Simulation shutdown completed")
 

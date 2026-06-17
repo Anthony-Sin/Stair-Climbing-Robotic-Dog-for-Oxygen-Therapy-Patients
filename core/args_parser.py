@@ -223,6 +223,11 @@ def parse_args():
                         help='Stair depth threshold where follow speed/centering are tightened')
     parser.add_argument('--stair-speed-scale', type=float, default=0.45,
                         help='Forward command scale while stairs are detected nearby')
+    parser.add_argument('--stair-approach-speed-scale', type=float, default=0.5,
+                        help='Forward command scale applied as soon as the YOLO model identifies '
+                             'stairs ahead (the approach phase, before the dog reaches '
+                             '--stair-near-distance). <1.0 slows the approach into the staircase; '
+                             '1.0 disables the approach slowdown.')
     parser.add_argument('--stair-centering-scale', type=float, default=0.6,
                         help='Yaw command scale while stairs are detected nearby. <1.0 suppresses the '
                              'bbox edge/size penalty amplification that otherwise saws the body on steps')
@@ -281,6 +286,7 @@ def parse_args():
     args.stairs_latch_frames = max(0, int(args.stairs_latch_frames))
     args.stair_near_distance = max(0.0, float(args.stair_near_distance))
     args.stair_speed_scale = min(1.0, max(0.0, float(args.stair_speed_scale)))
+    args.stair_approach_speed_scale = min(1.0, max(0.0, float(args.stair_approach_speed_scale)))
     args.stair_centering_scale = max(0.0, float(args.stair_centering_scale))
     args.stair_forward_floor = max(0.0, float(args.stair_forward_floor))
     args.stair_rot_max = max(0.0, float(args.stair_rot_max))

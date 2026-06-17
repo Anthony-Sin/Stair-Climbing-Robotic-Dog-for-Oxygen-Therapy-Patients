@@ -158,29 +158,59 @@ def _apply_stair_command_policy(
         debug_info["stairs_action_active"] = False
         return float(trans_x_cmd), float(rotation_cmd)
 
-    # Gate: stair behavior requires the person to be actively detected.
-    # Applying centering amplification during lost-person recovery rotation
-    # causes the robot to over-rotate and fall.
+    # Gate: stair behavior requires the person to be actively detected -- EXCEPT for a
+    # BRIEF loss while the staircase is already latched. On a brief loss we still hold the
+    # forward floor (below) so the climb keeps advancing instead of stranding the policy
+    # at vx=0 mid-step, but we suppress centering/recovery yaw: applying yaw amplification
+    # without a fresh detection over-rotates the body and falls (the original gate intent).
+    # In parkour mode steering is via delta_yaw (the predicted bearing), not this wz, so the
+    # robot still aims at the last-known person while the floor keeps it climbing.
     if not bool(debug_info.get("person_detected", False)):
-        debug_info["stairs_action_active"] = False
-        debug_info["stairs_gated_no_person"] = True
-        return float(trans_x_cmd), float(rotation_cmd)
+        lost_age = debug_info.get("lost_age_sec")
+        lost_grace = debug_info.get("lost_search_timeout_sec")
+        brief_loss = (
+            lost_age is not None
+            and lost_grace is not None
+            and float(lost_age) <= float(lost_grace)
+        )
+        if not brief_loss:
+            debug_info["stairs_action_active"] = False
+            debug_info["stairs_gated_no_person"] = True
+            return float(trans_x_cmd), float(rotation_cmd)
+        debug_info["stairs_gated_no_person"] = False
+        debug_info["stairs_brief_loss_floor"] = True
+        rotation_cmd = 0.0
 
     stair_depth_m = debug_info.get("stairs_depth_m")
 
-    # Require at least one sensor-confirmed (non-latched-only) depth reading
-    # before engaging the stair policy.  This prevents reaction to distant
-    # YOLO detections where depth could not be measured.
+    # Approach slowdown: as soon as the YOLO model identifies stairs ahead, ease off the
+    # throttle so the dog decelerates INTO the staircase instead of charging the base at
+    # full follow speed. This runs during the approach -- before a confirmed depth or the
+    # near threshold below engage the full climb policy. trans_x_cmd is the fresh follower
+    # output each frame, so scaling it here does not compound across frames.
+    approach_scale = float(args.stair_approach_speed_scale)
+    approach_x = float(trans_x_cmd)
+    if approach_x > 0.0 and approach_scale < 1.0:
+        approach_x = approach_x * approach_scale
+    approach_slowed = approach_x < float(trans_x_cmd)
+
+    # Require at least one sensor-confirmed (non-latched-only) depth reading before
+    # engaging the full near climb policy.  This prevents reaction to distant YOLO
+    # detections where depth could not be measured -- but still slow the approach.
     if stair_depth_m is None and not bool(debug_info.get("stairs_depth_ever_confirmed", False)):
         debug_info["stairs_action_active"] = False
         debug_info["stairs_gated_no_depth"] = True
-        return float(trans_x_cmd), float(rotation_cmd)
+        debug_info["stairs_approach_active"] = bool(approach_slowed)
+        debug_info["stairs_approach_speed_mps"] = float(approach_x)
+        return float(approach_x), float(rotation_cmd)
 
     stairs_near = stair_depth_m is None or float(stair_depth_m) <= float(args.stair_near_distance)
     debug_info["stairs_near"] = bool(stairs_near)
     if not stairs_near:
         debug_info["stairs_action_active"] = False
-        return float(trans_x_cmd), float(rotation_cmd)
+        debug_info["stairs_approach_active"] = bool(approach_slowed)
+        debug_info["stairs_approach_speed_mps"] = float(approach_x)
+        return float(approach_x), float(rotation_cmd)
 
     original_x = float(trans_x_cmd)
     original_wz = float(rotation_cmd)
@@ -214,6 +244,7 @@ def _apply_stair_command_policy(
         rotation_cmd = float(np.clip(rotation_cmd, -stair_rot_max, stair_rot_max))
 
     debug_info["stairs_action_active"] = True
+    debug_info["stairs_approach_active"] = False
     debug_info["stairs_forward_floor_mps"] = float(forward_floor)
     debug_info["stairs_speed_limit_mps"] = float(trans_x_cmd)
     debug_info["stairs_trans_x_before"] = original_x
@@ -806,8 +837,8 @@ def main():
             # LIVE stair trigger (sensor-derived): YOLO-World detection on RGB
             # (yolo_stairs_inference) + depth-camera distance below. This is what
             # _apply_stair_command_policy gates on -- NOT the sim_go2_locomotion
-            # demo_4d_elevation_raycast / stair_demo overlay, which is HUD/report
-            # decoration computed from ground-truth pose and drives nothing.
+            # stair_demo phase/blind_rl overlay, which is HUD/report decoration
+            # computed from ground-truth pose and drives nothing.
             stairs_result = yolo_stairs.get_latest_result()
             if stairs_result.get("detected", False):
                 stair_latch_counter = int(args.stairs_latch_frames)
@@ -1033,9 +1064,26 @@ def main():
                 and bool(debug_info.get("recovery_cmd_active", False))
                 and abs(float(rotation_cmd)) > 1e-4
             )
-            motion_allowed = live_motion_allowed or recovery_motion_allowed
+            # Brief person loss while climbing latched stairs: the stair policy holds a
+            # positive forward floor (with yaw zeroed) so the climb keeps advancing toward
+            # the last-known heading instead of stopping mid-step. recovery_motion_allowed
+            # can't carry this (it requires a nonzero rotation, which we deliberately zero
+            # on the stairs), so allow it explicitly. Bounded by the loss grace + stair latch.
+            stair_floor_motion_allowed = (
+                args.follow
+                and robot_controller is not None
+                and robot_controller.is_ready()
+                and not preparation_mode
+                and bool(debug_info.get("stairs_brief_loss_floor", False))
+                and bool(debug_info.get("stairs_action_active", False))
+                and float(trans_x_cmd) > 0.0
+            )
+            motion_allowed = (
+                live_motion_allowed or recovery_motion_allowed or stair_floor_motion_allowed
+            )
             debug_info["live_motion_allowed"] = bool(live_motion_allowed)
             debug_info["recovery_motion_allowed"] = bool(recovery_motion_allowed)
+            debug_info["stair_floor_motion_allowed"] = bool(stair_floor_motion_allowed)
 
             controller = robot_controller
             if motion_allowed and controller is not None:
@@ -1058,9 +1106,21 @@ def main():
                 debug_info["command_rotation_limiter"] = rotation_limiter.get_state()
                 debug_info["cmd_sent_ts"] = time.time()
                 debug_info["cmd_sent_mono"] = time.monotonic()
+                # Heading command for the parkour policy: the person's bearing as a yaw
+                # error (rad), clamped to the policy's trained heading envelope. The blind
+                # RL path ignores it; only the parkour policy in heading_mode=command uses it.
+                # Sign: rotation_error_deg>0 means the person is to the RIGHT, which needs a
+                # clockwise (negative) turn under the policy's CCW-positive yaw -> negate.
+                # (The sign is log-verifiable via the fall-diag injected_yaw field.)
+                _rot_err_deg = debug_info.get("rotation_error_deg")
+                yaw_err_cmd = 0.0
+                if _rot_err_deg is not None:
+                    yaw_err_cmd = float(np.clip(-np.radians(float(_rot_err_deg)), -1.0, 1.0))
+                debug_info["yaw_err_cmd"] = yaw_err_cmd
                 controller.move(
                     command_trans_x, 0.0, command_rotation,
-                    stairs_detected=stairs_detected
+                    stairs_detected=stairs_detected,
+                    yaw_err=yaw_err_cmd,
                 )
             elif controller is not None and controller.is_ready():
                 controller.stop()

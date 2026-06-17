@@ -394,6 +394,9 @@ class PersonFollower:
             'person_velocity': self.person_velocity,
             'lost_search_active': False,
             'lost_age_sec': None,
+            # Grace window for "brief loss" consumers (e.g. the stair forward-floor):
+            # while lost_age_sec <= this, the target is considered only momentarily lost.
+            'lost_search_timeout_sec': float(self.config.lost_search_timeout_sec),
         }
         
         # Update person tracking state

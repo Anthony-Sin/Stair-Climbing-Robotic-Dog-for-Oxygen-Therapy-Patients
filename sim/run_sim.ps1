@@ -27,14 +27,19 @@ param(
     [double]$RlControlHz = 50.0,
     [double]$RlActionScale = 0.25,
     [string]$RlStairsStrategy = "policy",
+    [string]$ParkourHeadingMode = "vision",
     [switch]$Sim2RealValidation,
+    [switch]$Sim2RealValidationCam,
     [double]$SimLatencyMs = 0.0,
     [double]$SimLatencyJitterMs = 0.0
 )
 
 $ErrorActionPreference = "Stop"
-if ($LocomotionMode -notin @("rl")) {
-    throw "LocomotionMode must be 'rl' (the procedural gait has been removed; the RL policy is the only controller)."
+if ($LocomotionMode -notin @("rl", "parkour")) {
+    throw "LocomotionMode must be 'rl' (blind rl_sar flat trot) or 'parkour' (Extreme-Parkour perceptive depth-camera policy)."
+}
+if ($ParkourHeadingMode -notin @("vision", "command")) {
+    throw "ParkourHeadingMode must be 'vision' (policy self-steers from depth) or 'command' (steer toward the person-follow bearing)."
 }
 if ($RlPolicyFormat -notin @("auto", "torchscript", "torch", "pt", "jit", "onnx")) {
     throw "RlPolicyFormat must be one of: auto, torchscript, torch, pt, jit, onnx."
@@ -162,7 +167,7 @@ Set-Content -LiteralPath $SummaryLog -Encoding UTF8 -Value @(
     "  logs/launcher.log                           plain-text launcher timeline",
     "  logs/isaac_console.log                      filtered important Isaac messages",
     "  videos/opencv_preview.mp4                   OpenCV preview (YOLO + LiDAR BEV + fused distance)",
-    "  videos/topdown.mp4 / scene_view.mp4         1080p overhead + external scene cameras (~66 fps)",
+    "  videos/topdown.mp4 / scene_view.mp4         768x432 overhead + external scene cameras (~66 fps; downscaled to fit the mpeg4 encoder)",
     "",
     "Fast diagnosis:",
     "  If isaac_wait is complete, Isaac emitted world_ready and scene loading finished.",
@@ -995,6 +1000,7 @@ Write-Stage "setup" "start" "Preparing run_sim launch" @{
     rl_action_scale = [double]$RlActionScale
     rl_stairs_strategy = $RlStairsStrategy
     sim2real_validation = [bool]$Sim2RealValidation
+    sim2real_validation_cam = [bool]$Sim2RealValidationCam
 }
 Write-Host "Read first: $SummaryLog"
 Prune-OldRunLogs -KeepCount $KeepRunLogs
@@ -1087,13 +1093,17 @@ if ($NoIsaac) {
         "-RlPolicyFormat", $RlPolicyFormat,
         "-RlControlHz", [string]$RlControlHz,
         "-RlActionScale", [string]$RlActionScale,
-        "-RlStairsStrategy", $RlStairsStrategy
+        "-RlStairsStrategy", $RlStairsStrategy,
+        "-ParkourHeadingMode", $ParkourHeadingMode
     )
     if ($RlPolicyPath) {
         $isaacArgs += @("-RlPolicyPath", $RlPolicyPath)
     }
     if ($Sim2RealValidation) {
         $isaacArgs += "-Sim2RealValidation"
+    }
+    if ($Sim2RealValidationCam) {
+        $isaacArgs += "-Sim2RealValidationCam"
     }
 
     $isaacCommandLine = Format-CommandLine -FilePath "powershell.exe" -Arguments $isaacArgs

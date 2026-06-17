@@ -12,7 +12,9 @@ param(
     [double]$RlControlHz = 50.0,
     [double]$RlActionScale = 0.25,
     [string]$RlStairsStrategy = "policy",
-    [switch]$Sim2RealValidation
+    [string]$ParkourHeadingMode = "vision",
+    [switch]$Sim2RealValidation,
+    [switch]$Sim2RealValidationCam
 )
 
 $ErrorActionPreference = "Stop"
@@ -56,6 +58,7 @@ Write-ConsoleLog "  Frame target:        ${FrameHost}:${FramePort}"
 Write-ConsoleLog "  Command receiver:    0.0.0.0:${CmdPort}"
 Write-ConsoleLog "  Locomotion mode:     $LocomotionMode"
 Write-ConsoleLog "  Sim2Real preset:     $([bool]$Sim2RealValidation)"
+Write-ConsoleLog "  Sim2Real cam preset: $([bool]$Sim2RealValidationCam)"
 if ($RlPolicyPath) {
     Write-ConsoleLog "  RL policy path:      $RlPolicyPath"
 }
@@ -81,7 +84,7 @@ $env:PYTHONUNBUFFERED = "1"
 # Initialize RawLog file first
 New-Item -ItemType File -Path $RawLog -Force | Out-Null
 
-$rlArgs = "--locomotion-mode $LocomotionMode --rl-policy-format $RlPolicyFormat --rl-control-hz $RlControlHz --rl-action-scale $RlActionScale --rl-stairs-strategy $RlStairsStrategy"
+$rlArgs = "--locomotion-mode $LocomotionMode --rl-policy-format $RlPolicyFormat --rl-control-hz $RlControlHz --rl-action-scale $RlActionScale --rl-stairs-strategy $RlStairsStrategy --parkour-heading-mode $ParkourHeadingMode"
 if ($RlPolicyPath) {
     $rlArgs = "$rlArgs --rl-policy-path `"$RlPolicyPath`""
 }
@@ -100,7 +103,15 @@ if ($Sim2RealValidation) {
     $validationArg = "--sim2real-validation"
 }
 
-$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" --person-move --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera $rawArg $rlArgs $validationArg > `"$RawLog`" 2>&1`""
+# Camera/perception sim2real preset: routes the parkour depth-camera ML input
+# through the RealSense D435 noise model inside isaac_env.py (clean by default).
+# Independent of --sim2real-validation; touches no RL/physics knobs.
+$validationCamArg = ""
+if ($Sim2RealValidationCam) {
+    $validationCamArg = "--sim2real-validation-cam"
+}
+
+$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" --person-move --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera $rawArg $rlArgs $validationArg $validationCamArg > `"$RawLog`" 2>&1`""
 
 # Start the process with direct OS redirection to prevent pipeline blocking
 $process = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs -PassThru -NoNewWindow

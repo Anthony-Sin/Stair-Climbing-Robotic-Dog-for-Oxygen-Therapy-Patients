@@ -230,10 +230,12 @@ The demo telemetry is geometry-exact scene decoration decoupled from the RL phys
 ---
 
 TRIGGER:
-Reasoning about what perception drives the sim's stair climb (assuming the `demo_4d_elevation_raycast` / `_get_analytical_terrain_height` signal is the control input).
+Reasoning about what perception drives the sim's stair climb (assuming the `_get_analytical_terrain_height` ground-truth signal is the control input).
 
 LESSON:
-The live stair trigger is sensor-derived: `stairs_detected` comes from `yolo_stairs_inference` (YOLO-World on RGB, latched in `core/main.py`) and `stairs_depth_m` from the depth camera (`_depth_from_bbox_excluding_person`); `_apply_stair_command_policy` reads only those `debug_info` values. The analytical `_get_analytical_terrain_height` / `demo_4d_elevation_raycast` feeds ONLY `_build_stair_demo_telemetry` (HUD/reports) and is called with `vertical_assist_mps=0.0` / `body_height_target_m=None` — it drives no command, RL, or physics. Do not treat it as the climb's perception or "replace" it expecting behavior to change.
+The live stair trigger is sensor-derived: `stairs_detected` comes from `yolo_stairs_inference` (YOLO-World on RGB, latched in `core/main.py`) and `stairs_depth_m` from the depth camera (`_depth_from_bbox_excluding_person`); `_apply_stair_command_policy` reads only those `debug_info` values. The analytical `_get_analytical_terrain_height` feeds ONLY `_build_stair_demo_telemetry`'s `phase` / `blind_rl.mode` HUD labels (`vertical_assist_mps=0.0` / `body_height_target_m=None`) — it drives no command, RL, or physics. Do not treat it as the climb's perception or "replace" it expecting behavior to change.
+
+NOTE (2026-06-17): the fabricated `demo_4d_elevation_raycast` block — the fake "lidar" the analytical probe used to populate in `stair_demo["lidar"]` (samples/detected/confidence/distance_to_next_riser_m) — was REMOVED. `stair_demo["lidar"]` is now filled only by the real PhysX-raycast XT16 (`sim_lidar_xt16.cast_scan`) in `isaac_env.py`. The synthetic `phase`/`blind_rl.mode` labels remain.
 
 WHY:
 The decorative overlay and the live control signal share "stair/raycast" vocabulary, so the synthetic ground-truth telemetry looks like the perception path and leads to redundant or misdirected work (e.g. "make the climb sensor-driven" when it already is).

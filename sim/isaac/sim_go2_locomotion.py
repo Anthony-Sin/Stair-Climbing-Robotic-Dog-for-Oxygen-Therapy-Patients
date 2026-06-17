@@ -52,7 +52,6 @@ class Go2LocomotionState:
     # replacing the removed procedural-gait swing bookkeeping.
     rl_leg_summary: Dict[str, Any] = field(default_factory=dict)
     rl_policy_name: str = ""
-    stair_demo_detected_logged: bool = False
     stair_demo_climb_logged: bool = False
     stair_demo_complete_logged: bool = False
     stair_crawl_logged: bool = False
@@ -296,8 +295,10 @@ def get_active_stairs() -> "StairSpec":
     return ACTIVE_STAIRS
 
 
+# Forward distance within which an approaching staircase flips blind_rl.mode to
+# "stair_approach". This is the only surviving use of the analytical terrain
+# probe; it labels the (synthetic) RL mode and drives no command/physics.
 STAIR_LIDAR_LOOKAHEAD_M = 0.85
-STAIR_LIDAR_SAMPLE_RANGES_M = (0.15, 0.30, 0.45, 0.60, 0.75)
 
 
 def _terrain_phase(x: float, y: float) -> str:
@@ -350,15 +351,22 @@ def _build_stair_demo_telemetry(
     This (and its helpers `_terrain_phase` / `_next_stair_edge` /
     `_get_analytical_terrain_height`) is derived from the robot's exact
     ground-truth pose and the hard-coded stair geometry. It populates the
-    `stair_demo` telemetry for the HUD/reports and drives NOTHING: not the
-    command, not the RL policy, not physics (it is recorded with
-    `vertical_assist_mps=0.0` / `body_height_target_m=None`).
+    `stair_demo` telemetry's `phase` and `blind_rl` mode labels for the
+    HUD/reports and drives NOTHING: not the command, not the RL policy, not
+    physics (it is recorded with `vertical_assist_mps=0.0` /
+    `body_height_target_m=None`).
+
+    NOTE: the fabricated `lidar` block (the `demo_4d_elevation_raycast` that
+    re-skinned the analytical terrain probe as a fake sensor) has been removed.
+    The ONLY LiDAR in sim is the real PhysX raycast XT16 in `sim_lidar_xt16.py`;
+    `isaac_env.py` writes its genuine returns into `stair_demo["lidar"]`.
 
     The LIVE stair trigger is sensor-derived and lives elsewhere:
     `core/main.py` sets `debug_info["stairs_detected"]` from
     `yolo_stairs_inference` (YOLO-World on RGB) + the depth camera, and
     `_apply_stair_command_policy` gates on that. Do not mistake this overlay's
-    `lidar.detected` for the real signal (see CLAUDE.md incident ledger).
+    synthetic `phase` / `blind_rl.mode` for the real signal (see CLAUDE.md
+    incident ledger).
     """
     phase = _terrain_phase(rx, ry)
     edge_x, current_h, next_h = _next_stair_edge(rx, ry)
@@ -373,22 +381,6 @@ def _build_stair_demo_telemetry(
         )
     )
 
-    cos_y = math.cos(yaw)
-    sin_y = math.sin(yaw)
-    samples = []
-    for idx, range_m in enumerate(STAIR_LIDAR_SAMPLE_RANGES_M):
-        sx = rx + cos_y * range_m
-        sy = ry + sin_y * range_m
-        samples.append(
-            {
-                "range_m": round(float(range_m), 3),
-                "x_m": round(float(sx), 3),
-                "y_m": round(float(sy), 3),
-                "elevation_m": round(float(_get_analytical_terrain_height(sx, sy)), 3),
-                "timestamp_offset_ms": int(idx * 12),
-            }
-        )
-
     command_speed = math.sqrt((vx * vx) + (vy * vy)) + 0.25 * abs(wz)
     if phase == "top_landing":
         rl_mode = "landing_follow"
@@ -399,7 +391,6 @@ def _build_stair_demo_telemetry(
     else:
         rl_mode = "flat_follow"
     rl_active = bool(rl_mode in ("stair_approach", "stair_climb") and command_speed > 0.03)
-    confidence = 0.96 if phase == "staircase" else 0.91 if detected else 0.42
 
     # Real per-leg commands the RL policy issued this step (set in
     # _step_go2_locomotion from RLLocomotionPolicy.leg_command_summary()).
@@ -417,9 +408,9 @@ def _build_stair_demo_telemetry(
         robot_fall_type = "collapsed"
 
     return {
-        "source": "synthetic_isaac_ground_truth_raycast",
+        "source": "synthetic_isaac_ground_truth_pose",
         "is_synthetic": True,
-        "data_truth": "sim_geometry_exact_for_demo_not_hardware_lidar",
+        "data_truth": "phase_and_blind_rl_mode_are_hud_labels_from_gt_pose_not_a_sensor",
         "phase": phase,
         "robot": {
             "x_m": round(float(rx), 3),
@@ -432,20 +423,9 @@ def _build_stair_demo_telemetry(
             "fell": bool(robot_fell),
             "fall_type": str(robot_fall_type),
         },
-        "lidar": {
-            "model": "demo_4d_elevation_raycast",
-            "ray_count": len(samples),
-            "lookahead_m": round(float(STAIR_LIDAR_LOOKAHEAD_M), 2),
-            "detected": detected,
-            "confidence": round(float(confidence), 2),
-            "distance_to_next_riser_m": (
-                None if distance_to_step_m is None else round(float(distance_to_step_m), 3)
-            ),
-            "step_height_m": round(float(step_delta_m if step_delta_m > 0.0 else (ACTIVE_STAIRS.step_height_m if phase == "staircase" else 0.0)), 3),
-            "current_ground_m": round(float(current_h), 3),
-            "next_ground_m": round(float(next_h), 3),
-            "samples": samples,
-        },
+        # The `lidar` key is intentionally absent here; the real PhysX-raycast
+        # XT16 (sim_lidar_xt16.py) is the only LiDAR, and isaac_env.py fills
+        # stair_demo["lidar"] from its genuine returns on each scan.
         "blind_rl": {
             "policy": state.rl_policy_name or "go2_rl_policy",
             "mode": rl_mode,
@@ -507,24 +487,10 @@ def _record_stair_demo_telemetry(
     telemetry: Dict[str, Any],
 ) -> None:
     state.stair_demo_telemetry = telemetry
-    lidar = telemetry.get("lidar", {})
     blind_rl = telemetry.get("blind_rl", {})
     phase = str(telemetry.get("phase", "unknown"))
     if logger is None:
         return
-
-    if lidar.get("detected") and not state.stair_demo_detected_logged:
-        state.stair_demo_detected_logged = True
-        log_event(
-            logger,
-            logging.INFO,
-            "synthetic_lidar_stairs_detected",
-            "Synthetic 4D elevation raycast detected the staircase from Isaac ground-truth geometry",
-            data_source=telemetry.get("source"),
-            distance_to_next_riser_m=lidar.get("distance_to_next_riser_m"),
-            step_height_m=lidar.get("step_height_m"),
-            is_synthetic=True,
-        )
 
     if blind_rl.get("active") and not state.stair_demo_climb_logged:
         state.stair_demo_climb_logged = True
