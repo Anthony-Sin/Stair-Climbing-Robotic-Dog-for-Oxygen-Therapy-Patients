@@ -40,11 +40,11 @@ class SimRobotController:
     def is_ready(self) -> bool:
         return self._ready
     def move(self, vx: float, vy: float, wz: float, stairs_detected: bool = False,
-             yaw_err: float = 0.0) -> None:
-        self._send(vx, vy, wz, stairs_detected, yaw_err)
+             yaw_err: float = 0.0, person_bbox=None) -> None:
+        self._send(vx, vy, wz, stairs_detected, yaw_err, person_bbox)
 
     def stop(self) -> None:
-        self._send(0.0, 0.0, 0.0, False, 0.0)
+        self._send(0.0, 0.0, 0.0, False, 0.0, None)
 
     def shutdown(self) -> None:
         self.stop()
@@ -62,7 +62,7 @@ class SimRobotController:
             self._sock = None
 
     def _send(self, vx: float, vy: float, wz: float, stairs_detected: bool = False,
-              yaw_err: float = 0.0) -> None:
+              yaw_err: float = 0.0, person_bbox=None) -> None:
         if not self._sock:
             return
         vx_raw = float(vx)
@@ -78,8 +78,17 @@ class SimRobotController:
                     vx_raw=float(vx_raw),
                 )
             vx = 0.0
+        # Normalized [0,1] person bbox (rounded to keep the UDP packet small -- the
+        # Isaac receiver reads a fixed-size datagram; full-precision floats can
+        # overflow it and silently drop the command). 4 decimals is sub-pixel.
+        _pbb = (
+            [round(float(v), 4) for v in person_bbox[:4]]
+            if isinstance(person_bbox, (list, tuple)) and len(person_bbox) >= 4
+            else None
+        )
         payload = json.dumps({"vx": vx, "vy": vy, "wz": wz, "yaw_err": float(yaw_err),
-                              "stairs_detected": stairs_detected}).encode()
+                              "stairs_detected": stairs_detected,
+                              "person_bbox": _pbb}).encode()
         try:
             self._sock.sendto(payload, (self._host, self._port))
             self._total_sent += 1

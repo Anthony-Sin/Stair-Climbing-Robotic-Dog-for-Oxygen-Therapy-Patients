@@ -870,6 +870,21 @@ def main():
             stairs_depth_m = _depth_from_bbox_excluding_person(
                 depth_img, stairs_bbox, _person_bbox_for_depth
             )
+            # Forward the followed person's bbox (normalized [0,1] of the RGB frame)
+            # to Isaac so the parkour depth policy can mask the person out of its
+            # depth input -- the near body at close follow range otherwise reads as
+            # terrain the policy charges at (the close-range surge). Reuses the same
+            # YOLO bbox as the stair-depth exclusion above; deployable on the robot.
+            person_bbox_norm = None
+            if _person_bbox_for_depth is not None and len(_person_bbox_for_depth) >= 4:
+                _ih, _iw = img.shape[0], img.shape[1]
+                if _iw > 0 and _ih > 0:
+                    _b = _person_bbox_for_depth
+                    person_bbox_norm = [
+                        float(_b[0]) / _iw, float(_b[1]) / _ih,
+                        float(_b[2]) / _iw, float(_b[3]) / _ih,
+                    ]
+            debug_info["person_bbox_norm"] = person_bbox_norm
             if stairs_depth_m is not None:
                 last_stairs_depth_m = stairs_depth_m
                 stairs_depth_ever_confirmed = True
@@ -1121,6 +1136,7 @@ def main():
                     command_trans_x, 0.0, command_rotation,
                     stairs_detected=stairs_detected,
                     yaw_err=yaw_err_cmd,
+                    person_bbox=debug_info.get("person_bbox_norm"),
                 )
             elif controller is not None and controller.is_ready():
                 controller.stop()

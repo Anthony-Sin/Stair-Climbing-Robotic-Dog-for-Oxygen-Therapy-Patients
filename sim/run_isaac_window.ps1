@@ -6,12 +6,13 @@ param(
     [Parameter(Mandatory = $true)][string]$FrameHost,
     [int]$FramePort = 55002,
     [int]$CmdPort = 55001,
-    [string]$ParkourHeadingMode = "command",
+    [string]$ParkourHeadingMode = "vision",
     [switch]$Sim2RealValidationCam,
     [switch]$SelfTestWalk,
     [double]$SelfTestVx = 0.5,
     [double]$SelfTestSec = 15.0,
-    [switch]$SelfTestNoPolicy
+    [switch]$SelfTestNoPolicy,
+    [switch]$NoParkourPersonMask
 )
 
 $ErrorActionPreference = "Stop"
@@ -55,6 +56,7 @@ Write-ConsoleLog "  Frame target:        ${FrameHost}:${FramePort}"
 Write-ConsoleLog "  Command receiver:    0.0.0.0:${CmdPort}"
 Write-ConsoleLog "  Locomotion policy:   parkour (depth/vision)"
 Write-ConsoleLog "  Parkour heading:     $ParkourHeadingMode"
+Write-ConsoleLog "  Parkour person mask: $(-not $NoParkourPersonMask)"
 Write-ConsoleLog "  Real-sim env preset: $([bool]$Sim2RealValidationCam)"
 Write-ConsoleLog ""
 
@@ -79,6 +81,8 @@ $env:PYTHONUNBUFFERED = "1"
 New-Item -ItemType File -Path $RawLog -Force | Out-Null
 
 $locomotionArgs = "--parkour-heading-mode $ParkourHeadingMode"
+# Person-mask is ON by default in isaac_env.py; pass the disable flag through for A/B.
+if ($NoParkourPersonMask) { $locomotionArgs += " --no-parkour-person-mask" }
 
 # Isaac records the external scene Left view to scene_view.mp4 (beside opencv_preview.mp4).
 $rawArg = ""

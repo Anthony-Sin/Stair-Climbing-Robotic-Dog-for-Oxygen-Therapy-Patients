@@ -21,12 +21,13 @@ param(
     [int]$IsaacReadyTimeoutSec = 420,
     [int]$KeepRunLogs = 1,
     [int]$MaxRunTimeSec = 900,
-    [string]$ParkourHeadingMode = "command",
+    [string]$ParkourHeadingMode = "vision",
     [switch]$Sim2RealValidationCam,
     [switch]$SelfTestWalk,
     [double]$SelfTestVx = 0.5,
     [double]$SelfTestSec = 15.0,
     [switch]$SelfTestNoPolicy,
+    [switch]$NoParkourPersonMask,
     [double]$SimLatencyMs = 0.0,
     [double]$SimLatencyJitterMs = 0.0
 )
@@ -1085,6 +1086,9 @@ if ($NoIsaac) {
     if ($Sim2RealValidationCam) {
         $isaacArgs += "-Sim2RealValidationCam"
     }
+    if ($NoParkourPersonMask) {
+        $isaacArgs += "-NoParkourPersonMask"
+    }
     if ($SelfTestWalk) {
         $isaacArgs += "-SelfTestWalk"
         $isaacArgs += "-SelfTestVx";  $isaacArgs += [string]$SelfTestVx
@@ -1168,11 +1172,11 @@ if ($NoDockerRun) {
         "--sim-latency-ms $effLatencyMs",
         "--sim-latency-jitter-ms $effLatencyJitterMs",
         "--target-distance 0.45",
-        # Forward cap held in the parkour policy's proven-stable regime. The
-        # controller-free self-test (2026-06-17) showed a constant vx=0.2 command
-        # stays upright ~12 s while vx=0.5 falls by ~2.2 s, and the policy floors
-        # at ~0.5 m/s actual regardless, so a higher cap only destabilizes it.
-        "--trans-x-max 0.2",
+        # Forward cap restored to the commit-02e441e value so the no-arg default
+        # reproduces the vision-mode parkour follow that ran there. (The 0.2 cap
+        # was tuned against command-mode self-tests; with vision self-steer the
+        # default, 0.85 matches the run the dog tracked the person in.)
+        "--trans-x-max 0.85",
         "--trans-x-tolerance 0.12",
         "--trans-x-alpha 0.65",
         "--kp 1.1",

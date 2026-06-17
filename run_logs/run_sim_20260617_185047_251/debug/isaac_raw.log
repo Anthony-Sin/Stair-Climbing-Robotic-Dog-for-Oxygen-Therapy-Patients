@@ -1,0 +1,781 @@
+18:50:49 INFO    [isaac_env] Starting Isaac Sim Go2 environment
+Starting kit application with the following args:  ['C:\\isaac_sim_600\\exts\\isaacsim.simulation_app\\isaacsim\\simulation_app\\simulation_app.py', 'C:\\isaac_sim_600\\apps/isaacsim.exp.base.python.kit', '--/app/tokens/exe-path=C:\\isaac_sim_600\\kit', '--/persistent/app/viewport/displayOptions=3094', '--/rtx/materialDb/syncLoads=True', '--/rtx/hydra/materialSyncLoads=True', '--/omni.kit.plugin/syncUsdLoads=True', '--/app/renderer/resolution/width=1280', '--/app/renderer/resolution/height=720', '--/app/window/width=1440', '--/app/window/height=900', '--/renderer/multiGpu/enabled=True', '--/app/fastShutdown=True', '--/app/installSignalHandlers=0', '--ext-folder', 'C:\\isaac_sim_600/exts', '--ext-folder', 'C:\\isaac_sim_600/apps', '--/physics/cudaDevice=0', '--/plugins/carb.tasking.plugin/threadCount=16', '--/plugins/omni.tbb.globalcontrol/maxThreadCount=16', '--portable']
+Passing the following args to the base kit application:  ['--person-move', '--frame-host', '127.0.0.1', '--frame-port', '55002', '--cmd-port', '55001', '--log-dir', 'C:\\Users\\antho\\Downloads\\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\\log\\run_sim_20260617_185047_251', '--no-view-follow-camera', '--raw-video-path', 'C:\\Users\\antho\\Downloads\\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\\log\\run_sim_20260617_185047_251\\videos\\scene_view.mp4', '--parkour-heading-mode', 'vision']
+2026-06-17T22:50:49Z [Info] [carb] Logging to file: c:/isaac_sim_600/kit/logs/Kit/Isaac-Sim Python/6.0/kit_20260617_185049.log
+[0.153s] [ext: omni.assets.plugins-0.0.0] startup
+[0.162s] [ext: omni.blobkey-1.1.2] startup
+[0.163s] [ext: omni.kit.async_engine-0.0.3] startup
+[1.667s] [ext: omni.client.lib-1.1.1] startup
+[1.717s] [ext: omni.client-1.3.0] startup
+[2.047s] [ext: omni.protobuf.lib-1.0.0] startup
+[2.049s] [ext: omni.grpc.lib-1.0.0] startup
+[2.050s] [ext: omni.metrics.core-0.0.3] startup
+[2.051s] [ext: omni.datastore-0.0.0] startup
+[2.055s] [ext: omni.gpu_foundation.shadercache.vulkan-1.0.0] startup
+[2.063s] [ext: omni.hsscclient-1.1.4] startup
+[2.065s] [ext: omni.stats-1.0.1] startup
+[2.068s] [ext: omni.ujitso.default-1.0.0] startup
+[2.084s] [ext: omni.gpu_foundation-0.0.0] startup
+[2.170s] [ext: carb.windowing.plugins-1.0.1] startup
+[2.200s] [ext: omni.kit.renderer.init-1.0.1] startup
+[2.202s] [ext: omni.kit.pipapi-0.0.0] startup
+[2.204s] [ext: omni.kit.pip_archive-0.0.0] startup
+[2.206s] [ext: isaacsim.pip.newton-0.6.0] startup
+[2.207s] [ext: omni.pip.compute-1.9.0] startup
+[2.210s] [ext: omni.isaac.core_archive-5.3.0] startup
+[2.211s] [ext: omni.kit.telemetry-0.5.2] startup
+[2.240s] [ext: omni.kit.loop-isaac-1.6.0] startup
+[2.248s] [ext: omni.kit.test-2.0.7] startup
+[2.416s] [ext: omni.materialx.libs-1.0.9] startup
+[2.462s] [ext: omni.gpucompute.plugins-0.0.0] startup
+[2.466s] [ext: omni.usd.config-1.0.7] startup
+[2.477s] [ext: omni.usd.libs-1.0.3] startup
+[2.786s] [ext: omni.iray.libs-0.0.1] startup
+2026-06-17T22:50:52Z [2,701ms] [Warning] [omni.rtx] Skipping unsupported non-NVIDIA GPU: Intel(R) UHD Graphics
+2026-06-17T22:50:52Z [2,702ms] [Warning] [omni.rtx] Skipping unsupported non-NVIDIA GPU: Intel(R) UHD Graphics
+[3.039s] [ext: omni.mdl-57.0.3] startup
+
+|---------------------------------------------------------------------------------------------|
+| Driver Version: 561.17        | Graphics API: Vulkan
+|=============================================================================================|
+| GPU | Name                             | Active | LDA | GPU Memory | Vendor-ID | LUID       |
+|     |                                  |        |     |            | Device-ID | UUID       |
+|     |                                  |        |     |            | Bus-ID    |            |
+|---------------------------------------------------------------------------------------------|
+| 0   | NVIDIA GeForce RTX 4070 Laptop.. | Yes: 0 |     | 7948    MB | 10de      | bb480100.. |
+|     |                                  |        |     |            | 2860      | 057f8559.. |
+|     |                                  |        |     |            | 1         |            |
+|---------------------------------------------------------------------------------------------|
+| 1   | Intel(R) UHD Graphics            |        |     | 8005    MB | 8086      | f1380100.. |
+|     |                                  |        |     |            | a7a8      | 8680a8a7.. |
+|     |                                  |        |     |            | N/A       |            |
+|=============================================================================================|
+| OS: Windows 11 Home, Version: 10.0 (25H2), Build: 26200, Kernel: 10.0.26100.8655
+| Processor: 13th Gen Intel(R) Core(TM) i7-13620H
+| Cores: 10 | Logical Cores: 16
+|---------------------------------------------------------------------------------------------|
+| Total Memory (MB): 16010 | Free Memory: 4643
+| Total Page/Swap (MB): 50826 | Free Page/Swap: 17842
+|---------------------------------------------------------------------------------------------|
+[3.192s] [ext: omni.mdl.neuraylib-0.2.20] startup
+[3.200s] [ext: omni.kit.usd.mdl-1.1.9] startup
+[3.544s] [ext: omni.appwindow-1.2.2] startup
+[3.559s] [ext: omni.kit.renderer.core-1.2.2] startup
+[3.567s] [ext: omni.kit.renderer.capture-2.0.1] startup
+[3.576s] [ext: omni.kit.renderer.imgui-2.0.6] startup
+[3.598s] [ext: omni.ui-3.1.3] startup
+[3.627s] [ext: omni.kit.mainwindow-1.0.3] startup
+[3.630s] [ext: carb.audio-0.1.0] startup
+[3.634s] [ext: omni.uiaudio-1.0.0] startup
+[3.638s] [ext: omni.kit.uiapp-0.0.0] startup
+[3.638s] [ext: omni.usd.schema.metrics.assembler-110.1.0] startup
+[3.647s] [ext: omni.usd.schema.audio-0.0.1] startup
+[3.657s] [ext: omni.usd_resolver-1.0.0] startup
+[3.671s] [ext: omni.usd.core-1.8.3] startup
+[3.680s] [ext: omni.metropolis.schema-0.0.3] startup
+[3.681s] [ext: isaacsim.anim.robot.schema-0.1.1] startup
+[3.683s] [ext: omni.usd.schema.anim-0.0.1] startup
+[3.732s] [ext: omni.usd.schema.geospatial-0.0.1] startup
+[3.741s] [ext: omni.usd.schema.omnigraph-1.0.1] startup
+[3.761s] [ext: omni.usd.schema.semantics-0.0.0] startup
+[3.770s] [ext: omni.activity.core-1.0.3] startup
+[3.776s] [ext: omni.cubric-0.1.0] startup
+[3.780s] [ext: omni.graph.exec-0.9.6] startup
+[3.783s] [ext: omni.hydra.scene_delegate-0.3.5] startup
+[3.792s] [ext: usdrt.scenegraph-7.6.3] startup
+[3.874s] [ext: omni.hydra.usdrt_delegate-7.5.2] startup
+[3.888s] [ext: omni.inspect-1.0.2] startup
+[3.894s] [ext: omni.kit.actions.core-1.0.0] startup
+[3.901s] [ext: omni.kit.audiodeviceenum-1.0.2] startup
+[3.905s] [ext: omni.kit.commands-1.5.0] startup
+[3.915s] [ext: omni.kit.exec.core-0.13.5] startup
+[3.920s] [ext: omni.kit.usd_undo-0.1.8] startup
+[3.921s] [ext: omni.kit.window.popup_dialog-2.0.25] startup
+[3.931s] [ext: omni.kit.widget.nucleus_connector-2.3.1] startup
+[3.939s] [ext: omni.timeline-1.1.0] startup
+[3.945s] [ext: omni.usd-1.15.2] startup
+[4.053s] [ext: omni.graph.core-3.1.2] startup
+[4.063s] [ext: omni.kit.notification_manager-1.0.11] startup
+[4.070s] [ext: isaacsim.core.deprecation_manager-0.4.2] startup
+[4.072s] [ext: isaacsim.replicator.agent.schema-0.1.1] startup
+[4.075s] [ext: isaacsim.robot.schema-6.3.6] startup
+[4.087s] [ext: isaacsim.robot_motion.schema-0.2.0] startup
+[4.092s] [ext: omni.anim.behavior.schema-110.1.0] startup
+[4.106s] [ext: omni.anim.graph.schema-110.1.1] startup
+[4.128s] [ext: omni.anim.navigation.schema-110.1.0] startup
+[4.139s] [ext: omni.behavior.tree.schema-110.1.0] startup
+[4.142s] [ext: omni.isaac.ml_archive-3.3.0] startup
+[4.142s] [ext: omni.kit.asset_converter-5.1.4] startup
+[4.177s] [ext: omni.pip.cloud-1.5.3] startup
+[4.180s] [ext: omni.usd.schema.flow-110.0.0] startup
+[4.182s] [ext: omni.usd.schema.mujoco-1.1.0] startup
+[4.184s] [ext: omni.usd.schema.newton-1.2.0] startup
+[4.186s] [ext: omni.usd.schema.omni_lens_distortion-1.0.0] startup
+[4.188s] [ext: omni.usd.schema.omni_projectors-1.0.0] startup
+[4.189s] [ext: omni.usd.schema.omni_sensors-0.0.0] startup
+[4.208s] [ext: omni.usd.schema.omniscripting-1.0.1] startup
+[4.223s] [ext: omni.usd.schema.physical_lighting-0.1.0] startup
+[4.233s] [ext: omni.usd.schema.physx-110.1.11] startup
+[4.309s] [ext: omni.usd.schema.render_settings.rtx-1.0.2] startup
+[4.320s] [ext: omni.usd.schema.usd_particle_field-1.0.0] startup
+[4.322s] [ext: isaacsim.core.version-2.1.0] startup
+[4.324s] [ext: omni.kit.menu.core-1.2.0] startup
+[4.325s] [ext: omni.kit.menu.utils-2.2.3] startup
+[4.340s] [ext: isaacsim.app.about-2.3.0] startup
+[4.355s] [ext: isaacsim.asset.transformer-1.2.3] startup
+[4.362s] [ext: omni.scene.optimizer.core-110.1.0] startup
+[4.486s] [ext: isaacsim.asset.importer.utils-1.8.0] startup
+[4.492s] [ext: omni.convexdecomposition-110.1.11] startup
+[4.498s] [ext: omni.physics-110.1.11] startup
+[4.510s] [ext: omni.physx.gpu-110.1.11] startup
+[4.512s] [ext: omni.physx.foundation-110.1.11] startup
+[4.534s] [ext: omni.usdphysics-110.1.11] startup
+[4.539s] [ext: omni.physx.cooking-110.1.11] startup
+[4.547s] [ext: omni.physx-110.1.11] startup
+[4.581s] [ext: omni.physics.physx-110.1.11] startup
+[4.586s] [ext: isaacsim.asset.exporter.urdf-2.0.3] startup
+[4.602s] [ext: omni.kit.clipboard-1.1.1] startup
+[4.605s] [ext: omni.kit.usd.layers-2.6.1] startup
+[4.623s] [ext: omni.kit.widget.context_menu-1.4.0] startup
+[4.627s] [ext: omni.kit.context_menu-1.9.0] startup
+[4.631s] [ext: omni.kit.helper.file_utils-0.1.10] startup
+[4.634s] [ext: omni.kit.widget.nucleus_info-2.0.2] startup
+[4.636s] [ext: omni.kit.search_core-1.0.8] startup
+[4.638s] [ext: omni.kit.widget.path_field-2.0.13] startup
+[4.641s] [ext: omni.kit.widget.browser_bar-2.0.10] startup
+[4.643s] [ext: omni.kit.widget.filebrowser-2.13.4] startup
+[4.659s] [ext: omni.kit.widget.options_menu-1.1.6] startup
+[4.666s] [ext: omni.kit.widget.options_button-1.0.3] startup
+[4.668s] [ext: omni.kit.widget.search_delegate-1.0.9] startup
+[4.672s] [ext: omni.ui.scene-2.0.1] startup
+[4.690s] [ext: omni.kit.window.filepicker-2.15.5] startup
+[4.739s] [ext: omni.kit.window.file_importer-1.1.21] startup
+[4.751s] [ext: omni.kit.material.library-3.1.2] startup
+[4.766s] [ext: isaacsim.asset.transformer.rules-1.7.8] startup
+[4.797s] [ext: omni.usdex.libs-2.2.2] startup
+[4.817s] [ext: isaacsim.asset.importer.mjcf-3.10.0] startup
+[4.822s] [ext: isaacsim.asset.importer.urdf-3.11.0] startup
+[4.830s] [ext: omni.kit.primitive.mesh-1.1.0] startup
+[4.840s] [ext: omni.kit.stage_template.core-1.1.22] startup
+[4.842s] [ext: omni.kit.stage_templates-2.0.2] startup
+[4.846s] [ext: omni.usd.metrics.assembler-110.1.2] startup
+[4.854s] [ext: omni.warp.core-1.13.0] startup
+[5.102s] [ext: isaacsim.core.experimental.utils-0.17.1] startup
+[5.106s] [ext: omni.physics.stageupdate-110.1.11] startup
+[5.113s] [ext: omni.physics.tensors-110.1.11] startup
+[5.128s] [ext: omni.physx.tensors-110.1.11] startup
+[5.137s] [ext: isaacsim.core.simulation_manager-1.15.4] startup
+2026-06-17T22:50:54Z [5,065ms] [Warning] [isaacsim.core.simulation_manager.plugin] USD stage is not available; stage-opened subscription is deferred
+2026-06-17T22:50:54Z [5,065ms] [Warning] [isaacsim.core.simulation_manager.plugin] USD stage is not available; stage-opened subscription is deferred
+[5.166s] [ext: isaacsim.storage.native-1.9.2] startup
+[5.170s] [ext: omni.usd.metrics.assembler.physics-110.1.11] startup
+[5.174s] [ext: isaacsim.core.utils-4.1.6] startup
+[5.181s] [ext: isaacsim.core.prims-0.11.6] startup
+[12.525s] [ext: isaacsim.core.api-5.2.12] startup
+[12.646s] [ext: isaacsim.core.cloner-1.7.2] startup
+[12.661s] [ext: isaacsim.test.docstring-1.3.1] startup
+[12.701s] [ext: isaacsim.core.experimental.prims-1.8.8] startup
+[12.854s] [ext: isaacsim.core.experimental.primdata-0.3.2] startup
+[12.864s] [ext: omni.graph.tools-1.81.0] startup
+[13.075s] [ext: omni.graph-1.142.5] startup
+[13.326s] [ext: isaacsim.core.experimental.actuators-0.1.0] startup
+[22.235s] [ext: isaacsim.core.experimental.materials-0.7.0] startup
+[22.252s] [ext: isaacsim.core.experimental.objects-0.8.0] startup
+[22.563s] [ext: omni.hydra.engine.stats-1.0.5] startup
+[22.570s] [ext: omni.hydra.rtx.shadercache.vulkan-1.0.0] startup
+[22.575s] [ext: omni.index.libs-387500.3473.0] startup
+[22.575s] [ext: omni.index-1.0.1] startup
+[22.579s] [ext: omni.ujitso.client-0.0.0] startup
+[22.581s] [ext: omni.usd.schema.playback-1.0.0] startup
+[22.598s] [ext: omni.volume-0.5.2] startup
+[22.619s] [ext: omni.hydra.rtx-1.0.3] startup
+[22.738s] [ext: omni.kit.hydra_texture-1.6.0] startup
+[22.745s] [ext: omni.kit.raycast.query-1.2.0] startup
+[22.758s] [ext: omni.kit.viewport.legacy_gizmos-1.0.24] startup
+[22.767s] [ext: omni.kit.viewport.registry-104.0.6] startup
+[22.769s] [ext: omni.kit.viewport.scene_camera_model-1.0.7] startup
+[22.777s] [ext: omni.kit.widget.viewport-109.2.0] startup
+[22.807s] [ext: omni.kit.window.drop_support-1.0.8] startup
+[22.812s] [ext: omni.kit.viewport.window-109.0.2] startup
+[23.930s] [ext: omni.kit.viewport.utility-2.0.1] startup
+[23.934s] [ext: isaacsim.core.rendering_manager-0.4.2] startup
+[24.011s] [ext: omni.graph.action_core-1.1.9] startup
+[24.025s] [ext: omni.graph.action_nodes_core-2.10.2] startup
+[24.037s] [ext: omni.graph.action_nodes-2.10.3] startup
+[24.182s] [ext: omni.graph.action-2.10.2] startup
+[24.190s] [ext: omni.graph.image.core-0.6.1] startup
+[24.215s] [ext: omni.graph.image.nodes-1.3.1] startup
+[24.225s] [ext: omni.graph.nodes_core-2.10.3] startup
+[24.290s] [ext: omni.graph.nodes-2.11.1] startup
+[24.354s] [ext: omni.kit.hotkeys.core-1.3.12] startup
+[24.360s] [ext: omni.kit.property.adapter.core-1.1.1] startup
+[24.380s] [ext: omni.kit.property.adapter.usd-1.0.5] startup
+[24.391s] [ext: omni.kit.widget.filter-1.1.5] startup
+[24.399s] [ext: omni.kit.widget.highlight_label-1.0.3] startup
+[24.407s] [ext: omni.kit.widget.searchfield-1.1.8] startup
+[24.425s] [ext: omni.kit.window.file_exporter-1.0.36] startup
+[24.437s] [ext: omni.kit.widget.stage-4.3.0] startup
+[24.520s] [ext: omni.kit.window.content_browser_registry-0.0.6] startup
+[24.528s] [ext: omni.kit.window.file-2.0.10] startup
+[24.551s] [ext: omni.kit.window.content_browser-3.1.8] startup
+[24.618s] [ext: omni.kit.window.property-1.15.1] startup
+[24.738s] [ext: omni.kit.property.usd-4.8.1] startup
+[24.811s] [ext: omni.graph.scriptnode-2.10.2] startup
+[24.922s] [ext: omni.kit.widget.searchable_combobox-1.0.7] startup
+[24.934s] [ext: omni.kit.widget.settings-2.0.0] startup
+[24.953s] [ext: omni.kit.window.preferences-1.8.3] startup
+[24.999s] [ext: omni.kit.viewport.menubar.core-107.2.2] startup
+[25.045s] [ext: omni.syntheticdata-0.6.15] startup
+[25.268s] [ext: omni.replicator.nv-1.1.1] startup
+[25.316s] [ext: omni.videoencoding-0.2.1] startup
+[25.335s] [ext: omni.replicator.core-1.13.25] startup
+2026-06-17T22:51:14Z [25,267ms] [Warning] [pxr.Semantics] pxr.Semantics is deprecated - please use Semantics instead
+Warp 1.13.0 initialized:
+   CUDA Toolkit 12.9, Driver 12.6
+   Devices:
+     "cpu"      : "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel"
+     "cuda:0"   : "NVIDIA GeForce RTX 4070 Laptop GPU" (8 GiB, sm_89, mempool enabled)
+   Kernel cache:
+     \\?\C:\Users\antho\AppData\Local\NVIDIA\warp\Cache\1.13.0
+2026-06-17T22:51:15Z [25,773ms] [Warning] [omni.replicator.core.scripts.extension] No material configuration file, adding configuration to material settings directly.
+[26.821s] [ext: isaacsim.core.nodes-5.10.4] startup
+[27.106s] [ext: isaacsim.core.throttling-2.3.3] startup
+[27.116s] [ext: omni.kit.manipulator.viewport-107.0.1] startup
+[27.127s] [ext: omni.graph.visualization.nodes-2.1.4] startup
+[27.270s] [ext: omni.kit.window.extensions-1.5.7] startup
+[27.309s] [ext: isaacsim.gui.components-1.8.4] startup
+[27.340s] [ext: isaacsim.robot.surface_gripper-3.6.1] startup
+[27.455s] [ext: isaacsim.robot.manipulators-3.4.4] startup
+[27.548s] [ext: isaacsim.robot_motion.lula-4.1.2] startup
+[27.564s] [ext: isaacsim.robot_motion.motion_generation-8.2.8] startup
+[27.590s] [ext: isaacsim.cortex.framework-1.0.17] startup
+[27.596s] [ext: isaacsim.cortex.behaviors-2.0.16] startup
+[27.612s] [ext: isaacsim.examples.base-1.3.1] startup
+[27.632s] [ext: omni.kit.widget.zoombar-1.0.7] startup
+[27.643s] [ext: omni.kit.browser.core-2.3.18] startup
+[27.667s] [ext: omni.kit.browser.folder.core-2.0.2] startup
+[27.709s] [ext: omni.kit.widget.stage_icons-1.0.8] startup
+[27.722s] [ext: omni.kit.window.stage-2.6.1] startup
+[27.755s] [ext: omni.kit.menu.stage-1.2.7] startup
+[27.768s] [ext: omni.kit.usd.collect-3.0.5] startup
+[27.790s] [ext: omni.kit.widget.prompt-1.0.7] startup
+[27.801s] [ext: omni.kit.tool.collect-2.2.19] startup
+[27.824s] [ext: isaacsim.examples.browser-0.3.1] startup
+[27.855s] [ext: omni.kit.search.files-1.0.4] startup
+[27.864s] [ext: omni.kit.widget.calendar-1.0.9] startup
+[27.876s] [ext: omni.kit.widget.extended_searchfield-1.0.31] startup
+[27.936s] [ext: omni.simready.content.browser-0.3.7] startup
+[29.271s] [ext: isaacsim.gui.content_browser-0.4.2] startup
+[29.283s] [ext: omni.kit.selection-0.1.6] startup
+[29.294s] [ext: isaacsim.gui.menu-2.10.5] startup
+[29.323s] [ext: isaacsim.gui.property-1.6.2] startup
+[29.346s] [ext: omni.kit.viewport.actions-107.0.2] startup
+[29.363s] [ext: omni.kit.viewport.menubar.display-107.1.3] startup
+[29.369s] [ext: isaacsim.gui.sensors.icon-2.2.0] startup
+[29.384s] [ext: omni.behavior.scripting.core-110.1.0] startup
+[29.398s] [ext: isaacsim.replicator.behavior-1.5.3] startup
+[29.408s] [ext: isaacsim.replicator.experimental.domain_randomization-1.2.4] startup
+[29.579s] [ext: isaacsim.replicator.domain_randomization-1.2.1] startup
+[30.026s] [ext: isaacsim.replicator.writers-1.5.3] startup
+[30.265s] [ext: isaacsim.robot.experimental.wheeled_robots-0.2.9] startup
+[30.379s] [ext: isaacsim.robot.policy.examples-5.2.11] startup
+[30.503s] [ext: isaacsim.robot.wheeled_robots-5.2.3] startup
+[30.521s] [ext: isaacsim.robot.wheeled_robots.nodes-0.1.2] startup
+[30.647s] [ext: isaacsim.robot_motion.experimental.motion_generation-6.1.2] startup
+[30.680s] [ext: isaacsim.robot_motion.cumotion-1.3.0] startup
+[30.733s] [ext: omni.kit.numpy.common-0.1.3] startup
+[30.744s] [ext: isaacsim.sensors.camera-1.7.8] startup
+[30.924s] [ext: isaacsim.sensors.experimental.physics-3.0.1] startup
+[30.981s] [ext: omni.sensors.net-1.0.1] startup
+[31.038s] [ext: omni.sensors.nv.common-3.0.0] startup
+[31.148s] [ext: omni.sensors.nv.materials-2.0.0] startup
+[31.186s] [ext: omni.sensors.nv.acoustic-3.0.0] startup
+[31.215s] [ext: omni.sensors.nv.ids-2.0.1] startup
+[31.232s] [ext: omni.sensors.nv.lidar-3.0.0] startup
+[31.268s] [ext: omni.sensors.nv.radar-3.0.0] startup
+[31.288s] [ext: isaacsim.sensors.experimental.rtx-1.4.3] startup
+[32.400s] [ext: isaacsim.sensors.physics.nodes-1.5.2] startup
+[32.511s] [ext: isaacsim.util.debug_draw-3.2.2] startup
+[32.555s] [ext: isaacsim.sensors.physx-2.5.4] startup
+[32.600s] [ext: isaacsim.sensors.rtx-15.17.0] startup
+[32.656s] [ext: isaacsim.simulation_app-2.18.3] startup
+[32.658s] [ext: omni.anim.curve.core-1.6.0] startup
+[32.714s] [ext: omni.graph.ui_nodes-2.10.5] startup
+[32.920s] [ext: omni.hydra.scene_api-0.1.3] startup
+[32.932s] [ext: omni.kit.manipulator.camera-110.0.0] startup
+[32.948s] [ext: omni.kit.manipulator.selector-1.1.4] startup
+[32.952s] [ext: omni.kit.manipulator.transform-107.0.0] startup
+[32.982s] [ext: omni.kit.widget.toolbar-2.1.0] startup
+[33.040s] [ext: omni.kit.manipulator.tool.snap-1.5.14] startup
+[33.065s] [ext: omni.kit.viewport.manipulator.transform-107.0.4] startup
+[33.073s] [ext: omni.kit.manipulator.prim.core-108.0.2] startup
+[33.098s] [ext: omni.kit.manipulator.prim.usd-107.0.3] startup
+[33.103s] [ext: omni.kit.manipulator.prim-108.0.0] startup
+[33.103s] [ext: omni.kit.manipulator.selection-109.0.1] startup
+[33.106s] [ext: omni.kit.menu.create-2.0.2] startup
+[33.110s] [ext: omni.kit.property.audio-1.0.16] startup
+[33.134s] [ext: omni.kit.property.camera-1.0.14] startup
+[33.143s] [ext: omni.kit.property.geometry-2.1.2] startup
+[33.158s] [ext: omni.kit.property.light-1.0.14] startup
+2026-06-17T22:51:22Z [33,355ms] [Warning] [omni.usd] Encountered USD Warnings but USD Diagnostics are currently muted. To view USD Warnings, please set the '/persistent/app/usd/muteUsdDiagnostics' setting to false in Preferences page.
+[33.551s] [ext: omni.kit.property.material-1.14.2] startup
+[33.597s] [ext: omni.kit.property.render-1.2.2] startup
+[33.606s] [ext: omni.kit.property.transform-1.6.9] startup
+[33.627s] [ext: omni.kit.property.bundle-1.5.1] startup
+[33.640s] [ext: omni.kit.usdz_export-1.1.0] startup
+[33.656s] [ext: omni.kit.tool.asset_importer-5.2.0] startup
+[33.699s] [ext: omni.kit.ui.actions-1.0.5] startup
+[33.709s] [ext: omni.kit.viewport.menubar.camera-107.0.10] startup
+[33.751s] [ext: omni.kit.viewport.menubar.lighting-107.3.2] startup
+[33.770s] [ext: omni.kit.viewport.menubar.render-107.0.10] startup
+[33.789s] [ext: omni.kit.viewport.menubar.settings-110.0.1] startup
+[33.817s] [ext: omni.kit.window.console-1.1.8] startup
+[33.844s] [ext: omni.kit.window.status_bar-0.1.11] startup
+[33.851s] [ext: omni.kit.window.toolbar-3.0.3] startup
+[33.862s] [ext: omni.ocio-0.1.1] startup
+[33.871s] [ext: omni.physx.commands-110.1.11] startup
+[33.878s] [ext: omni.replicator.replicator_yaml-2.0.12] startup
+[34.049s] [ext: omni.rtx.window.settings-0.8.0] startup
+[34.078s] [ext: omni.rtx.settings.core-0.7.0] startup
+[34.094s] [ext: omni.usd.metrics.assembler.ui-110.1.1] startup
+[34.122s] [ext: semantics.schema.editor-2.0.2] startup
+[34.150s] [ext: semantics.schema.property-2.0.1] startup
+[34.166s] [ext: omni.kit.menu.common-2.0.2] startup
+[34.178s] [ext: isaacsim.exp.base-6.0.0] startup
+[34.180s] [ext: isaacsim.exp.base.python-6.0.0] startup
+[34.192s] Simulation App Starting
+[38.603s] Simulation App Startup Complete
+[38.617s] app ready
+18:51:29 INFO    [isaac_env] Active staircase: demo_gentle (12 steps, rise=0.080 m, run=0.300 m, top=0.960 m, handrail=False)
+18:51:29 INFO    [isaac_env] Realism profile: PERFECT ENV (clean default)
+18:51:29 INFO    [isaac_env] Building Isaac world
+18:51:29 INFO    [isaac_env] Spawning static obstacles
+18:51:30 INFO    [isaac_env] Successfully bound texture material to stairs and top landing
+18:51:30 INFO    [isaac_env] Clean stairs-only environment (demo_gentle preset: 12 steps + landing) successfully spawned
+18:51:30 INFO    [isaac_env] Skipping extra visual props; scene contains only stairs, walls, ground, robot, and person
+18:51:30 INFO    [isaac_env] Configured soft dome, key, fill, and ceiling panel lighting
+18:51:30 INFO    [isaac_env] Created physics material /World/PhysicsMaterials/HighFrictionMaterial with dynamic=1.000, static=1.200
+18:51:30 INFO    [isaac_env] Bound /World/PhysicsMaterials/HighFrictionMaterial to /World/Environment/step_0
+18:51:30 INFO    [isaac_env] Bound /World/PhysicsMaterials/HighFrictionMaterial to /World/Environment/step_1
+18:51:30 INFO    [isaac_env] Bound /World/PhysicsMaterials/HighFrictionMaterial to /World/Environment/step_2
+18:51:30 INFO    [isaac_env] Bound /World/PhysicsMaterials/HighFrictionMaterial to /World/Environment/step_3
+18:51:30 INFO    [isaac_env] Bound /World/PhysicsMaterials/HighFrictionMaterial to /World/Environment/step_4
+18:51:30 INFO    [isaac_env] Bound /World/PhysicsMaterials/HighFrictionMaterial to /World/defaultGroundPlane
+18:51:30 INFO    [isaac_env] Loading Go2 robot
+18:51:30 INFO    [isaac_env] Using official Isaac Sim Go2 Nucleus asset (mesh geometry)
+18:51:30 INFO    [isaac_env] Go2 base link set to dynamic (non-kinematic) for PhysX articulation support
+18:51:30 INFO    [isaac_env] Go2 PhysX articulation was registered with the Isaac world
+18:51:30 INFO    [isaac_env] Skipping robot-mounted O2 props for a clean stairs-and-walls sim scene
+18:51:30 INFO    [isaac_env] Go2 USD joint drives configured for selected locomotion mode
+18:51:30 INFO    [isaac_env] Adding front camera
+18:51:30 INFO    [isaac_env] Streaming the RGB stream of the robot's front RealSense D435 (rigid body-parented)
+2026-06-17T22:51:30Z [40,726ms] [Warning] [isaacsim.sensors.camera.camera] 'verticalAperture' (1.5290800094604493) and 'horizontalAperture' (2.0954999923706055) are inconsistent with the pixel resolution aspect ratio (1.7777777777777777). Setting 'verticalAperture' to 1.1787187457084656 to ensure square pixels.
+18:51:30 INFO    [isaac_env] Front D435 RGB camera rigidly parented under the Go2 body (inherits real gait shake)
+18:51:30 INFO    [isaac_env] Set D435 color intrinsics: 36mm aperture, 26mm focal length, near clip 0.05m
+18:51:30 INFO    [isaac_env] Rigid body-parented parkour depth camera attached to the Go2 body
+2026-06-17T22:51:30Z [40,740ms] [Warning] [isaacsim.sensors.camera.camera] 'verticalAperture' (1.5290800094604493) and 'horizontalAperture' (2.0954999923706055) are inconsistent with the pixel resolution aspect ratio (1.7777777777777777). Setting 'verticalAperture' to 1.1787187457084656 to ensure square pixels.
+18:51:30 INFO    [isaac_env] Created wide scene verification camera
+2026-06-17T22:51:30Z [40,745ms] [Warning] [isaacsim.sensors.camera.camera] 'verticalAperture' (1.5290800094604493) and 'horizontalAperture' (2.4) are inconsistent with the pixel resolution aspect ratio (1.7777777777777777). Setting 'verticalAperture' to 1.35 to ensure square pixels.
+18:51:30 INFO    [isaac_env] Created static top-down overhead camera for scene recording
+2026-06-17T22:51:30Z [40,748ms] [Warning] [isaacsim.sensors.camera.camera] 'verticalAperture' (1.5290800094604493) and 'horizontalAperture' (2.0954999923706055) are inconsistent with the pixel resolution aspect ratio (1.7777777777777777). Setting 'verticalAperture' to 1.1787187457084656 to ensure square pixels.
+18:51:30 INFO    [isaac_env] Recording external raw view from Isaac Sim scene Left perspective camera
+18:51:30 INFO    [isaac_env] Spawning person target
+[40.933s] [ext: omni.anim.timeline-110.0.0] startup
+[42.161s] [ext: omni.anim.asset-110.1.0] startup
+[42.191s] [ext: omni.anim.retarget.core-110.1.0] startup
+[42.213s] [ext: omni.anim.graph.core-110.1.2] startup
+2026-06-17T22:51:31Z [42,176ms] [Warning] [omni.graph.core._impl._registration.register_python_ogn] Python import process in omni.anim.graph.core failed - 'NoneType' object is not subscriptable. Aborting Python node registration
+18:51:31 INFO    [isaac_env] Animation timeline extensions ready (USD clip mode).
+18:51:32 INFO    [isaac_env] Creating isolated local modified copy of Biped_Setup.usd
+18:51:34 INFO    [isaac_env] Walk clip timing + estimated gait period (diagnostic only; clip unchanged)
+18:51:34 INFO    [isaac_env] Walk clip timing + estimated gait period (diagnostic only; clip unchanged)
+18:51:56 INFO    [isaac_env] Successfully removed animationGraph and zeroed Root translation/rotation in local copy
+18:51:56 INFO    [isaac_env] Using local modified Biped_Setup mannequin as the animated character asset
+[person_actor] Pre-Fabric walk binding: /World/Characters/SimWalker/biped_demo_meters -> /World/Characters/SimWalker/CharacterAnimation/Animation/stand_walk_1_skelanim
+18:51:56 INFO    [isaac_env] Spawned animated person visual with kinematic physics collider.
+18:51:56 INFO    [isaac_env] Skipping patient cart/O2 props for a clean stairs-and-walls sim scene
+2026-06-17T22:51:56Z [66,528ms] [Warning] [omni.fabric.plugin] Warning: attribute evaluatedTranslations not found for bucket id 4b
+
+18:51:57 INFO    [isaac_env] Initializing Isaac front camera sensor
+18:51:57 INFO    [isaac_env] Isaac front camera sensor initialized
+18:51:57 INFO    [isaac_env] Enabling RGB and Depth streams on camera frame
+2026-06-17T22:51:57Z [67,463ms] [Warning] [isaacsim.sensors.camera.camera] Annotator rgb already attached to /Render/OmniverseKit/HydraTextures/Replicator
+18:51:57 INFO    [isaac_env] RGB and Depth streams are active and available on initialized camera
+18:51:57 INFO    [isaac_env] Parkour depth camera sensor initialized (distance_to_image_plane)
+2026-06-17T22:51:57Z [67,562ms] [Warning] [isaacsim.sensors.camera.camera] Annotator rgb already attached to /Render/OmniverseKit/HydraTextures/Replicator_02
+18:51:57 INFO    [isaac_env] Top-down camera sensor initialized
+2026-06-17T22:51:57Z [67,602ms] [Warning] [isaacsim.sensors.camera.camera] Annotator rgb already attached to /Render/OmniverseKit/HydraTextures/Replicator_03
+18:51:57 INFO    [isaac_env] Isaac scene Left camera sensor initialized for raw recording
+18:51:57 INFO    [isaac_env] Go2 standing joint pose applied by name via set_joint_positions
+18:51:57 INFO    [isaac_env] Set Go2 articulation drive gains (radian units)
+18:51:57 INFO    [isaac_env] Loaded Extreme-Parkour base_jit + vision depth encoder
+18:51:57 INFO    [isaac_env] Parkour policy joint mapping (policy slot -> isaac dof)
+18:51:57 INFO    [isaac_env] Loaded Extreme-Parkour Go2 perceptive locomotion policy
+2026-06-17T22:51:57Z [67,947ms] [Warning] [omni.rtx] DLSS Skipped: Target resolution below 64x64.
+2026-06-17T22:51:59Z [70,310ms] [Warning] [omni.fabric.plugin] Warning: attribute deviceIds not found for path /Render/OmniverseKit/HydraTextures/Replicator
+
+2026-06-17T22:52:00Z [70,396ms] [Warning] [omni.syntheticdata.plugin] OgnSdPostRenderVarToHost : rendervar copy from texture directly to host buffer is counter-performant. Please use copy from texture to device buffer first.
+18:52:01 INFO    [isaac_env] Person animation ready via UsdSkel.BindingAPI + Biped_Setup SkelAnimation.
+18:52:01 INFO    [isaac_env] Person animation is loaded and ready
+18:52:01 INFO    [isaac_env] Set Go2 articulation drive gains (radian units)
+18:52:01 INFO    [isaac_env] Settling Go2 at zero command before world_ready
+18:52:01 INFO    [isaac_env] Go2 locomotion policy is writing joint targets
+18:52:01 INFO    [isaac_env] settle diagnostic
+18:52:02 INFO    [isaac_env] settle diagnostic
+18:52:03 INFO    [isaac_env] settle diagnostic
+18:52:03 INFO    [isaac_env] settle diagnostic
+18:52:04 INFO    [isaac_env] settle diagnostic
+18:52:05 INFO    [isaac_env] Go2 spawn settle finished
+18:52:05 INFO    [isaac_env] Simulation timeline started playing successfully
+2026-06-17T22:52:05Z [75,694ms] [Warning] [isaacsim.sensors.camera.camera] Annotator rgb already attached to /Render/OmniverseKit/HydraTextures/Replicator_04
+2026-06-17T22:52:05Z [75,964ms] [Warning] [rtx.scenedb.plugin] [InstanceTransformStorage] The amount of world update transforms WorldUpdateStorageWindow 73 needed to cover is larger than max allowed storage MaxHistoryTransformCount 8.            Motions may be wrong for long exposure sensors/cameras. Consider allow a larger storage for transforms through --/rtx/scenedb/maxHistoryTransformCount=73
+18:52:09 INFO    [isaac_env] Saved wide scene verification image
+18:52:09 INFO    [isaac_env] Saved initial verification screenshot to C:\Users\antho\Downloads\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\log\run_sim_20260617_185047_251\reports\verification_start.png
+18:52:09 INFO    [isaac_env] Isaac world is ready
+18:52:09 INFO    [isaac_env] Isaac velocity command receiver is listening
+18:52:09 INFO    [isaac_env] Camera frame publisher is ready
+18:52:09 INFO    [isaac_env] Recording cameras (topdown + scene_view) decoupled from perception cadence
+18:52:09 INFO    [isaac_env] Simulated XT16 LiDAR enabled
+18:52:09 INFO    [isaac_env] Holding autonomous scene motion until first active YOLO command received
+18:52:10 INFO    [isaac_env] Person SkelAnimation clip switched
+
+Failed to load OpenH264 library: openh264-1.8.0-win64.dll
+	Please check environment and/or download library: https://github.com/cisco/openh264/releases
+
+[libopenh264 @ 0000024ebfaee640] Incorrect library version loaded
+[ERROR:0@0.019] global cap_ffmpeg_impl.hpp:3514 open Could not open codec libopenh264, error: Unspecified error (-22)
+[ERROR:0@0.019] global cap_ffmpeg_impl.hpp:3531 open VIDEOIO/FFMPEG: Failed to initialize VideoWriter
+18:52:10 INFO    [isaac_env] XT16 LiDAR preview recording started
+18:52:35 INFO    [isaac_env] First Docker/controller velocity packet received
+18:52:36 INFO    [isaac_env] First nonzero Docker/controller velocity command received; scene motion is released
+18:52:36 INFO    [isaac_env] Autonomous scene motion released after first active YOLO command was observed
+18:52:36 INFO    [isaac_env] Masked followed person out of parkour depth input
+18:52:37 INFO    [isaac_env] Person SkelAnimation clip switched
+[libopenh264 @ 00000260d27feac0] Incorrect library version loaded
+[ERROR:0@27.090] global cap_ffmpeg_impl.hpp:3514 open Could not open codec libopenh264, error: Unspecified error (-22)
+[ERROR:0@27.090] global cap_ffmpeg_impl.hpp:3531 open VIDEOIO/FFMPEG: Failed to initialize VideoWriter
+18:52:37 INFO    [isaac_env] Top-down video recording started
+[libopenh264 @ 00000260ed9abb40] Incorrect library version loaded
+[ERROR:0@27.121] global cap_ffmpeg_impl.hpp:3514 open Could not open codec libopenh264, error: Unspecified error (-22)
+[ERROR:0@27.121] global cap_ffmpeg_impl.hpp:3531 open VIDEOIO/FFMPEG: Failed to initialize VideoWriter
+18:52:37 INFO    [isaac_env] External scene_view (Isaac scene Left) recording started
+18:52:37 INFO    [isaac_env] fall diagnostic
+18:52:38 INFO    [isaac_env] fall diagnostic
+18:52:38 INFO    [isaac_env] fall diagnostic
+18:52:39 INFO    [isaac_env] fall diagnostic
+18:52:39 INFO    [isaac_env] fall diagnostic
+18:52:40 INFO    [isaac_env] fall diagnostic
+18:52:40 INFO    [isaac_env] Patient climb trajectory sample
+18:52:40 INFO    [isaac_env] Masked followed person out of parkour depth input
+18:52:40 INFO    [isaac_env] fall diagnostic
+18:52:41 INFO    [isaac_env] Patient reached the base of the stairs and is starting to climb
+18:52:41 INFO    [isaac_env] fall diagnostic
+18:52:41 INFO    [isaac_env] fall diagnostic
+18:52:42 INFO    [isaac_env] fall diagnostic
+18:52:42 INFO    [isaac_env] fall diagnostic
+18:52:43 INFO    [isaac_env] fall diagnostic
+18:52:43 INFO    [isaac_env] fall diagnostic
+18:52:44 INFO    [isaac_env] Patient climb trajectory sample
+18:52:44 INFO    [isaac_env] Masked followed person out of parkour depth input
+18:52:44 INFO    [isaac_env] fall diagnostic
+18:52:44 INFO    [isaac_env] fall diagnostic
+18:52:45 INFO    [isaac_env] fall diagnostic
+18:52:45 INFO    [isaac_env] fall diagnostic
+18:52:46 INFO    [isaac_env] fall diagnostic
+18:52:46 INFO    [isaac_env] fall diagnostic
+18:52:47 INFO    [isaac_env] fall diagnostic
+18:52:47 INFO    [isaac_env] Patient climb trajectory sample
+18:52:47 INFO    [isaac_env] Masked followed person out of parkour depth input
+18:52:47 INFO    [isaac_env] fall diagnostic
+18:52:48 INFO    [isaac_env] fall diagnostic
+18:52:48 INFO    [isaac_env] fall diagnostic
+18:52:49 INFO    [isaac_env] fall diagnostic
+18:52:49 INFO    [isaac_env] fall diagnostic
+18:52:50 INFO    [isaac_env] fall diagnostic
+18:52:50 INFO    [isaac_env] Synthetic locomotion stair telemetry is active; body-height and anti-tip assist are disabled
+18:52:50 INFO    [isaac_env] Patient climb trajectory sample
+18:52:50 INFO    [isaac_env] Masked followed person out of parkour depth input
+18:52:50 INFO    [isaac_env] fall diagnostic
+18:52:51 INFO    [isaac_env] fall diagnostic
+18:52:51 INFO    [isaac_env] fall diagnostic
+18:52:52 INFO    [isaac_env] fall diagnostic
+18:52:52 INFO    [isaac_env] fall diagnostic
+18:52:53 INFO    [isaac_env] fall diagnostic
+18:52:53 INFO    [isaac_env] fall diagnostic
+18:52:53 INFO    [isaac_env] Patient climb trajectory sample
+18:52:53 INFO    [isaac_env] Masked followed person out of parkour depth input
+18:52:54 INFO    [isaac_env] fall diagnostic
+18:52:54 INFO    [isaac_env] fall diagnostic
+18:52:55 INFO    [isaac_env] fall diagnostic
+18:52:55 INFO    [isaac_env] fall diagnostic
+18:52:56 INFO    [isaac_env] fall diagnostic
+18:52:56 INFO    [isaac_env] fall diagnostic
+18:52:57 INFO    [isaac_env] fall diagnostic
+18:52:57 INFO    [isaac_env] Patient climb trajectory sample
+18:52:57 INFO    [isaac_env] fall diagnostic
+18:52:58 INFO    [isaac_env] fall diagnostic
+18:52:58 INFO    [isaac_env] fall diagnostic
+18:52:59 INFO    [isaac_env] Robot entered the staircase phase; keeping the run alive so the climb is visible
+18:52:59 INFO    [isaac_env] fall diagnostic
+18:52:59 INFO    [isaac_env] fall diagnostic
+18:53:00 INFO    [isaac_env] fall diagnostic
+18:53:00 INFO    [isaac_env] Patient climb trajectory sample
+18:53:00 INFO    [isaac_env] fall diagnostic
+18:53:01 INFO    [isaac_env] fall diagnostic
+18:53:02 INFO    [isaac_env] fall diagnostic
+18:53:02 INFO    [isaac_env] fall diagnostic
+18:53:03 INFO    [isaac_env] fall diagnostic
+18:53:03 INFO    [isaac_env] fall diagnostic
+18:53:04 INFO    [isaac_env] fall diagnostic
+18:53:04 INFO    [isaac_env] Patient climb trajectory sample
+18:53:04 INFO    [isaac_env] fall diagnostic
+18:53:05 INFO    [isaac_env] fall diagnostic
+18:53:05 INFO    [isaac_env] fall diagnostic
+18:53:06 INFO    [isaac_env] fall diagnostic
+18:53:06 INFO    [isaac_env] fall diagnostic
+18:53:07 INFO    [isaac_env] fall diagnostic
+18:53:07 INFO    [isaac_env] fall diagnostic
+18:53:07 INFO    [isaac_env] Patient climb trajectory sample
+18:53:08 INFO    [isaac_env] fall diagnostic
+18:53:08 INFO    [isaac_env] fall diagnostic
+18:53:09 INFO    [isaac_env] fall diagnostic
+18:53:09 INFO    [isaac_env] fall diagnostic
+18:53:10 INFO    [isaac_env] fall diagnostic
+18:53:10 INFO    [isaac_env] fall diagnostic
+18:53:10 INFO    [isaac_env] Patient climb trajectory sample
+18:53:10 INFO    [isaac_env] Masked followed person out of parkour depth input
+18:53:10 INFO    [isaac_env] fall diagnostic
+18:53:11 INFO    [isaac_env] fall diagnostic
+18:53:11 INFO    [isaac_env] fall diagnostic
+18:53:12 INFO    [isaac_env] fall diagnostic
+18:53:12 INFO    [isaac_env] fall diagnostic
+18:53:13 INFO    [isaac_env] fall diagnostic
+18:53:13 INFO    [isaac_env] fall diagnostic
+18:53:14 INFO    [isaac_env] Patient climb trajectory sample
+18:53:14 INFO    [isaac_env] fall diagnostic
+18:53:14 INFO    [isaac_env] fall diagnostic
+18:53:15 INFO    [isaac_env] fall diagnostic
+18:53:15 INFO    [isaac_env] fall diagnostic
+18:53:16 INFO    [isaac_env] fall diagnostic
+18:53:16 INFO    [isaac_env] fall diagnostic
+18:53:17 INFO    [isaac_env] fall diagnostic
+18:53:17 INFO    [isaac_env] Patient climb trajectory sample
+18:53:17 INFO    [isaac_env] fall diagnostic
+18:53:18 INFO    [isaac_env] fall diagnostic
+18:53:18 INFO    [isaac_env] fall diagnostic
+18:53:19 INFO    [isaac_env] fall diagnostic
+18:53:19 INFO    [isaac_env] fall diagnostic
+18:53:20 INFO    [isaac_env] fall diagnostic
+18:53:20 INFO    [isaac_env] Patient climb trajectory sample
+18:53:20 INFO    [isaac_env] fall diagnostic
+18:53:21 INFO    [isaac_env] fall diagnostic
+18:53:21 INFO    [isaac_env] fall diagnostic
+18:53:22 INFO    [isaac_env] fall diagnostic
+18:53:22 INFO    [isaac_env] fall diagnostic
+18:53:23 INFO    [isaac_env] fall diagnostic
+18:53:23 INFO    [isaac_env] fall diagnostic
+18:53:23 INFO    [isaac_env] Patient climb trajectory sample
+18:53:24 INFO    [isaac_env] fall diagnostic
+18:53:24 INFO    [isaac_env] fall diagnostic
+18:53:25 INFO    [isaac_env] fall diagnostic
+18:53:25 INFO    [isaac_env] fall diagnostic
+18:53:26 INFO    [isaac_env] fall diagnostic
+18:53:26 INFO    [isaac_env] fall diagnostic
+18:53:27 INFO    [isaac_env] fall diagnostic
+18:53:27 INFO    [isaac_env] Patient climb trajectory sample
+18:53:27 INFO    [isaac_env] Masked followed person out of parkour depth input
+18:53:28 INFO    [isaac_env] fall diagnostic
+18:53:28 INFO    [isaac_env] fall diagnostic
+18:53:29 INFO    [isaac_env] fall diagnostic
+18:53:29 INFO    [isaac_env] fall diagnostic
+18:53:30 INFO    [isaac_env] fall diagnostic
+18:53:30 INFO    [isaac_env] fall diagnostic
+18:53:31 INFO    [isaac_env] Patient climb trajectory sample
+18:53:31 INFO    [isaac_env] Masked followed person out of parkour depth input
+18:53:31 INFO    [isaac_env] fall diagnostic
+18:53:32 INFO    [isaac_env] fall diagnostic
+18:53:32 INFO    [isaac_env] fall diagnostic
+18:53:33 INFO    [isaac_env] fall diagnostic
+18:53:34 INFO    [isaac_env] fall diagnostic
+18:53:34 INFO    [isaac_env] fall diagnostic
+18:53:35 INFO    [isaac_env] fall diagnostic
+18:53:35 INFO    [isaac_env] Patient climb trajectory sample
+18:53:36 INFO    [isaac_env] fall diagnostic
+18:53:36 INFO    [isaac_env] fall diagnostic
+18:53:37 INFO    [isaac_env] fall diagnostic
+18:53:37 INFO    [isaac_env] fall diagnostic
+18:53:38 INFO    [isaac_env] fall diagnostic
+18:53:38 INFO    [isaac_env] fall diagnostic
+18:53:39 INFO    [isaac_env] fall diagnostic
+18:53:39 INFO    [isaac_env] Patient climb trajectory sample
+18:53:40 INFO    [isaac_env] fall diagnostic
+18:53:40 INFO    [isaac_env] fall diagnostic
+18:53:41 INFO    [isaac_env] fall diagnostic
+18:53:42 INFO    [isaac_env] fall diagnostic
+18:53:43 INFO    [isaac_env] fall diagnostic
+18:53:44 INFO    [isaac_env] fall diagnostic
+18:53:44 INFO    [isaac_env] Patient climb trajectory sample
+18:53:44 INFO    [isaac_env] fall diagnostic
+18:53:45 INFO    [isaac_env] fall diagnostic
+18:53:46 INFO    [isaac_env] fall diagnostic
+18:53:46 INFO    [isaac_env] fall diagnostic
+18:53:47 INFO    [isaac_env] fall diagnostic
+18:53:48 INFO    [isaac_env] fall diagnostic
+18:53:48 INFO    [isaac_env] fall diagnostic
+18:53:49 INFO    [isaac_env] Patient climb trajectory sample
+18:53:49 INFO    [isaac_env] Masked followed person out of parkour depth input
+18:53:49 INFO    [isaac_env] fall diagnostic
+18:53:49 INFO    [isaac_env] fall diagnostic
+18:53:50 INFO    [isaac_env] fall diagnostic
+18:53:51 INFO    [isaac_env] fall diagnostic
+18:53:51 INFO    [isaac_env] fall diagnostic
+18:53:52 INFO    [isaac_env] fall diagnostic
+18:53:52 INFO    [isaac_env] fall diagnostic
+18:53:52 INFO    [isaac_env] Patient climb trajectory sample
+18:53:52 INFO    [isaac_env] Masked followed person out of parkour depth input
+18:53:53 INFO    [isaac_env] fall diagnostic
+18:53:53 INFO    [isaac_env] fall diagnostic
+18:53:54 INFO    [isaac_env] fall diagnostic
+18:53:55 INFO    [isaac_env] fall diagnostic
+18:53:55 INFO    [isaac_env] fall diagnostic
+18:53:56 INFO    [isaac_env] fall diagnostic
+18:53:56 INFO    [isaac_env] Patient climb trajectory sample
+18:53:56 INFO    [isaac_env] Masked followed person out of parkour depth input
+18:53:56 INFO    [isaac_env] fall diagnostic
+18:53:57 INFO    [isaac_env] fall diagnostic
+18:53:58 INFO    [isaac_env] fall diagnostic
+18:53:58 INFO    [isaac_env] fall diagnostic
+18:53:59 INFO    [isaac_env] fall diagnostic
+18:53:59 INFO    [isaac_env] fall diagnostic
+18:54:00 INFO    [isaac_env] fall diagnostic
+18:54:00 INFO    [isaac_env] Patient climb trajectory sample
+18:54:00 INFO    [isaac_env] Masked followed person out of parkour depth input
+18:54:01 INFO    [isaac_env] fall diagnostic
+18:54:01 INFO    [isaac_env] fall diagnostic
+18:54:02 INFO    [isaac_env] fall diagnostic
+18:54:02 INFO    [isaac_env] fall diagnostic
+18:54:03 INFO    [isaac_env] fall diagnostic
+18:54:03 INFO    [isaac_env] fall diagnostic
+18:54:04 INFO    [isaac_env] fall diagnostic
+18:54:04 INFO    [isaac_env] Patient climb trajectory sample
+18:54:04 INFO    [isaac_env] Masked followed person out of parkour depth input
+18:54:05 INFO    [isaac_env] fall diagnostic
+18:54:05 INFO    [isaac_env] fall diagnostic
+18:54:06 INFO    [isaac_env] fall diagnostic
+18:54:06 INFO    [isaac_env] fall diagnostic
+18:54:07 INFO    [isaac_env] fall diagnostic
+18:54:08 INFO    [isaac_env] fall diagnostic
+18:54:08 INFO    [isaac_env] Patient climb trajectory sample
+18:54:08 INFO    [isaac_env] Masked followed person out of parkour depth input
+18:54:08 INFO    [isaac_env] fall diagnostic
+18:54:09 INFO    [isaac_env] fall diagnostic
+18:54:09 INFO    [isaac_env] fall diagnostic
+18:54:10 INFO    [isaac_env] fall diagnostic
+18:54:10 INFO    [isaac_env] fall diagnostic
+18:54:11 INFO    [isaac_env] fall diagnostic
+18:54:11 INFO    [isaac_env] fall diagnostic
+18:54:12 INFO    [isaac_env] Patient climb trajectory sample
+18:54:12 INFO    [isaac_env] Masked followed person out of parkour depth input
+18:54:12 INFO    [isaac_env] fall diagnostic
+18:54:13 INFO    [isaac_env] fall diagnostic
+18:54:13 INFO    [isaac_env] Patient reached the top of the stairs and stopped
+18:54:13 INFO    [isaac_env] fall diagnostic
+18:54:14 INFO    [isaac_env] Person SkelAnimation clip switched
+18:54:14 INFO    [isaac_env] fall diagnostic
+18:54:15 INFO    [isaac_env] fall diagnostic
+18:54:15 INFO    [isaac_env] fall diagnostic
+18:54:16 INFO    [isaac_env] fall diagnostic
+18:54:16 INFO    [isaac_env] fall diagnostic
+18:54:17 INFO    [isaac_env] fall diagnostic
+18:54:17 INFO    [isaac_env] fall diagnostic
+18:54:18 INFO    [isaac_env] fall diagnostic
+18:54:19 INFO    [isaac_env] fall diagnostic
+18:54:19 INFO    [isaac_env] fall diagnostic
+18:54:20 INFO    [isaac_env] fall diagnostic
+18:54:20 INFO    [isaac_env] fall diagnostic
+18:54:21 INFO    [isaac_env] fall diagnostic
+18:54:21 INFO    [isaac_env] fall diagnostic
+18:54:22 INFO    [isaac_env] fall diagnostic
+18:54:23 INFO    [isaac_env] fall diagnostic
+18:54:23 INFO    [isaac_env] fall diagnostic
+18:54:23 INFO    [isaac_env] Masked followed person out of parkour depth input
+18:54:24 INFO    [isaac_env] fall diagnostic
+18:54:24 INFO    [isaac_env] fall diagnostic
+18:54:25 INFO    [isaac_env] fall diagnostic
+18:54:26 INFO    [isaac_env] fall diagnostic
+18:54:26 INFO    [isaac_env] fall diagnostic
+18:54:27 INFO    [isaac_env] fall diagnostic
+18:54:28 INFO    [isaac_env] fall diagnostic
+18:54:28 INFO    [isaac_env] Masked followed person out of parkour depth input
+18:54:28 INFO    [isaac_env] fall diagnostic
+18:54:29 INFO    [isaac_env] fall diagnostic
+18:54:30 INFO    [isaac_env] fall diagnostic
+18:54:30 INFO    [isaac_env] fall diagnostic
+18:54:31 INFO    [isaac_env] fall diagnostic
+18:54:32 INFO    [isaac_env] fall diagnostic
+18:54:32 INFO    [isaac_env] Masked followed person out of parkour depth input
+18:54:32 INFO    [isaac_env] fall diagnostic
+18:54:33 INFO    [isaac_env] fall diagnostic
+18:54:34 INFO    [isaac_env] fall diagnostic
+18:54:34 INFO    [isaac_env] fall diagnostic
+18:54:35 INFO    [isaac_env] fall diagnostic
+18:54:36 INFO    [isaac_env] fall diagnostic
+18:54:36 INFO    [isaac_env] fall diagnostic
+18:54:36 INFO    [isaac_env] Masked followed person out of parkour depth input
+18:54:37 INFO    [isaac_env] fall diagnostic
+18:54:37 INFO    [isaac_env] fall diagnostic
+18:54:38 INFO    [isaac_env] fall diagnostic
+18:54:38 INFO    [isaac_env] fall diagnostic
+18:54:39 INFO    [isaac_env] fall diagnostic
+18:54:40 INFO    [isaac_env] fall diagnostic
+18:54:40 INFO    [isaac_env] fall diagnostic
+18:54:40 INFO    [isaac_env] Masked followed person out of parkour depth input
+18:54:41 INFO    [isaac_env] fall diagnostic
+18:54:41 INFO    [isaac_env] fall diagnostic
+18:54:42 INFO    [isaac_env] fall diagnostic
+18:54:43 INFO    [isaac_env] fall diagnostic
+18:54:43 INFO    [isaac_env] fall diagnostic
+18:54:44 INFO    [isaac_env] fall diagnostic
+18:54:44 INFO    [isaac_env] Masked followed person out of parkour depth input
+18:54:45 INFO    [isaac_env] fall diagnostic
+18:54:45 INFO    [isaac_env] fall diagnostic
+18:54:46 INFO    [isaac_env] fall diagnostic
+18:54:47 INFO    [isaac_env] fall diagnostic
+18:54:47 INFO    [isaac_env] fall diagnostic
+18:54:48 INFO    [isaac_env] fall diagnostic
+18:54:49 INFO    [isaac_env] fall diagnostic
+18:54:49 INFO    [isaac_env] Masked followed person out of parkour depth input
+18:54:49 INFO    [isaac_env] fall diagnostic
+18:54:50 INFO    [isaac_env] fall diagnostic
+18:54:51 INFO    [isaac_env] fall diagnostic
+18:54:52 INFO    [isaac_env] fall diagnostic
+18:54:52 INFO    [isaac_env] fall diagnostic
+18:54:53 INFO    [isaac_env] fall diagnostic
+18:54:54 INFO    [isaac_env] fall diagnostic
+18:54:55 INFO    [isaac_env] fall diagnostic
+18:54:55 INFO    [isaac_env] fall diagnostic
+18:54:55 INFO    [isaac_env] Evaluation stop condition reached after stair climb visibility
+2026-06-17T22:54:55Z [246,249ms] [Warning] [isaacsim.sensors.camera.camera] Annotator rgb already attached to /Render/OmniverseKit/HydraTextures/Replicator_04
+2026-06-17T22:54:55Z [246,290ms] [Warning] [isaacsim.sensors.camera.camera] Annotator rgb already attached to /Render/OmniverseKit/HydraTextures/Replicator_04
+18:55:01 INFO    [isaac_env] Saved wide scene verification image
+18:55:01 INFO    [isaac_env] Saved final verification screenshot to C:\Users\antho\Downloads\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\log\run_sim_20260617_185047_251\reports\verification_end.png
+
+========================================
+EVALUATION SUMMARY:
+Human: straight
+Robot dog: fell (collapsed)
+  - FL leg: ON_GROUND (height above ground: 0.023 m)
+  - FR leg: ON_GROUND (height above ground: 0.023 m)
+  - RL leg: ON_GROUND (height above ground: 0.078 m)
+  - RR leg: ON_GROUND (height above ground: 0.023 m)
+Stair demo data: synthetic (staircase)
+Exit reason: patient_destination_and_robot_stair_climb_visible
+========================================
+
+18:55:01 INFO    [isaac_env] Saved evaluation summary to C:\Users\antho\Downloads\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\log\run_sim_20260617_185047_251\reports\evaluation_summary.txt
+18:55:01 INFO    [isaac_env] Saved stair demo report to C:\Users\antho\Downloads\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\log\run_sim_20260617_185047_251\reports\stair_demo_report.json
+18:55:01 INFO    [isaac_env] Top-down video recording finalized
+18:55:01 INFO    [isaac_env] XT16 LiDAR preview recording finalized
+18:55:01 INFO    [isaac_env] External scene_view (Isaac scene Left) recording finalized
+2026-06-17T22:55:02Z [253,326ms] [Warning] [omni.anim.graph.core.plugin] CharacterManager::Shutdown() called without a prior successful call to CharacterManager::Initialize().
+[253.427s] Simulation App Shutting Down

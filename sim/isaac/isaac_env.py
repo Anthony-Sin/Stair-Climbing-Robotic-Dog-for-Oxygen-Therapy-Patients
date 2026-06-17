@@ -98,12 +98,22 @@ parser.add_argument("--parkour-depth-noise-mult", type=float, default=0.0,
                          "shadows + range holes) the YOLO/fusion stream already uses, so the "
                          "perceptive policy sees the noisy depth the real camera produces. "
                          "Set by the --sim2real-validation-cam preset to 1.0 (nominal D435).")
-parser.add_argument("--parkour-heading-mode", type=str, default="command",
+parser.add_argument("--parkour-heading-mode", type=str, default="vision",
                     choices=("vision", "command"),
                     help="Parkour steering: 'vision' (policy self-steers from depth) or "
                          "'command' (steer toward the person-follow bearing). Default "
-                         "'command' so the YOLO person bearing actually steers the dog; "
-                         "pass 'vision' to restore depth self-steer.")
+                         "'vision' to match the trained gait (the closed-loop depth "
+                         "self-steer it relies on; this is how it ran at commit 02e441e); "
+                         "pass 'command' to steer toward the YOLO person bearing instead "
+                         "(note: command mode overwrites proprio[6:8] and can destabilize).")
+parser.add_argument("--no-parkour-person-mask", action="store_true",
+                    help="Disable masking the followed person out of the parkour depth "
+                         "input. Masking is ON by default: the YOLO person bbox forwarded "
+                         "from the controller is FOV-mapped into the depth image and pushed "
+                         "to far, so the perceptive policy does not read the near body as "
+                         "terrain to charge at (the close-range surge). Pass this flag to "
+                         "A/B the raw-depth behavior. Deployable: the same detector runs on "
+                         "the real robot.")
 parser.add_argument("--stair-preset", type=str, default="demo_gentle",
                     choices=("demo_gentle", "residential", "commercial", "steep"),
                     help="Staircase geometry preset (single source of truth in "
@@ -506,6 +516,7 @@ _cmd_vel    = {
     "vy": 0.0,
     "wz": 0.0,
     "yaw_err": 0.0,
+    "person_bbox": None,
     "ts": 0.0,
     "count": 0,
     "active_count": 0,
@@ -538,7 +549,7 @@ def _cmd_receiver_thread(port: int) -> None:
     )
     while _running:
         try:
-            data, _ = sock.recvfrom(256)
+            data, _ = sock.recvfrom(1024)
             payload = json.loads(data.decode("utf-8"))
             vx_raw = float(payload.get("vx", 0.0))
             vx = max(0.0, vx_raw)
@@ -548,6 +559,15 @@ def _cmd_receiver_thread(port: int) -> None:
             # command when --parkour-heading-mode command. Ignored by the blind RL path.
             yaw_err = float(payload.get("yaw_err", 0.0))
             stairs_detected = bool(payload.get("stairs_detected", False))
+            # Followed person's bbox in RGB-frame normalized [0,1] coords (or None
+            # if no detection this frame). Forwarded so the parkour depth policy can
+            # mask the person out of its depth input. List of 4 floats or None.
+            _pbb = payload.get("person_bbox", None)
+            person_bbox = (
+                [float(v) for v in _pbb[:4]]
+                if isinstance(_pbb, (list, tuple)) and len(_pbb) >= 4
+                else None
+            )
             if vx_raw < 0.0:
                 now = time.monotonic()
                 if (now - last_reverse_x_suppressed_log_ts) >= 1.0:
@@ -567,6 +587,7 @@ def _cmd_receiver_thread(port: int) -> None:
                 _cmd_vel["wz"] = wz
                 _cmd_vel["yaw_err"] = yaw_err
                 _cmd_vel["stairs_detected"] = stairs_detected
+                _cmd_vel["person_bbox"] = person_bbox
                 _cmd_vel["ts"] = time.monotonic()
                 _cmd_vel["count"] = int(_cmd_vel.get("count", 0)) + 1
                 cmd_count = int(_cmd_vel["count"])
@@ -1121,6 +1142,74 @@ def add_parkour_depth_camera(stage, resolution: tuple = (106, 60)) -> Camera:
         camera_path=cam_path, body_prim=body_path, resolution=list(resolution),
     )
     return camera
+
+
+# --- Person-mask FOV mapping (RGB/YOLO cam -> parkour depth cam) -------------
+# The YOLO person bbox comes from the front RGB stream (add_camera: focal 26,
+# aperture 36 x 20.25 -> ~69 deg hFOV / ~42.6 deg vFOV). The parkour policy reads
+# the depth cam (add_parkour_depth_camera: focal 18.97, aperture 36 x 36*60/106
+# -> 87 deg hFOV / ~56.5 deg vFOV). Both are the SAME co-located D435 (identical
+# FRONT_D435_MOUNT + aim), so a bbox maps from RGB-normalized coords to depth
+# pixels by center-scaling each axis by tan(FOV/2)_rgb / tan(FOV/2)_depth (the
+# depth FOV is wider, so the RGB frame fills the central ~73% of it). CONTRACT:
+# if you change either camera's intrinsics, update these to match.
+_RGB_TAN_HALF_H = 36.0 / (2.0 * 26.0)                     # ~0.6923
+_RGB_TAN_HALF_V = 20.25 / (2.0 * 26.0)                    # ~0.3894
+_PK_TAN_HALF_H = 36.0 / (2.0 * 18.97)                     # ~0.9489
+_PK_TAN_HALF_V = (36.0 * 60.0 / 106.0) / (2.0 * 18.97)    # ~0.5371
+_BBOX_TO_DEPTH_SCALE_H = _RGB_TAN_HALF_H / _PK_TAN_HALF_H  # ~0.7296
+_BBOX_TO_DEPTH_SCALE_V = _RGB_TAN_HALF_V / _PK_TAN_HALF_V  # ~0.7250
+# Value written into masked pixels. The depth preprocessing clips to far_clip, so
+# any value >= far_clip reads as "max range / clear". Use the camera far clip.
+_PARKOUR_DEPTH_FAR_FILL = 1.0e5
+
+
+def mask_person_in_parkour_depth(depth_hw, person_bbox_norm, dilate_frac: float = 0.06):
+    """Push the followed person's footprint to far range in the parkour depth frame.
+
+    person_bbox_norm = [x1, y1, x2, y2] in [0, 1] of the RGB (YOLO) frame. Maps to
+    depth pixels via the co-located-D435 FOV center-scaling above and sets that
+    rectangle to a far value so the perceptive policy sees clear space (not near
+    terrain) where the person stands. Returns the (possibly copied) depth array;
+    returns the input unchanged on any bad/empty box. The mapped pixel box is
+    returned alongside for telemetry. Deployable: the real robot runs the same
+    YOLO detector, so this masking is not a sim-only ground-truth cheat.
+    """
+    try:
+        d = np.asarray(depth_hw)
+        if d.ndim != 2 or person_bbox_norm is None or len(person_bbox_norm) < 4:
+            return depth_hw, None
+        h, w = d.shape
+        x1, y1, x2, y2 = (float(person_bbox_norm[0]), float(person_bbox_norm[1]),
+                          float(person_bbox_norm[2]), float(person_bbox_norm[3]))
+        if x2 < x1:
+            x1, x2 = x2, x1
+        if y2 < y1:
+            y1, y2 = y2, y1
+        # Small dilation to catch limb/edge leakage outside the tight box.
+        x1 -= dilate_frac
+        x2 += dilate_frac
+        y1 -= dilate_frac
+        y2 += dilate_frac
+
+        def _to_depth_px(u, v):
+            ud = 0.5 + (u - 0.5) * _BBOX_TO_DEPTH_SCALE_H
+            vd = 0.5 + (v - 0.5) * _BBOX_TO_DEPTH_SCALE_V
+            return ud * w, vd * h
+
+        px1, py1 = _to_depth_px(x1, y1)
+        px2, py2 = _to_depth_px(x2, y2)
+        cx1 = max(0, int(math.floor(min(px1, px2))))
+        cx2 = min(w, int(math.ceil(max(px1, px2))))
+        cy1 = max(0, int(math.floor(min(py1, py2))))
+        cy2 = min(h, int(math.ceil(max(py1, py2))))
+        if cx2 <= cx1 or cy2 <= cy1:
+            return depth_hw, None
+        out = d.copy()
+        out[cy1:cy2, cx1:cx2] = float(_PARKOUR_DEPTH_FAR_FILL)
+        return out, (cx1, cy1, cx2, cy2)
+    except Exception:
+        return depth_hw, None
 
 
 def add_scene_left_camera(stage, resolution: tuple = (1920, 1080)) -> Optional[Camera]:
@@ -3662,6 +3751,7 @@ def main() -> None:
                     vx, vy, wz = 0.0, 0.0, 0.0
                     yaw_err = 0.0
                     stairs_detected = False
+                    person_bbox = None
                     command_fresh = False
                 else:
                     vx = _cmd_vel["vx"]
@@ -3669,6 +3759,7 @@ def main() -> None:
                     wz = _cmd_vel["wz"]
                     yaw_err = _cmd_vel.get("yaw_err", 0.0)
                     stairs_detected = _cmd_vel.get("stairs_detected", False)
+                    person_bbox = _cmd_vel.get("person_bbox", None)
                     command_fresh = True
             # Self-test: bypass the Docker/vision controller entirely and drive a
             # constant forward command straight into the locomotion policy. Lets us
@@ -3677,6 +3768,7 @@ def main() -> None:
                 vx, vy, wz = float(args.self_test_vx), 0.0, 0.0
                 yaw_err = 0.0
                 stairs_detected = False
+                person_bbox = None
                 command_fresh = True
                 cmd_count = max(cmd_count, 1)
                 active_count = max(active_count, 1)
@@ -3721,6 +3813,30 @@ def main() -> None:
                             if args.parkour_depth_noise_mult > 0.0:
                                 _depth_hw = apply_parkour_depth_noise(
                                     _depth_hw, args.parkour_depth_noise_mult)
+                            # Mask the followed person out of the depth so the
+                            # perceptive policy does not read the near body as
+                            # terrain and charge at it (close-range surge). ON by
+                            # default; --no-parkour-person-mask disables for A/B.
+                            if person_bbox is not None and not args.no_parkour_person_mask:
+                                _masked, _mbox = mask_person_in_parkour_depth(
+                                    _depth_hw, person_bbox)
+                                if _mbox is not None:
+                                    if _parkour_depth_step % 50 == 0:
+                                        cx1, cy1, cx2, cy2 = _mbox
+                                        try:
+                                            _roi = np.asarray(_depth_hw)[cy1:cy2, cx1:cx2]
+                                            _roi = _roi[np.isfinite(_roi) & (_roi > 1e-4)]
+                                            _near = float(_roi.min()) if _roi.size else None
+                                        except Exception:
+                                            _near = None
+                                        log_event(
+                                            LOGGER, logging.INFO,
+                                            "parkour_person_depth_masked",
+                                            "Masked followed person out of parkour depth input",
+                                            bbox_norm=[round(float(b), 4) for b in person_bbox[:4]],
+                                            depth_px_box=[cx1, cy1, cx2, cy2],
+                                            nearest_depth_removed_m=_near)
+                                    _depth_hw = _masked
                             rl_policy.submit_depth(_depth_hw)
                     except Exception as _pk_dexc:
                         log_event(LOGGER, logging.WARNING, "parkour_depth_read_failed",

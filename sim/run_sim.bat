@@ -44,6 +44,7 @@ if /I "%ARG%"=="--self-test-walk" set "ARG=-SelfTestWalk"
 if /I "%ARG%"=="--self-test-vx" set "ARG=-SelfTestVx"
 if /I "%ARG%"=="--self-test-sec" set "ARG=-SelfTestSec"
 if /I "%ARG%"=="--self-test-no-policy" set "ARG=-SelfTestNoPolicy"
+if /I "%ARG%"=="--no-parkour-person-mask" set "ARG=-NoParkourPersonMask"
 set "PS_ARGS=%PS_ARGS% "%ARG%""
 shift
 goto parse_args
