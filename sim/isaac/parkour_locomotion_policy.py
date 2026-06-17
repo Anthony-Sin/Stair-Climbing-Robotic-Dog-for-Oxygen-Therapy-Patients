@@ -1,18 +1,21 @@
 """Run the Extreme-Parkour-Onboard Go2 perceptive policy in Isaac Sim.
 
-Drop-in alternative to ``RLLocomotionPolicy`` (same ``step(articulation, cmd, dt)``
-+ ``leg_command_summary()`` surface) that drives the robot with the depth-camera
-parkour policy instead of the blind flat trot. The full verified I/O contract is
-in [[project_parkour_policy_contract]]; the per-step assembly here mirrors the
-upstream ``run_extreme_parkour.py`` ``turn_obs`` / ``send_action`` exactly.
+The sole low-level Go2 locomotion controller: it drives the robot from the
+depth camera (perceptive stair/parkour gait). Exposes ``step(articulation, cmd,
+dt, *, delta_yaw=...)`` + ``leg_command_summary()`` + ``diagnostics()``. The full
+verified I/O contract is in [[project_parkour_policy_contract]]; the per-step
+assembly here mirrors the upstream ``run_extreme_parkour.py`` ``turn_obs`` /
+``send_action`` exactly.
 
 Models (gitignored, under sim/isaac/assets/policies/parkour/):
   - base_jit.pt      : composite TorchScript (estimator + actor submodules)
   - vision_weight.pt : state_dict for RecurrentDepthBackbone (see parkour_depth_backbone)
 
-Actuation is the same explicit-PD-torque path the blind policy uses (so the
-PhysX drive gains must be zeroed for it, exactly like rl mode), but with the
-parkour gains kp=40 / kd=1 and per-leg torque limits [hip 25, thigh 40, calf 40].
+Actuation is an explicit-PD-torque law (so the PhysX drive gains must be zeroed
+for it) with the parkour gains kp=40 / kd=1 and per-leg torque limits [hip 25,
+thigh 40, calf 40]. Optional sim-to-real actuator/sensor realism (off by default,
+enabled by the --sim2real-validation-cam preset) layers on top via
+go2_locomotion_utils.
 """
 
 from __future__ import annotations
@@ -26,10 +29,22 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
-# Reuse the blind policy's pure Isaac-articulation helpers + logging shim rather
-# than duplicating them (joint classify, quat->matrix, safe joint read, effort
-# apply). These are static / stateless on the articulation.
-from rl_locomotion_policy import RLLocomotionPolicy, log_event
+# Shared, stateless Isaac-articulation helpers + sim-to-real realism routines
+# (joint classify, quat->matrix, safe joint read, effort apply, leg geometry,
+# joint-limit read, proprio sensor noise, obs latency, PD-with-actuator-realism).
+from go2_locomotion_utils import (
+    PARKOUR_DEFAULT_POSE,
+    add_sensor_noise,
+    apply_joint_efforts,
+    apply_obs_latency,
+    classify_dof,
+    leg_extension_m,
+    log_event,
+    pd_torque,
+    quat_to_matrix,
+    read_joint_limits,
+    safe_joint_vector,
+)
 from parkour_depth_backbone import DepthOnlyFCBackbone58x87, RecurrentDepthBackbone
 
 # Policy joint order: leg-major FR, FL, RR, RL; each leg hip, thigh, calf
@@ -41,14 +56,12 @@ PARKOUR_JOINT_ORDER: Tuple[Tuple[str, str], ...] = (
     ("rl", "hip"), ("rl", "thigh"), ("rl", "calf"),
 )
 
-# Default joint angles (policy order) -- target pose when action = 0.
-# NOTE: hips ±0.1, REAR thighs 1.0 (front 0.8); NOT the rl_sar uniform pose.
+# Default joint angles (policy order) -- target pose when action = 0. Built from
+# the shared PARKOUR_DEFAULT_POSE (go2_locomotion_utils) so the spawn-freeze /
+# USD-drive seed in isaac_env and this policy agree on the stance.
+# NOTE: hips ±0.1, REAR thighs 1.0 (front 0.8); NOT a uniform pose.
 PARKOUR_DEFAULT_POS = np.array(
-    [-0.1, 0.8, -1.5,   # FR
-      0.1, 0.8, -1.5,   # FL
-     -0.1, 1.0, -1.5,   # RR
-      0.1, 1.0, -1.5],  # RL
-    dtype=np.float32,
+    [PARKOUR_DEFAULT_POSE[k] for k in PARKOUR_JOINT_ORDER], dtype=np.float32,
 )
 
 # Per-joint torque limits (policy order), Go2 URDF: hip 25, thigh/calf 40 Nm.
@@ -89,6 +102,23 @@ class ParkourPolicyConfig:
     heading_mode: str = "vision"       # "vision" (self-steer) or "command" (external delta_yaw)
     yaw_scale: float = 1.5
     device: str = "cpu"
+    # --- Sim-to-real realism (opt-in; default off => identical to the clean
+    # deployment). Enabled together by the --sim2real-validation-cam preset, or
+    # individually via the override flags. Models the IMU/encoder noise, sensing
+    # latency, and actuator imperfections the real Go2 has but the lockstep sim
+    # does not. See go2_locomotion_utils for the routines these feed.
+    # Proprioceptive sensor noise (added in physical units, before the obs scales):
+    obs_noise_enabled: bool = False
+    obs_noise_ang_vel: float = 0.2     # rad/s   base angular velocity (IMU gyro)
+    obs_noise_imu: float = 0.05        # rad     imu roll/pitch tilt
+    obs_noise_dof_pos: float = 0.01    # rad     joint position encoder
+    obs_noise_dof_vel: float = 1.5     # rad/s   joint velocity
+    obs_latency_steps: int = 0         # control steps of sensing delay (0 = none)
+    # Actuator realism on the explicit-PD torque (default => ideal PD):
+    joint_limit_clamp: bool = False    # saturate target to REPORTED joint limits
+    backlash_rad: float = 0.0          # lost-motion deadband on PD position error
+    torque_derate: float = 1.0         # scale commanded torque (<1 = thermal/voltage sag)
+    torque_rate_limit_nm: float = 0.0  # slew-rate limit (Nm/step; 0 = unlimited)
 
 
 class ParkourLocomotionPolicy:
@@ -114,7 +144,7 @@ class ParkourLocomotionPolicy:
                     "vision_weight.pt under sim/isaac/assets/policies/parkour/ "
                     "(from change-every/Extreme-Parkour-Onboard traced/)."
                 )
-        # Telemetry/HUD reads .name off this; keep the rl_policy_name surface.
+        # Telemetry/HUD reads .name off this for the policy_name surface.
         self.policy_path = self.base_model_path
 
         self.n = len(PARKOUR_JOINT_ORDER)
@@ -140,11 +170,27 @@ class ParkourLocomotionPolicy:
         self._accumulator = 0.0
         self._inference_count = 0
         self._active_logged = False
+        # Sim-to-real realism state (only exercised when the matching config is on).
+        # Dedicated RNG so injecting obs noise does not perturb the global np.random
+        # stream the image-noise caches draw from.
+        self._obs_rng = np.random.default_rng()
+        self._obs_latency_buffer: List[np.ndarray] = []
+        # Joint position limits read lazily from the articulation the first time
+        # torque control runs (None until then, and None if the asset omits them).
+        self._limits_read = False
+        self._joint_pos_lower: Optional[np.ndarray] = None
+        self._joint_pos_upper: Optional[np.ndarray] = None
         # Steering telemetry (surfaced via diagnostics() for the fall-diag log):
         # what forward command + heading the policy actually used this inference.
         self._last_vx = 0.0
         self._last_injected_yaw: Optional[float] = None  # delta_yaw fed to slots 6:8 in command mode
         self._last_vision_yaw = 0.0                       # depth self-steer yaw (would-be / actual)
+        # Raw output of the privileged-state estimator (estimator.estimator), [9].
+        # Its leading components are the base linear-velocity estimate the actor is
+        # conditioned on; surfaced via diagnostics() so the fall-diag log can compare
+        # the speed the policy THINKS it has against the measured body_vx (an estimate
+        # that lags the true speed makes the frozen actor over-drive the gait).
+        self._last_est_state: Optional[np.ndarray] = None
 
         log_event(
             self.logger, logging.INFO, "parkour_policy_joint_map",
@@ -188,7 +234,7 @@ class ParkourLocomotionPolicy:
     def _build_joint_map(self, dof_names: Sequence[str]) -> List[int]:
         isaac_by_key: Dict[Tuple[str, str], int] = {}
         for idx, raw in enumerate(dof_names):
-            key = RLLocomotionPolicy._classify_dof(str(raw))
+            key = classify_dof(str(raw))
             if key is not None and key not in isaac_by_key:
                 isaac_by_key[key] = idx
         mapping: List[int] = []
@@ -228,6 +274,7 @@ class ParkourLocomotionPolicy:
         self._accumulator = 0.0
         self._last_target_policy = self.default_pos_policy.copy()
         self.last_targets_isaac = self._policy_to_isaac_vector(self.default_pos_policy)
+        self._obs_latency_buffer.clear()
 
     # -- depth -------------------------------------------------------------
 
@@ -298,7 +345,7 @@ class ParkourLocomotionPolicy:
                     omega_world = values[:3]
             except Exception:
                 pass
-        rot = RLLocomotionPolicy._quat_to_matrix(quat_wxyz)  # body->world
+        rot = quat_to_matrix(quat_wxyz)  # body->world
         return (rot.T @ omega_world).astype(np.float32)
 
     def _build_proprio(
@@ -306,15 +353,31 @@ class ParkourLocomotionPolicy:
     ) -> torch.Tensor:
         cfg = self.config
         quat = self._base_quat_wxyz(articulation)
-        ang_vel = self._body_ang_vel(articulation, quat) * float(cfg.ang_vel_scale)
+        ang_vel_phys = self._body_ang_vel(articulation, quat)  # rad/s, body frame
         roll, pitch = self._roll_pitch_from_quat(quat)
 
-        q_isaac = RLLocomotionPolicy._safe_joint_vector(
+        q_isaac = safe_joint_vector(
             articulation, ("get_joint_positions",), len(self.dof_names))
-        qd_isaac = RLLocomotionPolicy._safe_joint_vector(
+        qd_isaac = safe_joint_vector(
             articulation, ("get_joint_velocities",), len(self.dof_names))
-        dof_pos = (self._isaac_to_policy_vector(q_isaac) - self.default_pos_policy) * float(cfg.dof_pos_scale)
-        dof_vel = self._isaac_to_policy_vector(qd_isaac) * float(cfg.dof_vel_scale)
+        q_pol = self._isaac_to_policy_vector(q_isaac)
+        qd_pol = self._isaac_to_policy_vector(qd_isaac)
+
+        # Opt-in proprioceptive sensor noise on the physical quantities (before the
+        # obs scales), so the policy is exercised against IMU/encoder noise rather
+        # than exact ground-truth state. Commands / prev_action / contact stay clean
+        # (intent / internal feedback / a binary flag, not analogue-sensed).
+        if cfg.obs_noise_enabled:
+            rng = self._obs_rng
+            ang_vel_phys = add_sensor_noise(rng, ang_vel_phys, float(cfg.obs_noise_ang_vel))
+            roll = float(roll + rng.normal(0.0, float(cfg.obs_noise_imu)))
+            pitch = float(pitch + rng.normal(0.0, float(cfg.obs_noise_imu)))
+            q_pol = add_sensor_noise(rng, q_pol, float(cfg.obs_noise_dof_pos))
+            qd_pol = add_sensor_noise(rng, qd_pol, float(cfg.obs_noise_dof_vel))
+
+        ang_vel = ang_vel_phys * float(cfg.ang_vel_scale)
+        dof_pos = (q_pol - self.default_pos_policy) * float(cfg.dof_pos_scale)
+        dof_vel = qd_pol * float(cfg.dof_vel_scale)
 
         # contact: -0.5 if foot force below threshold (swing), else +0.5 (stance).
         if foot_contacts is not None:
@@ -336,6 +399,14 @@ class ParkourLocomotionPolicy:
             self.prev_action,             # 12 (raw last action)
             contact,                      # 4
         ]).astype(np.float32)
+
+        # Opt-in observation latency: act on the proprio from obs_latency_steps
+        # control steps ago (the oldest available during warmup), modelling the
+        # sense->actuate delay. Applied before the yaw slots are overwritten and
+        # before the tensor is built, so history + depth + actor all see the same
+        # delayed sensor state.
+        proprio = apply_obs_latency(
+            self._obs_latency_buffer, proprio, int(cfg.obs_latency_steps))
         return torch.from_numpy(proprio).to(self._device).unsqueeze(0)  # [1,53]
 
     def _infer(self, articulation: Any, vx: float, foot_contacts, delta_yaw) -> None:
@@ -379,6 +450,7 @@ class ParkourLocomotionPolicy:
 
         with torch.no_grad():
             lin_vel_latent = self._estimator(proprio)                       # [1,9]
+            self._last_est_state = lin_vel_latent.detach().cpu().numpy().reshape(-1)
             priv_latent = self._hist_encoder(
                 self._elu, self._proprio_history.view(-1, PARKOUR_N_HIST, PARKOUR_N_PROPRIO))  # [1,20]
             obs = torch.cat([proprio, depth_latent, lin_vel_latent, priv_latent], dim=-1)  # [1,114]
@@ -398,14 +470,30 @@ class ParkourLocomotionPolicy:
     # -- actuation (explicit PD torque, kp40/kd1, per-leg limits) ----------
 
     def _apply_torque_pd(self, articulation: Any) -> None:
+        cfg = self.config
         n = len(self.dof_names)
-        q = RLLocomotionPolicy._safe_joint_vector(articulation, ("get_joint_positions",), n)
-        qd = RLLocomotionPolicy._safe_joint_vector(articulation, ("get_joint_velocities",), n)
-        target = np.asarray(self.last_targets_isaac, dtype=np.float32)
-        tau = float(self.config.kp) * (target - q) - float(self.config.kd) * qd
-        tau = np.clip(tau, -self.torque_limits_isaac, self.torque_limits_isaac)
+        q = safe_joint_vector(articulation, ("get_joint_positions",), n)
+        qd = safe_joint_vector(articulation, ("get_joint_velocities",), n)
+        # Joint-limit clamp reads the asset's REPORTED limits lazily, once.
+        if cfg.joint_limit_clamp and not self._limits_read:
+            self._joint_pos_lower, self._joint_pos_upper = read_joint_limits(
+                articulation, n, self.logger)
+            self._limits_read = True
+        # Explicit-PD torque (kp40/kd1, per-leg limits) + optional actuator realism.
+        # With all realism off this is exactly tau = kp*(target-q) - kd*qd clipped.
+        tau = pd_torque(
+            q, qd, self.last_targets_isaac,
+            kp=float(cfg.kp), kd=float(cfg.kd),
+            torque_limits=self.torque_limits_isaac,
+            joint_lower=self._joint_pos_lower if cfg.joint_limit_clamp else None,
+            joint_upper=self._joint_pos_upper if cfg.joint_limit_clamp else None,
+            backlash_rad=float(cfg.backlash_rad),
+            torque_derate=float(cfg.torque_derate),
+            torque_rate_limit=float(cfg.torque_rate_limit_nm),
+            prev_torque=self._last_torque,
+        )
         self._last_torque = tau.astype(np.float32)
-        RLLocomotionPolicy._apply_joint_efforts(articulation, self._last_torque)
+        apply_joint_efforts(articulation, self._last_torque)
 
     # -- main entry --------------------------------------------------------
 
@@ -435,18 +523,18 @@ class ParkourLocomotionPolicy:
             "inference_count": int(self._inference_count),
         }
 
-    # -- telemetry (HUD compatibility with RLLocomotionPolicy) -------------
+    # -- telemetry (per-leg swing/stance summary for the gait HUD) ---------
 
     def leg_command_summary(self) -> Dict[str, Any]:
         target = np.asarray(self._last_target_policy, dtype=np.float32)
         action = np.asarray(self.prev_action, dtype=np.float32)
         slot_of = {key: i for i, key in enumerate(PARKOUR_JOINT_ORDER)}
-        ext_default = RLLocomotionPolicy._leg_extension_m(float(PARKOUR_DEFAULT_POS[2]))
+        ext_default = leg_extension_m(float(PARKOUR_DEFAULT_POS[2]))
         leg_commands: Dict[str, Dict[str, Any]] = {}
         swing_legs: List[str] = []
         for leg in ("fl", "fr", "rl", "rr"):
             calf_t = float(target[slot_of[(leg, "calf")]])
-            clearance = ext_default - RLLocomotionPolicy._leg_extension_m(calf_t)
+            clearance = ext_default - leg_extension_m(calf_t)
             is_swing = bool(clearance > 0.02)
             if is_swing:
                 swing_legs.append(leg.upper())
@@ -466,6 +554,14 @@ class ParkourLocomotionPolicy:
         tau = np.asarray(self._last_torque, dtype=np.float32)
         act = np.asarray(self.prev_action, dtype=np.float32)
         inj = getattr(self, "_last_injected_yaw", None)
+        # Estimated base linear velocity the actor conditions on (leading components
+        # of the estimator output). Compare est_lin_vel[0] (forward) to the measured
+        # body_vx in fall_diag: if the estimate lags well below body_vx, the frozen
+        # actor is being told it is slow and keeps driving the gait faster.
+        est = getattr(self, "_last_est_state", None)
+        est_lin_vel = (
+            None if est is None else [round(float(v), 3) for v in np.asarray(est).reshape(-1)[:3]]
+        )
         return {
             "inference_count": int(self._inference_count),
             "action_norm": round(float(np.linalg.norm(act)), 3),
@@ -479,4 +575,7 @@ class ParkourLocomotionPolicy:
             "injected_yaw": None if inj is None else round(float(inj), 3),
             "vision_yaw": round(float(getattr(self, "_last_vision_yaw", 0.0)), 3),
             "heading_mode": str(self.config.heading_mode),
+            # Estimated base linear velocity [vx,vy,vz] (policy's internal estimate);
+            # compare est_lin_vel[0] to the measured body_vx logged alongside.
+            "est_lin_vel": est_lin_vel,
         }

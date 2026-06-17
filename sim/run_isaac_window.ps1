@@ -6,15 +6,12 @@ param(
     [Parameter(Mandatory = $true)][string]$FrameHost,
     [int]$FramePort = 55002,
     [int]$CmdPort = 55001,
-    [string]$LocomotionMode = "rl",
-    [string]$RlPolicyPath = "",
-    [string]$RlPolicyFormat = "auto",
-    [double]$RlControlHz = 50.0,
-    [double]$RlActionScale = 0.25,
-    [string]$RlStairsStrategy = "policy",
-    [string]$ParkourHeadingMode = "vision",
-    [switch]$Sim2RealValidation,
-    [switch]$Sim2RealValidationCam
+    [string]$ParkourHeadingMode = "command",
+    [switch]$Sim2RealValidationCam,
+    [switch]$SelfTestWalk,
+    [double]$SelfTestVx = 0.5,
+    [double]$SelfTestSec = 15.0,
+    [switch]$SelfTestNoPolicy
 )
 
 $ErrorActionPreference = "Stop"
@@ -56,12 +53,9 @@ Write-ConsoleLog "  Isaac JSONL events:  $(Join-Path $DebugDir 'isaac_env.jsonl'
 Write-ConsoleLog "  Isaac Sim dir:       $IsaacSimDir"
 Write-ConsoleLog "  Frame target:        ${FrameHost}:${FramePort}"
 Write-ConsoleLog "  Command receiver:    0.0.0.0:${CmdPort}"
-Write-ConsoleLog "  Locomotion mode:     $LocomotionMode"
-Write-ConsoleLog "  Sim2Real preset:     $([bool]$Sim2RealValidation)"
-Write-ConsoleLog "  Sim2Real cam preset: $([bool]$Sim2RealValidationCam)"
-if ($RlPolicyPath) {
-    Write-ConsoleLog "  RL policy path:      $RlPolicyPath"
-}
+Write-ConsoleLog "  Locomotion policy:   parkour (depth/vision)"
+Write-ConsoleLog "  Parkour heading:     $ParkourHeadingMode"
+Write-ConsoleLog "  Real-sim env preset: $([bool]$Sim2RealValidationCam)"
 Write-ConsoleLog ""
 
 if (-not (Test-Path -LiteralPath $IsaacSimDir)) {
@@ -84,10 +78,7 @@ $env:PYTHONUNBUFFERED = "1"
 # Initialize RawLog file first
 New-Item -ItemType File -Path $RawLog -Force | Out-Null
 
-$rlArgs = "--locomotion-mode $LocomotionMode --rl-policy-format $RlPolicyFormat --rl-control-hz $RlControlHz --rl-action-scale $RlActionScale --rl-stairs-strategy $RlStairsStrategy --parkour-heading-mode $ParkourHeadingMode"
-if ($RlPolicyPath) {
-    $rlArgs = "$rlArgs --rl-policy-path `"$RlPolicyPath`""
-}
+$locomotionArgs = "--parkour-heading-mode $ParkourHeadingMode"
 
 # Isaac records the external scene Left view to scene_view.mp4 (beside opencv_preview.mp4).
 $rawArg = ""
@@ -95,23 +86,28 @@ if ($RawVideoPath) {
     $rawArg = "--raw-video-path `"$RawVideoPath`""
 }
 
-# Sim-to-real validation preset: turns on the realistic regime inside isaac_env.py
-# (obs noise + 1-step latency + domain randomization + joint-limit clamp + LiDAR
-# range noise + lighting randomization). Off by default => clean regime.
-$validationArg = ""
-if ($Sim2RealValidation) {
-    $validationArg = "--sim2real-validation"
-}
-
-# Camera/perception sim2real preset: routes the parkour depth-camera ML input
-# through the RealSense D435 noise model inside isaac_env.py (clean by default).
-# Independent of --sim2real-validation; touches no RL/physics knobs.
+# Real-simulated-env preset: turns on the full sim-to-real realism suite inside
+# isaac_env.py -- RealSense D435 noise on the depth-camera ML AND the YOLO RGB/depth
+# stream, proprio obs noise + 1-step latency, domain randomization + lighting,
+# joint-limit clamp, and XT16 LiDAR range noise. Off by default => the clean
+# "perfect env".
 $validationCamArg = ""
 if ($Sim2RealValidationCam) {
     $validationCamArg = "--sim2real-validation-cam"
 }
 
-$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" --person-move --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera $rawArg $rlArgs $validationArg $validationCamArg > `"$RawLog`" 2>&1`""
+# Controller-free locomotion self-test: drive a constant forward command straight
+# into the policy (headless, auto-exits after --self-test-sec) so the gait can be
+# isolated from the vision/follow controller. --self-test-no-policy skips inference
+# to confirm the robot stands on the position-hold drives alone.
+$selfTestArg = ""
+if ($SelfTestWalk) {
+    $selfTestArg = "--self-test-walk --self-test-vx $SelfTestVx --self-test-sec $SelfTestSec --headless"
+    if ($SelfTestNoPolicy) { $selfTestArg += " --self-test-no-policy" }
+    Write-ConsoleLog "  Self-test:           vx=$SelfTestVx, ${SelfTestSec}s, no-policy=$SelfTestNoPolicy (headless, no controller)"
+}
+
+$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" --person-move --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera $rawArg $locomotionArgs $validationCamArg $selfTestArg > `"$RawLog`" 2>&1`""
 
 # Start the process with direct OS redirection to prevent pipeline blocking
 $process = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs -PassThru -NoNewWindow

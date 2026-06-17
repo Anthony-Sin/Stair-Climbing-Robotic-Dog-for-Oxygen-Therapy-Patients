@@ -1,9 +1,10 @@
-"""Pure-Python tests for the XT16 LiDAR profile wire format, the LiDAR+YOLO
-distance fusion, and the RL policy's real per-leg command summary.
+"""Pure-Python tests for the XT16 LiDAR profile wire format and the LiDAR+YOLO
+distance fusion.
 
-No Isaac/OpenCV needed: sim_lidar_xt16 and rl_locomotion_policy are omni-free and
-the raycast is injected. Run directly (python tests/test_lidar_fusion.py) or via
-pytest.
+No Isaac/OpenCV/torch needed: sim_lidar_xt16 is omni-free and the raycast is
+injected. Run directly (python tests/test_lidar_fusion.py) or via pytest.
+(The locomotion policy's per-leg command summary is tested in
+tests/test_parkour_contract.py, where the torch-backed policy lives.)
 """
 import math
 import os
@@ -19,7 +20,6 @@ for _sub in ("core", os.path.join("sim", "isaac")):
 
 import lidar_fusion as lf
 from sim_lidar_xt16 import Xt16Config, cast_scan, profile_from_scan
-import rl_locomotion_policy as rlp
 
 
 def _fake_world(person_range=2.0, wall_range=5.0):
@@ -73,39 +73,6 @@ def test_fuse_agreement_weighted():
     assert lf.fuse_distance(None, 2.0)["fused_m"] == 2.0
     assert lf.fuse_distance(2.0, None)["fused_m"] == 2.0
     assert lf.fuse_distance(None, None)["fused_m"] is None
-
-
-def _fake_policy():
-    pol = object.__new__(rlp.RLLocomotionPolicy)  # bypass __init__ (no model needed)
-    pol.default_pos_policy = np.array(
-        [rlp.POLICY_DEFAULT_BY_JOINT[j] for (_l, j) in rlp.POLICY_JOINT_ORDER], np.float32
-    )
-    pol.action_scale_policy = np.array(
-        [rlp.POLICY_ACTION_SCALE_BY_JOINT[j] for (_l, j) in rlp.POLICY_JOINT_ORDER], np.float32
-    )
-    pol._last_action = np.zeros(12, np.float32)
-    pol._last_target_policy = pol.default_pos_policy.copy()
-    return pol
-
-
-def test_leg_summary_default_is_all_stance():
-    s = _fake_policy().leg_command_summary()
-    assert s["swing_legs"] == []
-    assert set(s["leg_commands"]) == {"FL", "FR", "RL", "RR"}
-    assert all(c["state"] == "stance" for c in s["leg_commands"].values())
-
-
-def test_leg_summary_knee_flexion_is_swing():
-    pol = _fake_policy()
-    tp = pol.default_pos_policy.copy()
-    fr_calf = [i for i, (l, j) in enumerate(rlp.POLICY_JOINT_ORDER) if l == "fr" and j == "calf"][0]
-    tp[fr_calf] = -2.1  # bend the knee past the -1.5 default -> leg retracts -> swing
-    pol._last_target_policy = tp
-    s = pol.leg_command_summary()
-    assert s["swing_legs"] == ["FR"]
-    assert s["leg_commands"]["FR"]["state"] == "swing"
-    assert s["leg_commands"]["FR"]["foot_lift_m"] > 0.02
-    assert s["leg_commands"]["FL"]["state"] == "stance"
 
 
 if __name__ == "__main__":

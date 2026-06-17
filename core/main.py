@@ -837,7 +837,7 @@ def main():
             # LIVE stair trigger (sensor-derived): YOLO-World detection on RGB
             # (yolo_stairs_inference) + depth-camera distance below. This is what
             # _apply_stair_command_policy gates on -- NOT the sim_go2_locomotion
-            # stair_demo phase/blind_rl overlay, which is HUD/report decoration
+            # stair_demo phase/locomotion overlay, which is HUD/report decoration
             # computed from ground-truth pose and drives nothing.
             stairs_result = yolo_stairs.get_latest_result()
             if stairs_result.get("detected", False):

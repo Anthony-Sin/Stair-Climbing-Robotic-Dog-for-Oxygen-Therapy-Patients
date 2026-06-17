@@ -233,7 +233,7 @@ def parse_args():
                              'bbox edge/size penalty amplification that otherwise saws the body on steps')
     parser.add_argument('--stair-forward-floor', type=float, default=0.35,
                         help='Minimum forward command (m/s) held while climbing detected nearby stairs, '
-                             'so the follow PID cannot stall the blind RL policy at the stair base')
+                             'so the follow PID cannot stall the locomotion policy at the stair base')
     parser.add_argument('--stair-rot-max', type=float, default=0.6,
                         help='Yaw command cap (rad/s) while on stairs; lower than --rot-max to stop the '
                              'centering saw that destabilizes the climb')

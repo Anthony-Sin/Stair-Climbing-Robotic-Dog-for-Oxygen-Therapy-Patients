@@ -175,13 +175,13 @@ USD resolves referenced and nested assets asynchronously. For standalone scripts
 ---
 
 TRIGGER:
-Reading or trusting the gait/leg HUD (Panels 3-4, the central gait reticle) or the stair_demo `blind_rl.leg_commands` / `swing_legs` telemetry in the sim.
+Reading or trusting the gait/leg HUD (Panels 3-4, the central gait reticle) or the stair_demo `locomotion.leg_commands` / `swing_legs` telemetry in the sim.
 
 LESSON:
-Source leg/gait telemetry from the RL policy's real joint targets via `rl_locomotion_policy.RLLocomotionPolicy.leg_command_summary()` (stored on `Go2LocomotionState.rl_leg_summary` in `_step_go2_locomotion`). Do NOT reintroduce a `current_swing_legs`-style field that the locomotion controller never fills in.
+Source leg/gait telemetry from the locomotion policy's real joint targets via `parkour_locomotion_policy.ParkourLocomotionPolicy.leg_command_summary()` (stored on `Go2LocomotionState.leg_summary` in `_step_go2_locomotion`). Do NOT reintroduce a `current_swing_legs`-style field that the locomotion controller never fills in.
 
 WHY:
-The procedural-gait scaffolding that once populated `Go2LocomotionState.current_swing_legs` was removed, but its consumers were left reading the now-dead field (always empty), so the leg/gait HUD silently displayed static/fake data disconnected from the RL policy.
+The procedural-gait scaffolding that once populated `Go2LocomotionState.current_swing_legs` was removed, but its consumers were left reading the now-dead field (always empty), so the leg/gait HUD silently displayed static/fake data disconnected from the policy. (The blind RL policy was removed entirely; parkour is the sole locomotion controller, and the telemetry key is now `locomotion`, not `blind_rl`.)
 
 ---
 
@@ -225,7 +225,7 @@ LESSON:
 Those are the SYNTHETIC stair-demo overlay and can report `flat_follow` / a near-spawn `x_m` even when the physics robot actually climbed. Judge real motion from the `fall diagnostic` JSONL stream in `debug/isaac_env.jsonl` (`x`, `pitch`, `policy_cmd=[vx,vy,wz]`), not the reports.
 
 WHY:
-The demo telemetry is geometry-exact scene decoration decoupled from the RL physics; trusting it hid that the robot physically climbed ~2 steps then stalled at x≈2.38.
+The demo telemetry is geometry-exact scene decoration decoupled from the physics; trusting it hid that the robot physically climbed ~2 steps then stalled at x≈2.38.
 
 ---
 
@@ -233,9 +233,9 @@ TRIGGER:
 Reasoning about what perception drives the sim's stair climb (assuming the `_get_analytical_terrain_height` ground-truth signal is the control input).
 
 LESSON:
-The live stair trigger is sensor-derived: `stairs_detected` comes from `yolo_stairs_inference` (YOLO-World on RGB, latched in `core/main.py`) and `stairs_depth_m` from the depth camera (`_depth_from_bbox_excluding_person`); `_apply_stair_command_policy` reads only those `debug_info` values. The analytical `_get_analytical_terrain_height` feeds ONLY `_build_stair_demo_telemetry`'s `phase` / `blind_rl.mode` HUD labels (`vertical_assist_mps=0.0` / `body_height_target_m=None`) — it drives no command, RL, or physics. Do not treat it as the climb's perception or "replace" it expecting behavior to change.
+The live stair trigger is sensor-derived: `stairs_detected` comes from `yolo_stairs_inference` (YOLO-World on RGB, latched in `core/main.py`) and `stairs_depth_m` from the depth camera (`_depth_from_bbox_excluding_person`); `_apply_stair_command_policy` reads only those `debug_info` values. The analytical `_get_analytical_terrain_height` feeds ONLY `_build_stair_demo_telemetry`'s `phase` / `locomotion.mode` HUD labels (`vertical_assist_mps=0.0` / `body_height_target_m=None`) — it drives no command, policy, or physics. Do not treat it as the climb's perception or "replace" it expecting behavior to change.
 
-NOTE (2026-06-17): the fabricated `demo_4d_elevation_raycast` block — the fake "lidar" the analytical probe used to populate in `stair_demo["lidar"]` (samples/detected/confidence/distance_to_next_riser_m) — was REMOVED. `stair_demo["lidar"]` is now filled only by the real PhysX-raycast XT16 (`sim_lidar_xt16.cast_scan`) in `isaac_env.py`. The synthetic `phase`/`blind_rl.mode` labels remain.
+NOTE (2026-06-17): the fabricated `demo_4d_elevation_raycast` block — the fake "lidar" the analytical probe used to populate in `stair_demo["lidar"]` (samples/detected/confidence/distance_to_next_riser_m) — was REMOVED. `stair_demo["lidar"]` is now filled only by the real PhysX-raycast XT16 (`sim_lidar_xt16.cast_scan`) in `isaac_env.py`. The synthetic `phase`/`locomotion.mode` labels remain.
 
 WHY:
 The decorative overlay and the live control signal share "stair/raycast" vocabulary, so the synthetic ground-truth telemetry looks like the perception path and leads to redundant or misdirected work (e.g. "make the climb sensor-driven" when it already is).

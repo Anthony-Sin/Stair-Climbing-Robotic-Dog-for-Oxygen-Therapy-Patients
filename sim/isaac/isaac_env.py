@@ -82,16 +82,12 @@ parser.add_argument("--verification-image", type=str, default="",
                     help="Write a wide scene verification PNG showing robot, person, and stairs")
 parser.add_argument("--exit-after-verification", action="store_true",
                     help="Exit after writing --verification-image")
-parser.add_argument("--locomotion-mode", type=str, default="rl",
-                    choices=("rl", "parkour"),
-                    help="Low-level Go2 locomotion controller: 'rl' (blind rl_sar flat trot) "
-                         "or 'parkour' (Extreme-Parkour-Onboard perceptive depth-camera policy)")
 parser.add_argument("--parkour-base-model", type=str,
                     default=str(REPO_ROOT / "sim" / "isaac" / "assets" / "policies" / "parkour" / "base_jit.pt"),
-                    help="Extreme-Parkour base_jit.pt (TorchScript actor+estimator) for --locomotion-mode parkour")
+                    help="Extreme-Parkour base_jit.pt (TorchScript actor+estimator) for the parkour locomotion policy")
 parser.add_argument("--parkour-vision-model", type=str,
                     default=str(REPO_ROOT / "sim" / "isaac" / "assets" / "policies" / "parkour" / "vision_weight.pt"),
-                    help="Extreme-Parkour vision_weight.pt (depth-encoder state_dict) for --locomotion-mode parkour")
+                    help="Extreme-Parkour vision_weight.pt (depth-encoder state_dict) for the parkour locomotion policy")
 parser.add_argument("--parkour-depth-hz", type=float, default=10.0,
                     help="Rate (Hz) the rigid depth camera is rendered/submitted to the parkour policy")
 parser.add_argument("--parkour-depth-noise-mult", type=float, default=0.0,
@@ -102,30 +98,19 @@ parser.add_argument("--parkour-depth-noise-mult", type=float, default=0.0,
                          "shadows + range holes) the YOLO/fusion stream already uses, so the "
                          "perceptive policy sees the noisy depth the real camera produces. "
                          "Set by the --sim2real-validation-cam preset to 1.0 (nominal D435).")
-parser.add_argument("--parkour-heading-mode", type=str, default="vision",
+parser.add_argument("--parkour-heading-mode", type=str, default="command",
                     choices=("vision", "command"),
                     help="Parkour steering: 'vision' (policy self-steers from depth) or "
-                         "'command' (steer toward the person-follow bearing)")
-parser.add_argument("--rl-policy-path", type=str,
-                    default=str(REPO_ROOT / "sim" / "isaac" / "assets" / "policies" / "go2_robot_lab_policy.pt"),
-                    help="Local TorchScript/ONNX Go2 policy path (rl_sar go2 robot_lab)")
-parser.add_argument("--rl-policy-format", type=str, default="auto",
-                    choices=("auto", "torchscript", "torch", "pt", "jit", "onnx"),
-                    help="Policy loader format for --rl-policy-path")
-parser.add_argument("--rl-control-hz", type=float, default=50.0,
-                    help="Trained policy control rate in Hz")
-parser.add_argument("--rl-action-scale", type=float, default=0.25,
-                    help="Scale applied to policy actions before adding default joint pose")
-parser.add_argument("--rl-stairs-strategy", type=str, default="policy",
-                    choices=("policy",),
-                    help="Stairs are handled by the RL policy (the only supported strategy)")
+                         "'command' (steer toward the person-follow bearing). Default "
+                         "'command' so the YOLO person bearing actually steers the dog; "
+                         "pass 'vision' to restore depth self-steer.")
 parser.add_argument("--stair-preset", type=str, default="demo_gentle",
                     choices=("demo_gentle", "residential", "commercial", "steep"),
                     help="Staircase geometry preset (single source of truth in "
                          "sim_go2_locomotion.StairSpec). demo_gentle (default) reproduces the "
                          "original 0.08 m x 0.30 m x 12 gentle test stairs; residential/"
-                         "commercial/steep use real building-code rise/run so the sensor + RL "
-                         "stack faces non-trivial stairs. Drives the physics cuboids, analytical "
+                         "commercial/steep use real building-code rise/run so the sensor + "
+                         "locomotion stack faces non-trivial stairs. Drives the physics cuboids, analytical "
                          "terrain, patient path, and stair overlay from one spec.")
 parser.add_argument("--stair-step-height", type=float, default=None,
                     help="Override the preset tread rise in metres (e.g. 0.178)")
@@ -139,34 +124,19 @@ parser.add_argument("--no-stair-handrail", dest="stair_handrail", action="store_
                     help="Force-disable handrail volumes (overrides the preset)")
 parser.add_argument("--spawn-settle-steps", type=int, default=50,
                     help="Zero-command policy/hold steps after spawn before world_ready")
-# Go2 joint PD gains. These are the deployment contract for the rl_sar go2
-# robot_lab policy (policy/go2/robot_lab/config.yaml). The policy was trained
-# with and runs on rl_kp=20, rl_kd=0.5 -- NOT the fixed_kp=80/fixed_kd=3.0, which
-# in rl_sar are only the stiff "getup"/stand gains used to interpolate to the
-# default pose before the policy takes over. Using 80/3.0 for RL control is ~4x
-# too stiff and the policy's position targets then produce violent torques that
-# flip the robot. The gains MUST be applied in radian units (PhysX native) via
-# the articulation API, not only as a degrees-based USD DriveAPI. See
-# _apply_rl_drive_gains().
-parser.add_argument("--rl-kp", type=float, default=20.0,
-                    help="Go2 joint position gain (Nm/rad) for RL control (rl_sar go2 config.yaml rl_kp)")
-parser.add_argument("--rl-kd", type=float, default=0.5,
-                    help="Go2 joint velocity gain (Nm/(rad/s)) for RL control (rl_sar go2 config.yaml rl_kd)")
-parser.add_argument("--rl-torque-limit", type=float, default=23.5,
-                    help="Go2 per-joint torque saturation (Nm) the policy was trained with")
-parser.add_argument("--rl-control-mode", type=str, default="torque",
-                    choices=("torque", "position"),
-                    help="Low-level actuation. 'torque' applies the rl_sar explicit PD law "
-                         "tau=kp*(target-q)-kd*qd clipped to the torque limit (faithful to "
-                         "training); 'position' uses the PhysX implicit position drive.")
-parser.add_argument("--rl-obs-noise", dest="rl_obs_noise", action="store_true", default=False,
-                    help="Inject Gaussian IMU/encoder noise into the RL policy observation "
-                         "(default off => exact clean obs). Stress-tests policy robustness "
-                         "against the noisy state the real robot sees.")
-parser.add_argument("--rl-obs-latency-steps", type=int, default=0,
-                    help="Make the RL policy act on the observation from N control steps ago "
+# Sim-to-real realism overrides (parkour locomotion policy). All off / nominal by
+# default (the "perfect env"); the --sim2real-validation-cam preset turns the whole
+# suite on, and each flag below still overrides the preset. The parkour PD gains
+# (kp=40/kd=1) + per-leg torque limits are fixed in ParkourPolicyConfig (the trained
+# deployment contract), so there are no kp/kd/torque-limit flags here.
+parser.add_argument("--obs-noise", dest="obs_noise", action="store_true", default=False,
+                    help="Inject Gaussian IMU/encoder noise into the locomotion policy's "
+                         "proprioceptive observation (default off => exact clean obs). "
+                         "Stress-tests robustness against the noisy state the real robot sees.")
+parser.add_argument("--obs-latency-steps", dest="obs_latency_steps", type=int, default=0,
+                    help="Make the locomotion policy act on the proprio from N control steps ago "
                          "(0 = none) to model the sense->actuate delay absent in lockstep sim.")
-parser.add_argument("--rl-torque-rate", type=float, default=0.0,
+parser.add_argument("--torque-rate", dest="torque_rate", type=float, default=0.0,
                     help="Actuator torque slew-rate limit in Nm per control step (0 = "
                          "unlimited). Models finite actuator bandwidth the ideal PD lacks.")
 parser.add_argument("--domain-rand", dest="domain_rand", action="store_true", default=False,
@@ -179,8 +149,8 @@ parser.add_argument("--dr-friction-pct", type=float, default=0.3,
                     help="Fractional +/- randomization of ground/stair static & dynamic "
                          "friction when --domain-rand is set (0.3 = plus/minus 30 percent).")
 parser.add_argument("--dr-gain-pct", type=float, default=0.2,
-                    help="Fractional +/- randomization of the RL PD gains kp/kd when "
-                         "--domain-rand is set (0.2 = plus/minus 20 percent).")
+                    help="Fractional +/- randomization of the parkour PD gains kp/kd (nominal "
+                         "40/1) when --domain-rand is set (0.2 = plus/minus 20 percent).")
 parser.add_argument("--dr-push-interval-sec", type=float, default=4.0,
                     help="Seconds between random base-velocity push disturbances when "
                          "--domain-rand is set (<=0 disables pushes).")
@@ -190,29 +160,25 @@ parser.add_argument("--dr-lighting-pct", type=float, default=0.0,
                     help="Fractional +/- randomization of scene light intensity when --domain-rand "
                          "is set (0 = off). Stress-tests YOLO/pose/ReID against the lighting "
                          "variation the fixed sim lighting otherwise hides.")
-parser.add_argument("--sim2real-validation", dest="sim2real_validation", action="store_true", default=False,
-                    help="Preset: validate the policy in a realistic regime instead of the clean "
-                         "default. Turns ON RL obs noise, a 1-step obs latency, domain "
-                         "randomization, and joint-limit clamping -- each still overridable by its "
-                         "own flag. Actuator-bandwidth/backlash numbers are NOT invented; set "
-                         "--rl-torque-rate / --rl-backlash-rad explicitly for those.")
 parser.add_argument("--sim2real-validation-cam", dest="sim2real_validation_cam", action="store_true", default=False,
-                    help="Preset (camera/perception twin of --sim2real-validation): validate the "
-                         "PERCEPTIVE pipeline against realistic camera input instead of the clean "
-                         "default, WITHOUT perturbing the RL/physics model. Turns ON the RealSense "
-                         "D435 depth-noise model on the parkour depth-camera ML input "
-                         "(--parkour-depth-noise-mult 1.0), still overridable by its own flag. Only "
-                         "meaningful with --locomotion-mode parkour (rl mode is blind; its YOLO RGB "
-                         "stream is already noisy). Leaves all RL knobs (obs noise/latency/domain "
-                         "rand/torque) untouched.")
-parser.add_argument("--rl-joint-limit-clamp", dest="rl_joint_limit_clamp", action="store_true", default=False,
-                    help="Saturate RL joint-position targets to the articulation's reported joint "
+                    help="REAL-SIMULATED ENV preset: validate the whole stack against realistic "
+                         "sensing + actuation instead of the clean 'perfect env' default. Turns ON, "
+                         "each still overridable by its own flag: the RealSense D435 depth-noise "
+                         "model on BOTH the parkour depth-camera ML input "
+                         "(--parkour-depth-noise-mult 1.0) and the YOLO RGB/depth stream; "
+                         "proprioceptive obs noise (--obs-noise) + a 1-step obs latency "
+                         "(--obs-latency-steps 1); domain randomization (--domain-rand) incl. "
+                         "lighting (0.3); joint-limit clamping (--joint-limit-clamp); and XT16 "
+                         "LiDAR range noise (0.02 m). Actuator-bandwidth/backlash numbers are NOT "
+                         "invented; set --torque-rate / --backlash-rad / --torque-derate explicitly.")
+parser.add_argument("--joint-limit-clamp", dest="joint_limit_clamp", action="store_true", default=False,
+                    help="Saturate joint-position targets to the articulation's reported joint "
                          "limits before the PD law (models real motor hard stops; limits are READ "
                          "from the asset, not guessed).")
-parser.add_argument("--rl-backlash-rad", type=float, default=0.0,
+parser.add_argument("--backlash-rad", dest="backlash_rad", type=float, default=0.0,
                     help="Actuator backlash/deadband half-width (rad) on the PD position error "
                          "(0 = off). Set from real Go2 figures when available; not guessed.")
-parser.add_argument("--rl-torque-derate", type=float, default=1.0,
+parser.add_argument("--torque-derate", dest="torque_derate", type=float, default=1.0,
                     help="Multiplier on commanded joint torque to model thermal/voltage sag "
                          "(1.0 = no effect).")
 parser.add_argument("--fall-recovery", dest="fall_recovery", action="store_true", default=False,
@@ -224,17 +190,17 @@ parser.add_argument("--max-fall-recoveries", type=int, default=3,
                     help="Maximum in-place re-stand recoveries before the run ends anyway "
                          "(bounds retries when --fall-recovery is set).")
 # Headless locomotion self-test: drive a constant forward command directly into
-# the RL policy (no Docker/vision needed) so flat-ground walking and balance can
-# be verified in isolation, then auto-exit and write the evaluation summary.
+# the locomotion policy (no Docker/vision needed) so flat-ground walking and
+# balance can be verified in isolation, then auto-exit and write the eval summary.
 parser.add_argument("--self-test-walk", action="store_true",
-                    help="Inject a constant forward velocity command into the RL policy and auto-exit (no controller needed)")
+                    help="Inject a constant forward velocity command into the locomotion policy and auto-exit (no controller needed)")
 parser.add_argument("--self-test-vx", type=float, default=0.5,
                     help="Forward velocity command (m/s) used by --self-test-walk")
 parser.add_argument("--self-test-sec", type=float, default=15.0,
                     help="Simulated seconds to run --self-test-walk before exiting")
 parser.add_argument("--self-test-no-policy", action="store_true",
-                    help="During self-test, do NOT run the RL policy: hold the default pose via the "
-                         "PD drives only. Isolates whether physics/gains/asset alone can stand.")
+                    help="During self-test, do NOT run the locomotion policy: hold the default pose "
+                         "via the PD drives only. Isolates whether physics/gains/asset alone can stand.")
 parser.add_argument("--front-cam-out", type=str, default="",
                     help="Debug: save the robot's FRONT (D435) camera RGB to this PNG after "
                          "--front-cam-after steps (with the robot frozen at spawn), then exit. "
@@ -287,38 +253,38 @@ args = parser.parse_args()
 def _flag_passed(*names: str) -> bool:
     """True if any of these option strings were given on the command line.
 
-    Lets the --sim2real-validation preset supply a value WITHOUT overriding an
+    Lets the --sim2real-validation-cam preset supply a value WITHOUT overriding an
     explicit per-flag choice the user made.
     """
     return any(a == n or a.startswith(n + "=") for a in sys.argv[1:] for n in names)
 
 
-# --sim2real-validation preset: flip the realism knobs that already have
-# documented modelling defaults from opt-in to on, unless the user set them
-# explicitly. Resolved here (before the _DR block reads args.domain_rand). The
-# clean regime stays the default when the preset is off. Actuator-bandwidth and
-# backlash numbers are deliberately NOT set here -- those would be guesses.
-if args.sim2real_validation:
-    if not _flag_passed("--rl-obs-noise"):
-        args.rl_obs_noise = True
-    if not _flag_passed("--rl-obs-latency-steps"):
-        args.rl_obs_latency_steps = 1
+# --sim2real-validation-cam = the REAL-SIMULATED ENV preset. The sim has exactly
+# two configurations: the default "perfect env" (everything clean/ideal) and this
+# one, the closest-to-real env we can test. It flips every realism knob that has a
+# documented modelling default from opt-in to on -- perception (D435 depth + RGB,
+# XT16 LiDAR), proprioception (obs noise + latency), dynamics (domain rand +
+# lighting), and actuator limits (joint-limit clamp) -- each still overridable by
+# its own flag. The whole-stack perception gate (FramePublisher RGB/depth noise)
+# also keys off args.sim2real_validation_cam directly. Actuator-bandwidth/backlash
+# numbers are deliberately NOT set here -- those would be guesses; set --torque-rate
+# / --backlash-rad / --torque-derate explicitly. Resolved before the _DR block
+# reads args.domain_rand. The magnitudes are existing nominals, not new inventions.
+if args.sim2real_validation_cam:
+    if not _flag_passed("--parkour-depth-noise-mult"):
+        args.parkour_depth_noise_mult = 1.0   # nominal RealSense D435 depth noise
+    if not _flag_passed("--obs-noise"):
+        args.obs_noise = True
+    if not _flag_passed("--obs-latency-steps"):
+        args.obs_latency_steps = 1
     if not _flag_passed("--domain-rand"):
         args.domain_rand = True
-    if not _flag_passed("--rl-joint-limit-clamp"):
-        args.rl_joint_limit_clamp = True
+    if not _flag_passed("--joint-limit-clamp"):
+        args.joint_limit_clamp = True
     if not _flag_passed("--lidar-range-noise-m"):
         args.lidar_range_noise_m = 0.02   # Hesai XT16 datasheet range accuracy (~2 cm)
     if not _flag_passed("--dr-lighting-pct"):
         args.dr_lighting_pct = 0.3
-
-# --sim2real-validation-cam preset: the perception twin of the above. Turns the
-# parkour depth-camera ML input from clean to the nominal RealSense D435 noise
-# model, and touches NOTHING on the RL/physics side. The magnitude is not a new
-# invented number -- 1.0 is the existing apply_realsense_depth_noise nominal.
-if args.sim2real_validation_cam:
-    if not _flag_passed("--parkour-depth-noise-mult"):
-        args.parkour_depth_noise_mult = 1.0
 
 
 def _log_bucket(log_dir: str, bucket: str) -> str:
@@ -351,8 +317,7 @@ log_event(
     frame_host=args.frame_host,
     physics_hz=int(args.physics_hz),
     render_every=int(args.render_every),
-    locomotion_mode=args.locomotion_mode,
-    rl_policy_path=args.rl_policy_path if args.locomotion_mode == "rl" else "",
+    locomotion_mode="parkour",
     log_path=getattr(LOGGER, "sim_log_path", ""),
 )
 
@@ -456,44 +421,32 @@ if _DR_RNG is not None:
         push_vel=float(args.dr_push_vel),
     )
 
-# One-line banner so every run's logs state which sim-to-real regime it validated
-# in (clean vs the --sim2real-validation realistic profile) and the resolved knobs.
+# One-line banner so every run's logs state which environment it ran in: the
+# default "perfect env" (clean/ideal) or the --sim2real-validation-cam
+# "real-simulated env" (full D435 + proprio + dynamics + actuator realism), plus
+# the resolved knobs (perception, proprioception, dynamics, actuator).
+_perception_realism = bool(args.sim2real_validation_cam)
 log_event(
     LOGGER,
     logging.INFO,
-    "rl_realism_profile",
-    ("Realism profile: VALIDATION" if args.sim2real_validation else "Realism profile: clean (default)"),
-    sim2real_validation=bool(args.sim2real_validation),
-    rl_obs_noise=bool(args.rl_obs_noise),
-    rl_obs_latency_steps=int(args.rl_obs_latency_steps),
-    rl_torque_rate=float(args.rl_torque_rate),
-    rl_joint_limit_clamp=bool(args.rl_joint_limit_clamp),
-    rl_backlash_rad=float(args.rl_backlash_rad),
-    rl_torque_derate=float(args.rl_torque_derate),
+    "realism_profile",
+    ("Realism profile: REAL-SIM ENV" if args.sim2real_validation_cam
+     else "Realism profile: PERFECT ENV (clean default)"),
+    sim2real_validation_cam=bool(args.sim2real_validation_cam),
+    perception_realism=bool(_perception_realism),
+    parkour_depth_noise_mult=float(args.parkour_depth_noise_mult),
+    obs_noise=bool(args.obs_noise),
+    obs_latency_steps=int(args.obs_latency_steps),
+    torque_rate=float(args.torque_rate),
+    joint_limit_clamp=bool(args.joint_limit_clamp),
+    backlash_rad=float(args.backlash_rad),
+    torque_derate=float(args.torque_derate),
     domain_rand=bool(args.domain_rand),
     lidar_range_noise_m=float(args.lidar_range_noise_m),
     lidar_dropout_prob=float(args.lidar_dropout_prob),
     dr_lighting_pct=float(args.dr_lighting_pct),
 )
-
-# Camera/perception realism banner -- the twin of rl_realism_profile, for the
-# depth-camera ML (parkour). Independent of the RL profile above.
-log_event(
-    LOGGER,
-    logging.INFO,
-    "camera_realism_profile",
-    ("Camera realism profile: VALIDATION" if args.sim2real_validation_cam or args.parkour_depth_noise_mult > 0.0
-     else "Camera realism profile: clean (default)"),
-    sim2real_validation_cam=bool(args.sim2real_validation_cam),
-    parkour_depth_noise_mult=float(args.parkour_depth_noise_mult),
-    locomotion_mode=args.locomotion_mode,
-)
-from rl_locomotion_policy import (
-    POLICY_DEFAULT_BY_JOINT,
-    RLLocomotionPolicy,
-    RLLocomotionPolicyConfig,
-    get_dof_names,
-)
+from go2_locomotion_utils import PARKOUR_DEFAULT_POSE, classify_dof, get_dof_names
 from sim_person_actor import spawn_sim_person
 from sim_lidar_xt16 import Xt16Config, cast_scan, render_preview, profile_from_scan
 
@@ -501,12 +454,11 @@ from sim_lidar_xt16 import Xt16Config, cast_scan, render_preview, profile_from_s
 # Constants
 # ---------------------------------------------------------------------------
 GO2_USD_PATH   = "/World/Go2"
-# Spawn height (m) of the Go2 body root. With the RL default pose
-# (POLICY_DEFAULT_BY_JOINT: thigh 0.8, calf -1.5) the base stands ~0.33 m above
-# the feet. The RL policy runs with soft kp=20 drives (as trained) which cannot
-# absorb a hard drop, so spawn just above the stand height (~1.5 cm) for a gentle
-# touchdown — a tall drop makes the soft legs splay sideways before the policy
-# can stabilise.
+# Spawn height (m) of the Go2 body root. With the parkour default pose
+# (PARKOUR_DEFAULT_POSE: front thigh 0.8 / rear 1.0, calf -1.5) the base stands
+# ~0.33 m above the feet. Spawn just above the stand height (~1.5 cm) for a gentle
+# touchdown — a tall drop makes the legs splay sideways before the policy can
+# stabilise.
 GO2_SPAWN_Z    = 0.345
 CAMERA_PRIM    = "/World/Sensors/Go2FrontCamera"
 VIEW_CAMERA_PRIM = "/World/View/Go2FollowCamera"
@@ -787,11 +739,12 @@ def load_go2(world: World):
     if changed_count > 0:
         print(f"[load_go2] Changed purpose to 'default' on {changed_count} prims (local URDF asset).")
 
-    # Go2 spawn joint positions (radians) = the RL policy's neutral/default pose
-    # (rl_locomotion_policy.POLICY_DEFAULT_BY_JOINT: hip 0, thigh 0.8, calf -1.5).
-    # Spawning at the policy's default stance means the first observation starts
-    # from the in-distribution pose the policy was trained around.
-    STANDING_POSE_RAD = POLICY_DEFAULT_BY_JOINT
+    # Go2 spawn joint positions (radians) = the parkour policy's neutral/default
+    # pose (go2_locomotion_utils.PARKOUR_DEFAULT_POSE: hips +/-0.1, front thighs
+    # 0.8 / rear 1.0, calves -1.5), keyed by (leg, joint). Spawning at the policy's
+    # default stance means the first observation starts from the in-distribution
+    # pose the policy was trained around.
+    STANDING_POSE_RAD = PARKOUR_DEFAULT_POSE
 
     art_path = ""
     if go2_prim and go2_prim.IsValid():
@@ -824,32 +777,27 @@ def load_go2(world: World):
                 base_link_path=base_link_path,
             )
 
-        # RL: author the policy's trained RL control gains (rl_sar go2
-        # config.yaml rl_kp=20, rl_kd=0.5). These USD values seed the drive before
-        # world.reset(); the authoritative radian-unit gains are (re)applied via
-        # _apply_rl_drive_gains() after reset so the degrees-vs-radians USD
-        # ambiguity cannot soften/stiffen them.
-        drive_stiffness = float(args.rl_kp) if args.locomotion_mode == "rl" else 800.0
-        drive_damping = float(args.rl_kd) if args.locomotion_mode == "rl" else 40.0
+        # Stiff position-hold drive gains that seed the USD drive before
+        # world.reset() and hold the robot at the stand pose through setup. The
+        # parkour policy zeroes these at settle and drives the joints with its own
+        # explicit-PD torque (kp=40/kd=1) instead.
+        drive_stiffness = 800.0
+        drive_damping = 40.0
 
         # Apply joint drives and set initial standing joint positions in USD.
         # USD Physics angular drive targets are in degrees.
         for prim in Usd.PrimRange(go2_prim):
             if prim.IsA(UsdPhysics.RevoluteJoint):
                 joint_name = prim.GetName().lower()
-                target_deg = 0.0
-                for part, rad in STANDING_POSE_RAD.items():
-                    if part in joint_name:
-                        target_deg = _math.degrees(rad)
-                        break
+                key = classify_dof(joint_name)
+                target_deg = _math.degrees(STANDING_POSE_RAD.get(key, 0.0)) if key else 0.0
 
                 # Position drive with stiffness/damping
                 drive_api = UsdPhysics.DriveAPI.Apply(prim, "angular")
                 drive_api.CreateStiffnessAttr(drive_stiffness)
                 drive_api.CreateDampingAttr(drive_damping)
                 drive_api.CreateTargetPositionAttr(target_deg)
-                max_force = float(args.rl_torque_limit) if args.locomotion_mode == "rl" else 1000.0
-                drive_api.CreateMaxForceAttr(max_force)
+                drive_api.CreateMaxForceAttr(1000.0)
 
                 # Set initial joint state so PhysX starts from the standing pose
                 try:
@@ -894,7 +842,7 @@ def load_go2(world: World):
         logging.INFO,
         "go2_joint_drive_configured",
         "Go2 USD joint drives configured for selected locomotion mode",
-        locomotion_mode=args.locomotion_mode,
+        locomotion_mode="parkour",
         stiffness=drive_stiffness,
         damping=drive_damping,
     )
@@ -1280,7 +1228,7 @@ def capture_verification_image(
     go2=None,
     person=None,
     step_world=True,
-    rl_policy: Optional[RLLocomotionPolicy] = None,
+    rl_policy=None,
 ) -> None:
     """Render and save a PNG from the wide scene verification camera."""
     out_path = Path(output_path).expanduser()
@@ -2437,15 +2385,21 @@ class FramePublisher:
             small_rgb = cv2.resize(rgb, (rgb_w, rgb_h), interpolation=cv2.INTER_LINEAR)
             small_depth = cv2.resize(depth, (depth_w, depth_h), interpolation=cv2.INTER_NEAREST)
 
-            # 1. Apply radial/tangential lens distortion (D435 simulation)
-            small_rgb = apply_lens_distortion(small_rgb, is_depth=False)
-            small_depth = apply_lens_distortion(small_depth, is_depth=True)
-
-            # 2. Apply realistic RealSense D435 sensor depth noise to the downsampled depth map
-            small_depth = apply_realsense_depth_noise(small_depth)
-
-            # 3. Apply camera sensor noise and motion blur to RGB
-            small_rgb_bgr = apply_rgb_perception_noise(small_rgb, vx, vy, wz)
+            # Perception realism is gated on the run's environment: the default
+            # "perfect env" publishes clean frames; the --sim2real-validation-cam
+            # "real-simulated env" applies the full RealSense D435 model (lens
+            # distortion + depth-sensor noise + RGB motion-blur/exposure/pixel
+            # noise) to the YOLO/fusion stream. Either way the frame is converted
+            # to BGR for the JPEG encode below.
+            if _perception_realism:
+                small_rgb = apply_lens_distortion(small_rgb, is_depth=False)
+                small_depth = apply_lens_distortion(small_depth, is_depth=True)
+                small_depth = apply_realsense_depth_noise(small_depth)
+                small_rgb_bgr = apply_rgb_perception_noise(small_rgb, vx, vy, wz)
+            else:
+                small_rgb_bgr = (cv2.cvtColor(small_rgb, cv2.COLOR_RGBA2BGR)
+                                 if small_rgb.ndim == 3 and small_rgb.shape[2] == 4
+                                 else small_rgb)
 
             ok, buf = cv2.imencode('.jpg', small_rgb_bgr, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
             if not ok:
@@ -2780,7 +2734,7 @@ def ensure_person_animation_loaded(world: World, person, *, render: bool, attemp
 
 
 # ---------------------------------------------------------------------------
-# Go2 RL joint PD gains (called after world.reset())
+# Go2 joint PD drive gains (called after world.reset())
 # ---------------------------------------------------------------------------
 def _set_go2_drive_gains(go2, kp: float, kd: float, torque_limit: float, *, reason: str) -> None:
     """Set the Go2 articulation PhysX drive gains directly, in radian units.
@@ -2789,14 +2743,14 @@ def _set_go2_drive_gains(go2, kp: float, kd: float, torque_limit: float, *, reas
     angular drive targets are in DEGREES, so the effective stiffness can be ~57x
     off. After world.reset() the PhysX articulation is live and its gains can be
     set directly in radian units (what set_joint_position_targets uses), so this is
-    the source of truth. Used both to install the rl_sar position-hold gains
-    (rl_kp=20, rl_kd=0.5) before the policy starts and to zero them for explicit
-    torque control (the policy then applies its own PD as joint efforts).
+    the source of truth. Used both to install the stiff position-hold gains before
+    the policy starts and to zero them for explicit torque control (the policy then
+    applies its own PD as joint efforts).
     """
     dof_names = get_dof_names(go2)
     n = len(dof_names) or int(getattr(go2, "num_dof", 0) or 0)
     if n <= 0:
-        log_event(LOGGER, logging.WARNING, "rl_gains_skipped",
+        log_event(LOGGER, logging.WARNING, "drive_gains_skipped",
                   "Could not determine Go2 DOF count; drive gains not applied")
         return
     kps = np.full(n, float(kp), dtype=np.float32)
@@ -2814,7 +2768,7 @@ def _set_go2_drive_gains(go2, kp: float, kd: float, torque_limit: float, *, reas
             except Exception:
                 pass
     except Exception as exc:
-        log_event(LOGGER, logging.DEBUG, "rl_gains_controller_failed",
+        log_event(LOGGER, logging.DEBUG, "drive_gains_controller_failed",
                   "ArticulationController.set_gains unavailable", error=str(exc))
 
     if applied_via is None:
@@ -2844,48 +2798,35 @@ def _set_go2_drive_gains(go2, kp: float, kd: float, torque_limit: float, *, reas
         pass
 
     log_event(
-        LOGGER, logging.INFO, "rl_drive_gains_applied",
+        LOGGER, logging.INFO, "drive_gains_applied",
         "Set Go2 articulation drive gains (radian units)",
         reason=reason, applied_via=applied_via or "none", dof_count=int(n),
         kp=float(kp), kd=float(kd), torque_limit_nm=float(torque_limit),
         readback_kp=readback_kp, readback_kd=readback_kd,
     )
     if applied_via is None:
-        log_event(LOGGER, logging.WARNING, "rl_drive_gains_fallback_usd",
+        log_event(LOGGER, logging.WARNING, "drive_gains_fallback_usd",
                   "No runtime gain API succeeded; relying on USD DriveAPI authoring (degrees)")
 
 
-def _apply_rl_drive_gains(go2) -> None:
-    """Install the rl_sar position-hold gains (rl_kp/rl_kd) after world.reset().
-
-    These hold the robot at the standing pose through the remaining setup steps
-    (person animation, verification). In torque control mode the gains are later
-    zeroed at the start of the settle loop (see _settle_go2_spawn) so the policy's
-    explicit PD torque is the sole actuation.
-    """
-    if args.locomotion_mode != "rl":
-        return
-    _set_go2_drive_gains(go2, float(args.rl_kp), float(args.rl_kd),
-                         float(args.rl_torque_limit), reason="position_hold_pre_policy")
-
-
 def _go2_standing_joint_targets(go2):
-    """Return (standing_rad, dof_names): the policy default pose in the
-    articulation's own DOF order, matched BY JOINT NAME.
+    """Return (standing_rad, dof_names, unmatched): the parkour policy default pose
+    in the articulation's own DOF order, matched BY (leg, joint) NAME.
 
-    The Nucleus Go2 reports its DOFs joint-type-major (all hips, then thighs, then
-    calves), so a positional [hip,thigh,calf]x4 array would scramble the pose.
+    Leg-aware (front vs rear thighs differ; see PARKOUR_DEFAULT_POSE), so the
+    standing/freeze hold pose matches the pose the policy commands around. The
+    Nucleus Go2 reports its DOFs joint-type-major (all hips, then thighs, then
+    calves), so a positional array would scramble the pose -- hence the name match.
     """
     dof_names = get_dof_names(go2)
     standing_rad = np.zeros(len(dof_names), dtype=float)
     unmatched = []
     for idx, raw in enumerate(dof_names):
-        low = str(raw).lower()
-        joint = next((j for j in ("hip", "thigh", "calf") if j in low), None)
-        if joint is None:
+        key = classify_dof(str(raw))
+        if key is None:
             unmatched.append(str(raw))
             continue
-        standing_rad[idx] = float(POLICY_DEFAULT_BY_JOINT.get(joint, 0.0))
+        standing_rad[idx] = float(PARKOUR_DEFAULT_POSE.get(key, 0.0))
     return standing_rad, dof_names, unmatched
 
 
@@ -2896,7 +2837,7 @@ def _freeze_go2_at_spawn(go2) -> None:
     joints to the default pose, pins the base at (go2_x, 0, spawn_z) with identity
     orientation, and zeroes all velocities -- a clean kinematic freeze. This keeps
     the robot's forward camera pointed at the person so YOLO can detect it and send
-    the first command (a free RL stand would slowly drift/yaw out of frame). The
+    the first command (a free policy stand would slowly drift/yaw out of frame). The
     policy takes over the instant scene motion is released.
     """
     try:
@@ -3023,48 +2964,20 @@ def _init_go2_standing_pose(go2) -> None:
         pass
 
 
-def _create_rl_locomotion_policy(go2) -> Optional[RLLocomotionPolicy]:
-    dof_names = get_dof_names(go2)
-    policy_path = Path(args.rl_policy_path)
-    if not policy_path.is_absolute():
-        policy_path = (REPO_ROOT / policy_path).resolve()
-    config = RLLocomotionPolicyConfig(
-        policy_path=str(policy_path),
-        policy_format=args.rl_policy_format,
-        control_hz=float(args.rl_control_hz),
-        control_mode=str(args.rl_control_mode),
-        kp=float(args.rl_kp) * float(_DR.get("kp_mult", 1.0)),
-        kd=float(args.rl_kd) * float(_DR.get("kd_mult", 1.0)),
-        torque_limit=float(args.rl_torque_limit),
-        torque_rate_limit_nm=float(args.rl_torque_rate),
-        obs_noise_enabled=bool(args.rl_obs_noise),
-        obs_latency_steps=int(args.rl_obs_latency_steps),
-        joint_limit_clamp=bool(args.rl_joint_limit_clamp),
-        backlash_rad=float(args.rl_backlash_rad),
-        torque_derate=float(args.rl_torque_derate),
-    )
-    policy = RLLocomotionPolicy(config, dof_names, logger=LOGGER)
-    log_event(
-        LOGGER,
-        logging.INFO,
-        "rl_locomotion_policy_loaded",
-        "Loaded local Go2 RL locomotion policy",
-        policy_path=str(policy_path),
-        policy_format=args.rl_policy_format,
-        control_hz=float(args.rl_control_hz),
-        dof_count=len(dof_names),
-        observation_size=int(config.num_observations),
-    )
-    _export_rl_contract_manifest(policy)
-    return policy
+# Parkour policy control rate (Hz). Fixed by the trained deployment contract:
+# physics 200 Hz / decimation 4 = 50 Hz control. Not a CLI knob -- the policy was
+# trained at this rate and other rates destabilise it.
+CONTROL_HZ = 50.0
 
 
-def _create_parkour_locomotion_policy(go2):
-    """Construct the Extreme-Parkour perceptive policy (--locomotion-mode parkour).
+def _create_locomotion_policy(go2):
+    """Construct the Extreme-Parkour perceptive depth/vision locomotion policy.
 
-    Lazy-imports the parkour runner so 'rl' mode never pulls in torch/the depth
-    backbone. Same step()/leg_command_summary()/policy_path surface as the blind
-    RLLocomotionPolicy, so the main loop and telemetry need no special-casing.
+    The sole low-level Go2 controller. Lazy-imports the parkour runner so the
+    module top level stays torch-free. Sim-to-real realism is off by default (the
+    "perfect env"); the --sim2real-validation-cam preset / override flags turn the
+    suite on and it is threaded into the policy here. Domain-randomization PD-gain
+    perturbation is applied to the nominal kp=40/kd=1.
     """
     from parkour_locomotion_policy import ParkourLocomotionPolicy, ParkourPolicyConfig
 
@@ -3076,66 +2989,53 @@ def _create_parkour_locomotion_policy(go2):
     if not vision_path.is_absolute():
         vision_path = (REPO_ROOT / vision_path).resolve()
     # Depth is encoded every Nth control step (50 Hz control / 10 Hz depth = 5).
-    depth_interval = max(1, int(round(float(args.rl_control_hz) / max(1e-3, float(args.parkour_depth_hz)))))
+    depth_interval = max(1, int(round(CONTROL_HZ / max(1e-3, float(args.parkour_depth_hz)))))
+    # Heading source. The self-test has NO person bearing to follow, so "command"
+    # mode would inject a constant delta_yaw=0 every step -- that overwrites the
+    # policy's depth self-steer (proprio[6:8]) with "perfectly aligned, go straight"
+    # and severs the closed-loop heading feedback the gait relies on, so the robot
+    # drifts/corkscrews open-loop. Force vision self-steer for the isolated self-test
+    # so the gait runs exactly as trained (and as it walked at commit 02e441e),
+    # regardless of the run default. "command" only makes sense with a live bearing.
+    effective_heading_mode = (
+        "vision" if bool(getattr(args, "self_test_walk", False))
+        else str(args.parkour_heading_mode)
+    )
     config = ParkourPolicyConfig(
         base_model_path=str(base_path),
         vision_model_path=str(vision_path),
-        control_hz=float(args.rl_control_hz),
+        control_hz=CONTROL_HZ,
         depth_update_interval=depth_interval,
-        heading_mode=str(args.parkour_heading_mode),
+        heading_mode=effective_heading_mode,
+        # Sim-to-real realism (off unless the real-sim preset / overrides set them).
+        obs_noise_enabled=bool(args.obs_noise),
+        obs_latency_steps=int(args.obs_latency_steps),
+        joint_limit_clamp=bool(args.joint_limit_clamp),
+        backlash_rad=float(args.backlash_rad),
+        torque_derate=float(args.torque_derate),
+        torque_rate_limit_nm=float(args.torque_rate),
     )
+    # Domain-randomization PD-gain perturbation around the nominal kp=40/kd=1.
+    config.kp *= float(_DR.get("kp_mult", 1.0))
+    config.kd *= float(_DR.get("kd_mult", 1.0))
     policy = ParkourLocomotionPolicy(config, dof_names, logger=LOGGER)
     log_event(
         LOGGER, logging.INFO, "parkour_locomotion_policy_loaded",
         "Loaded Extreme-Parkour Go2 perceptive locomotion policy",
         base_model=str(base_path), vision_model=str(vision_path),
-        control_hz=float(args.rl_control_hz), depth_update_interval=depth_interval,
-        heading_mode=str(args.parkour_heading_mode), dof_count=len(dof_names),
+        control_hz=CONTROL_HZ, depth_update_interval=depth_interval,
+        heading_mode=effective_heading_mode, dof_count=len(dof_names),
+        self_test_forced_vision=bool(getattr(args, "self_test_walk", False)),
+        kp=round(float(config.kp), 3), kd=round(float(config.kd), 3),
+        obs_noise=bool(config.obs_noise_enabled), obs_latency_steps=int(config.obs_latency_steps),
+        joint_limit_clamp=bool(config.joint_limit_clamp),
     )
     return policy
 
 
-def _export_rl_contract_manifest(policy: RLLocomotionPolicy) -> None:
-    """Write the RL deployment contract to reports/rl_deployment_contract.json.
-
-    The policy owns the contract (see RLLocomotionPolicy.deployment_contract); here
-    we augment it with env-level facts the policy cannot know (physics rate ->
-    decimation, and the domain-randomization state actually applied this run) and
-    persist it so a future real LowCmd controller can be checked against the exact
-    constants this sim run used.
-    """
-    try:
-        contract = policy.deployment_contract()
-        physics_hz = float(getattr(args, "physics_hz", 0.0) or 0.0)
-        control_hz = float(contract.get("timing", {}).get("control_hz", 0.0) or 0.0)
-        contract["timing"]["physics_hz"] = physics_hz
-        contract["timing"]["decimation"] = (
-            int(round(physics_hz / control_hz)) if control_hz > 0 else None
-        )
-        contract["domain_randomization"] = {
-            "enabled": bool(getattr(args, "domain_rand", False)),
-            "seed": int(getattr(args, "dr_seed", 0)),
-            "applied": {k: float(v) for k, v in _DR.items()},  # empty when --domain-rand off
-        }
-        out_path = os.path.join(_log_bucket(args.log_dir, "reports"), "rl_deployment_contract.json")
-        with open(out_path, "w") as fh:
-            json.dump(contract, fh, indent=2, sort_keys=True)
-        log_event(
-            LOGGER, logging.INFO, "rl_contract_manifest_saved",
-            f"Saved RL deployment contract to {out_path}",
-            policy_sha256=contract.get("policy", {}).get("sha256"),
-            decimation=contract["timing"]["decimation"],
-        )
-    except Exception as e:
-        log_event(
-            LOGGER, logging.WARNING, "rl_contract_manifest_failed",
-            f"Failed to write RL deployment contract: {e}",
-        )
-
-
 def _step_go2_locomotion(
     go2,
-    rl_policy: Optional[RLLocomotionPolicy],
+    rl_policy,
     vx: float,
     vy: float,
     wz: float,
@@ -3148,33 +3048,30 @@ def _step_go2_locomotion(
     if rl_policy is None:
         return
     if getattr(args, "self_test_no_policy", False):
-        # Diagnostic A/B: skip inference so the PD drives hold the authored
-        # default pose. If the robot stands here but flips with the policy on,
-        # the obs/policy path is at fault, not physics/gains/asset.
+        # Diagnostic A/B: skip inference so the position-hold PD drives hold the
+        # authored default pose (the settle loop keeps the drives live for this
+        # mode). If the robot stands here but flips with the policy on, the
+        # obs/policy path is at fault, not physics/gains/asset.
         record_go2_telemetry(
             go2, _go2_locomotion_state, base_link_name=BASE_LINK_NAME,
             logger=LOGGER, vx=vx, vy=vy, wz=wz,
         )
         return
-    # Parkour accepts an external heading command (delta_yaw); it is only consumed when
-    # the policy's heading_mode == "command" (else the depth self-steer yaw wins). The
-    # blind RLLocomotionPolicy.step has no delta_yaw kwarg, so only pass it for parkour.
-    if args.locomotion_mode == "parkour":
-        telemetry = rl_policy.step(go2, (vx, vy, wz), dt, delta_yaw=float(yaw_err))
-    else:
-        telemetry = rl_policy.step(go2, (vx, vy, wz), dt)
+    # The parkour policy steers itself from depth (heading_mode "vision"); when
+    # heading_mode is "command" it consumes the external bearing instead, passed
+    # here as delta_yaw (the person-follow heading).
+    telemetry = rl_policy.step(go2, (vx, vy, wz), dt, delta_yaw=float(yaw_err))
     # The policy just moved the joints; capture its real per-leg command so the
-    # stair-demo telemetry and HUD reflect what the RL policy actually did this
-    # step (replaces the removed procedural-gait swing bookkeeping).
-    _go2_locomotion_state.rl_leg_summary = rl_policy.leg_command_summary()
-    _go2_locomotion_state.rl_policy_name = rl_policy.policy_path.name
+    # stair-demo telemetry and HUD reflect what the policy actually did this step.
+    _go2_locomotion_state.leg_summary = rl_policy.leg_command_summary()
+    _go2_locomotion_state.policy_name = rl_policy.policy_path.name
     if not getattr(rl_policy, "_active_logged", False):
         setattr(rl_policy, "_active_logged", True)
         log_event(
             LOGGER,
             logging.INFO,
-            "rl_locomotion_policy_active",
-            "Go2 RL policy is writing joint targets",
+            "locomotion_policy_active",
+            "Go2 locomotion policy is writing joint targets",
             **telemetry,
         )
     # Rebuild the stair-demo telemetry from the policy-driven body pose so the
@@ -3191,20 +3088,18 @@ def _step_go2_locomotion(
     )
 
 
-def _settle_go2_spawn(world: World, go2, rl_policy: Optional[RLLocomotionPolicy], steps: int, dt: float) -> None:
+def _settle_go2_spawn(world: World, go2, rl_policy, steps: int, dt: float) -> None:
     settle_steps = max(0, int(steps))
     if settle_steps <= 0:
         return
-    # Hand the joints over to the policy. In torque mode the policy applies its own
-    # PD as explicit joint efforts, so the PhysX position drive is zeroed here -- at
-    # the start of the loop that applies torque every step -- to avoid double
-    # control. Until this point the position-hold gains kept the robot standing.
-    _parkour_mode = args.locomotion_mode == "parkour"
-    if _parkour_mode or (args.locomotion_mode == "rl" and str(args.rl_control_mode).lower() == "torque"):
-        # Parkour always uses explicit-PD torque (kp40/kd1 inside the policy), like
-        # rl torque mode -- zero the PhysX position drive so it does not double-control.
-        _zero_torque_limit = float(args.rl_torque_limit) if not _parkour_mode else 40.0
-        _set_go2_drive_gains(go2, 0.0, 0.0, _zero_torque_limit,
+    # Hand the joints over to the policy. The parkour policy applies its own PD as
+    # explicit joint efforts (kp40/kd1 inside the policy), so the PhysX position
+    # drive is zeroed here -- at the start of the loop that applies torque every
+    # step -- to avoid double control. Until this point the position-hold gains kept
+    # the robot standing. Exception: --self-test-no-policy keeps the position-hold
+    # drives live (it skips the policy, so the drives are what hold the pose).
+    if not getattr(args, "self_test_no_policy", False):
+        _set_go2_drive_gains(go2, 0.0, 0.0, 40.0,
                              reason="zeroed_for_explicit_torque_control")
     log_event(
         LOGGER,
@@ -3212,7 +3107,7 @@ def _settle_go2_spawn(world: World, go2, rl_policy: Optional[RLLocomotionPolicy]
         "go2_spawn_settle_start",
         "Settling Go2 at zero command before world_ready",
         steps=settle_steps,
-        locomotion_mode=args.locomotion_mode,
+        locomotion_mode="parkour",
     )
     for i in range(settle_steps):
         if rl_policy is not None:
@@ -3249,7 +3144,7 @@ def _settle_go2_spawn(world: World, go2, rl_policy: Optional[RLLocomotionPolicy]
         "go2_spawn_settle_complete",
         "Go2 spawn settle finished",
         steps=settle_steps,
-        locomotion_mode=args.locomotion_mode,
+        locomotion_mode="parkour",
     )
 
 
@@ -3265,7 +3160,7 @@ def _run_evaluation_and_save_images(
     evaluation_exit_reason: str = "not_recorded",
     motion_elapsed_sim_sec: float = 0.0,
     robot_stair_phase_sim_sec: float = 0.0,
-    rl_policy: Optional[RLLocomotionPolicy] = None,
+    rl_policy=None,
 ) -> None:
     """Capture final verification image, evaluate straight-line walking / balance, and log summary."""
     if log_dir:
@@ -3387,7 +3282,7 @@ def _run_evaluation_and_save_images(
         print(detail, flush=True)
     stair_demo = get_stair_demo_telemetry(_go2_locomotion_state)
     stair_phase = stair_demo.get("phase", "not_reported")
-    stair_rl = stair_demo.get("blind_rl", {})
+    stair_loco = stair_demo.get("locomotion", {})
     print(f"Stair demo data: synthetic ({stair_phase})", flush=True)
     print(f"Exit reason: {evaluation_exit_reason}", flush=True)
     print("="*40 + "\n", flush=True)
@@ -3407,7 +3302,7 @@ def _run_evaluation_and_save_images(
                 f.write(f"Stair demo phase: {stair_phase}\n")
                 f.write("Stair phase/mode source: synthetic Isaac ground-truth pose+geometry (HUD label only)\n")
                 f.write("LiDAR source: real PhysX-raycast XT16 (see lidar_preview.mp4 / lidar_scan logs)\n")
-                f.write(f"Synthetic blind-RL mode: {stair_rl.get('mode', 'not_reported')}\n")
+                f.write(f"Synthetic locomotion mode: {stair_loco.get('mode', 'not_reported')}\n")
             log_event(LOGGER, logging.INFO, "evaluation_summary_saved", f"Saved evaluation summary to {summary_path}")
         except Exception as e:
             log_event(LOGGER, logging.WARNING, "evaluation_summary_failed", f"Failed to write evaluation summary: {e}")
@@ -3494,7 +3389,7 @@ def main() -> None:
 
     log_event(LOGGER, logging.INFO, "camera_add_start", "Adding front camera")
     camera = add_camera(stage)
-    parkour_depth_camera = add_parkour_depth_camera(stage) if args.locomotion_mode == "parkour" else None
+    parkour_depth_camera = add_parkour_depth_camera(stage)
     verification_camera = add_verification_camera(stage) if (args.verification_image or args.log_dir) else None
     topdown_camera = add_topdown_camera(stage)
     scene_left_camera = add_scene_left_camera(stage)
@@ -3541,27 +3436,23 @@ def main() -> None:
     # After world.reset() the articulation is fully initialised; set the Go2
     # joints to the standing pose so the robot doesn't collapse.
     _init_go2_standing_pose(go2)
-    # Install the rl_sar position-hold gains in radian units (overrides the USD
+    # Install the stiff position-hold gains in radian units (overrides the USD
     # degree-unit DriveAPI authoring). These hold the robot standing through the
-    # remaining setup; torque mode zeroes them at the start of the settle loop.
-    _apply_rl_drive_gains(go2)
-    rl_policy = (
-        _create_parkour_locomotion_policy(go2)
-        if args.locomotion_mode == "parkour"
-        else _create_rl_locomotion_policy(go2)
-    )
+    # remaining setup; the settle loop zeroes them so the policy's explicit-PD
+    # torque is the sole actuation.
+    _set_go2_drive_gains(go2, 800.0, 40.0, 1000.0, reason="position_hold_pre_policy")
+    rl_policy = _create_locomotion_policy(go2)
 
     # Load the person animation BEFORE the settle. ensure_person_animation_loaded
     # may step the world, and the settle hands the joints to the policy (zeroing
-    # the position-hold drive in torque mode) -- so the robot must still be held by
-    # the drive while the animation graph loads.
+    # the position-hold drive) -- so the robot must still be held by the drive
+    # while the animation graph loads.
     animation_ready = ensure_person_animation_loaded(world, person, render=not args.headless, attempts=4)
 
     _settle_go2_spawn(world, go2, rl_policy, args.spawn_settle_steps, 1.0 / max(1, int(args.physics_hz)))
-    if args.locomotion_mode == "parkour":
-        # Clear the depth GRU hidden state + proprio history accumulated during the
-        # zero-command settle so the recurrent policy starts each run clean.
-        rl_policy.reset()
+    # Clear the depth GRU hidden state + proprio history accumulated during the
+    # zero-command settle so the recurrent policy starts each run clean.
+    rl_policy.reset()
 
     if verification_camera is not None and args.verification_image and args.exit_after_verification:
         capture_verification_image(world, verification_camera, args.verification_image, go2=go2, person=person, rl_policy=rl_policy)
@@ -3604,9 +3495,8 @@ def main() -> None:
         person_animation_ready=bool(animation_ready),
         view_follow_camera=bool(view_camera is not None),
         hold_motion_until_command=bool(args.hold_motion_until_command),
-        locomotion_mode=args.locomotion_mode,
-        rl_policy_active=bool(rl_policy is not None),
-        rl_stairs_strategy=args.rl_stairs_strategy,
+        locomotion_mode="parkour",
+        locomotion_policy_active=bool(rl_policy is not None),
     )
 
     # Start background thread for receiving velocity commands
@@ -3630,16 +3520,14 @@ def main() -> None:
     # perception/control loop (which stays on --render-every). Clamp to >=1 and never
     # coarser than the perception cadence (a higher record-every would be a downgrade).
     record_every = max(1, min(int(args.record_every), int(args.render_every)))
-    # Parkour's perceptive policy runs a Torch depth backbone on the GPU and adds a depth
+    # The perceptive policy runs a Torch depth backbone on the GPU and adds a depth
     # render product. With the default fine record cadence, the two 1080p recording render
     # products (topdown + scene_view) get starved -- their get_rgb() returns no frame every
-    # record tick, so topdown.mp4 / scene_view.mp4 silently never record (the rl path, with
-    # no depth backbone, has the GPU headroom to service them). Fold recording onto the
-    # perception render cadence in parkour mode so NO extra 1080p renders are issued beyond
-    # the ones the perception loop already performs -- the front camera proves those still
-    # complete under parkour load, so the recording cameras ride the same renders.
-    if args.locomotion_mode == "parkour":
-        record_every = int(args.render_every)
+    # record tick, so topdown.mp4 / scene_view.mp4 silently never record. Fold recording onto
+    # the perception render cadence so NO extra 1080p renders are issued beyond the ones the
+    # perception loop already performs -- the front camera proves those still complete under
+    # the policy's GPU load, so the recording cameras ride the same renders.
+    record_every = int(args.render_every)
     record_fps = args.physics_hz / max(1, record_every)
 
     # Top-down video writer — starts when scene_motion_released becomes True
@@ -3783,8 +3671,8 @@ def main() -> None:
                     stairs_detected = _cmd_vel.get("stairs_detected", False)
                     command_fresh = True
             # Self-test: bypass the Docker/vision controller entirely and drive a
-            # constant forward command straight into the RL policy. Lets us verify
-            # flat-ground walking and balance in isolation (headless, no UDP).
+            # constant forward command straight into the locomotion policy. Lets us
+            # verify flat-ground walking and balance in isolation (headless, no UDP).
             if args.self_test_walk:
                 vx, vy, wz = float(args.self_test_vx), 0.0, 0.0
                 yaw_err = 0.0
@@ -3843,7 +3731,7 @@ def main() -> None:
             if not scene_motion_allowed:
                 # Demo has not started yet (waiting for the first controller command).
                 # FREEZE the robot at its spawn pose facing the person (+X) instead of
-                # running the RL policy. A free RL stand has no absolute position/yaw
+                # running the policy. A free policy stand has no absolute position/yaw
                 # feedback, so at zero command it slowly drifts and yaws -- which turns
                 # the robot's forward camera off the person, so YOLO never detects the
                 # person, never sends a command, and the motion gate never releases
@@ -3903,7 +3791,7 @@ def main() -> None:
                 cmd_active=bool(controller_ready and nonzero_command_fresh),
                 scene_motion_allowed=bool(scene_motion_allowed),
                 gait_time=round(float(_go2_locomotion_state.gait_time), 4),
-                swing_legs=list((_go2_locomotion_state.rl_leg_summary or {}).get("swing_legs", [])),
+                swing_legs=list((_go2_locomotion_state.leg_summary or {}).get("swing_legs", [])),
             )
 
             if view_camera is not None:
@@ -4047,6 +3935,10 @@ def main() -> None:
                             injected_yaw=policy_diag.get("injected_yaw"),
                             vision_yaw=policy_diag.get("vision_yaw"),
                             heading_mode=policy_diag.get("heading_mode"),
+                            # Policy's internal base-velocity estimate; est_lin_vel[0]
+                            # (forward) vs body_vx reveals whether the actor is being
+                            # fed an under-reported speed (=> over-drives the gait).
+                            est_lin_vel=policy_diag.get("est_lin_vel"),
                             inferences=policy_diag.get("inference_count"),
                         )
                     if not robot_fallen_now:
@@ -4195,7 +4087,7 @@ def main() -> None:
                         gt_patient = _last_gt_patient_pose
                         gt_distractor = None
                         stair_demo = get_stair_demo_telemetry(_go2_locomotion_state)
-                        swing_legs = list((_go2_locomotion_state.rl_leg_summary or {}).get("swing_legs", []))
+                        swing_legs = list((_go2_locomotion_state.leg_summary or {}).get("swing_legs", []))
 
                         # Simulated XT16 LiDAR: real raycast against scene geometry.
                         # Throttled to ~--lidar-hz; the compact polar profile rides the
@@ -4339,7 +4231,7 @@ def main() -> None:
                                           "Top-down recording camera returned no frame on 30 record ticks; "
                                           "its RTX render product is being starved and topdown.mp4 will be empty.",
                                           empty_record_ticks=int(_topdown_empty_record_ticks),
-                                          locomotion_mode=args.locomotion_mode)
+                                          locomotion_mode="parkour")
                     except Exception as _td_exc:
                         if not _topdown_starved_logged:
                             _topdown_starved_logged = True
@@ -4401,7 +4293,7 @@ def main() -> None:
                                           "Scene_view recording camera returned no frame on 30 record ticks; "
                                           "its RTX render product is being starved and scene_view.mp4 will be empty.",
                                           empty_record_ticks=int(_raw_empty_record_ticks),
-                                          locomotion_mode=args.locomotion_mode)
+                                          locomotion_mode="parkour")
                     except Exception as _raw_exc:
                         if not _raw_starved_logged:
                             _raw_starved_logged = True
@@ -4437,7 +4329,7 @@ def main() -> None:
             log_event(LOGGER, logging.WARNING, "topdown_recording_missing",
                       "topdown.mp4 was never recorded: the top-down render product returned no frame on every record tick",
                       empty_record_ticks=int(_topdown_empty_record_ticks),
-                      locomotion_mode=args.locomotion_mode)
+                      locomotion_mode="parkour")
         if lidar_video_writer is not None:
             try:
                 lidar_video_writer.release()
@@ -4456,7 +4348,7 @@ def main() -> None:
             log_event(LOGGER, logging.WARNING, "scene_view_recording_missing",
                       "scene_view.mp4 was never recorded: the scene_view render product returned no frame on every record tick",
                       empty_record_ticks=int(_raw_empty_record_ticks),
-                      locomotion_mode=args.locomotion_mode)
+                      locomotion_mode="parkour")
         simulation_app.close()
         log_event(LOGGER, logging.INFO, "simulation_shutdown", "Simulation shutdown completed")
 

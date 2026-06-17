@@ -21,31 +21,27 @@ param(
     [int]$IsaacReadyTimeoutSec = 420,
     [int]$KeepRunLogs = 1,
     [int]$MaxRunTimeSec = 900,
-    [string]$LocomotionMode = "rl",
-    [string]$RlPolicyPath = "",
-    [string]$RlPolicyFormat = "auto",
-    [double]$RlControlHz = 50.0,
-    [double]$RlActionScale = 0.25,
-    [string]$RlStairsStrategy = "policy",
-    [string]$ParkourHeadingMode = "vision",
-    [switch]$Sim2RealValidation,
+    [string]$ParkourHeadingMode = "command",
     [switch]$Sim2RealValidationCam,
+    [switch]$SelfTestWalk,
+    [double]$SelfTestVx = 0.5,
+    [double]$SelfTestSec = 15.0,
+    [switch]$SelfTestNoPolicy,
     [double]$SimLatencyMs = 0.0,
     [double]$SimLatencyJitterMs = 0.0
 )
 
 $ErrorActionPreference = "Stop"
-if ($LocomotionMode -notin @("rl", "parkour")) {
-    throw "LocomotionMode must be 'rl' (blind rl_sar flat trot) or 'parkour' (Extreme-Parkour perceptive depth-camera policy)."
-}
 if ($ParkourHeadingMode -notin @("vision", "command")) {
     throw "ParkourHeadingMode must be 'vision' (policy self-steers from depth) or 'command' (steer toward the person-follow bearing)."
 }
-if ($RlPolicyFormat -notin @("auto", "torchscript", "torch", "pt", "jit", "onnx")) {
-    throw "RlPolicyFormat must be one of: auto, torchscript, torch, pt, jit, onnx."
-}
-if ($RlStairsStrategy -notin @("policy")) {
-    throw "RlStairsStrategy must be 'policy' (stairs are handled by the RL policy)."
+if ($SelfTestWalk) {
+    # The locomotion self-test drives a constant forward command straight into the
+    # parkour policy inside Isaac -- no vision/Docker controller is involved -- so
+    # skip Docker and its TensorRT preflight. Isaac auto-exits after -SelfTestSec.
+    $NoDockerRun = $true
+    $NoModelPreflight = $true
+    Write-Host "Self-test mode: driving the policy directly (vx=$SelfTestVx, ${SelfTestSec}s, no-policy=$SelfTestNoPolicy); Docker controller disabled."
 }
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $Stamp = Get-Date -Format "yyyyMMdd_HHmmss_fff"
@@ -993,13 +989,8 @@ Write-Stage "setup" "start" "Preparing run_sim launch" @{
     keep_run_logs = [int]$KeepRunLogs
     trt_engine = $TrtEngine
     sim_frame_timeout_exit_sec = [double]$SimFrameTimeoutExitSec
-    locomotion_mode = $LocomotionMode
-    rl_policy_path = $RlPolicyPath
-    rl_policy_format = $RlPolicyFormat
-    rl_control_hz = [double]$RlControlHz
-    rl_action_scale = [double]$RlActionScale
-    rl_stairs_strategy = $RlStairsStrategy
-    sim2real_validation = [bool]$Sim2RealValidation
+    locomotion_mode = "parkour"
+    parkour_heading_mode = $ParkourHeadingMode
     sim2real_validation_cam = [bool]$Sim2RealValidationCam
 }
 Write-Host "Read first: $SummaryLog"
@@ -1089,21 +1080,16 @@ if ($NoIsaac) {
         "-FrameHost", $FrameHost,
         "-FramePort", [string]$FramePort,
         "-CmdPort", [string]$CmdPort,
-        "-LocomotionMode", $LocomotionMode,
-        "-RlPolicyFormat", $RlPolicyFormat,
-        "-RlControlHz", [string]$RlControlHz,
-        "-RlActionScale", [string]$RlActionScale,
-        "-RlStairsStrategy", $RlStairsStrategy,
         "-ParkourHeadingMode", $ParkourHeadingMode
     )
-    if ($RlPolicyPath) {
-        $isaacArgs += @("-RlPolicyPath", $RlPolicyPath)
-    }
-    if ($Sim2RealValidation) {
-        $isaacArgs += "-Sim2RealValidation"
-    }
     if ($Sim2RealValidationCam) {
         $isaacArgs += "-Sim2RealValidationCam"
+    }
+    if ($SelfTestWalk) {
+        $isaacArgs += "-SelfTestWalk"
+        $isaacArgs += "-SelfTestVx";  $isaacArgs += [string]$SelfTestVx
+        $isaacArgs += "-SelfTestSec"; $isaacArgs += [string]$SelfTestSec
+        if ($SelfTestNoPolicy) { $isaacArgs += "-SelfTestNoPolicy" }
     }
 
     $isaacCommandLine = Format-CommandLine -FilePath "powershell.exe" -Arguments $isaacArgs
@@ -1158,15 +1144,15 @@ if ($NoDockerRun) {
 
     $dockerLog = Join-Path $DebugDir "docker_run.log"
     # Controller-side sense->act latency (core/main.py SimCameraCapture delay buffer).
-    # The validation preset adds a realistic default (60 ms +/- 20 ms -- a Jetson
-    # camera->inference->command pipeline estimate) unless the flags are set
+    # The real-simulated-env preset adds a realistic default (60 ms +/- 20 ms -- a
+    # Jetson camera->inference->command pipeline estimate) unless the flags are set
     # explicitly. Tune these once the real pipeline latency is measured.
     $effLatencyMs = $SimLatencyMs
     $effLatencyJitterMs = $SimLatencyJitterMs
-    if ($Sim2RealValidation -and -not $PSBoundParameters.ContainsKey('SimLatencyMs')) {
+    if ($Sim2RealValidationCam -and -not $PSBoundParameters.ContainsKey('SimLatencyMs')) {
         $effLatencyMs = 60.0
     }
-    if ($Sim2RealValidation -and -not $PSBoundParameters.ContainsKey('SimLatencyJitterMs')) {
+    if ($Sim2RealValidationCam -and -not $PSBoundParameters.ContainsKey('SimLatencyJitterMs')) {
         $effLatencyJitterMs = 20.0
     }
     $visionArgs = @(
@@ -1182,7 +1168,11 @@ if ($NoDockerRun) {
         "--sim-latency-ms $effLatencyMs",
         "--sim-latency-jitter-ms $effLatencyJitterMs",
         "--target-distance 0.45",
-        "--trans-x-max 0.85",
+        # Forward cap held in the parkour policy's proven-stable regime. The
+        # controller-free self-test (2026-06-17) showed a constant vx=0.2 command
+        # stays upright ~12 s while vx=0.5 falls by ~2.2 s, and the policy floors
+        # at ~0.5 m/s actual regardless, so a higher cap only destabilizes it.
+        "--trans-x-max 0.2",
         "--trans-x-tolerance 0.12",
         "--trans-x-alpha 0.65",
         "--kp 1.1",

@@ -1234,11 +1234,11 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
     )
     height_m = robot_data.get("height_m") if isinstance(robot_data, dict) else None
 
-    blind_rl = stair_demo.get("blind_rl", {}) if isinstance(stair_demo, dict) else {}
-    rl_active = blind_rl.get("active", False) if blind_rl else False
-    rl_mode_for_status = str(blind_rl.get("mode", "")).upper() if blind_rl else ""
-    rl_str = ("ACTIVE " + rl_mode_for_status)[:18] if rl_active else (rl_mode_for_status or "N/A")
-    rl_color = HUD_MINT if rl_active else HUD_MUTED
+    locomotion = stair_demo.get("locomotion", {}) if isinstance(stair_demo, dict) else {}
+    loco_active = locomotion.get("active", False) if locomotion else False
+    loco_mode_for_status = str(locomotion.get("mode", "")).upper() if locomotion else ""
+    loco_str = ("ACTIVE " + loco_mode_for_status)[:18] if loco_active else (loco_mode_for_status or "N/A")
+    loco_color = HUD_MINT if loco_active else HUD_MUTED
 
     comm_str = "COMMAND ACTIVE" if comm_active else "STANDBY"
     comm_color = active_color if comm_active else (150, 150, 150)
@@ -1253,7 +1253,7 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
         ("BODY R/P:", roll_pitch_text, active_color if robot_data else HUD_MUTED),
         ("HEIGHT:", _format_optional_m(height_m), HUD_TEXT if height_m is not None else HUD_MUTED),
         ("COMM LINK:", comm_str, comm_color),
-        ("RL POLICY:", rl_str, rl_color),
+        ("LOCO POLICY:", loco_str, loco_color),
         ("STATUS:", status_str, status_color)
     ]
     
@@ -1332,23 +1332,23 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
         curr_y += 24
 
     # -----------------------------------------------------------------------
-    # Panel 3 (Top-Right): RL LOCOMOTION POLICY
+    # Panel 3 (Top-Right): LOCOMOTION POLICY
     # -----------------------------------------------------------------------
-    _draw_hud_panel(combined, right_x, top_y, panel_w, top_panel_h, "RL LOCOMOTION POLICY", active_color, alert=hud_alert)
-    
-    policy_name = str(blind_rl.get("policy", "N/A")) if blind_rl else "N/A"
-    mode_str = str(blind_rl.get("mode", "N/A")).upper() if blind_rl else "N/A"
-    gait_pattern = str(blind_rl.get("gait_pattern", "N/A")).upper() if blind_rl else "N/A"
-    clearance = blind_rl.get("foot_clearance_m") if blind_rl else None
-    cmd_speed_policy = blind_rl.get("commanded_speed_mps") if blind_rl else None
-    body_height_target = blind_rl.get("body_height_target_m") if blind_rl else None
-    vertical_assist_raw = blind_rl.get("vertical_assist_mps") if blind_rl else None
+    _draw_hud_panel(combined, right_x, top_y, panel_w, top_panel_h, "LOCOMOTION POLICY", active_color, alert=hud_alert)
+
+    policy_name = str(locomotion.get("policy", "N/A")) if locomotion else "N/A"
+    mode_str = str(locomotion.get("mode", "N/A")).upper() if locomotion else "N/A"
+    gait_pattern = str(locomotion.get("gait_pattern", "N/A")).upper() if locomotion else "N/A"
+    clearance = locomotion.get("foot_clearance_m") if locomotion else None
+    cmd_speed_policy = locomotion.get("commanded_speed_mps") if locomotion else None
+    body_height_target = locomotion.get("body_height_target_m") if locomotion else None
+    vertical_assist_raw = locomotion.get("vertical_assist_mps") if locomotion else None
     vertical_assist = _safe_float(vertical_assist_raw, 0.0)
-    assist_available = bool(blind_rl)
+    assist_available = bool(locomotion)
     assist_enabled = bool(
         assist_available and (
-            blind_rl.get("body_height_assist_enabled", abs(vertical_assist) > 1e-3)
-            or blind_rl.get("anti_tip_assist_enabled", False)
+            locomotion.get("body_height_assist_enabled", abs(vertical_assist) > 1e-3)
+            or locomotion.get("anti_tip_assist_enabled", False)
         )
     )
     assist_str = ("ON" if assist_enabled else "OFF") if assist_available else "N/A"
@@ -1379,7 +1379,7 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
     
     curr_y = bottom_y + 45
     detail_x = right_x + 12
-    leg_commands = blind_rl.get("leg_commands", {})
+    leg_commands = locomotion.get("leg_commands", {})
     _bar_x = detail_x + 64
     _bar_w = 118
     _dial_cx = right_x + panel_w - 28
@@ -1420,7 +1420,7 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
         curr_y += 42
 
     # -----------------------------------------------------------------------
-    # XT16 LiDAR BEV (right column, between the RL policy and leg panels)
+    # XT16 LiDAR BEV (right column, between the locomotion policy and leg panels)
     # -----------------------------------------------------------------------
     lidar_profile = debug_info.get("lidar_profile") if debug_info else None
     if lidar_profile:

@@ -1,9 +1,21 @@
-Place trained Go2 locomotion policies here for `--locomotion-mode rl`.
+Place trained Go2 locomotion policy weights here.
 
-Expected runtime path example:
+The sim uses the Extreme-Parkour-Onboard perceptive depth/vision policy as the
+sole locomotion controller. Its weights live under `parkour/`:
 
-```powershell
-.\sim\run_sim.bat --locomotion-mode rl --rl-policy-path sim\isaac\assets\policies\go2_policy.pt
+```
+sim/isaac/assets/policies/parkour/
+  base_jit.pt       # composite TorchScript (estimator + actor submodules)
+  vision_weight.pt  # depth-encoder state_dict (RecurrentDepthBackbone)
 ```
 
-The policy file must be local. Do not load policies directly from remote URLs or Nucleus paths at simulation runtime.
+Override the paths with `--parkour-base-model` / `--parkour-vision-model` if you
+keep the weights elsewhere. Example run:
+
+```powershell
+.\sim\run_sim.bat                          # perfect env (clean perception)
+.\sim\run_sim.bat --sim2real-validation-cam # real-simulated env (D435 + actuator/sensor realism)
+```
+
+Policy files must be local. Do not load policies directly from remote URLs or
+Nucleus paths at simulation runtime.

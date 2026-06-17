@@ -14,16 +14,17 @@ from pxr import Gf, Usd, UsdGeom, UsdPhysics
 from sim_logging_utils import log_event
 
 
-# Locomotion is driven by the RL policy in rl_locomotion_policy.py. This module
-# now only owns the stair-demo perception/telemetry and the analytical terrain
-# model used to build that telemetry from the robot's measured body pose.
+# Locomotion is driven by the parkour depth/vision policy in
+# parkour_locomotion_policy.py. This module now only owns the stair-demo
+# perception/telemetry and the analytical terrain model used to build that
+# telemetry from the robot's measured body pose.
 
 
 @dataclass
 class Go2LocomotionState:
-    # Telemetry/bookkeeping state shared with the stair-demo reporter. The RL
-    # locomotion policy (rl_locomotion_policy.py) drives the joints; this struct
-    # only carries perception/telemetry fields and per-run logging latches.
+    # Telemetry/bookkeeping state shared with the stair-demo reporter. The
+    # locomotion policy (parkour_locomotion_policy.py) drives the joints; this
+    # struct only carries perception/telemetry fields and per-run logging latches.
     target_height_m: float = 0.30
     stand_joint_positions: Optional[np.ndarray] = None
     dof_names: List[str] = field(default_factory=list)
@@ -45,13 +46,13 @@ class Go2LocomotionState:
     joint_gains_unavailable: bool = False
     dof_map: Dict[Tuple[str, str], int] = field(default_factory=dict)
     stair_demo_telemetry: Dict[str, Any] = field(default_factory=dict)
-    # Per-leg command summary from the RL policy
-    # (rl_locomotion_policy.RLLocomotionPolicy.leg_command_summary()):
+    # Per-leg command summary from the locomotion policy
+    # (parkour_locomotion_policy.ParkourLocomotionPolicy.leg_command_summary()):
     #   {"swing_legs": [...], "leg_commands": {LEG: {...}}}.
     # This is the single source of truth for the leg/gait telemetry and HUD,
     # replacing the removed procedural-gait swing bookkeeping.
-    rl_leg_summary: Dict[str, Any] = field(default_factory=dict)
-    rl_policy_name: str = ""
+    leg_summary: Dict[str, Any] = field(default_factory=dict)
+    policy_name: str = ""
     stair_demo_climb_logged: bool = False
     stair_demo_complete_logged: bool = False
     stair_crawl_logged: bool = False
@@ -295,9 +296,9 @@ def get_active_stairs() -> "StairSpec":
     return ACTIVE_STAIRS
 
 
-# Forward distance within which an approaching staircase flips blind_rl.mode to
+# Forward distance within which an approaching staircase flips locomotion.mode to
 # "stair_approach". This is the only surviving use of the analytical terrain
-# probe; it labels the (synthetic) RL mode and drives no command/physics.
+# probe; it labels the (synthetic) HUD mode and drives no command/physics.
 STAIR_LIDAR_LOOKAHEAD_M = 0.85
 
 
@@ -351,9 +352,9 @@ def _build_stair_demo_telemetry(
     This (and its helpers `_terrain_phase` / `_next_stair_edge` /
     `_get_analytical_terrain_height`) is derived from the robot's exact
     ground-truth pose and the hard-coded stair geometry. It populates the
-    `stair_demo` telemetry's `phase` and `blind_rl` mode labels for the
-    HUD/reports and drives NOTHING: not the command, not the RL policy, not
-    physics (it is recorded with `vertical_assist_mps=0.0` /
+    `stair_demo` telemetry's `phase` and `locomotion` mode labels for the
+    HUD/reports and drives NOTHING: not the command, not the locomotion policy,
+    not physics (it is recorded with `vertical_assist_mps=0.0` /
     `body_height_target_m=None`).
 
     NOTE: the fabricated `lidar` block (the `demo_4d_elevation_raycast` that
@@ -365,7 +366,7 @@ def _build_stair_demo_telemetry(
     `core/main.py` sets `debug_info["stairs_detected"]` from
     `yolo_stairs_inference` (YOLO-World on RGB) + the depth camera, and
     `_apply_stair_command_policy` gates on that. Do not mistake this overlay's
-    synthetic `phase` / `blind_rl.mode` for the real signal (see CLAUDE.md
+    synthetic `phase` / `locomotion.mode` for the real signal (see CLAUDE.md
     incident ledger).
     """
     phase = _terrain_phase(rx, ry)
@@ -383,20 +384,20 @@ def _build_stair_demo_telemetry(
 
     command_speed = math.sqrt((vx * vx) + (vy * vy)) + 0.25 * abs(wz)
     if phase == "top_landing":
-        rl_mode = "landing_follow"
+        loco_mode = "landing_follow"
     elif phase == "staircase":
-        rl_mode = "stair_climb"
+        loco_mode = "stair_climb"
     elif detected:
-        rl_mode = "stair_approach"
+        loco_mode = "stair_approach"
     else:
-        rl_mode = "flat_follow"
-    rl_active = bool(rl_mode in ("stair_approach", "stair_climb") and command_speed > 0.03)
+        loco_mode = "flat_follow"
+    loco_active = bool(loco_mode in ("stair_approach", "stair_climb") and command_speed > 0.03)
 
-    # Real per-leg commands the RL policy issued this step (set in
-    # _step_go2_locomotion from RLLocomotionPolicy.leg_command_summary()).
-    rl_summary = state.rl_leg_summary or {}
-    rl_swing_legs = [str(leg).upper() for leg in rl_summary.get("swing_legs", [])]
-    rl_leg_commands = rl_summary.get("leg_commands", {})
+    # Real per-leg commands the locomotion policy issued this step (set in
+    # _step_go2_locomotion from ParkourLocomotionPolicy.leg_command_summary()).
+    loco_summary = state.leg_summary or {}
+    swing_legs = [str(leg).upper() for leg in loco_summary.get("swing_legs", [])]
+    leg_commands = loco_summary.get("leg_commands", {})
 
     robot_fell = False
     robot_fall_type = "upright"
@@ -410,7 +411,7 @@ def _build_stair_demo_telemetry(
     return {
         "source": "synthetic_isaac_ground_truth_pose",
         "is_synthetic": True,
-        "data_truth": "phase_and_blind_rl_mode_are_hud_labels_from_gt_pose_not_a_sensor",
+        "data_truth": "phase_and_locomotion_mode_are_hud_labels_from_gt_pose_not_a_sensor",
         "phase": phase,
         "robot": {
             "x_m": round(float(rx), 3),
@@ -426,22 +427,22 @@ def _build_stair_demo_telemetry(
         # The `lidar` key is intentionally absent here; the real PhysX-raycast
         # XT16 (sim_lidar_xt16.py) is the only LiDAR, and isaac_env.py fills
         # stair_demo["lidar"] from its genuine returns on each scan.
-        "blind_rl": {
-            "policy": state.rl_policy_name or "go2_rl_policy",
-            "mode": rl_mode,
-            "active": rl_active,
+        "locomotion": {
+            "policy": state.policy_name or "go2_parkour_policy",
+            "mode": loco_mode,
+            "active": loco_active,
             "gait_pattern": (
-                "single_leg_stair_crawl" if rl_mode in ("stair_approach", "stair_climb") else "diagonal_flat_trot"
+                "single_leg_stair_crawl" if loco_mode in ("stair_approach", "stair_climb") else "diagonal_flat_trot"
             ),
-            "swing_legs": list(rl_swing_legs),
-            "leg_commands": _build_leg_command_summary(rl_leg_commands, rl_mode),
+            "swing_legs": list(swing_legs),
+            "leg_commands": _build_leg_command_summary(leg_commands, loco_mode),
             "commanded_speed_mps": round(float(command_speed), 3),
             "body_height_target_m": (
                 None if body_height_target_m is None else round(float(body_height_target_m), 3)
             ),
             "vertical_assist_mps": round(float(vertical_assist_mps), 3),
             "stair_slope_deg": round(float(math.degrees(math.atan2(ACTIVE_STAIRS.step_height_m, ACTIVE_STAIRS.step_depth_m))), 2),
-            "foot_clearance_m": round(float(_effective_swing_height_for_mode(rl_mode)), 3),
+            "foot_clearance_m": round(float(_effective_swing_height_for_mode(loco_mode)), 3),
             "physics_contact_enabled": True,
             "body_height_assist_enabled": False,
             "anti_tip_assist_enabled": False,
@@ -458,20 +459,20 @@ def _effective_swing_height_for_mode(mode: str) -> float:
 
 
 def _build_leg_command_summary(
-    rl_leg_commands: Dict[str, Dict[str, Any]],
-    rl_mode: str,
+    leg_commands: Dict[str, Dict[str, Any]],
+    loco_mode: str,
 ) -> Dict[str, Dict[str, Any]]:
-    """Relabel the RL policy's real per-leg commands for the stair HUD.
+    """Relabel the locomotion policy's real per-leg commands for the stair HUD.
 
-    ``rl_leg_commands`` comes from RLLocomotionPolicy.leg_command_summary() and
+    ``leg_commands`` comes from ParkourLocomotionPolicy.leg_command_summary() and
     already carries the real swing/stance state, the foot-lift estimate, and the
     commanded joint angles. Here we only adapt the human-readable action label to
     the current terrain mode (STEP_UP/LOAD_HOLD on stairs vs SWING/STANCE on flat).
     """
-    stair_mode = rl_mode in ("stair_approach", "stair_climb")
+    stair_mode = loco_mode in ("stair_approach", "stair_climb")
     commands: Dict[str, Dict[str, Any]] = {}
     for leg in ("FL", "FR", "RL", "RR"):
-        cmd = dict(rl_leg_commands.get(leg, {}))
+        cmd = dict(leg_commands.get(leg, {}))
         is_swing = cmd.get("state") == "swing"
         if stair_mode:
             cmd["action"] = "STEP_UP" if is_swing else "LOAD_HOLD"
@@ -487,21 +488,21 @@ def _record_stair_demo_telemetry(
     telemetry: Dict[str, Any],
 ) -> None:
     state.stair_demo_telemetry = telemetry
-    blind_rl = telemetry.get("blind_rl", {})
+    locomotion = telemetry.get("locomotion", {})
     phase = str(telemetry.get("phase", "unknown"))
     if logger is None:
         return
 
-    if blind_rl.get("active") and not state.stair_demo_climb_logged:
+    if locomotion.get("active") and not state.stair_demo_climb_logged:
         state.stair_demo_climb_logged = True
         log_event(
             logger,
             logging.INFO,
-            "synthetic_blind_rl_stair_assist_active",
-            "Synthetic blind-RL stair telemetry is active; body-height and anti-tip assist are disabled",
-            mode=blind_rl.get("mode"),
-            body_height_target_m=blind_rl.get("body_height_target_m"),
-            vertical_assist_mps=blind_rl.get("vertical_assist_mps"),
+            "synthetic_locomotion_stair_assist_active",
+            "Synthetic locomotion stair telemetry is active; body-height and anti-tip assist are disabled",
+            mode=locomotion.get("mode"),
+            body_height_target_m=locomotion.get("body_height_target_m"),
+            vertical_assist_mps=locomotion.get("vertical_assist_mps"),
             physics_contact_enabled=True,
             body_height_assist_enabled=False,
             anti_tip_assist_enabled=False,
