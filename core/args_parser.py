@@ -241,8 +241,8 @@ def parse_args():
     parser.add_argument('--raw-video-path', type=str, default='',
                         help='MP4 path for raw camera frame recording (no overlays); empty disables')
     parser.add_argument('--no-raw-video', action='store_true',
-                        help='Disable the controller-side raw_camera.mp4 writer. Used in sim, '
-                             'where Isaac records raw_camera.mp4 from the external scene Left view.')
+                        help='Disable the controller-side raw video writer. Used in sim, '
+                             'where Isaac records scene_view.mp4 from the external scene Left view.')
     parser.add_argument('--no-obstacle-stop', dest='obstacle_stop_enabled',
                         action='store_false', default=True,
                         help='Disable central-depth front obstacle speed gating')

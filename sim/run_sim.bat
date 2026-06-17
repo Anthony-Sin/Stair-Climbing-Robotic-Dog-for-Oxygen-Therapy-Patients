@@ -42,6 +42,9 @@ if /I "%ARG%"=="--rl-policy-format" set "ARG=-RlPolicyFormat"
 if /I "%ARG%"=="--rl-control-hz" set "ARG=-RlControlHz"
 if /I "%ARG%"=="--rl-action-scale" set "ARG=-RlActionScale"
 if /I "%ARG%"=="--rl-stairs-strategy" set "ARG=-RlStairsStrategy"
+if /I "%ARG%"=="--sim2real-validation" set "ARG=-Sim2RealValidation"
+if /I "%ARG%"=="--sim-latency-ms" set "ARG=-SimLatencyMs"
+if /I "%ARG%"=="--sim-latency-jitter-ms" set "ARG=-SimLatencyJitterMs"
 set "PS_ARGS=%PS_ARGS% "%ARG%""
 shift
 goto parse_args

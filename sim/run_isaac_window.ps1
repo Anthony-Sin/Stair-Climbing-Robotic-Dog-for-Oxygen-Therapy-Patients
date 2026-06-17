@@ -11,7 +11,8 @@ param(
     [string]$RlPolicyFormat = "auto",
     [double]$RlControlHz = 50.0,
     [double]$RlActionScale = 0.25,
-    [string]$RlStairsStrategy = "policy"
+    [string]$RlStairsStrategy = "policy",
+    [switch]$Sim2RealValidation
 )
 
 $ErrorActionPreference = "Stop"
@@ -54,6 +55,7 @@ Write-ConsoleLog "  Isaac Sim dir:       $IsaacSimDir"
 Write-ConsoleLog "  Frame target:        ${FrameHost}:${FramePort}"
 Write-ConsoleLog "  Command receiver:    0.0.0.0:${CmdPort}"
 Write-ConsoleLog "  Locomotion mode:     $LocomotionMode"
+Write-ConsoleLog "  Sim2Real preset:     $([bool]$Sim2RealValidation)"
 if ($RlPolicyPath) {
     Write-ConsoleLog "  RL policy path:      $RlPolicyPath"
 }
@@ -84,13 +86,21 @@ if ($RlPolicyPath) {
     $rlArgs = "$rlArgs --rl-policy-path `"$RlPolicyPath`""
 }
 
-# Isaac records the external scene Left view to raw_camera.mp4 (beside opencv_preview.mp4).
+# Isaac records the external scene Left view to scene_view.mp4 (beside opencv_preview.mp4).
 $rawArg = ""
 if ($RawVideoPath) {
     $rawArg = "--raw-video-path `"$RawVideoPath`""
 }
 
-$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" --person-move --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera $rawArg $rlArgs > `"$RawLog`" 2>&1`""
+# Sim-to-real validation preset: turns on the realistic regime inside isaac_env.py
+# (obs noise + 1-step latency + domain randomization + joint-limit clamp + LiDAR
+# range noise + lighting randomization). Off by default => clean regime.
+$validationArg = ""
+if ($Sim2RealValidation) {
+    $validationArg = "--sim2real-validation"
+}
+
+$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" --person-move --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera $rawArg $rlArgs $validationArg > `"$RawLog`" 2>&1`""
 
 # Start the process with direct OS redirection to prevent pipeline blocking
 $process = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs -PassThru -NoNewWindow

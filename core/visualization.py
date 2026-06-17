@@ -15,23 +15,23 @@ from lidar_fusion import decode_lidar_profile
 
 _yolo_conf_history = deque(maxlen=30)
 
-HUD_BG = (116, 153, 186)        # parchment panel fill (BGR)
-HUD_BG_DARK = (16, 28, 45)      # dark walnut title/rail fill
-HUD_EDGE = (34, 70, 116)        # copper border
-HUD_EDGE_DIM = (50, 69, 88)     # aged ink linework
-HUD_TEXT = (23, 32, 43)         # dark ink on parchment
-HUD_MUTED = (77, 86, 92)        # faded brown-gray labels
-HUD_BLUE = (34, 92, 148)        # copper command accent
-HUD_BLUE_DIM = (44, 66, 92)
-HUD_MINT = (86, 176, 97)        # live/ok accent
-HUD_MAGENTA = (42, 52, 150)     # red ink accent
-HUD_ALERT = (26, 38, 200)
-HUD_CYAN = (220, 238, 96)       # cyan guide geometry (BGR)
-HUD_GOLD = (58, 226, 240)       # yellow range geometry (BGR)
-HUD_INK = (14, 21, 29)
-HUD_RAIL_LIGHT = (205, 218, 218)
-HUD_RAIL_MUTED = (138, 150, 152)
-HUD_PANEL_ALPHA = 0.88
+HUD_BG = (42, 36, 25)           # dark blue instrument panel fill (BGR)
+HUD_BG_DARK = (14, 18, 19)      # black title/rail fill
+HUD_EDGE = (50, 106, 156)       # aged copper frame
+HUD_EDGE_DIM = (59, 76, 79)     # oxidized steel linework
+HUD_TEXT = (210, 224, 219)      # pale instrument text
+HUD_MUTED = (128, 145, 144)     # dim labels
+HUD_BLUE = (207, 154, 72)       # cool telemetry blue
+HUD_BLUE_DIM = (89, 80, 52)
+HUD_MINT = (92, 206, 105)       # live/ok accent
+HUD_MAGENTA = (76, 104, 220)    # warm alert/orange ink
+HUD_ALERT = (50, 68, 218)
+HUD_CYAN = (220, 236, 96)       # cyan target geometry (BGR)
+HUD_GOLD = (58, 190, 228)       # gold/copper geometry (BGR)
+HUD_INK = (8, 13, 16)
+HUD_RAIL_LIGHT = (208, 222, 217)
+HUD_RAIL_MUTED = (124, 142, 141)
+HUD_PANEL_ALPHA = 0.91
 
 
 class EdgePenaltyChart:
@@ -220,7 +220,7 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
 
 def _draw_hud_panel(img: np.ndarray, x: int, y: int, w: int, h: int, title: str, 
                     active_color: Tuple[int, int, int], alert: bool = False) -> None:
-    """Draw a parchment/copper instrument panel without tinting the full frame."""
+    """Draw a beveled dark instrument module without tinting the camera frame."""
     sub = img[y:y+h, x:x+w]
     if sub.size > 0:
         bg = np.zeros_like(sub)
@@ -228,34 +228,57 @@ def _draw_hud_panel(img: np.ndarray, x: int, y: int, w: int, h: int, title: str,
         cv2.addWeighted(sub, 1.0 - HUD_PANEL_ALPHA, bg, HUD_PANEL_ALPHA, 0, sub)
 
     border_color = HUD_ALERT if alert else HUD_EDGE
-    accent_color = HUD_ALERT if alert else border_color
+    cyan = HUD_ALERT if alert else HUD_CYAN
+    clip = 12
+    pts = np.array(
+        [
+            [x + clip, y],
+            [x + w - 3, y],
+            [x + w, y + 3],
+            [x + w, y + h - clip],
+            [x + w - clip, y + h],
+            [x + 3, y + h],
+            [x, y + h - 3],
+            [x, y + clip],
+        ],
+        dtype=np.int32,
+    )
+    shadow = pts + np.array([4, 5], dtype=np.int32)
+    cv2.polylines(img, [shadow], True, (5, 8, 10), 2, cv2.LINE_AA)
+    cv2.polylines(img, [pts], True, (12, 18, 20), 4, cv2.LINE_AA)
+    cv2.polylines(img, [pts], True, border_color, 2, cv2.LINE_AA)
+    cv2.rectangle(img, (x + 7, y + 7), (x + w - 7, y + h - 7), HUD_EDGE_DIM, 1, cv2.LINE_AA)
+    cv2.line(img, (x + 10, y + 34), (x + w - 12, y + 34), (27, 59, 74), 1, cv2.LINE_AA)
 
-    cv2.rectangle(img, (x + 3, y + 3), (x + w + 3, y + h + 3), (9, 13, 17), 1)
-    cv2.rectangle(img, (x, y), (x + w, y + h), border_color, 2, cv2.LINE_AA)
-    cv2.rectangle(img, (x + 5, y + 5), (x + w - 5, y + h - 5), HUD_EDGE_DIM, 1, cv2.LINE_AA)
-    cv2.line(img, (x + 10, y + 34), (x + w - 10, y + 34), (70, 84, 95), 1, cv2.LINE_AA)
+    side_x = x + w - 16
+    side_pts = np.array(
+        [[side_x, y + 15], [x + w - 4, y + 26], [x + w - 4, y + h - 24], [side_x, y + h - 12]],
+        dtype=np.int32,
+    )
+    cv2.fillPoly(img, [side_pts], (24, 31, 28), cv2.LINE_AA)
+    cv2.polylines(img, [side_pts], True, (69, 96, 96), 1, cv2.LINE_AA)
 
-    for rx, ry in ((x + 8, y + 8), (x + w - 8, y + 8), (x + 8, y + h - 8), (x + w - 8, y + h - 8)):
-        cv2.circle(img, (rx, ry), 5, (54, 73, 93), -1, cv2.LINE_AA)
-        cv2.circle(img, (rx, ry), 5, HUD_EDGE, 1, cv2.LINE_AA)
-        cv2.circle(img, (rx - 1, ry - 1), 1, (160, 181, 196), -1, cv2.LINE_AA)
+    for rx, ry in ((x + 9, y + 9), (x + w - 10, y + 9), (x + 9, y + h - 10), (x + w - 10, y + h - 10)):
+        cv2.circle(img, (rx, ry), 4, (72, 98, 101), -1, cv2.LINE_AA)
+        cv2.circle(img, (rx, ry), 4, (16, 21, 22), 1, cv2.LINE_AA)
+        cv2.circle(img, (rx - 1, ry - 1), 1, (170, 187, 181), -1, cv2.LINE_AA)
 
-    bracket = 22
-    cv2.line(img, (x, y), (x + bracket, y), accent_color, 2, cv2.LINE_AA)
-    cv2.line(img, (x, y), (x, y + bracket), accent_color, 2, cv2.LINE_AA)
-    cv2.line(img, (x + w - bracket, y), (x + w, y), accent_color, 2, cv2.LINE_AA)
-    cv2.line(img, (x + w, y), (x + w, y + bracket), accent_color, 2, cv2.LINE_AA)
-    cv2.line(img, (x, y + h - bracket), (x, y + h), accent_color, 2, cv2.LINE_AA)
-    cv2.line(img, (x, y + h), (x + bracket, y + h), accent_color, 2, cv2.LINE_AA)
-    cv2.line(img, (x + w - bracket, y + h), (x + w, y + h), accent_color, 2, cv2.LINE_AA)
-    cv2.line(img, (x + w, y + h - bracket), (x + w, y + h), accent_color, 2, cv2.LINE_AA)
+    bracket = 24
+    for bx, by, sx, sy in (
+        (x, y, 1, 1),
+        (x + w, y, -1, 1),
+        (x, y + h, 1, -1),
+        (x + w, y + h, -1, -1),
+    ):
+        cv2.line(img, (bx, by), (bx + sx * bracket, by), cyan, 1, cv2.LINE_AA)
+        cv2.line(img, (bx, by), (bx, by + sy * bracket), cyan, 1, cv2.LINE_AA)
 
     if title:
-        title_w = min(w - 24, max(130, 18 + len(title) * 9))
-        cv2.rectangle(img, (x + 16, y + 8), (x + 16 + title_w, y + 29), HUD_BG_DARK, -1)
-        cv2.rectangle(img, (x + 16, y + 8), (x + 16 + title_w, y + 29), (62, 82, 101), 1, cv2.LINE_AA)
-        cv2.putText(img, title, (x + 18, y + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.43,
-                    (206, 219, 220), 1, cv2.LINE_AA)
+        title_w = min(w - 32, max(128, 18 + len(title) * 8))
+        cv2.rectangle(img, (x + 15, y + 8), (x + 15 + title_w, y + 29), HUD_BG_DARK, -1)
+        cv2.rectangle(img, (x + 15, y + 8), (x + 15 + title_w, y + 29), (53, 91, 98), 1, cv2.LINE_AA)
+        cv2.putText(img, title, (x + 18, y + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.40,
+                    HUD_TEXT, 1, cv2.LINE_AA)
 
 
 def _draw_hud_reticle_legacy(img: np.ndarray, cx: int, cy: int, debug_info: Dict[str, Any],
@@ -350,78 +373,64 @@ def _draw_hud_reticle_legacy(img: np.ndarray, cx: int, cy: int, debug_info: Dict
 def _draw_hud_reticle(img: np.ndarray, cx: int, cy: int, debug_info: Dict[str, Any],
                       active_color: Tuple[int, int, int], alert: bool = False,
                       swing_list: list = None) -> None:
-    """Draw the center target/attitude reticle from available telemetry only."""
+    """Draw the blue/gold center target reticle from available telemetry only."""
     accent_color = HUD_ALERT if alert else HUD_CYAN
-    ring_color = HUD_INK
-    muted = (42, 52, 58)
+    glow = img.copy()
+    cv2.circle(glow, (cx, cy), 51, (122, 104, 37), 8, cv2.LINE_AA)
+    cv2.circle(glow, (cx, cy), 30, (120, 94, 34), 5, cv2.LINE_AA)
+    cv2.addWeighted(glow, 0.22, img, 0.78, 0, img)
 
-    cv2.circle(img, (cx, cy), 64, ring_color, 1, cv2.LINE_AA)
-    cv2.circle(img, (cx, cy), 38, muted, 1, cv2.LINE_AA)
-    for radius in (24, 52):
-        cv2.ellipse(img, (cx, cy), (radius, radius), 0, 210, 330, muted, 1, cv2.LINE_AA)
-        cv2.ellipse(img, (cx, cy), (radius, radius), 0, 30, 150, muted, 1, cv2.LINE_AA)
+    cv2.circle(img, (cx, cy), 54, HUD_INK, 2, cv2.LINE_AA)
+    cv2.circle(img, (cx, cy), 47, HUD_GOLD, 1, cv2.LINE_AA)
+    cv2.circle(img, (cx, cy), 31, HUD_CYAN, 1, cv2.LINE_AA)
+    for start, end in ((205, 247), (293, 335), (25, 67), (113, 155)):
+        cv2.ellipse(img, (cx, cy), (66, 66), 0, start, end, HUD_GOLD, 2, cv2.LINE_AA)
 
-    for angle in range(0, 360, 15):
-        rad = math.radians(angle)
-        major = angle % 45 == 0
-        inner_r = 58 if major else 61
-        outer_r = 72 if major else 67
-        tick_color = accent_color if angle % 90 == 0 else ring_color
+    for deg in range(0, 360, 30):
+        rad = math.radians(deg)
+        inner_r = 46 if deg % 90 == 0 else 50
+        outer_r = 55 if deg % 90 == 0 else 53
         cv2.line(
             img,
             (int(cx + inner_r * math.cos(rad)), int(cy + inner_r * math.sin(rad))),
             (int(cx + outer_r * math.cos(rad)), int(cy + outer_r * math.sin(rad))),
-            tick_color,
-            2 if major else 1,
-            cv2.LINE_AA,
-        )
-
-    cv2.line(img, (cx - 92, cy), (cx - 72, cy), accent_color, 1, cv2.LINE_AA)
-    cv2.line(img, (cx + 72, cy), (cx + 92, cy), accent_color, 1, cv2.LINE_AA)
-    cv2.line(img, (cx, cy - 92), (cx, cy - 72), accent_color, 1, cv2.LINE_AA)
-    cv2.line(img, (cx, cy + 72), (cx, cy + 92), accent_color, 1, cv2.LINE_AA)
-    cv2.circle(img, (cx, cy), 2, accent_color, -1, cv2.LINE_AA)
-
-    for deg, lbl in [(270, "F"), (90, "B"), (180, "L"), (0, "R")]:
-        rad = math.radians(deg)
-        cv2.putText(
-            img,
-            lbl,
-            (int(cx + 78 * math.cos(rad)) - 4, int(cy + 78 * math.sin(rad)) + 5),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.32,
-            accent_color,
+            HUD_EDGE if deg % 90 else HUD_GOLD,
             1,
             cv2.LINE_AA,
         )
 
-    cv2.rectangle(img, (cx - 13, cy - 21), (cx + 13, cy + 21), HUD_MUTED, 1, cv2.LINE_AA)
-    cv2.line(img, (cx - 13, cy), (cx + 13, cy), muted, 1, cv2.LINE_AA)
-    cv2.line(img, (cx, cy - 21), (cx, cy + 21), muted, 1, cv2.LINE_AA)
+    compass = {
+        "N": np.array([[cx, cy - 72], [cx - 8, cy - 51], [cx + 8, cy - 51]], dtype=np.int32),
+        "S": np.array([[cx, cy + 72], [cx - 8, cy + 51], [cx + 8, cy + 51]], dtype=np.int32),
+        "W": np.array([[cx - 72, cy], [cx - 51, cy - 8], [cx - 51, cy + 8]], dtype=np.int32),
+        "E": np.array([[cx + 72, cy], [cx + 51, cy - 8], [cx + 51, cy + 8]], dtype=np.int32),
+    }
+    for tri in compass.values():
+        cv2.fillPoly(img, [tri], HUD_GOLD, cv2.LINE_AA)
+        cv2.polylines(img, [tri], True, HUD_INK, 1, cv2.LINE_AA)
+
+    cv2.circle(img, (cx, cy), 4, accent_color, -1, cv2.LINE_AA)
+    cv2.circle(img, (cx, cy), 8, HUD_EDGE_DIM, 1, cv2.LINE_AA)
+
+    cv2.rectangle(img, (cx - 14, cy - 20), (cx + 14, cy + 20), HUD_EDGE_DIM, 1, cv2.LINE_AA)
+    cv2.line(img, (cx - 14, cy), (cx + 14, cy), HUD_EDGE_DIM, 1, cv2.LINE_AA)
+    cv2.line(img, (cx, cy - 20), (cx, cy + 20), HUD_EDGE_DIM, 1, cv2.LINE_AA)
 
     feet = {
-        "FL": (cx - 25, cy - 16),
-        "FR": (cx + 25, cy - 16),
-        "RL": (cx - 25, cy + 16),
-        "RR": (cx + 25, cy + 16),
+        "FL": (cx - 27, cy - 17),
+        "FR": (cx + 27, cy - 17),
+        "RL": (cx - 27, cy + 17),
+        "RR": (cx + 27, cy + 17),
     }
     swing_set = {leg.upper() for leg in swing_list} if swing_list else set()
     for leg, (fx, fy) in feet.items():
         is_swing = leg in swing_set
         foot_color = accent_color if is_swing else HUD_INK
         cv2.line(img, (cx, cy), (fx, fy), HUD_EDGE_DIM, 1, cv2.LINE_AA)
-        cv2.circle(img, (fx, fy), 6, foot_color, -1, cv2.LINE_AA)
-        cv2.circle(img, (fx, fy), 6, HUD_EDGE, 1, cv2.LINE_AA)
-        cv2.putText(
-            img,
-            leg,
-            (fx - 7, fy + 3),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.24,
-            (4, 6, 8) if is_swing else HUD_TEXT,
-            1,
-            cv2.LINE_AA,
-        )
+        cv2.circle(img, (fx, fy), 7, foot_color, -1, cv2.LINE_AA)
+        cv2.circle(img, (fx, fy), 7, HUD_GOLD, 1, cv2.LINE_AA)
+        cv2.putText(img, leg, (fx - 8, fy + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.24,
+                    HUD_TEXT if not is_swing else HUD_INK, 1, cv2.LINE_AA)
 
     stair_demo = debug_info.get("stair_demo", {}) if debug_info else {}
     robot_data = stair_demo.get("robot", {}) if isinstance(stair_demo, dict) else {}
@@ -433,8 +442,8 @@ def _draw_hud_reticle(img: np.ndarray, cx: int, cy: int, debug_info: Dict[str, A
         roll_rad = math.radians(roll_f)
         cv2.line(
             img,
-            (int(cx - 30 * math.cos(roll_rad)), int(cy - 30 * math.sin(roll_rad))),
-            (int(cx + 30 * math.cos(roll_rad)), int(cy + 30 * math.sin(roll_rad))),
+            (int(cx - 27 * math.cos(roll_rad)), int(cy - 27 * math.sin(roll_rad))),
+            (int(cx + 27 * math.cos(roll_rad)), int(cy + 27 * math.sin(roll_rad))),
             accent_color,
             1,
             cv2.LINE_AA,
@@ -443,11 +452,23 @@ def _draw_hud_reticle(img: np.ndarray, cx: int, cy: int, debug_info: Dict[str, A
     else:
         roll_txt = "--"
     pitch_txt = f"{_safe_float(pitch):+.1f}" if pitch is not None else "--"
+    target_bear = debug_info.get("rotation_error_deg") if debug_info else None
+    target_dist = debug_info.get("depth_distance_m") if debug_info else None
+    bear_txt = f"{_safe_float(target_bear):+.1f}" if target_bear is not None else "--"
+    dist_txt = f"{_safe_float(target_dist):.1f}m" if target_dist is not None else "--"
 
-    cv2.putText(img, f"R {roll_txt}", (cx - 105, cy - 9), cv2.FONT_HERSHEY_SIMPLEX,
-                0.34, accent_color, 1, cv2.LINE_AA)
-    cv2.putText(img, f"P {pitch_txt}", (cx - 105, cy + 11), cv2.FONT_HERSHEY_SIMPLEX,
-                0.34, accent_color, 1, cv2.LINE_AA)
+    cv2.circle(img, (cx - 92, cy - 15), 3, HUD_CYAN, -1, cv2.LINE_AA)
+    cv2.circle(img, (cx - 92, cy + 4), 3, HUD_CYAN, -1, cv2.LINE_AA)
+    cv2.putText(img, f"R {roll_txt}", (cx - 86, cy - 10), cv2.FONT_HERSHEY_SIMPLEX,
+                0.31, HUD_CYAN, 1, cv2.LINE_AA)
+    cv2.putText(img, f"P {pitch_txt}", (cx - 86, cy + 10), cv2.FONT_HERSHEY_SIMPLEX,
+                0.31, HUD_CYAN, 1, cv2.LINE_AA)
+    cv2.circle(img, (cx + 82, cy - 15), 3, HUD_ALERT, -1, cv2.LINE_AA)
+    cv2.circle(img, (cx + 82, cy + 4), 3, HUD_ALERT, -1, cv2.LINE_AA)
+    cv2.putText(img, f"Y {bear_txt}", (cx + 88, cy - 10), cv2.FONT_HERSHEY_SIMPLEX,
+                0.31, HUD_ALERT, 1, cv2.LINE_AA)
+    cv2.putText(img, f"D {dist_txt}", (cx + 88, cy + 10), cv2.FONT_HERSHEY_SIMPLEX,
+                0.31, HUD_ALERT, 1, cv2.LINE_AA)
 
 
 def _detect_stair_pixel_edges(source_frame: Optional[np.ndarray]) -> list:
@@ -659,45 +680,124 @@ def _draw_stair_vision_panel(combined: np.ndarray, debug_info: Dict[str, Any],
 
 
 def _draw_row_icon(img: np.ndarray, x: int, y: int, color: Tuple[int, int, int]) -> None:
-    """Small schematic-trace icon drawn between a panel label and its value."""
-    cv2.line(img, (x,      y), (x + 4,  y), color, 1)
-    cv2.line(img, (x + 4,  y - 3), (x + 4,  y + 3), color, 1)
-    cv2.line(img, (x + 4,  y), (x + 10, y), color, 1)
-    cv2.line(img, (x + 10, y - 3), (x + 10, y + 3), color, 1)
-    cv2.line(img, (x + 10, y), (x + 14, y), color, 1)
+    """Small circuit-trace icon drawn between a panel label and its value."""
+    stem = (max(20, color[0] - 20), max(20, color[1] - 18), max(20, color[2] - 18))
+    cv2.line(img, (x, y), (x + 24, y), stem, 1, cv2.LINE_AA)
+    for dx, dy in ((4, -6), (10, 5), (16, -4)):
+        cv2.line(img, (x + dx, y), (x + dx + 7, y + dy), stem, 1, cv2.LINE_AA)
+        cv2.circle(img, (x + dx + 7, y + dy), 2, color, 1, cv2.LINE_AA)
+    cv2.circle(img, (x + 24, y), 2, color, -1, cv2.LINE_AA)
 
 
 def _draw_reference_guides(img: np.ndarray, center_x: int, center_y: int, w: int, h: int) -> None:
-    """Draw the thin alignment/range guides from the reference without filtering the camera."""
+    """Draw sparse cyan framing marks without filtering the camera."""
     guide = img.copy()
-    gold_glow = (22, 112, 128)
-    cyan_glow = (92, 118, 50)
+    for xrail in (12, w - 13):
+        cv2.line(guide, (xrail, 42), (xrail, min(h - 32, 120)), HUD_CYAN, 1, cv2.LINE_AA)
+        cv2.line(guide, (xrail, max(42, h - 125)), (xrail, h - 32), HUD_CYAN, 1, cv2.LINE_AA)
+    for ymark in (max(45, center_y - 108), min(h - 34, center_y + 108)):
+        cv2.line(guide, (center_x - 28, ymark), (center_x + 28, ymark), HUD_CYAN, 1, cv2.LINE_AA)
+        cv2.circle(guide, (center_x, ymark), 2, HUD_CYAN, -1, cv2.LINE_AA)
 
-    range_ys = [
-        max(44, center_y - int(h * 0.105)),
-        max(44, center_y - int(h * 0.055)),
-    ]
-    for y in range_ys:
-        cv2.line(guide, (0, y), (w - 1, y), gold_glow, 3, cv2.LINE_AA)
-        cv2.line(guide, (0, y), (w - 1, y), HUD_GOLD, 1, cv2.LINE_AA)
-        for xdot in (10, max(10, center_x - 430), min(w - 11, center_x + 430), w - 11):
-            cv2.circle(guide, (xdot, y), 3, HUD_GOLD, -1, cv2.LINE_AA)
+    cv2.addWeighted(guide, 0.34, img, 0.66, 0, img)
 
-    center_rails = (center_x - 33, center_x + 33)
-    for xrail in center_rails:
-        cv2.line(guide, (xrail, 42), (xrail, max(44, center_y - 78)), cyan_glow, 3, cv2.LINE_AA)
-        cv2.line(guide, (xrail, center_y + 72), (xrail, h - 32), cyan_glow, 3, cv2.LINE_AA)
-        cv2.line(guide, (xrail, 42), (xrail, max(44, center_y - 78)), HUD_CYAN, 1, cv2.LINE_AA)
-        cv2.line(guide, (xrail, center_y + 72), (xrail, h - 32), HUD_CYAN, 1, cv2.LINE_AA)
-        for yy in (max(44, center_y - 78), min(h - 32, center_y + 72)):
-            cv2.circle(guide, (xrail, yy), 3, HUD_CYAN, -1, cv2.LINE_AA)
 
-    side_rails = (max(0, center_x - 365), min(w - 1, center_x + 365))
-    for xrail in side_rails:
-        cv2.line(guide, (xrail, 42), (xrail, min(h - 32, 92)), HUD_CYAN, 1, cv2.LINE_AA)
-        cv2.line(guide, (xrail, max(42, h - 104)), (xrail, h - 32), HUD_CYAN, 1, cv2.LINE_AA)
+def _draw_center_instrument_bar(img: np.ndarray, cx: int, cy: int, target_dist: Any) -> None:
+    """Draw the bottom-center mechanical range instrument."""
+    bar_w = 360
+    x0 = cx - bar_w // 2
+    x1 = cx + bar_w // 2
+    y = cy
 
-    cv2.addWeighted(guide, 0.42, img, 0.58, 0, img)
+    glow = img.copy()
+    cv2.line(glow, (x0 + 56, y), (x1 - 56, y), (84, 192, 224), 9, cv2.LINE_AA)
+    cv2.addWeighted(glow, 0.20, img, 0.80, 0, img)
+    cv2.line(img, (x0 + 56, y), (x1 - 56, y), HUD_GOLD, 3, cv2.LINE_AA)
+    cv2.line(img, (x0 + 60, y - 3), (x1 - 60, y - 3), HUD_TEXT, 1, cv2.LINE_AA)
+
+    left_head = np.array(
+        [[x0 + 18, y - 20], [x0 + 52, y - 20], [x0 + 70, y - 10], [x0 + 70, y + 10],
+         [x0 + 52, y + 20], [x0 + 18, y + 20]],
+        dtype=np.int32,
+    )
+    right_head = np.array(
+        [[x1 - 18, y - 20], [x1 - 52, y - 20], [x1 - 70, y - 10], [x1 - 70, y + 10],
+         [x1 - 52, y + 20], [x1 - 18, y + 20]],
+        dtype=np.int32,
+    )
+    for head in (left_head, right_head):
+        cv2.fillPoly(img, [head], (72, 92, 88), cv2.LINE_AA)
+        cv2.polylines(img, [head], True, HUD_EDGE, 2, cv2.LINE_AA)
+        cv2.polylines(img, [head], True, HUD_INK, 1, cv2.LINE_AA)
+
+    cv2.rectangle(img, (x0 + 32, y - 27), (x0 + 46, y - 19), HUD_EDGE_DIM, -1)
+    cv2.rectangle(img, (x1 - 46, y + 19), (x1 - 32, y + 27), HUD_EDGE_DIM, -1)
+    cv2.circle(img, (x0 + 24, y + 25), 6, HUD_INK, -1, cv2.LINE_AA)
+    cv2.circle(img, (x1 - 24, y - 25), 6, HUD_INK, -1, cv2.LINE_AA)
+
+    if target_dist is not None:
+        dist = _safe_float(target_dist)
+        marker_ratio = float(np.clip(dist / 4.0, 0.0, 1.0))
+        mx = int(round((x0 + 72) + marker_ratio * ((x1 - 72) - (x0 + 72))))
+        cv2.line(img, (mx, y - 11), (mx, y + 11), HUD_CYAN, 1, cv2.LINE_AA)
+        cv2.putText(img, f"{dist:.2f}m", (mx - 22, y + 29), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.32, HUD_CYAN, 1, cv2.LINE_AA)
+
+
+def _draw_robot_schematic(img: np.ndarray, x: int, y: int, w: int, h: int) -> None:
+    """Draw a compact quadruped schematic in a panel inset."""
+    cv2.rectangle(img, (x, y), (x + w, y + h), (91, 99, 90), -1)
+    cv2.rectangle(img, (x, y), (x + w, y + h), HUD_EDGE, 1, cv2.LINE_AA)
+    body = np.array(
+        [[x + 18, y + 22], [x + 50, y + 16], [x + 64, y + 23], [x + 58, y + 34], [x + 22, y + 36]],
+        dtype=np.int32,
+    )
+    head = np.array([[x + 61, y + 19], [x + 74, y + 22], [x + 75, y + 31], [x + 60, y + 30]], dtype=np.int32)
+    cv2.fillPoly(img, [body, head], (136, 144, 135), cv2.LINE_AA)
+    cv2.polylines(img, [body], True, HUD_INK, 1, cv2.LINE_AA)
+    cv2.polylines(img, [head], True, HUD_INK, 1, cv2.LINE_AA)
+    for hx, hy, fx, fy in (
+        (x + 26, y + 35, x + 20, y + 57),
+        (x + 38, y + 34, x + 42, y + 57),
+        (x + 52, y + 33, x + 48, y + 55),
+        (x + 60, y + 31, x + 68, y + 53),
+    ):
+        cv2.line(img, (hx, hy), (fx, fy), HUD_INK, 2, cv2.LINE_AA)
+        cv2.circle(img, (fx, fy), 2, HUD_INK, -1, cv2.LINE_AA)
+    cv2.circle(img, (x + 70, y + 25), 1, HUD_INK, -1)
+
+
+def _draw_actuator_widget(
+    img: np.ndarray,
+    x: int,
+    y: int,
+    w: int,
+    lift_ratio: float,
+    color: Tuple[int, int, int],
+) -> None:
+    """Draw a small mechanical actuator cylinder."""
+    h = 18
+    body_y = y - h // 2
+    cv2.rectangle(img, (x + 12, body_y + 3), (x + w - 12, body_y + h - 3), (35, 43, 42), -1)
+    cv2.rectangle(img, (x + 18, body_y + 5), (x + w - 18, body_y + h - 5), (72, 86, 82), -1)
+    fill_w = int((w - 40) * float(np.clip(lift_ratio, 0.0, 1.0)))
+    if fill_w > 0:
+        cv2.rectangle(img, (x + 20, body_y + 6), (x + 20 + fill_w, body_y + h - 6), color, -1)
+    cv2.rectangle(img, (x + 18, body_y + 5), (x + w - 18, body_y + h - 5), HUD_EDGE, 1, cv2.LINE_AA)
+    for cap_x in (x + 10, x + w - 22):
+        cv2.rectangle(img, (cap_x, body_y), (cap_x + 14, body_y + h), (82, 91, 88), -1)
+        cv2.rectangle(img, (cap_x, body_y), (cap_x + 14, body_y + h), HUD_EDGE, 1, cv2.LINE_AA)
+    cv2.line(img, (x, y), (x + 12, y), HUD_EDGE, 2, cv2.LINE_AA)
+    cv2.line(img, (x + w - 8, y), (x + w + 8, y), HUD_EDGE, 2, cv2.LINE_AA)
+
+
+def _draw_leg_gauge(img: np.ndarray, cx: int, cy: int, ratio: float, color: Tuple[int, int, int]) -> None:
+    cv2.ellipse(img, (cx, cy), (15, 15), 0, 200, 340, HUD_EDGE_DIM, 1, cv2.LINE_AA)
+    cv2.ellipse(img, (cx, cy), (15, 15), 0, 200, int(200 + 140 * float(np.clip(ratio, 0.0, 1.0))), color, 2, cv2.LINE_AA)
+    angle = math.radians(200 + 140 * float(np.clip(ratio, 0.0, 1.0)))
+    cv2.line(img, (cx, cy), (int(cx + 12 * math.cos(angle)), int(cy + 12 * math.sin(angle))),
+             color, 1, cv2.LINE_AA)
+    cv2.circle(img, (cx, cy), 2, HUD_TEXT, -1, cv2.LINE_AA)
 
 
 def _draw_lidar_bev_panel_legacy(combined: np.ndarray, x: int, y: int, w: int, h: int,
@@ -838,7 +938,10 @@ def _draw_lidar_bev_panel(combined: np.ndarray, x: int, y: int, w: int, h: int,
     if ax1 <= ax0 + 10 or ay1 <= ay0 + 10:
         return
 
-    cv2.rectangle(combined, (ax0, ay0), (ax1, ay1), (0, 0, 0), -1)
+    bev_bg = (82, 128, 163)
+    bev_ink = (10, 20, 25)
+    cv2.rectangle(combined, (ax0, ay0), (ax1, ay1), bev_bg, -1)
+    cv2.rectangle(combined, (ax0, ay0), (ax1, ay1), HUD_INK, 1, cv2.LINE_AA)
     decoded = decode_lidar_profile(profile)
     if decoded is None:
         cv2.putText(combined, "LIDAR PROFILE: N/A", (ax0 + 10, (ay0 + ay1) // 2),
@@ -854,15 +957,15 @@ def _draw_lidar_bev_panel(combined: np.ndarray, x: int, y: int, w: int, h: int,
     for r_ring in range(1, int(math.floor(view_range)) + 1):
         rp = int(round(r_ring * scale))
         if 1 < rp < radius_px:
-            cv2.circle(combined, (cx, cy), rp, (22, 34, 38), 1, cv2.LINE_AA)
+            cv2.circle(combined, (cx, cy), rp, (66, 88, 96), 1, cv2.LINE_AA)
             cv2.putText(combined, f"{r_ring}m", (cx + rp - 18, cy - 4),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.25, (60, 82, 88), 1, cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.25, (56, 76, 82), 1, cv2.LINE_AA)
 
     for deg in range(0, 360, 30):
         rad = math.radians(deg)
         x2 = int(round(cx - math.sin(rad) * radius_px))
         y2 = int(round(cy - math.cos(rad) * radius_px))
-        cv2.line(combined, (cx, cy), (x2, y2), (16, 28, 32), 1, cv2.LINE_AA)
+        cv2.line(combined, (cx, cy), (x2, y2), (62, 81, 88), 1, cv2.LINE_AA)
 
     ranges = np.asarray(decoded.get("ranges_m"), dtype=np.float32)
     if ranges.size:
@@ -877,17 +980,20 @@ def _draw_lidar_bev_panel(combined: np.ndarray, x: int, y: int, w: int, h: int,
             inb = (u >= ax0) & (u < ax1) & (v >= ay0) & (v < ay1)
             if np.any(inb):
                 rr = np.clip(valid_ranges[inb] / view_range, 0.0, 1.0)
-                brightness = (82.0 + 170.0 * (1.0 - rr)).astype(np.uint8)
+                brightness = (60.0 + 120.0 * (1.0 - rr)).astype(np.uint8)
                 colors = np.zeros((int(np.sum(inb)), 3), dtype=np.uint8)
-                colors[:, 0] = np.maximum(brightness, 130)
-                colors[:, 1] = brightness
-                colors[:, 2] = np.clip(brightness * 0.75, 70, 210)
+                colors[:, 0] = np.clip(brightness * 0.45, 24, 90)
+                colors[:, 1] = np.clip(brightness * 0.70, 35, 135)
+                colors[:, 2] = np.clip(brightness * 0.95, 45, 190)
                 uu, vv = u[inb], v[inb]
                 combined[vv, uu] = colors
                 for du, dv in ((1, 0), (0, 1), (1, 1)):
                     mu, mv = uu + du, vv + dv
                     ok = (mu >= ax0) & (mu < ax1) & (mv >= ay0) & (mv < ay1)
                     combined[mv[ok], mu[ok]] = colors[ok]
+                step = max(1, len(uu) // 96)
+                for px, py in zip(uu[::step], vv[::step]):
+                    cv2.circle(combined, (int(px), int(py)), 2, bev_ink, -1, cv2.LINE_AA)
 
             outline = []
             for rng_i, ang_i in zip(ranges, ang):
@@ -899,20 +1005,20 @@ def _draw_lidar_bev_panel(combined: np.ndarray, x: int, y: int, w: int, h: int,
                     outline.append([px, py])
             if len(outline) > 2:
                 cv2.polylines(combined, [np.array(outline, dtype=np.int32)],
-                              False, (52, 74, 80), 1, cv2.LINE_AA)
+                              False, bev_ink, 2, cv2.LINE_AA)
 
     robot = np.array([[cx, cy - 8], [cx - 6, cy + 6], [cx + 6, cy + 6]], dtype=np.int32)
-    cv2.fillPoly(combined, [robot], accent)
-    cv2.polylines(combined, [robot], True, HUD_TEXT, 1, cv2.LINE_AA)
+    cv2.fillPoly(combined, [robot], HUD_GOLD)
+    cv2.polylines(combined, [robot], True, HUD_INK, 1, cv2.LINE_AA)
     cv2.putText(combined, "F", (cx - 4, ay0 + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.28,
-                HUD_MUTED, 1, cv2.LINE_AA)
+                bev_ink, 1, cv2.LINE_AA)
 
     if person_bearing_rad is not None:
         target_range = float(lidar_m) if lidar_m is not None and float(lidar_m) > 0.0 else view_range
         ray_len = min(target_range, view_range) * scale
         tx = int(round(cx - math.sin(person_bearing_rad) * ray_len))
         ty = int(round(cy - math.cos(person_bearing_rad) * ray_len))
-        target_color = HUD_ALERT if disagreement else HUD_MAGENTA
+        target_color = HUD_ALERT if disagreement else HUD_GOLD
         cv2.line(combined, (cx, cy), (tx, ty), target_color, 1, cv2.LINE_AA)
         cv2.circle(combined, (tx, ty), 4, target_color, -1, cv2.LINE_AA)
 
@@ -927,7 +1033,7 @@ def _draw_lidar_bev_panel(combined: np.ndarray, x: int, y: int, w: int, h: int,
     status_color = HUD_ALERT if disagreement else HUD_MINT
     readout = f"HITS {hit_count}/{ray_count}  NEAR {near_txt}  {l_txt}  {d_txt}  {c_txt}"
     cv2.putText(combined, readout, (ax0, y + h - 8),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.33, HUD_TEXT, 1, cv2.LINE_AA)
+                cv2.FONT_HERSHEY_SIMPLEX, 0.33, HUD_GOLD, 1, cv2.LINE_AA)
     status_w = cv2.getTextSize(status, cv2.FONT_HERSHEY_SIMPLEX, 0.33, 1)[0][0]
     cv2.putText(combined, status, (max(ax0, ax1 - status_w - 2), y + h - 8),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.33, status_color, 1, cv2.LINE_AA)
@@ -976,6 +1082,12 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
 
     # Draw central HUD target crosshair/reticle with centered gait chassis
     _draw_hud_reticle(combined, frame_center_x, frame_center_y, debug_info, active_color, alert=hud_alert, swing_list=swing_list)
+    _draw_center_instrument_bar(
+        combined,
+        frame_center_x,
+        min(h_f - 142, frame_center_y + 118),
+        debug_info.get("depth_distance_m") if debug_info else None,
+    )
 
     # Draw estimated target crosshair (from YOLO box center)
     center_x = debug_info.get('center_x', None)
@@ -1016,7 +1128,7 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
         header_lock = "LOST"
         header_lock_color = HUD_ALERT
 
-    header_title = "SYSTEM ANALYSIS / SENSOR CONTROL"
+    header_title = "SYSTEM ANALYSIS / BIOMETRIC CONTROL"
     cv2.putText(combined, header_title, (20, 26),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.43, rail_light, 1, cv2.LINE_AA)
     title_w = cv2.getTextSize(header_title, cv2.FONT_HERSHEY_SIMPLEX, 0.43, 1)[0][0]
@@ -1121,9 +1233,9 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
     
     curr_y = top_y + 45
     for label, val, val_color in p1_lines:
-        cv2.putText(combined, label, (left_x + 12, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, HUD_MUTED, 1, cv2.LINE_AA)
-        _draw_row_icon(combined, left_x + 128, curr_y - 3, HUD_EDGE_DIM)
-        cv2.putText(combined, val, (left_x + 148, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, val_color, 2 if "STATUS" in label else 1, cv2.LINE_AA)
+        cv2.putText(combined, label, (left_x + 12, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.39, HUD_TEXT, 1, cv2.LINE_AA)
+        _draw_row_icon(combined, left_x + 104, curr_y - 3, HUD_EDGE_DIM)
+        cv2.putText(combined, val, (left_x + 136, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.39, val_color, 2 if "STATUS" in label else 1, cv2.LINE_AA)
         curr_y += 24
 
     # -----------------------------------------------------------------------
@@ -1188,9 +1300,9 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
         
     curr_y = bottom_y + 45
     for label, val, val_color in p2_lines:
-        cv2.putText(combined, label, (left_x + 12, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, HUD_MUTED, 1, cv2.LINE_AA)
-        _draw_row_icon(combined, left_x + 128, curr_y - 3, HUD_EDGE_DIM)
-        cv2.putText(combined, val, (left_x + 148, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, val_color, 2 if "LOCK" in label else 1, cv2.LINE_AA)
+        cv2.putText(combined, label, (left_x + 12, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.39, HUD_TEXT, 1, cv2.LINE_AA)
+        _draw_row_icon(combined, left_x + 104, curr_y - 3, HUD_EDGE_DIM)
+        cv2.putText(combined, val, (left_x + 136, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.39, val_color, 2 if "LOCK" in label else 1, cv2.LINE_AA)
         curr_y += 24
 
     # -----------------------------------------------------------------------
@@ -1217,7 +1329,7 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
     assist_color = HUD_ALERT if assist_enabled else (HUD_MINT if assist_available else HUD_MUTED)
     
     p3_lines = [
-        ("POLICY:", policy_name[:22], active_color if policy_name != "N/A" else HUD_MUTED),
+        ("POLICY:", policy_name[:18], active_color if policy_name != "N/A" else HUD_MUTED),
         ("MODE:", mode_str, HUD_MINT if "CLIMB" in mode_str or "APPROACH" in mode_str else active_color),
         ("GAIT TYPE:", gait_pattern.replace("_", " "), HUD_TEXT if gait_pattern != "N/A" else HUD_MUTED),
         ("CLEARANCE:", f"{float(clearance):.2f} m" if clearance is not None else "N/A", HUD_TEXT if clearance is not None else HUD_MUTED),
@@ -1226,31 +1338,13 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
         ("ASSIST:", assist_str, assist_color),
     ]
     
-    # Robot dog silhouette icon (top-right corner of RL panel)
-    _dog_x = right_x + panel_w - 64
-    _dog_y = top_y + 28
-    _dog_c = (85, 85, 85)    # body fill
-    _dog_l = (120, 120, 120) # outline
-    body = np.array([[_dog_x,      _dog_y + 8],  [_dog_x + 33, _dog_y + 7],
-                      [_dog_x + 33, _dog_y + 17], [_dog_x,      _dog_y + 17]], np.int32)
-    head = np.array([[_dog_x + 29, _dog_y + 2],  [_dog_x + 44, _dog_y + 4],
-                      [_dog_x + 44, _dog_y + 14], [_dog_x + 29, _dog_y + 13]], np.int32)
-    cv2.fillPoly(combined, [body], _dog_c)
-    cv2.fillPoly(combined, [head], _dog_c)
-    cv2.polylines(combined, [body], True, _dog_l, 1, cv2.LINE_AA)
-    cv2.polylines(combined, [head], True, _dog_l, 1, cv2.LINE_AA)
-    for lx_t, lx_b in [(_dog_x + 26, _dog_x + 24), (_dog_x + 31, _dog_x + 33),
-                        (_dog_x + 5,  _dog_x + 3),  (_dog_x + 10, _dog_x + 12)]:
-        cv2.line(combined, (lx_t, _dog_y + 17), (lx_b, _dog_y + 27), _dog_l, 2, cv2.LINE_AA)
-    cv2.line(combined, (_dog_x, _dog_y + 11), (_dog_x - 7, _dog_y + 7), _dog_l, 1, cv2.LINE_AA)
-    cv2.circle(combined, (_dog_x + 40, _dog_y + 7), 1, _dog_l, -1)
+    _draw_robot_schematic(combined, right_x + 12, top_y + 38, 76, 74)
 
     curr_y = top_y + 45
     for label, val, val_color in p3_lines:
-        cv2.putText(combined, label, (right_x + 12, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, HUD_MUTED, 1, cv2.LINE_AA)
-        _draw_row_icon(combined, right_x + 100, curr_y - 3, HUD_EDGE_DIM)
-        cv2.putText(combined, val, (right_x + 118, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, val_color, 1, cv2.LINE_AA)
-        curr_y += 24
+        cv2.putText(combined, label, (right_x + 98, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.35, HUD_TEXT, 1, cv2.LINE_AA)
+        cv2.putText(combined, val, (right_x + 174, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.35, val_color, 1, cv2.LINE_AA)
+        curr_y += 23
 
     # -----------------------------------------------------------------------
     # Panel 4 (Bottom-Right): LEG ACTUATORS & COMMANDS
@@ -1258,13 +1352,11 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
     _draw_hud_panel(combined, right_x, bottom_y, panel_w, bottom_panel_h, "LEG ACTUATORS & COMMANDS", active_color, alert=hud_alert)
     
     curr_y = bottom_y + 45
-    detail_x = right_x + 8
+    detail_x = right_x + 12
     leg_commands = blind_rl.get("leg_commands", {})
-    _bar_x   = detail_x + 60
-    _bar_w   = 110
-    _bar_h   = 9
-    _dial_r  = 10
-    _dial_cx = right_x + panel_w - 18
+    _bar_x = detail_x + 64
+    _bar_w = 118
+    _dial_cx = right_x + panel_w - 28
 
     for leg in ("FL", "FR", "RL", "RR"):
         cmd_data = leg_commands.get(leg, {}) if isinstance(leg_commands, dict) else {}
@@ -1281,46 +1373,25 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
             action = "N/A"
             lift_m = None
 
-        leg_color = active_color if is_swing else (HUD_MUTED if has_leg_cmd else HUD_EDGE_DIM)
+        leg_color = HUD_CYAN if is_swing else (HUD_GOLD if has_leg_cmd else HUD_EDGE_DIM)
 
-        # Label
         cv2.putText(combined, f"LEG {leg}", (detail_x, curr_y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, leg_color, 1, cv2.LINE_AA)
-
-        # Actuator bar (cylinder-style fill)
-        bar_y = curr_y - 8
-        cv2.rectangle(combined, (_bar_x, bar_y), (_bar_x + _bar_w, bar_y + _bar_h), (28, 28, 28), -1)
-        cv2.rectangle(combined, (_bar_x, bar_y), (_bar_x + _bar_w, bar_y + _bar_h), (65, 65, 65),  1)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, HUD_TEXT, 1, cv2.LINE_AA)
         lift_val = None
         try:
             lift_val = None if lift_m is None else max(0.0, float(lift_m))
         except Exception:
             lift_val = None
         fill_ratio = min(lift_val / 0.12, 1.0) if lift_val is not None else 0.0
-        fill_w = int(_bar_w * fill_ratio)
-        if fill_w > 0:
-            cv2.rectangle(combined, (_bar_x, bar_y + 1),
-                          (_bar_x + fill_w, bar_y + _bar_h - 1), leg_color, -1)
-            # Top highlight stripe
-            cv2.line(combined, (_bar_x + 1, bar_y + 1),
-                     (_bar_x + fill_w, bar_y + 1), (220, 220, 220), 1)
-
-        # Value text inside / after bar
+        _draw_actuator_widget(combined, _bar_x, curr_y - 4, _bar_w, fill_ratio, leg_color)
         lift_txt = f"{lift_val:.2f}m" if lift_val is not None else "--"
-        val_lbl = f"{lift_txt}  {action[:7]}"
-        cv2.putText(combined, val_lbl, (_bar_x + _bar_w + 4, curr_y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.34, leg_color, 1, cv2.LINE_AA)
+        cv2.putText(combined, lift_txt, (detail_x, curr_y + 14),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.30, HUD_BLUE, 1, cv2.LINE_AA)
+        cv2.putText(combined, action[:7], (_bar_x + _bar_w + 8, curr_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.33, leg_color, 1, cv2.LINE_AA)
+        _draw_leg_gauge(combined, _dial_cx, curr_y - 5, fill_ratio, leg_color)
 
-        # Mini gauge dial
-        dial_cy = curr_y - 4
-        cv2.circle(combined, (_dial_cx, dial_cy), _dial_r, (35, 35, 35), -1)
-        cv2.circle(combined, (_dial_cx, dial_cy), _dial_r, (75, 75, 75),  1)
-        _ang = math.radians(220 + int(100 * fill_ratio))
-        nx = int(_dial_cx + (_dial_r - 3) * math.cos(_ang))
-        ny = int(dial_cy   + (_dial_r - 3) * math.sin(_ang))
-        cv2.line(combined, (_dial_cx, dial_cy), (nx, ny), leg_color, 1, cv2.LINE_AA)
-
-        curr_y += 46
+        curr_y += 42
 
     # -----------------------------------------------------------------------
     # XT16 LiDAR BEV (right column, between the RL policy and leg panels)

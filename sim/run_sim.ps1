@@ -26,7 +26,10 @@ param(
     [string]$RlPolicyFormat = "auto",
     [double]$RlControlHz = 50.0,
     [double]$RlActionScale = 0.25,
-    [string]$RlStairsStrategy = "policy"
+    [string]$RlStairsStrategy = "policy",
+    [switch]$Sim2RealValidation,
+    [double]$SimLatencyMs = 0.0,
+    [double]$SimLatencyJitterMs = 0.0
 )
 
 $ErrorActionPreference = "Stop"
@@ -148,7 +151,7 @@ Set-Content -LiteralPath $SummaryLog -Encoding UTF8 -Value @(
     "  summary      final launcher result",
     "",
     "What the folders mean:",
-    "  videos/    all recorded mp4s (opencv_preview, raw_camera, topdown, lidar_preview)",
+    "  videos/    all recorded mp4s (opencv_preview, scene_view, topdown, lidar_preview)",
     "  reports/   evaluation_summary.txt, stair_demo_report.json, verification_*.png",
     "  logs/      human timeline: launcher.log, status.jsonl, isaac_console.log",
     "  debug/     verbose dumps -- open only when stuck:",
@@ -158,14 +161,15 @@ Set-Content -LiteralPath $SummaryLog -Encoding UTF8 -Value @(
     "  logs/status.jsonl                           machine-readable launcher stage events",
     "  logs/launcher.log                           plain-text launcher timeline",
     "  logs/isaac_console.log                      filtered important Isaac messages",
-    "  videos/opencv_preview/opencv_preview.mp4    OpenCV preview (YOLO + LiDAR BEV + fused distance)",
+    "  videos/opencv_preview.mp4                   OpenCV preview (YOLO + LiDAR BEV + fused distance)",
+    "  videos/topdown.mp4 / scene_view.mp4         1080p overhead + external scene cameras (~66 fps)",
     "",
     "Fast diagnosis:",
     "  If isaac_wait is complete, Isaac emitted world_ready and scene loading finished.",
     "  Docker starts automatically after Isaac is ready; pass --pause-after-isaac to restore the manual gate.",
     "  Isaac now holds autonomous person/distractor motion until the controller sends a nonzero command.",
     "  Docker will not command the robot until both TensorRT engine files exist in models/.",
-    "  OpenCV preview frames are saved even when GUI preview is disabled.",
+    "  OpenCV preview video is saved even when GUI preview is disabled.",
     "  If build fails, docker_run.log will not exist because the controller never started.",
     "  Existing Docker images are reused automatically.",
     "  To force a rebuild, run: .\run_sim.bat --force-build",
@@ -990,6 +994,7 @@ Write-Stage "setup" "start" "Preparing run_sim launch" @{
     rl_control_hz = [double]$RlControlHz
     rl_action_scale = [double]$RlActionScale
     rl_stairs_strategy = $RlStairsStrategy
+    sim2real_validation = [bool]$Sim2RealValidation
 }
 Write-Host "Read first: $SummaryLog"
 Prune-OldRunLogs -KeepCount $KeepRunLogs
@@ -1074,7 +1079,7 @@ if ($NoIsaac) {
         "-IsaacSimDir", $IsaacSimDir,
         "-RepoRoot", $RepoRoot,
         "-RunLogDir", $RunLogDir,
-        "-RawVideoPath", (Join-Path $VideosDir "raw_camera.mp4"),
+        "-RawVideoPath", (Join-Path $VideosDir "scene_view.mp4"),
         "-FrameHost", $FrameHost,
         "-FramePort", [string]$FramePort,
         "-CmdPort", [string]$CmdPort,
@@ -1086,6 +1091,9 @@ if ($NoIsaac) {
     )
     if ($RlPolicyPath) {
         $isaacArgs += @("-RlPolicyPath", $RlPolicyPath)
+    }
+    if ($Sim2RealValidation) {
+        $isaacArgs += "-Sim2RealValidation"
     }
 
     $isaacCommandLine = Format-CommandLine -FilePath "powershell.exe" -Arguments $isaacArgs
@@ -1139,6 +1147,18 @@ if ($NoDockerRun) {
         -ExpectedContainerName $DockerContainerName
 
     $dockerLog = Join-Path $DebugDir "docker_run.log"
+    # Controller-side sense->act latency (core/main.py SimCameraCapture delay buffer).
+    # The validation preset adds a realistic default (60 ms +/- 20 ms -- a Jetson
+    # camera->inference->command pipeline estimate) unless the flags are set
+    # explicitly. Tune these once the real pipeline latency is measured.
+    $effLatencyMs = $SimLatencyMs
+    $effLatencyJitterMs = $SimLatencyJitterMs
+    if ($Sim2RealValidation -and -not $PSBoundParameters.ContainsKey('SimLatencyMs')) {
+        $effLatencyMs = 60.0
+    }
+    if ($Sim2RealValidation -and -not $PSBoundParameters.ContainsKey('SimLatencyJitterMs')) {
+        $effLatencyJitterMs = 20.0
+    }
     $visionArgs = @(
         "python3 sim/main.py",
         "--sim",
@@ -1149,6 +1169,8 @@ if ($NoDockerRun) {
         "--frame-port $FramePort",
         "--trt-engine '$TrtEngine'",
         "--sim-frame-timeout-exit-sec $SimFrameTimeoutExitSec",
+        "--sim-latency-ms $effLatencyMs",
+        "--sim-latency-jitter-ms $effLatencyJitterMs",
         "--target-distance 0.45",
         "--trans-x-max 0.85",
         "--trans-x-tolerance 0.12",
@@ -1157,9 +1179,11 @@ if ($NoDockerRun) {
         "--kd 0.15",
         "--ecs-log-dir /workspace/run_logs/debug/ecs",
         "--debug-trace-dir /workspace/run_logs/debug/debug_trace",
-        "--preview-save-dir /workspace/run_logs/videos/opencv_preview",
+        # Write the OpenCV preview straight into videos/ (no preview-save-dir, which
+        # would rmtree its target -- that is why this used to be boxed in a subfolder).
+        "--preview-video-path /workspace/run_logs/videos/opencv_preview.mp4",
         "--preview-save-fps 5",
-        # raw_camera.mp4 is recorded by Isaac from the external scene Left view;
+        # scene_view.mp4 is recorded by Isaac from the external scene Left view;
         # disable the controller's raw writer so the robot-POV stream isn't duplicated.
         "--no-raw-video"
     )

@@ -594,11 +594,11 @@ def main():
 
     raw_video_path = getattr(args, "raw_video_path", "")
     if getattr(args, "no_raw_video", False):
-        # In sim, Isaac records raw_camera.mp4 from the external scene Left view,
+        # In sim, Isaac records scene_view.mp4 from the external scene Left view,
         # so the controller's raw writer is disabled to avoid a duplicate file.
         raw_video_path = ""
     elif not raw_video_path and args.preview_save_dir:
-        raw_video_path = os.path.join(args.preview_save_dir, "raw_camera.mp4")
+        raw_video_path = os.path.join(args.preview_save_dir, "scene_view.mp4")
     if raw_video_path and not args.preview_save_dir:
         raw_video_dir = os.path.dirname(raw_video_path)
         if raw_video_dir:
@@ -1235,7 +1235,7 @@ def main():
                         if _rvw is not None and _rvw.isOpened():
                             raw_video_writer = _rvw
                             debug_trace.log(
-                                "raw_camera_video_started",
+                                "scene_view_video_started",
                                 path=raw_video_path,
                                 fps=float(preview_rate_hz),
                                 frame_shape=list(img.shape),

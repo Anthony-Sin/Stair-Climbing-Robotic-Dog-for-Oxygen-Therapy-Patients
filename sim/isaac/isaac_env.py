@@ -39,6 +39,14 @@ parser.add_argument("--physics-hz", type=int, default=200,
 parser.add_argument("--render-every", type=int, default=7,
                     help="Render + publish a camera frame every N physics steps. With "
                          "--physics-hz 200 this also sets the GUI/render rate; 7 -> ~28 fps.")
+parser.add_argument("--record-every", type=int, default=3,
+                    help="Render + capture the recording cameras (top-down + external "
+                         "scene_view) every N physics steps -- a finer cadence than "
+                         "--render-every so those mp4s get a higher FPS WITHOUT touching the "
+                         "perception/control pipeline (front cam -> YOLO publish, LiDAR, and "
+                         "command loop stay on --render-every). With --physics-hz 200, "
+                         "3 -> ~66 fps recording vs ~28 fps perception. The extra renders only "
+                         "cost GPU wall-clock; physics still steps every frame at --physics-hz.")
 parser.add_argument("--person-x", type=float, default=1.4,
                     help="Initial X position of the person target (kept well beyond "
                          "target_distance from the robot so the robot has forward-follow "
@@ -237,12 +245,12 @@ parser.add_argument("--ros2-bridge-host", type=str, default="127.0.0.1",
                     help="Destination host for the ROS2 bridge cloud/odom UDP sidecar.")
 parser.add_argument("--ros2-bridge-port", type=int, default=55003,
                     help="Destination UDP port for the ROS2 bridge cloud/odom sidecar.")
-# raw_camera.mp4 = the external Isaac-Sim scene Left view, recorded sim-side
+# scene_view.mp4 = the external Isaac-Sim scene Left view, recorded sim-side
 # (the robot's own front POV is streamed to the controller for opencv_preview).
 parser.add_argument("--raw-video-path", type=str, default="",
-                    help="MP4 path for the external Isaac scene Left 'raw' view. "
-                         "Empty uses <log-dir>/raw_camera.mp4. run_sim points this at "
-                         "the vision preview dir so it sits beside opencv_preview.mp4.")
+                    help="MP4 path for the external Isaac scene Left view. "
+                         "Empty uses <log-dir>/scene_view.mp4. run_sim points this at "
+                         "the videos dir so it sits beside opencv_preview.mp4.")
 args = parser.parse_args()
 
 
@@ -1005,7 +1013,7 @@ def add_camera(stage, resolution: tuple = (1280, 720)) -> Camera:
     frame streamed to the controller for YOLO + the OpenCV preview HUD.
 
     The Isaac Sim scene Left perspective camera is NOT streamed here — it is
-    recorded separately as the external raw_camera.mp4 view via
+    recorded separately as the external scene_view.mp4 view via
     add_scene_left_camera().
     """
     global CAMERA_PRIM, _using_go2_builtin_camera
@@ -1058,17 +1066,18 @@ def add_camera(stage, resolution: tuple = (1280, 720)) -> Camera:
     return camera
 
 
-def add_scene_left_camera(stage, resolution: tuple = (1280, 720)) -> Optional[Camera]:
+def add_scene_left_camera(stage, resolution: tuple = (1920, 1080)) -> Optional[Camera]:
     """Camera sensor on the Isaac Sim scene Left perspective viewport camera.
 
-    Used only to record the external raw_camera.mp4 view (the Isaac-Sim left-side
+    Used only to record the external scene_view.mp4 view (the Isaac-Sim left-side
     display) — a fixed scene camera, separate from the robot's streamed front POV.
-    Returns None if no scene camera is available (raw recording is then skipped).
+    Rendered at 1080p (recording-only; does not feed perception/control).
+    Returns None if no scene camera is available (scene_view recording is then skipped).
     """
     path = _find_isaac_scene_left_camera(stage)
     if path is None:
         log_event(LOGGER, logging.WARNING, "scene_left_camera_not_found",
-                  "Isaac Sim scene Left camera not found; raw_camera.mp4 recording will be skipped")
+                  "Isaac Sim scene Left camera not found; scene_view.mp4 recording will be skipped")
         return None
     try:
         camera = Camera(prim_path=path, name="scene_left_camera", resolution=resolution)
@@ -1115,8 +1124,11 @@ def add_verification_camera(stage, resolution: tuple = (1280, 720)) -> Camera:
     return camera
 
 
-def add_topdown_camera(stage, resolution: tuple = (640, 480)) -> Camera:
-    """Create a static overhead camera looking straight down at the full scene."""
+def add_topdown_camera(stage, resolution: tuple = (1920, 1080)) -> Camera:
+    """Create a static overhead camera looking straight down at the full scene.
+
+    Rendered at 1080p (recording-only; does not feed perception/control).
+    """
     if not stage.GetPrimAtPath("/World/View").IsValid():
         stage.DefinePrim("/World/View", "Xform")
 
@@ -3315,7 +3327,7 @@ def main() -> None:
                       "Isaac scene Left camera sensor initialized for raw recording")
         except Exception as _sl_exc:
             log_event(LOGGER, logging.WARNING, "scene_left_camera_init_failed",
-                      "Scene Left camera init failed; raw_camera.mp4 recording will be skipped",
+                      "Scene Left camera init failed; scene_view.mp4 recording will be skipped",
                       error=str(_sl_exc))
             scene_left_camera = None
 
@@ -3398,6 +3410,13 @@ def main() -> None:
     dt         = 1.0 / args.physics_hz
     step_count = 0
 
+    # Recording cameras (top-down + external scene_view) render+capture on their own
+    # finer cadence (--record-every) so their mp4s get a higher FPS than the
+    # perception/control loop (which stays on --render-every). Clamp to >=1 and never
+    # coarser than the perception cadence (a higher record-every would be a downgrade).
+    record_every = max(1, min(int(args.record_every), int(args.render_every)))
+    record_fps = args.physics_hz / max(1, record_every)
+
     # Top-down video writer — starts when scene_motion_released becomes True
     topdown_video_path = os.path.join(_log_bucket(args.log_dir, "videos"), "topdown.mp4") if args.log_dir else ""
     topdown_video_writer = None
@@ -3407,12 +3426,12 @@ def main() -> None:
         if topdown_video_dir:
             os.makedirs(topdown_video_dir, exist_ok=True)
 
-    # Raw external view (Isaac scene Left camera) -> raw_camera.mp4. run_sim points
-    # --raw-video-path at the vision preview dir so it sits beside opencv_preview.mp4
+    # External scene view (Isaac scene Left camera) -> scene_view.mp4. run_sim points
+    # --raw-video-path at the videos dir so it sits beside opencv_preview.mp4
     # (the controller's raw writer is disabled via --no-raw-video). Starts with the
     # top-down recorder once scene motion is released.
     raw_video_path = args.raw_video_path or (
-        os.path.join(_log_bucket(args.log_dir, "videos"), "raw_camera.mp4") if args.log_dir else "")
+        os.path.join(_log_bucket(args.log_dir, "videos"), "scene_view.mp4") if args.log_dir else "")
     raw_video_writer = None
     if scene_left_camera is not None and raw_video_path:
         raw_video_dir = os.path.dirname(raw_video_path)
@@ -3442,6 +3461,13 @@ def main() -> None:
         dropout_prob=float(args.lidar_dropout_prob),
     )
     _render_rate_hz = args.physics_hz / max(1, args.render_every)
+    log_event(LOGGER, logging.INFO, "recording_cadence_configured",
+              "Recording cameras (topdown + scene_view) decoupled from perception cadence",
+              record_fps=round(float(record_fps), 2),
+              perception_fps=round(float(_render_rate_hz), 2),
+              record_every=int(record_every),
+              render_every=int(args.render_every),
+              recording_resolution="1920x1080")
     lidar_scan_stride = max(1, int(round(_render_rate_hz / max(0.1, args.lidar_hz))))
     if lidar_scan_enabled:
         log_event(LOGGER, logging.INFO, "lidar_preview_configured",
@@ -3488,7 +3514,15 @@ def main() -> None:
             # cadence, so a fresh render is available exactly when it reads RGB.
             step_count += 1
             _render_enabled = (not args.headless) or bool(args.front_cam_out)
-            render_now = _render_enabled and (step_count % args.render_every == 0)
+            # Perception/control reads RGB on --render-every. The recording cameras
+            # (topdown + scene_view) capture on the finer --record-every once recording
+            # is released, so render on the UNION of the two cadences: a fresh RTX frame
+            # is then guaranteed whenever either consumer reads. The extra renders only
+            # add GPU wall-clock; physics/RL still step every frame, and the perception
+            # PUBLISH cadence is unchanged, so the control pipeline is not degraded.
+            _perception_tick = (step_count % args.render_every == 0)
+            _record_tick = topdown_recording_released and (step_count % record_every == 0)
+            render_now = _render_enabled and (_perception_tick or _record_tick)
             world.step(render=render_now)
 
             # Read latest velocity command (zero out if stale)
@@ -3979,8 +4013,13 @@ def main() -> None:
                         error=str(exc),
                     )
 
+            # Recording cameras (top-down + external scene_view) capture on the finer
+            # --record-every cadence for a higher FPS than the perception loop above.
+            # render_now already drew a fresh RTX frame this step (the record cadence is
+            # folded into the render gate), so get_rgb() returns a current image.
+            if _record_tick:
                 # Top-down overhead recording — starts when scene motion is released
-                if topdown_camera is not None and topdown_video_path and topdown_recording_released:
+                if topdown_camera is not None and topdown_video_path:
                     try:
                         import cv2 as _cv2
                         td_rgb = topdown_camera.get_rgb()
@@ -3995,7 +4034,7 @@ def main() -> None:
                                     _fourcc = _cv2.VideoWriter_fourcc(*_codec)
                                     _tdvw = _cv2.VideoWriter(
                                         topdown_video_path, _fourcc,
-                                        max(1.0, args.physics_hz / max(1, args.render_every)),
+                                        max(1.0, record_fps),
                                         (int(td_w), int(td_h)),
                                     )
                                     if _tdvw.isOpened():
@@ -4005,14 +4044,15 @@ def main() -> None:
                                     topdown_video_writer = _tdvw
                                     log_event(LOGGER, logging.INFO, "topdown_video_started",
                                               "Top-down video recording started",
-                                              path=topdown_video_path)
+                                              path=topdown_video_path, fps=round(float(record_fps), 2),
+                                              resolution=f"{int(td_w)}x{int(td_h)}")
                             if topdown_video_writer is not None:
                                 topdown_video_writer.write(td_bgr)
                     except Exception:
                         pass
 
-                # Raw external view recording (Isaac scene Left camera) -> raw_camera.mp4
-                if scene_left_camera is not None and raw_video_path and topdown_recording_released:
+                # External scene_view recording (Isaac scene Left camera) -> scene_view.mp4
+                if scene_left_camera is not None and raw_video_path:
                     try:
                         import cv2 as _cv2_raw
                         sl_rgb = scene_left_camera.get_rgb()
@@ -4030,7 +4070,7 @@ def main() -> None:
                                     _rvw = _cv2_raw.VideoWriter(
                                         raw_video_path,
                                         _cv2_raw.VideoWriter_fourcc(*_codec),
-                                        max(1.0, args.physics_hz / max(1, args.render_every)),
+                                        max(1.0, record_fps),
                                         (int(sl_w), int(sl_h)),
                                     )
                                     if _rvw.isOpened():
@@ -4039,8 +4079,9 @@ def main() -> None:
                                 if _rvw is not None and _rvw.isOpened():
                                     raw_video_writer = _rvw
                                     log_event(LOGGER, logging.INFO, "raw_video_started",
-                                              "Raw external (Isaac scene Left) recording started",
-                                              path=raw_video_path)
+                                              "External scene_view (Isaac scene Left) recording started",
+                                              path=raw_video_path, fps=round(float(record_fps), 2),
+                                              resolution=f"{int(sl_w)}x{int(sl_h)}")
                             if raw_video_writer is not None:
                                 raw_video_writer.write(sl_bgr)
                     except Exception:
@@ -4080,7 +4121,7 @@ def main() -> None:
         if raw_video_writer is not None:
             try:
                 raw_video_writer.release()
-                log_event(LOGGER, logging.INFO, "raw_video_saved", "Raw external (Isaac scene Left) recording finalized",
+                log_event(LOGGER, logging.INFO, "raw_video_saved", "External scene_view (Isaac scene Left) recording finalized",
                           path=raw_video_path)
             except Exception:
                 pass
