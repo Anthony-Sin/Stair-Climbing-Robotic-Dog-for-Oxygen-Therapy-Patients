@@ -69,6 +69,11 @@ parser.add_argument("--quiet-console-log", action="store_true",
                     help="Write JSONL logs only and suppress pretty console log lines")
 parser.add_argument("--no-view-follow-camera", action="store_true",
                     help="Do not switch the Isaac viewport to the dynamic Go2 follow camera")
+parser.add_argument("--final-scene", action="store_true",
+                    help="Compose the upgraded hospital demo scene while reusing the existing "
+                         "Go2, patient, cameras, controller, and stair collision pipeline")
+parser.add_argument("--final-scene-env", type=str, default="hospital",
+                    help="Final-scene backdrop name. Currently only 'hospital' is supported.")
 parser.add_argument("--no-hold-motion-until-command", dest="hold_motion_until_command",
                     action="store_false", default=True,
                     help="Let autonomous scene motion start before the Docker/controller command stream is seen")
@@ -99,13 +104,17 @@ parser.add_argument("--parkour-depth-noise-mult", type=float, default=0.0,
                          "perceptive policy sees the noisy depth the real camera produces. "
                          "Set by the --sim2real-validation-cam preset to 1.0 (nominal D435).")
 parser.add_argument("--parkour-heading-mode", type=str, default="vision",
-                    choices=("vision", "command"),
-                    help="Parkour steering: 'vision' (policy self-steers from depth) or "
-                         "'command' (steer toward the person-follow bearing). Default "
-                         "'vision' to match the trained gait (the closed-loop depth "
-                         "self-steer it relies on; this is how it ran at commit 02e441e); "
-                         "pass 'command' to steer toward the YOLO person bearing instead "
-                         "(note: command mode overwrites proprio[6:8] and can destabilize).")
+                    choices=("vision", "command", "hybrid"),
+                    help="Parkour steering: 'vision' (policy self-steers from depth), "
+                         "'command' (always steer toward the person-follow bearing), or "
+                         "'hybrid' (steer toward the person on flat ground, but hand back "
+                         "to depth self-steer once the climb engages -- stairs_action_active). "
+                         "Default 'vision' to match the trained gait (the closed-loop depth "
+                         "self-steer it relies on; this is how it ran at commit 02e441e). "
+                         "'hybrid' is the recommended follow mode once the terrain-aware "
+                         "person mask is confirmed: it gives tight person tracking on flat "
+                         "and never fights foothold selection on the steps. Both 'command' "
+                         "and 'hybrid' overwrite proprio[6:8] with the (smoothed) bearing.")
 parser.add_argument("--no-parkour-person-mask", action="store_true",
                     help="Disable masking the followed person out of the parkour depth "
                          "input. Masking is ON by default: the YOLO person bbox forwarded "
@@ -114,6 +123,20 @@ parser.add_argument("--no-parkour-person-mask", action="store_true",
                          "terrain to charge at (the close-range surge). Pass this flag to "
                          "A/B the raw-depth behavior. Deployable: the same detector runs on "
                          "the real robot.")
+parser.add_argument("--parkour-mask-fill", type=str, default="terrain",
+                    choices=("terrain", "far"),
+                    help="How masked person pixels are filled in the parkour depth input. "
+                         "'terrain' (default): inpaint the body footprint with the depth of "
+                         "the surrounding visible terrain (the step/floor just below and "
+                         "beside the box), so the perceptive policy still sees the riser the "
+                         "person is standing on -- this is what stops the dog going blind to "
+                         "the first step at the stair base. 'far': the legacy flat far-fill "
+                         "(push the whole box to max range / 'clear'); kept for A/B because it "
+                         "reproduces the stair-base fall. Both kill the close-range body surge.")
+parser.add_argument("--with-o2-payload", action="store_true",
+                    help="Attach the 3D-printed rail cradle + P2-E6 oxygen concentrator "
+                         "to the Go2's back. Off by default so the base robot runs clean. "
+                         "Pass this flag to simulate the full therapy payload configuration.")
 parser.add_argument("--stair-preset", type=str, default="demo_gentle",
                     choices=("demo_gentle", "residential", "commercial", "steep"),
                     help="Staircase geometry preset (single source of truth in "
@@ -269,6 +292,13 @@ def _flag_passed(*names: str) -> bool:
     return any(a == n or a.startswith(n + "=") for a in sys.argv[1:] for n in names)
 
 
+_FINAL_SCENE_SPEC = None
+_final_scene_stair_half_width = None
+if args.final_scene:
+    from final_scene import configure_launch_args, stair_half_width as _final_scene_stair_half_width
+    _FINAL_SCENE_SPEC = configure_launch_args(args, _flag_passed)
+
+
 # --sim2real-validation-cam = the REAL-SIMULATED ENV preset. The sim has exactly
 # two configurations: the default "perfect env" (everything clean/ideal) and this
 # one, the closest-to-real env we can test. It flips every realism knob that has a
@@ -327,6 +357,8 @@ log_event(
     frame_host=args.frame_host,
     physics_hz=int(args.physics_hz),
     render_every=int(args.render_every),
+    final_scene=bool(args.final_scene),
+    final_scene_env=args.final_scene_env,
     locomotion_mode="parkour",
     log_path=getattr(LOGGER, "sim_log_path", ""),
 )
@@ -382,6 +414,7 @@ _ACTIVE_STAIRS = configure_stairs(
     step_height_m=args.stair_step_height,
     step_depth_m=args.stair_step_depth,
     step_count=args.stair_step_count,
+    half_width_m=(_final_scene_stair_half_width(_FINAL_SCENE_SPEC) if _FINAL_SCENE_SPEC is not None else None),
     handrail=args.stair_handrail,
 )
 log_event(
@@ -507,6 +540,13 @@ ROBOT_FALL_SUSTAIN_SEC = 0.4
 # Telemetry-only state for the stair demo; the RL policy owns joint control.
 _go2_locomotion_state = Go2LocomotionState()
 
+# Handle for the mounted oxygen-concentrator payload (rail cradle + breakable
+# strap + free tank rigid body), set by load_go2() and consumed by the
+# O2PayloadMonitor in main(). None until the payload is attached. See
+# sim/isaac/o2_payload.
+_o2_payload_handle = None
+_final_scene_handle = None
+
 # ---------------------------------------------------------------------------
 # Shared state between threads
 # ---------------------------------------------------------------------------
@@ -559,6 +599,11 @@ def _cmd_receiver_thread(port: int) -> None:
             # command when --parkour-heading-mode command. Ignored by the blind RL path.
             yaw_err = float(payload.get("yaw_err", 0.0))
             stairs_detected = bool(payload.get("stairs_detected", False))
+            # The climb gate engaged upstream (full stair policy active, not just YOLO
+            # latch). In hybrid heading mode the policy drops the person bearing and
+            # self-steers from depth while this is true. CONTRACT: encoder side is
+            # sim/bot/sim_robot_controller.py _send -- update both together.
+            stairs_action_active = bool(payload.get("stairs_action_active", False))
             # Followed person's bbox in RGB-frame normalized [0,1] coords (or None
             # if no detection this frame). Forwarded so the parkour depth policy can
             # mask the person out of its depth input. List of 4 floats or None.
@@ -587,6 +632,7 @@ def _cmd_receiver_thread(port: int) -> None:
                 _cmd_vel["wz"] = wz
                 _cmd_vel["yaw_err"] = yaw_err
                 _cmd_vel["stairs_detected"] = stairs_detected
+                _cmd_vel["stairs_action_active"] = stairs_action_active
                 _cmd_vel["person_bbox"] = person_bbox
                 _cmd_vel["ts"] = time.monotonic()
                 _cmd_vel["count"] = int(_cmd_vel.get("count", 0)) + 1
@@ -852,12 +898,44 @@ def load_go2(world: World):
             asset_path=str(usd_path),
         )
 
-    log_event(
-        LOGGER,
-        logging.INFO,
-        "robot_o2_mount_skipped",
-        "Skipping robot-mounted O2 props for a clean stairs-and-walls sim scene",
-    )
+    # Mount the oxygen-concentrator payload only when --with-o2-payload is passed.
+    # Off by default so the base robot runs without extra mass/geometry.
+    global _o2_payload_handle
+    if args.with_o2_payload:
+        from o2_payload import attach_o2_payload
+        _o2_payload_handle = attach_o2_payload(
+            stage,
+            resolve_go2_body_prim_path(stage),
+            log=lambda level, action, msg, **f: log_event(LOGGER, level, action, msg, **f),
+        )
+        from o2_payload.spec import SPEC as _O2_SPEC
+        _o2_com = _O2_SPEC.com_shift_m(tank_attached=True)
+        log_event(
+            LOGGER, logging.INFO, "robot_config",
+            "Robot physical configuration snapshot",
+            go2_trunk_mass_kg=_O2_SPEC.trunk_mass_kg,
+            o2_attached=True,
+            o2_tank_mass_kg=round(_O2_SPEC.concentrator.mass_kg, 4),
+            o2_rail_mass_kg=round(_O2_SPEC.rail.mass_kg, 4),
+            o2_total_payload_kg=round(_O2_SPEC.total_payload_mass_kg, 4),
+            o2_length_m=round(_O2_SPEC.concentrator.length_m, 4),
+            o2_width_m=round(_O2_SPEC.concentrator.width_m, 4),
+            o2_height_m=round(_O2_SPEC.concentrator.height_m, 4),
+            o2_orientation=_O2_SPEC.mount.orientation,
+            o2_mount_x_m=round(_O2_SPEC.cradle_base_x_m, 4),
+            o2_mount_y_m=_O2_SPEC.mount.cradle_base_y_m,
+            o2_mount_z_m=_O2_SPEC.mount.cradle_base_z_m,
+            o2_com_shift_x_mm=round(_o2_com[0] * 1000.0, 2),
+            o2_com_shift_z_mm=round(_o2_com[2] * 1000.0, 2),
+            o2_pitch_torque_nm=round(_O2_SPEC.pitch_torque_nm, 3),
+            o2_strap_break_n=_O2_SPEC.strap.break_force_n,
+        )
+    else:
+        log_event(
+            LOGGER, logging.INFO, "robot_config",
+            "Robot physical configuration snapshot",
+            o2_attached=False,
+        )
     log_event(
         LOGGER,
         logging.INFO,
@@ -1144,72 +1222,12 @@ def add_parkour_depth_camera(stage, resolution: tuple = (106, 60)) -> Camera:
     return camera
 
 
-# --- Person-mask FOV mapping (RGB/YOLO cam -> parkour depth cam) -------------
-# The YOLO person bbox comes from the front RGB stream (add_camera: focal 26,
-# aperture 36 x 20.25 -> ~69 deg hFOV / ~42.6 deg vFOV). The parkour policy reads
-# the depth cam (add_parkour_depth_camera: focal 18.97, aperture 36 x 36*60/106
-# -> 87 deg hFOV / ~56.5 deg vFOV). Both are the SAME co-located D435 (identical
-# FRONT_D435_MOUNT + aim), so a bbox maps from RGB-normalized coords to depth
-# pixels by center-scaling each axis by tan(FOV/2)_rgb / tan(FOV/2)_depth (the
-# depth FOV is wider, so the RGB frame fills the central ~73% of it). CONTRACT:
-# if you change either camera's intrinsics, update these to match.
-_RGB_TAN_HALF_H = 36.0 / (2.0 * 26.0)                     # ~0.6923
-_RGB_TAN_HALF_V = 20.25 / (2.0 * 26.0)                    # ~0.3894
-_PK_TAN_HALF_H = 36.0 / (2.0 * 18.97)                     # ~0.9489
-_PK_TAN_HALF_V = (36.0 * 60.0 / 106.0) / (2.0 * 18.97)    # ~0.5371
-_BBOX_TO_DEPTH_SCALE_H = _RGB_TAN_HALF_H / _PK_TAN_HALF_H  # ~0.7296
-_BBOX_TO_DEPTH_SCALE_V = _RGB_TAN_HALF_V / _PK_TAN_HALF_V  # ~0.7250
-# Value written into masked pixels. The depth preprocessing clips to far_clip, so
-# any value >= far_clip reads as "max range / clear". Use the camera far clip.
-_PARKOUR_DEPTH_FAR_FILL = 1.0e5
-
-
-def mask_person_in_parkour_depth(depth_hw, person_bbox_norm, dilate_frac: float = 0.06):
-    """Push the followed person's footprint to far range in the parkour depth frame.
-
-    person_bbox_norm = [x1, y1, x2, y2] in [0, 1] of the RGB (YOLO) frame. Maps to
-    depth pixels via the co-located-D435 FOV center-scaling above and sets that
-    rectangle to a far value so the perceptive policy sees clear space (not near
-    terrain) where the person stands. Returns the (possibly copied) depth array;
-    returns the input unchanged on any bad/empty box. The mapped pixel box is
-    returned alongside for telemetry. Deployable: the real robot runs the same
-    YOLO detector, so this masking is not a sim-only ground-truth cheat.
-    """
-    try:
-        d = np.asarray(depth_hw)
-        if d.ndim != 2 or person_bbox_norm is None or len(person_bbox_norm) < 4:
-            return depth_hw, None
-        h, w = d.shape
-        x1, y1, x2, y2 = (float(person_bbox_norm[0]), float(person_bbox_norm[1]),
-                          float(person_bbox_norm[2]), float(person_bbox_norm[3]))
-        if x2 < x1:
-            x1, x2 = x2, x1
-        if y2 < y1:
-            y1, y2 = y2, y1
-        # Small dilation to catch limb/edge leakage outside the tight box.
-        x1 -= dilate_frac
-        x2 += dilate_frac
-        y1 -= dilate_frac
-        y2 += dilate_frac
-
-        def _to_depth_px(u, v):
-            ud = 0.5 + (u - 0.5) * _BBOX_TO_DEPTH_SCALE_H
-            vd = 0.5 + (v - 0.5) * _BBOX_TO_DEPTH_SCALE_V
-            return ud * w, vd * h
-
-        px1, py1 = _to_depth_px(x1, y1)
-        px2, py2 = _to_depth_px(x2, y2)
-        cx1 = max(0, int(math.floor(min(px1, px2))))
-        cx2 = min(w, int(math.ceil(max(px1, px2))))
-        cy1 = max(0, int(math.floor(min(py1, py2))))
-        cy2 = min(h, int(math.ceil(max(py1, py2))))
-        if cx2 <= cx1 or cy2 <= cy1:
-            return depth_hw, None
-        out = d.copy()
-        out[cy1:cy2, cx1:cx2] = float(_PARKOUR_DEPTH_FAR_FILL)
-        return out, (cx1, cy1, cx2, cy2)
-    except Exception:
-        return depth_hw, None
+# Person masking for the parkour depth input lives in parkour_depth_mask.py (pure
+# numpy, no Isaac deps) so it is unit-testable on the host without booting Isaac.
+# Imported here and used unchanged. CONTRACT: the FOV-scale constants there pair with
+# the UDP person_bbox datagram (sim/bot/sim_robot_controller.py + this file) -- if you
+# change either camera's intrinsics, update both together.
+from parkour_depth_mask import mask_person_in_parkour_depth
 
 
 def add_scene_left_camera(stage, resolution: tuple = (1920, 1080)) -> Optional[Camera]:
@@ -1220,6 +1238,26 @@ def add_scene_left_camera(stage, resolution: tuple = (1920, 1080)) -> Optional[C
     Rendered at 1080p (recording-only; does not feed perception/control).
     Returns None if no scene camera is available (scene_view recording is then skipped).
     """
+    if args.final_scene:
+        try:
+            from final_scene import create_wall_recording_camera
+            camera_spec = create_wall_recording_camera(
+                stage,
+                "scene_view",
+                spec=_FINAL_SCENE_SPEC,
+                log=lambda level, action, msg, **f: log_event(LOGGER, level, action, msg, **f),
+            )
+            return Camera(prim_path=camera_spec.prim_path, name=camera_spec.name, resolution=resolution)
+        except Exception as exc:
+            log_event(
+                LOGGER,
+                logging.WARNING,
+                "final_scene_wall_follow_camera_failed",
+                "Could not create final-scene wall-edge person-follow recording camera",
+                error=str(exc),
+            )
+            return None
+
     path = _find_isaac_scene_left_camera(stage)
     if path is None:
         log_event(LOGGER, logging.WARNING, "scene_left_camera_not_found",
@@ -1242,14 +1280,22 @@ def add_verification_camera(stage, resolution: tuple = (1280, 720)) -> Camera:
     if not stage.GetPrimAtPath("/World/View").IsValid():
         stage.DefinePrim("/World/View", "Xform")
 
+    if args.final_scene:
+        from final_scene import verification_camera_config
+        focal_length_mm, eye_m, target_m = verification_camera_config(_FINAL_SCENE_SPEC)
+    else:
+        focal_length_mm = 14.0
+        eye_m = (-3.0, -3.5, 2.5)
+        target_m = (0.8, 0.0, 0.3)
+
     camera_prim = UsdGeom.Camera.Define(stage, VERIFICATION_CAMERA_PRIM).GetPrim()
-    UsdGeom.Camera(camera_prim).CreateFocalLengthAttr().Set(14.0)
+    UsdGeom.Camera(camera_prim).CreateFocalLengthAttr().Set(float(focal_length_mm))
     xform = UsdGeom.Xformable(camera_prim)
     xform.ClearXformOpOrder()
     transform_op = xform.AddTransformOp()
 
-    eye = Gf.Vec3d(-3.0, -3.5, 2.5)
-    target = Gf.Vec3d(0.8, 0.0, 0.3)
+    eye = Gf.Vec3d(float(eye_m[0]), float(eye_m[1]), float(eye_m[2]))
+    target = Gf.Vec3d(float(target_m[0]), float(target_m[1]), float(target_m[2]))
     view_matrix = Gf.Matrix4d(1.0)
     view_matrix.SetLookAt(eye, target, Gf.Vec3d(0.0, 0.0, 1.0))
     transform_op.Set(view_matrix.GetInverse())
@@ -1275,6 +1321,16 @@ def add_topdown_camera(stage, resolution: tuple = (1920, 1080)) -> Camera:
 
     Rendered at 1080p (recording-only; does not feed perception/control).
     """
+    if args.final_scene:
+        from final_scene import create_wall_recording_camera
+        camera_spec = create_wall_recording_camera(
+            stage,
+            "topdown",
+            spec=_FINAL_SCENE_SPEC,
+            log=lambda level, action, msg, **f: log_event(LOGGER, level, action, msg, **f),
+        )
+        return Camera(prim_path=camera_spec.prim_path, name=camera_spec.name, resolution=resolution)
+
     if not stage.GetPrimAtPath("/World/View").IsValid():
         stage.DefinePrim("/World/View", "Xform")
 
@@ -1340,8 +1396,14 @@ def capture_verification_image(
                 xform.ClearXformOpOrder()
                 transform_op = xform.AddTransformOp()
                 
-                eye = Gf.Vec3d(rx - 3.0, -3.5, 2.5)
-                target = Gf.Vec3d(rx + 0.8, 0.0, 0.3)
+                if args.final_scene:
+                    from final_scene import verification_camera_config
+                    _focal, eye_m, target_m = verification_camera_config(_FINAL_SCENE_SPEC)
+                    eye = Gf.Vec3d(float(eye_m[0]), float(eye_m[1]), float(eye_m[2]))
+                    target = Gf.Vec3d(float(target_m[0]), float(target_m[1]), float(target_m[2]))
+                else:
+                    eye = Gf.Vec3d(rx - 3.0, -3.5, 2.5)
+                    target = Gf.Vec3d(rx + 0.8, 0.0, 0.3)
                 view_matrix = Gf.Matrix4d(1.0)
                 view_matrix.SetLookAt(eye, target, Gf.Vec3d(0.0, 0.0, 1.0))
                 transform_op.Set(view_matrix.GetInverse())
@@ -1500,6 +1562,14 @@ def get_terrain_height_smooth(x: float, y: float) -> float:
     if x >= s.end_x_m:
         return s.top_height_m
     return 0.0
+
+
+def _get_person_pose_z(x: float, y: float, *, smooth: bool = True) -> float:
+    base_z = get_terrain_height_smooth(x, y) if smooth else get_terrain_height(x, y)
+    if _FINAL_SCENE_SPEC is None:
+        return base_z
+    from final_scene import person_pose_z
+    return person_pose_z(base_z, _FINAL_SCENE_SPEC)
 
 
 _PHYSX_QUERY_IFACE = None
@@ -1846,6 +1916,22 @@ def spawn_obstacles(world: World) -> None:
         except Exception as exc:
             log_event(LOGGER, logging.WARNING, "texture_binding_failed", "Failed to bind texture material to stairs", error=str(exc))
 
+    if args.final_scene:
+        try:
+            from final_scene import hide_stair_collision_visuals
+            hide_stair_collision_visuals(
+                s.step_count,
+                log=lambda level, action, msg, **f: log_event(LOGGER, level, action, msg, **f),
+            )
+        except Exception as exc:
+            log_event(
+                LOGGER,
+                logging.WARNING,
+                "final_scene_collision_visual_hide_failed",
+                "Could not hide default stair-collider visuals",
+                error=str(exc),
+            )
+
     # 3. Corridor walls spawning has been removed as requested by the user
     log_event(
         LOGGER,
@@ -2014,7 +2100,6 @@ class PatientLocomotionState:
         # while the patient is moving.
         self.gait_phase = 0.0
         # Throttled-trajectory-log bookkeeping (verify the climb from the JSONL).
-        self.last_pz = 0.0
         self.dbg_accum = 0.0
         self.elapsed_time = 0.0
         self.stair_phase_started = False
@@ -2022,19 +2107,29 @@ class PatientLocomotionState:
         self.o2_sat = 98.0  # Oxygen saturation %
         self.ground_follow_delay_sec = 20.0
         self.at_destination = False
-        # 2D waypoints: keep a short flat-ground follow before the stair base,
-        # then climb each step and stop on the top landing.
-        self.waypoints = [(self.x, 0.0)]
-        for waypoint_x in (1.2, 1.8):
-            if waypoint_x > self.x + 0.05:
-                self.waypoints.append((waypoint_x, 0.0))
-        if self.waypoints[-1][0] < 1.8:
-            self.waypoints.append((1.8, 0.0))
+        _stairs = get_active_stairs()
+        self.heading_yaw = 0.0
+        self.last_pz = _get_person_pose_z(self.x, self.y, smooth=True)
+        # 2D waypoints: default scene stays straight; final scene prepends a
+        # turning hospital corridor route before rejoining the stair centreline.
+        if args.final_scene:
+            from final_scene import build_patient_route
+            self.waypoints = build_patient_route(
+                _FINAL_SCENE_SPEC,
+                _stairs,
+                start_xy=(self.x, self.y),
+            )
+        else:
+            self.waypoints = [(self.x, self.y)]
+            for waypoint_x in (1.2, 1.8):
+                if waypoint_x > self.x + 0.05:
+                    self.waypoints.append((waypoint_x, 0.0))
+            if self.waypoints[-1][0] < 1.8:
+                self.waypoints.append((1.8, 0.0))
         self.stair_base_wp_idx = len(self.waypoints) - 1
         # One waypoint per tread (tread centre) plus a top-landing target,
         # generated from the active StairSpec so the patient path matches the
         # spawned stairs for every preset (see --stair-preset).
-        _stairs = get_active_stairs()
         self.waypoints.extend(
             (_stairs.start_x_m + (i + 0.5) * _stairs.step_depth_m, 0.0)
             for i in range(_stairs.step_count)
@@ -2048,6 +2143,26 @@ _patient_state = None
 _last_gt_patient_pose = None
 _last_gt_distractor_pose = None
 _camera_mount_update_warned = False
+_final_scene_wall_camera_update_warned = False
+
+
+def _read_final_scene_robot_pose(stage):
+    candidate_paths = (
+        f"{GO2_USD_PATH}/{BASE_LINK_NAME}",
+        f"{GO2_USD_PATH}/base",
+        GO2_USD_PATH,
+    )
+    for path in candidate_paths:
+        prim = stage.GetPrimAtPath(path)
+        if prim and prim.IsValid():
+            matrix = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+            yaw = math.atan2(float(matrix[0][1]), float(matrix[0][0]))
+            return (
+                (float(matrix[3][0]), float(matrix[3][1]), float(matrix[3][2])),
+                float(yaw),
+                path,
+            )
+    raise RuntimeError("final_scene: Go2 base pose prim was not found for recording cameras")
 
 
 def spawn_person(world, x: float = 1.0, y: float = 0.0):
@@ -2055,6 +2170,20 @@ def spawn_person(world, x: float = 1.0, y: float = 0.0):
     _patient_state = PatientLocomotionState(start_x=x, start_y=y)
     
     person = spawn_sim_person(world, x=x, y=y, logger=LOGGER)
+    initial_z = _get_person_pose_z(x, y, smooth=True)
+    person.set_world_pose(
+        position=np.array([float(x), float(y), float(initial_z)], dtype=float),
+        orientation=np.array([1.0, 0.0, 0.0, 0.0]),
+    )
+    if _FINAL_SCENE_SPEC is not None:
+        from final_scene import patient_spawn_log_fields
+        log_event(
+            LOGGER,
+            logging.INFO,
+            "final_scene_patient_spawn_pose",
+            "Placed final-scene patient at configured corridor start with floor clearance",
+            **patient_spawn_log_fields(x, y, initial_z, _FINAL_SCENE_SPEC),
+        )
     log_event(
         LOGGER,
         logging.INFO,
@@ -2063,6 +2192,56 @@ def spawn_person(world, x: float = 1.0, y: float = 0.0):
     )
         
     return person
+
+
+def update_final_scene_recording_cameras(stage) -> None:
+    global _final_scene_wall_camera_update_warned
+    if _FINAL_SCENE_SPEC is None or stage is None:
+        return
+    try:
+        if _patient_state is not None:
+            px = float(_patient_state.x)
+            py = float(_patient_state.y)
+        else:
+            px = float(args.person_x)
+            py = float(args.person_y)
+        pz = float(_get_person_pose_z(px, py, smooth=True))
+        robot_xyz, robot_yaw, robot_pose_path = _read_final_scene_robot_pose(stage)
+        dt = 1.0 / max(1.0, float(args.physics_hz))
+        from final_scene import update_wall_recording_cameras
+        update_wall_recording_cameras(
+            stage,
+            (px, py, pz),
+            robot_xyz=robot_xyz,
+            robot_yaw=robot_yaw,
+            dt=dt,
+            raycast_fn=_physx_raycast_distance,
+            terrain_height_fn=get_terrain_height,
+            spec=_FINAL_SCENE_SPEC,
+            log=lambda level, action, msg, **f: log_event(LOGGER, level, action, msg, **f),
+        )
+        if not getattr(update_final_scene_recording_cameras, "_logged_robot_pose", False):
+            update_final_scene_recording_cameras._logged_robot_pose = True
+            log_event(
+                LOGGER,
+                logging.INFO,
+                "final_scene_recording_cameras_robot_pose_source",
+                "Final-scene recording cameras are using the Go2 base pose as their subject source",
+                robot_pose_path=robot_pose_path,
+                robot_xyz=[round(float(v), 4) for v in robot_xyz],
+                robot_yaw=round(float(robot_yaw), 4),
+                camera_dt_s=round(float(dt), 5),
+            )
+    except Exception as exc:
+        if not _final_scene_wall_camera_update_warned:
+            _final_scene_wall_camera_update_warned = True
+            log_event(
+                LOGGER,
+                logging.WARNING,
+                "final_scene_wall_camera_tracking_failed",
+                "Final-scene wall recording camera tracking failed",
+                error=str(exc),
+            )
 
 
 def spawn_distractor_person(world, x: float, y: float):
@@ -2152,9 +2331,9 @@ def update_person_patrol(person, dt: float) -> None:
     # --- Already reached top of stairs: hold position, do not walk back ---
     if state.at_destination:
         px = state.x
-        py_pos = 0.0
-        pz = get_terrain_height_smooth(px, py_pos)
-        yaw = 0.0
+        py_pos = state.y
+        pz = _get_person_pose_z(px, py_pos, smooth=True)
+        yaw = state.heading_yaw
         qw = math.cos(yaw * 0.5)
         person.set_world_pose(
             position=np.array([px, py_pos, pz]),
@@ -2191,20 +2370,22 @@ def update_person_patrol(person, dt: float) -> None:
     elif state.o2_sat < 90.0:
         is_stumbling = True
 
-    # Walk straight forward through waypoints sequentially
+    # Walk through 2D waypoints sequentially. The default waypoints are straight
+    # down Y=0; final_scene adds flat corridor turns before the stairs.
     target_wp = state.waypoints[state.current_wp_idx]
     tx, ty = target_wp
     dx = tx - state.x
-    dist = abs(dx)
+    dy = ty - state.y
+    dist = math.hypot(dx, dy)
 
-    yaw = 0.0  # Force heading directly forward
+    yaw = state.heading_yaw
 
     if state.stop_timer > 0.0:
         state.stop_timer -= dt
         state.gait_time += dt
         px = state.x
-        py_pos = 0.0
-        pz = get_terrain_height_smooth(px, py_pos)
+        py_pos = state.y
+        pz = _get_person_pose_z(px, py_pos, smooth=True)
         # Resting bob is a visual cue only; keep it off the ground-truth Z (pz).
         bob_amp = 0.035 if is_stumbling else 0.015
         bob_z = max(0.0, bob_amp * math.sin(6.0 * state.gait_time))
@@ -2225,7 +2406,9 @@ def update_person_patrol(person, dt: float) -> None:
         step_dist = speed * dt
         if dist <= step_dist:
             state.x = tx
-            state.y = 0.0
+            state.y = ty
+            if dist > 1e-6:
+                state.heading_yaw = math.atan2(dy, dx)
 
             # Check if entering stair phase
             if not state.stair_phase_started and state.current_wp_idx == state.stair_base_wp_idx:
@@ -2250,11 +2433,14 @@ def update_person_patrol(person, dt: float) -> None:
                     "Patient reached the top of the stairs and stopped",
                     person_x=float(state.x),
                     person_y=float(state.y),
-                    person_z=float(get_terrain_height_smooth(state.x, state.y)),
+                    person_z=float(_get_person_pose_z(state.x, state.y, smooth=True)),
                 )
         else:
-            state.x += speed * dt
-            state.y = 0.0
+            ux = dx / max(1e-9, dist)
+            uy = dy / max(1e-9, dist)
+            state.x += ux * step_dist
+            state.y += uy * step_dist
+            state.heading_yaw = math.atan2(uy, ux)
 
         state.gait_time += dt
         # Advance the gait clock so the bob stays in step with travel: one full
@@ -2262,8 +2448,9 @@ def update_person_patrol(person, dt: float) -> None:
         if speed > 0.0:
             state.gait_phase += (speed / 0.6) * dt
         px = state.x
-        py_pos = 0.0
-        pz = get_terrain_height_smooth(px, py_pos)
+        py_pos = state.y
+        pz = _get_person_pose_z(px, py_pos, smooth=True)
+        yaw = state.heading_yaw
 
         # Visual-only climbing cues while on the stairs (never written to GT):
         # a forward lean ramped in/out over one tread at each end, and a small bob
@@ -2303,6 +2490,7 @@ def update_person_patrol(person, dt: float) -> None:
             "patient_trajectory",
             "Patient climb trajectory sample",
             person_x=round(float(px), 4),
+            person_y=round(float(py_pos), 4),
             person_z=round(float(pz), 4),
             d_z=round(float(pz - state.last_pz), 5),
             gait_phase=round(float(state.gait_phase), 3),
@@ -3132,6 +3320,7 @@ def _step_go2_locomotion(
     *,
     stairs_detected: bool = False,
     yaw_err: float = 0.0,
+    stairs_action_active: bool = False,
 ) -> None:
     vx = max(0.0, float(vx))
     if rl_policy is None:
@@ -3148,8 +3337,16 @@ def _step_go2_locomotion(
         return
     # The parkour policy steers itself from depth (heading_mode "vision"); when
     # heading_mode is "command" it consumes the external bearing instead, passed
-    # here as delta_yaw (the person-follow heading).
-    telemetry = rl_policy.step(go2, (vx, vy, wz), dt, delta_yaw=float(yaw_err))
+    # here as delta_yaw (the person-follow heading). In "hybrid" it consumes the
+    # bearing on flat ground but hands back to depth self-steer once the climb
+    # engages (stairs_action_active) -- pass delta_yaw=None there so the policy's
+    # vision-yaw drives and the follow bearing never fights foothold selection.
+    heading_mode = str(getattr(getattr(rl_policy, "config", None), "heading_mode", "vision"))
+    if heading_mode == "hybrid" and bool(stairs_action_active):
+        delta_yaw = None
+    else:
+        delta_yaw = float(yaw_err)
+    telemetry = rl_policy.step(go2, (vx, vy, wz), dt, delta_yaw=delta_yaw)
     # The policy just moved the joints; capture its real per-leg command so the
     # stair-demo telemetry and HUD reflect what the policy actually did this step.
     _go2_locomotion_state.leg_summary = rl_policy.leg_command_summary()
@@ -3423,7 +3620,7 @@ def _run_evaluation_and_save_images(
 # Main simulation loop
 # ---------------------------------------------------------------------------
 def main() -> None:
-    global _running, _camera_mount_update_warned
+    global _running, _camera_mount_update_warned, _final_scene_handle
 
     log_event(LOGGER, logging.INFO, "world_build_start", "Building Isaac world")
     world = build_world(args.physics_hz)
@@ -3447,8 +3644,31 @@ def main() -> None:
     except Exception as exc:
         log_event(LOGGER, logging.WARNING, "physics_material_failed", "Failed to create/bind friction material", error=str(exc))
 
+    if args.final_scene:
+        if stage is None:
+            raise RuntimeError("final_scene requested, but the USD stage is unavailable")
+        from final_scene import attach_final_scene
+        _final_scene_handle = attach_final_scene(
+            stage,
+            world,
+            spec=_FINAL_SCENE_SPEC,
+            log=lambda level, action, msg, **f: log_event(LOGGER, level, action, msg, **f),
+        )
+
     log_event(LOGGER, logging.INFO, "go2_load_start", "Loading Go2 robot")
     go2 = load_go2(world)
+
+    # Watchdog for the oxygen-concentrator payload attached inside load_go2:
+    # reports the carried mass / CoM shift / tilt periodically and warns loudly
+    # if the tank ever falls off the robot. Reads live prim poses each step.
+    o2_monitor = None
+    if _o2_payload_handle is not None and stage is not None:
+        from o2_payload import O2PayloadMonitor
+        o2_monitor = O2PayloadMonitor(
+            stage,
+            _o2_payload_handle,
+            log=lambda level, action, msg, **f: log_event(LOGGER, level, action, msg, **f),
+        )
 
     calf_prims = {}
     try:
@@ -3485,6 +3705,7 @@ def main() -> None:
 
     log_event(LOGGER, logging.INFO, "person_spawn_start", "Spawning person target")
     person = spawn_person(world, x=args.person_x, y=args.person_y)
+    update_final_scene_recording_cameras(stage)
 
     distractor_prim = None
 
@@ -3742,6 +3963,13 @@ def main() -> None:
             render_now = _render_enabled and (_perception_tick or _record_tick)
             world.step(render=render_now)
 
+            # O2 payload watchdog: post-step (live prim poses) it reports the
+            # carried mass / CoM effect every report_every steps and emits a loud
+            # o2_tank_detached / o2_robot_weight_changed event if the tank ever
+            # comes off. Read-only; it never drives control.
+            if o2_monitor is not None:
+                o2_monitor.update(step_count, step_count * dt)
+
             # Read latest velocity command (zero out if stale)
             with _cmd_lock:
                 age = time.monotonic() - _cmd_vel["ts"]
@@ -3751,6 +3979,7 @@ def main() -> None:
                     vx, vy, wz = 0.0, 0.0, 0.0
                     yaw_err = 0.0
                     stairs_detected = False
+                    stairs_action_active = False
                     person_bbox = None
                     command_fresh = False
                 else:
@@ -3759,6 +3988,7 @@ def main() -> None:
                     wz = _cmd_vel["wz"]
                     yaw_err = _cmd_vel.get("yaw_err", 0.0)
                     stairs_detected = _cmd_vel.get("stairs_detected", False)
+                    stairs_action_active = _cmd_vel.get("stairs_action_active", False)
                     person_bbox = _cmd_vel.get("person_bbox", None)
                     command_fresh = True
             # Self-test: bypass the Docker/vision controller entirely and drive a
@@ -3768,6 +3998,7 @@ def main() -> None:
                 vx, vy, wz = float(args.self_test_vx), 0.0, 0.0
                 yaw_err = 0.0
                 stairs_detected = False
+                stairs_action_active = False
                 person_bbox = None
                 command_fresh = True
                 cmd_count = max(cmd_count, 1)
@@ -3818,8 +4049,9 @@ def main() -> None:
                             # terrain and charge at it (close-range surge). ON by
                             # default; --no-parkour-person-mask disables for A/B.
                             if person_bbox is not None and not args.no_parkour_person_mask:
-                                _masked, _mbox = mask_person_in_parkour_depth(
-                                    _depth_hw, person_bbox)
+                                _masked, _mbox, _mstats = mask_person_in_parkour_depth(
+                                    _depth_hw, person_bbox,
+                                    fill_mode=str(args.parkour_mask_fill))
                                 if _mbox is not None:
                                     if _parkour_depth_step % 50 == 0:
                                         cx1, cy1, cx2, cy2 = _mbox
@@ -3829,13 +4061,18 @@ def main() -> None:
                                             _near = float(_roi.min()) if _roi.size else None
                                         except Exception:
                                             _near = None
+                                        _ms = _mstats or {}
                                         log_event(
                                             LOGGER, logging.INFO,
                                             "parkour_person_depth_masked",
                                             "Masked followed person out of parkour depth input",
                                             bbox_norm=[round(float(b), 4) for b in person_bbox[:4]],
                                             depth_px_box=[cx1, cy1, cx2, cy2],
-                                            nearest_depth_removed_m=_near)
+                                            nearest_depth_removed_m=_near,
+                                            fill_mode=_ms.get("fill_mode"),
+                                            terrain_ref_m=_ms.get("terrain_ref_m"),
+                                            preserved_terrain_px=_ms.get("preserved_terrain_px"),
+                                            body_px=_ms.get("body_px"))
                                     _depth_hw = _masked
                             rl_policy.submit_depth(_depth_hw)
                     except Exception as _pk_dexc:
@@ -3860,7 +4097,8 @@ def main() -> None:
                 )
             elif controller_ready and nonzero_command_fresh:
                 _step_go2_locomotion(go2, rl_policy, vx, vy, wz, dt,
-                                     stairs_detected=stairs_detected, yaw_err=yaw_err)
+                                     stairs_detected=stairs_detected, yaw_err=yaw_err,
+                                     stairs_action_active=stairs_action_active)
             else:
                 # Demo running, momentarily no fresh command: hold a balanced stand
                 # with the policy (the robot has already started walking, so do not
@@ -3923,9 +4161,14 @@ def main() -> None:
                     if hasattr(person, "_update_animation_state"):
                         person._update_animation_state(walking=False)
                     person.set_world_pose(
-                        position=np.array([args.person_x, args.person_y, get_terrain_height(args.person_x, args.person_y)]),
+                        position=np.array([
+                            args.person_x,
+                            args.person_y,
+                            _get_person_pose_z(args.person_x, args.person_y, smooth=True),
+                        ]),
                         orientation=np.array([1.0, 0.0, 0.0, 0.0]),
                     )
+            update_final_scene_recording_cameras(stage)
 
             # Track positions over time if motion has started
             if scene_motion_allowed:
@@ -3995,7 +4238,7 @@ def main() -> None:
                 if _patient_state is not None:
                     px = float(_patient_state.x)
                     py = float(_patient_state.y)
-                    pz = float(get_terrain_height(px, py))
+                    pz = float(_get_person_pose_z(px, py, smooth=True))
                     _person_positions_over_time.append({
                         "t": time.monotonic(),
                         "pos": (px, py, pz),

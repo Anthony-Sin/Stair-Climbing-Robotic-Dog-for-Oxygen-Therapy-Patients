@@ -117,13 +117,16 @@ def build_concentrator() -> UsdaScene:
 # Rail cradle (origin = tank rest plane, centred on the robot back)
 # ---------------------------------------------------------------------------
 def build_rails() -> UsdaScene:
-    c = SPEC.concentrator
     r = SPEC.rail
-    L, W, H = c.length_m, c.width_m, c.height_m
+    # Cradle is sized to the tank's MOUNTED extents (flat by default), so a
+    # laid-down tank gets a low, wide cradle rather than a tall upright one:
+    # fa = fore-aft (X), lat = lateral (Y), th = tank height (Z).
+    fa, lat, th = SPEC.mounted_extents_m
+    L, W, H = fa, lat, th
 
     plate_t = r.base_plate_thickness_m
     rail_t = r.rail_thickness_m
-    wall_h = r.wall_height_m
+    wall_h = min(r.wall_height_m, 0.7 * th)   # hug the tank's actual height
     gap = r.side_gap_m
     over = r.fore_aft_overhang_m
 

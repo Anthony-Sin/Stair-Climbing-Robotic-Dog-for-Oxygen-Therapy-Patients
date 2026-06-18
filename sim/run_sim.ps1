@@ -6,6 +6,7 @@ param(
     [switch]$PauseAfterIsaac,
     [switch]$NoIsaac,
     [switch]$NoDockerRun,
+    [switch]$FinalScene,
     [string]$IsaacSimDir = $(if ($env:ISAACSIM_DIR) { $env:ISAACSIM_DIR } else { "C:\isaac_sim_600" }),
     [string]$Image = "go2-pose-x86:latest",
     [string]$FrameHost = "",
@@ -22,19 +23,25 @@ param(
     [int]$KeepRunLogs = 1,
     [int]$MaxRunTimeSec = 900,
     [string]$ParkourHeadingMode = "vision",
+    [string]$ParkourMaskFill = "terrain",
+    [switch]$StairSquareUp,
     [switch]$Sim2RealValidationCam,
     [switch]$SelfTestWalk,
     [double]$SelfTestVx = 0.5,
     [double]$SelfTestSec = 15.0,
     [switch]$SelfTestNoPolicy,
     [switch]$NoParkourPersonMask,
+    [switch]$WithO2Payload,
     [double]$SimLatencyMs = 0.0,
     [double]$SimLatencyJitterMs = 0.0
 )
 
 $ErrorActionPreference = "Stop"
-if ($ParkourHeadingMode -notin @("vision", "command")) {
-    throw "ParkourHeadingMode must be 'vision' (policy self-steers from depth) or 'command' (steer toward the person-follow bearing)."
+if ($ParkourHeadingMode -notin @("vision", "command", "hybrid")) {
+    throw "ParkourHeadingMode must be 'vision' (policy self-steers from depth), 'command' (always steer toward the person-follow bearing), or 'hybrid' (person-steer on flat, depth self-steer on the stairs)."
+}
+if ($ParkourMaskFill -notin @("terrain", "far")) {
+    throw "ParkourMaskFill must be 'terrain' (inpaint the masked person with surrounding terrain depth -- default) or 'far' (legacy flat far-fill, for A/B)."
 }
 if ($SelfTestWalk) {
     # The locomotion self-test drives a constant forward command straight into the
@@ -834,6 +841,22 @@ function Stop-IsaacProcess {
     return $stopped
 }
 
+function Invoke-PerfTracker {
+    $perfScript = Join-Path $RepoRoot "perf_tracker\update_table.py"
+    if ($DryRun -or -not (Test-Path -LiteralPath $perfScript)) {
+        return
+    }
+    try {
+        $gitBranch = ""
+        try { $gitBranch = ((& git rev-parse --abbrev-ref HEAD 2>&1) -join "").Trim() } catch {}
+        $wslPerfScript = "$WslRepoRoot/perf_tracker/update_table.py"
+        & wsl.exe -e python3 $wslPerfScript $WslRunLogDir --git-branch $gitBranch 2>&1 |
+            ForEach-Object { Write-Host $_ }
+    } catch {
+        Write-Host "[perf_table] Warning: performance table update skipped: $_"
+    }
+}
+
 function Write-IsaacFailureDiagnosis {
     param(
         [Parameter(Mandatory = $true)][string]$EventLogPath,
@@ -986,12 +1009,14 @@ Write-Stage "setup" "start" "Preparing run_sim launch" @{
     no_isaac_ready_wait = [bool]$NoIsaacReadyWait
     no_model_preflight = [bool]$NoModelPreflight
     vision_preview = [bool]$VisionPreview
+    final_scene = [bool]$FinalScene
     pause_after_isaac = [bool]$PauseAfterIsaac
     keep_run_logs = [int]$KeepRunLogs
     trt_engine = $TrtEngine
     sim_frame_timeout_exit_sec = [double]$SimFrameTimeoutExitSec
     locomotion_mode = "parkour"
     parkour_heading_mode = $ParkourHeadingMode
+    parkour_mask_fill = $ParkourMaskFill
     sim2real_validation_cam = [bool]$Sim2RealValidationCam
 }
 Write-Host "Read first: $SummaryLog"
@@ -1081,13 +1106,20 @@ if ($NoIsaac) {
         "-FrameHost", $FrameHost,
         "-FramePort", [string]$FramePort,
         "-CmdPort", [string]$CmdPort,
-        "-ParkourHeadingMode", $ParkourHeadingMode
+        "-ParkourHeadingMode", $ParkourHeadingMode,
+        "-ParkourMaskFill", $ParkourMaskFill
     )
     if ($Sim2RealValidationCam) {
         $isaacArgs += "-Sim2RealValidationCam"
     }
     if ($NoParkourPersonMask) {
         $isaacArgs += "-NoParkourPersonMask"
+    }
+    if ($WithO2Payload) {
+        $isaacArgs += "-WithO2Payload"
+    }
+    if ($FinalScene) {
+        $isaacArgs += "-FinalScene"
     }
     if ($SelfTestWalk) {
         $isaacArgs += "-SelfTestWalk"
@@ -1194,6 +1226,10 @@ if ($NoDockerRun) {
     if (-not $VisionPreview) {
         $visionArgs += "--headless"
     }
+    # Experimental approach square-up (off by default; validate the mask + heading first).
+    if ($StairSquareUp) {
+        $visionArgs += "--stair-square-up"
+    }
     $visionCommand = $visionArgs -join " "
     $byteTrackNumpyAliasFix = "find /opt/bytetrack -type f -name '*.py' -exec sed -i 's/np\.float\b/float/g; s/np\.int\b/int/g; s/np\.bool\b/bool/g' {} + 2>/dev/null"
     $containerCommand = $byteTrackNumpyAliasFix + "; cd /workspace && exec " + $visionCommand
@@ -1264,10 +1300,12 @@ if ($NoDockerRun) {
         } else {
             Write-Stage "summary" "failed" "Docker run failed" @{ log = $dockerLog; container = $DockerContainerName }
         }
+        Invoke-PerfTracker
         exit $dockerExit
     }
     if (Write-DockerFailureDiagnosis -LogPath $dockerLog) {
         Write-Stage "summary" "failed" "Docker run did not start main.py cleanly" @{ log = $dockerLog; container = $DockerContainerName }
+        Invoke-PerfTracker
         exit 1
     }
     if (-not $DryRun -and (-not $NoIsaac) -and (Write-SimCompletionGateDiagnosis -EventLog $IsaacEventLog -DockerLog $dockerLog)) {
@@ -1276,6 +1314,7 @@ if ($NoDockerRun) {
             docker_log = $dockerLog
             container = $DockerContainerName
         }
+        Invoke-PerfTracker
         exit 1
     }
 }
@@ -1292,6 +1331,9 @@ if (Test-Path -LiteralPath $evalSummaryFile) {
     }
 }
 
+# --- Update cross-run performance table + auto-charts ---
+Invoke-PerfTracker
+
 Write-Stage "summary" "complete" "run_sim completed" @{ run_log_dir = $RunLogDir }
 Write-Host ""
 Write-Host "Logs for this run:"
@@ -1300,3 +1342,5 @@ Write-Host "Read first:"
 Write-Host "  $SummaryLog"
 Write-Host "Status file:"
 Write-Host "  $StatusLog"
+Write-Host "Performance table:"
+Write-Host "  $(Join-Path $RepoRoot 'perf_tracker\data\performance_table.csv')"

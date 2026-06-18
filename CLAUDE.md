@@ -7,23 +7,21 @@ This file contains only:
 - Recurring confusion points
 - Lessons learned from prior agent mistakes
 
-Do NOT treat this as general documentation.
-If something is obvious from reading the codebase, it should NOT be here.
+Do NOT treat this as general documentation. If something is obvious from reading the codebase, it should NOT be here.
 
 ---
 
 ## 2. Core Operating Principles
-
 1. Do not assume conventions.
 2. Do not refactor architecture unless explicitly instructed.
 3. Prefer minimal, surgical changes.
 4. Verify before destructive actions (overwrite, delete, replace).
 5. When uncertain, ask instead of guessing.
-6. do not create Fallbacks/safefials if not requested by the user try to fix the issue
+6. Do not create fallbacks/safefails if not requested by the user; try to fix the core issue.
+
 ---
 
 ## 3. The "Surprise Rule" (Mandatory)
-
 If you encounter:
 - Behavior that contradicts common conventions
 - Hidden coupling or side effects
@@ -34,229 +32,117 @@ You must:
 1. Explicitly notify the developer.
 2. Propose a concise addition to the Incident Ledger below.
 
-This file evolves from real mistakes.
-
 ---
 
 ## 4. Incident Ledger (Cross-Session Memory)
-
 Each entry must follow this structure:
-
-TRIGGER:
-Condition or pattern that activates this rule.
-
-LESSON:
-What must or must not be done.
-
-WHY:
-Short explanation of failure mode.
-
----
-
-(Entries are added over time.)
+- **TRIGGER:** Condition or pattern that activates this rule.
+- **LESSON:** What must or must not be done.
+- **WHY:** Short explanation of failure mode.
 
 ---
 
 ## 5. Progressive Disclosure
-
 If working in a specific domain or subdirectory:
-- Check for a local AGENTS.md in that directory.
+- Check for a local `AGENTS.md` in that directory.
 - Local rules override global ones.
 - Do not load unrelated domain rules.
 
 ---
 
 ## 6. What Does NOT Belong Here
+Do NOT include directory trees, tech stack summaries, style guides, obvious best practices, or long explanations. Keep this file short (<600 lines, ideally <500).
 
-Do NOT include:
-- Directory trees
-- Tech stack summaries
-- Style guides
-- Obvious best practices
-- Anything discoverable from reading the repository
-- Long explanations
+---
 
-Keep this file short (<600 lines, ideally <500).
-
-## 7. Special rules
-- This repository targets a **live remote robot system running on NVIDIA Jetson Orin**.  right now we are working in the sim version
-- Operational commands for model export/conversion/inference must be run on the **robot**, inside the robot's **Docker container** used for runtime, unless the developer explicitly says otherwise.
-
-- Path mapping rule for command guidance:
+## 7. Special Rules
+- This repository targets a **live remote robot system running on NVIDIA Jetson Orin** (currently working in the sim version).
+- Operational commands for model export/conversion/inference must be run on the **robot**, inside the robot's **Docker container** used for runtime, unless explicitly stated otherwise.
+- **Path mapping rule:**
   - Host repo `src/` is mounted as container working root `/workspace`.
-  - When giving runnable commands for runtime tasks, prefer container-relative paths from `/workspace` (for example `python3 misc/convert_to_trt.py ...`), or explicitly state both host and container forms.
+  - When giving runnable commands for runtime tasks, prefer container-relative paths from `/workspace` (e.g., `python3 misc/convert_to_trt.py ...`), or explicitly state both host and container forms.
+- Review the Jetson environment configuration located in the `/docker` directory to understand the system architecture, dependencies, and runtime environment.
 
-- To understand:
-  - System architecture
-  - Compatible dependencies
-  - Runtime environment
-  - Available libraries and drivers
-  You must review the Jetson environment configuration located in the `/docker` directory.
-
-The `/docker` folder defines the authoritative runtime environment for this project.
+---
 
 ## 8. Incident Ledger Entries
 
-TRIGGER:
-Developer asks whether a runtime/export command should run on host vs container for robot deployment.
+**TRIGGER:** Developer asks whether a runtime/export command should run on host vs container for robot deployment.
+**LESSON:** Default to the robot runtime Docker container and state that context explicitly in the first command answer.
+**WHY:** Host and container have different dependencies/paths; giving host-context commands causes execution confusion.
 
-LESSON:
-Default to the robot runtime Docker container and state that context explicitly in the first command answer.
+**TRIGGER:** Providing command paths without accounting for host-to-container mount remapping.
+**LESSON:** Provide container-native paths from `/workspace` (or both mappings) for all executable instructions.
+**WHY:** Ambiguous paths lead to incorrect execution locations (`repo/src` vs `/workspace`).
 
-WHY:
-Host and container have different dependencies/paths; giving host-context commands causes execution confusion and failures.
+**TRIGGER:** Developer asks to remove a feature from the main loop while preserving future recovery.
+**LESSON:** Prefer archive-by-move plus compatibility shims (warn + fallback) over hard deletion.
+**WHY:** Keeps runtime behavior stable and minimizes reactivation effort.
 
----
+**TRIGGER:** Developer asks to decouple logic into a separate reusable API/module.
+**LESSON:** Do not leave compatibility wrappers for the decoupled logic in the original module unless requested.
+**WHY:** Leftovers make ownership ambiguous and cause confusion during review.
 
-TRIGGER:
-Providing command paths without accounting for host-to-container mount remapping.
+**TRIGGER:** Person-follow behavior stops when target distance is satisfied but target is off-axis.
+**LESSON:** Do not use distance-only completion; require bearing or heading to also be within tolerance.
+**WHY:** Disables controller when a nearby target requires rapid turning to stay in view.
 
-LESSON:
-Provide container-native paths from `/workspace` (or both host+container mappings) for all executable instructions.
+**TRIGGER:** MPPI yaw or speed tuning appears ineffective after updating controller limits.
+**LESSON:** Check downstream velocity smoothing limits and accelerations.
+**WHY:** The velocity smoother can silently clip controller outputs.
 
-WHY:
-The same file has different effective roots (`repo/src` on host vs `/workspace` in container), and ambiguous paths lead to incorrect execution location.
+**TRIGGER:** Evaluating UsdSkel animations from remote CDN/Nucleus in code-driven sim scripts.
+**LESSON:** Copy/export remote USD assets to a local directory (e.g., `assets/`) and reference local copies.
+**WHY:** Remote assets load asynchronously, causing skeleton fallbacks (rest/T-pose) during initial frames.
 
----
+**TRIGGER:** Reading gait/leg HUD or `stair_demo` telemetry in the sim.
+**LESSON:** Source leg/gait telemetry from `parkour_locomotion_policy.ParkourLocomotionPolicy.leg_command_summary()`. Do NOT reintroduce `current_swing_legs`.
+**WHY:** Procedural-gait scaffolding was removed; old fields silently display fake data disconnected from the active parkour policy.
 
-TRIGGER:
-Developer asks to remove a feature from the main loop while preserving future recovery.
+**TRIGGER:** Removing "dead" gait fields from `Go2LocomotionState` (e.g. `gait_time`).
+**LESSON:** Keep `gait_time` and `gait_period`. They are used by `set_front_camera_local_pose` for handheld walking shake.
+**WHY:** Removing them breaks front-camera shake references in `isaac_env.py`.
 
-LESSON:
-Prefer archive-by-move plus compatibility shims (warn + fallback) over hard deletion.
+**TRIGGER:** Changing XT16 LiDAR polar-profile wire format.
+**LESSON:** Update encoder and decoder together, then re-run `tests/test_lidar_fusion.py`.
+**WHY:** They live in different processes (Isaac host vs Docker). One-sided changes silently break BEV panel and LiDAR+YOLO fusion.
 
-WHY:
-This keeps runtime behavior stable now and minimizes reactivation effort later.
+**TRIGGER:** Tuning the stair-climb forward command.
+**LESSON:** Keep the `debug_info["stairs_action_active"]` bypass in the obstacle gate.
+**WHY:** The downstream obstacle gate will silently zero/scale the forward command because stairs read as near obstacles.
 
----
+**TRIGGER:** Judging if the robot climbed from demo reports (`evaluation_summary.txt` / `stair_demo_report.json`).
+**LESSON:** Judge real motion from the `fall diagnostic` JSONL stream (`debug/isaac_env.jsonl`), not the reports.
+**WHY:** Synthetic demo telemetry is decoupled from physics and can falsely report climbs.
 
-TRIGGER:
-Developer asks to decouple logic into a separate reusable API/module.
+**TRIGGER:** Reasoning about perception driving the sim's stair climb.
+**LESSON:** Live stair trigger is sensor-derived (`stairs_detected`, `stairs_depth_m`). `_get_analytical_terrain_height` only feeds HUD labels and drives no physics.
+**WHY:** Treating synthetic ground-truth as live control input leads to misdirected debugging.
 
-LESSON:
-Do not leave compatibility wrappers for the decoupled logic in the original module unless explicitly requested.
+**TRIGGER:** Diagnosing why the parkour dog "surges" on flat ground.
+**LESSON:** The surge is caused by the person filling the depth cam at close range. Masking the person out of the depth (`mask_person_in_parkour_depth`) fixes it. Do NOT try to fix this by lowering `--trans-x-max` or tweaking frozen weights.
+**WHY:** The policy over-drives because it misreads the near body as terrain.
 
-WHY:
-Wrapper leftovers make ownership ambiguous and look like duplicated implementation, causing confusion during review.
+**TRIGGER:** Changing `--parkour-heading-mode`.
+**LESSON:** `vision` (depth self-steer) is the trained default. Both `vision` and `command` modes surge until the person is masked. `command` mode requires a non-zero bearing to remain stable.
+**WHY:** The surge is depth-driven, not heading-driven.
 
----
+**TRIGGER:** Believing a past commit "didn't surge" due to different code/weights.
+**LESSON:** Diff the LAUNCHERS, not the weights. The policy/scene are byte-identical; only launch config defaults changed.
+**WHY:** Chasing nonexistent code differences wastes time.
 
-TRIGGER:
-Person-follow behavior stops when target distance is satisfied but the target is still off-axis.
-
-LESSON:
-Do not use distance-only completion or hold logic for person-following; require bearing or heading to also be within tolerance.
-
-WHY:
-Distance-only completion disables the controller exactly when a nearby target may still require rapid turning to stay in view.
-
----
-
-TRIGGER:
-MPPI yaw or speed tuning appears ineffective even after updating the controller limits.
-
-LESSON:
-Check downstream velocity smoothing limits and accelerations whenever changing MPPI velocity bounds.
-
-WHY:
-The velocity smoother can silently clip controller outputs, making controller tuning appear broken or ignored.
-
----
-
-TRIGGER:
-Evaluating UsdSkel animations from a remote CDN/Nucleus path asynchronously in code-driven simulation scripts.
-
-LESSON:
-Always copy/export remote USD assets to a local directory (e.g., `assets/`) and modify/reference the local copies.
-
-WHY:
-USD resolves referenced and nested assets asynchronously. For standalone scripts that query or step skeleton transforms immediately, remote assets result in loading lag where the skeleton falls back to a rest/T-pose during the initial frames of the simulation.
+**TRIGGER:** Changing the parkour person-mask camera intrinsics or UDP field.
+**LESSON:** Update `_BBOX_TO_DEPTH_SCALE_H/V` and the UDP fixed-size datagram together.
+**WHY:** One-sided changes silently drop the mask across the process boundary.
 
 ---
 
-TRIGGER:
-Reading or trusting the gait/leg HUD (Panels 3-4, the central gait reticle) or the stair_demo `locomotion.leg_commands` / `swing_legs` telemetry in the sim.
+## 9. Testing & Verification
 
-LESSON:
-Source leg/gait telemetry from the locomotion policy's real joint targets via `parkour_locomotion_policy.ParkourLocomotionPolicy.leg_command_summary()` (stored on `Go2LocomotionState.leg_summary` in `_step_go2_locomotion`). Do NOT reintroduce a `current_swing_legs`-style field that the locomotion controller never fills in.
+**1. The Test Command & Execution**
+- Tests must be executed on the **local computer** via CMD/Command Prompt or PowerShell.
+- When you have completed a major task, made significant changes, or need to verify your results, **you must run the following sequence** to execute the simulation:
 
-WHY:
-The procedural-gait scaffolding that once populated `Go2LocomotionState.current_swing_legs` was removed, but its consumers were left reading the now-dead field (always empty), so the leg/gait HUD silently displayed static/fake data disconnected from the policy. (The blind RL policy was removed entirely; parkour is the sole locomotion controller, and the telemetry key is now `locomotion`, not `blind_rl`.)
-
----
-
-TRIGGER:
-Removing "dead" gait fields from `Go2LocomotionState` (e.g. `gait_time`, `gait_period`).
-
-LESSON:
-`gait_time` and `gait_period` are NOT locomotion gait state -- `set_front_camera_local_pose` uses them to add handheld walking shake to the robot-POV camera. Keep them when trimming procedural-gait fields; only the genuinely unreferenced ones are safe to delete.
-
-WHY:
-A field name containing "gait" looked like leftover procedural-gait code, but removing it would break the front-camera shake references in isaac_env.py.
-
----
-
-TRIGGER:
-Changing the XT16 LiDAR polar-profile wire format (the `lidar_profile` UDP sidecar field).
-
-LESSON:
-The encoder `sim_lidar_xt16.profile_from_scan` and the decoder `core/lidar_fusion.decode_lidar_profile` are a contract pair across the Isaac->controller UDP boundary; update both together and re-run `tests/test_lidar_fusion.py` (it round-trips the real encode+decode).
-
-WHY:
-The two live in different processes (Isaac host vs Docker controller); a one-sided format change silently breaks the in-preview BEV panel and the LiDAR+YOLO distance fusion without an import error.
-
----
-
-TRIGGER:
-Tuning the stair-climb forward command (e.g. adding a stair forward floor in `_apply_stair_command_policy`).
-
-LESSON:
-`_apply_front_obstacle_gate` runs immediately after the stair policy in the `core/main.py` loop and will zero/scale the forward command because the staircase reads as a near obstacle in the central depth ROI. It now early-returns when `debug_info["stairs_action_active"]` is set; keep that bypass or any stair forward floor is silently re-zeroed.
-
-WHY:
-The two gates are sequential and both write `trans_x_cmd`; the obstacle gate is downstream, so it wins unless it explicitly defers to the stair policy on the stairs.
-
----
-
-TRIGGER:
-Judging whether the robot climbed from `reports/evaluation_summary.txt` / `stair_demo_report.json` (phase, x_m, "drifted/flat_follow").
-
-LESSON:
-Those are the SYNTHETIC stair-demo overlay and can report `flat_follow` / a near-spawn `x_m` even when the physics robot actually climbed. Judge real motion from the `fall diagnostic` JSONL stream in `debug/isaac_env.jsonl` (`x`, `pitch`, `policy_cmd=[vx,vy,wz]`), not the reports.
-
-WHY:
-The demo telemetry is geometry-exact scene decoration decoupled from the physics; trusting it hid that the robot physically climbed ~2 steps then stalled at x≈2.38.
-
----
-
-TRIGGER:
-Reasoning about what perception drives the sim's stair climb (assuming the `_get_analytical_terrain_height` ground-truth signal is the control input).
-
-LESSON:
-The live stair trigger is sensor-derived: `stairs_detected` comes from `yolo_stairs_inference` (YOLO-World on RGB, latched in `core/main.py`) and `stairs_depth_m` from the depth camera (`_depth_from_bbox_excluding_person`); `_apply_stair_command_policy` reads only those `debug_info` values. The analytical `_get_analytical_terrain_height` feeds ONLY `_build_stair_demo_telemetry`'s `phase` / `locomotion.mode` HUD labels (`vertical_assist_mps=0.0` / `body_height_target_m=None`) — it drives no command, policy, or physics. Do not treat it as the climb's perception or "replace" it expecting behavior to change.
-
-NOTE (2026-06-17): the fabricated `demo_4d_elevation_raycast` block — the fake "lidar" the analytical probe used to populate in `stair_demo["lidar"]` (samples/detected/confidence/distance_to_next_riser_m) — was REMOVED. `stair_demo["lidar"]` is now filled only by the real PhysX-raycast XT16 (`sim_lidar_xt16.cast_scan`) in `isaac_env.py`. The synthetic `phase`/`locomotion.mode` labels remain.
-
-WHY:
-The decorative overlay and the live control signal share "stair/raycast" vocabulary, so the synthetic ground-truth telemetry looks like the perception path and leads to redundant or misdirected work (e.g. "make the climb sensor-driven" when it already is).
-
-## 9. Testing it
-
-1. The Test Command
-We run the simulation using Isaac Sim’s bundled Python interpreter via a command line instruction. We pass two special arguments to the environment script:
-
-Headless Mode: This runs the simulation in the background without launching a full graphical user interface, which makes it fast and resource-efficient.
-Verification Image Path: We specify a target file path for a PNG image.
-Exit After Verification: This flag tells the script to capture the image and immediately close down the simulation app, so we don't leave the background process running forever.
-
-2. How the Verification Capture Works
-When the command runs, the simulation goes through the following sequence:
-
-World Building: The virtual ground plane, friction settings, stairs, and boundaries are constructed.
-Spawning the Actors: The robot dog and the person are imported and placed in the scene.
-Settling the Scene: Instead of taking a photo immediately, the simulation runs for 70 steps. During these steps:
-A stabilization loop continuously targets a stable standing posture for the robot dog, preventing it from collapsing under gravity.
-The animation updater sets the person target's posture so they are in a natural stance instead of their default flat T-pose.
-Saving the Image: The camera takes an RGB snapshot of the viewport and saves it directly to the designated PNG file path.
-
----
+```powershell
+  cd C:\Users\antho\Downloads\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\sim
+  .\run_sim.bat

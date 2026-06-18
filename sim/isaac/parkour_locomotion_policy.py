@@ -99,7 +99,7 @@ class ParkourPolicyConfig:
     depth_far_clip: float = 2.0
     contact_force_threshold: float = 25.0
     mode: str = "parkour"              # parkour_walk one-hot: parkour=[1,0], walk=[0,1]
-    heading_mode: str = "vision"       # "vision" (self-steer) or "command" (external delta_yaw)
+    heading_mode: str = "vision"       # "vision" (self-steer), "command" (external delta_yaw), or "hybrid" (command on flat, vision on stairs)
     yaw_scale: float = 1.5
     device: str = "cpu"
     # --- Sim-to-real realism (opt-in; default off => identical to the clean
@@ -437,8 +437,10 @@ class ParkourLocomotionPolicy:
         # Always record the depth self-steer yaw so it can be compared in the logs to
         # any injected heading command (sign/scale validation of the command path).
         self._last_vision_yaw = float(yaw[0, 0].item())
-        if cfg.heading_mode == "command" and delta_yaw is not None:
+        if cfg.heading_mode in ("command", "hybrid") and delta_yaw is not None:
             # Steer toward an external bearing (e.g. person follow): [delta_yaw, delta_next_yaw].
+            # 'hybrid' passes delta_yaw=None on the stairs (decided upstream in
+            # _step_go2_locomotion via stairs_action_active), so it self-steers there.
             # Clamp into the trained vision-yaw envelope so the frozen actor never sees an
             # out-of-distribution heading slot (see PARKOUR_DELTA_YAW_CLAMP).
             dy = float(np.clip(float(delta_yaw), -PARKOUR_DELTA_YAW_CLAMP, PARKOUR_DELTA_YAW_CLAMP))

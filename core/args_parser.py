@@ -243,6 +243,26 @@ def parse_args():
     parser.add_argument('--stair-target-distance', type=float, default=0.7,
                         help='Follow standoff (m) used while stairs are detected; larger than '
                              '--target-distance so the dog does not park one step behind the person')
+    parser.add_argument('--parkour-yaw-deadband-deg', type=float, default=2.0,
+                        help='Deadband (deg) on the parkour heading (delta_yaw) command: bearing '
+                             'errors within this are sent as zero so bbox jitter does not micro-steer '
+                             'the gait. Consumed only by --parkour-heading-mode command/hybrid.')
+    parser.add_argument('--parkour-yaw-slew-rad-s', type=float, default=3.0,
+                        help='Max rate of change (rad/s) of the parkour heading (delta_yaw) command, '
+                             'slew-limited so a bbox jump cannot snap the heading and jolt the gait at '
+                             'a terrain transition. 0 disables slew limiting.')
+    parser.add_argument('--stair-square-up', action='store_true', default=False,
+                        help='During the stair APPROACH only (stairs detected, climb not yet engaged), '
+                             'steer the parkour heading to face the staircase head-on (center its bbox) '
+                             'so the dog hits the first riser square. Frozen the instant the climb '
+                             'engages -- depth self-steer then owns steering. Off by default (validate '
+                             'the mask + heading changes first). Only affects heading_mode command/hybrid.')
+    parser.add_argument('--stair-square-up-gain', type=float, default=0.5,
+                        help='Heading gain (rad per unit of normalized staircase-center offset) for '
+                             '--stair-square-up. The offset is in [-1,1] (frame center = 0).')
+    parser.add_argument('--stair-square-up-max', type=float, default=0.4,
+                        help='Cap (rad) on the --stair-square-up heading command, so approach alignment '
+                             'stays gentle and never snaps the body toward the stairs.')
     parser.add_argument('--raw-video-path', type=str, default='',
                         help='MP4 path for raw camera frame recording (no overlays); empty disables')
     parser.add_argument('--no-raw-video', action='store_true',
@@ -292,6 +312,10 @@ def parse_args():
     args.stair_rot_max = max(0.0, float(args.stair_rot_max))
     args.stair_yaw_deadband_deg = max(0.0, float(args.stair_yaw_deadband_deg))
     args.stair_target_distance = max(0.0, float(args.stair_target_distance))
+    args.parkour_yaw_deadband_deg = max(0.0, float(args.parkour_yaw_deadband_deg))
+    args.parkour_yaw_slew_rad_s = max(0.0, float(args.parkour_yaw_slew_rad_s))
+    args.stair_square_up_gain = max(0.0, float(args.stair_square_up_gain))
+    args.stair_square_up_max = max(0.0, float(args.stair_square_up_max))
     args.obstacle_stop_distance = max(0.0, float(args.obstacle_stop_distance))
     args.obstacle_slow_distance = max(args.obstacle_stop_distance, float(args.obstacle_slow_distance))
     args.obstacle_target_clearance = max(0.0, float(args.obstacle_target_clearance))

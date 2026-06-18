@@ -12,7 +12,9 @@ param(
     [double]$SelfTestVx = 0.5,
     [double]$SelfTestSec = 15.0,
     [switch]$SelfTestNoPolicy,
-    [switch]$NoParkourPersonMask
+    [switch]$NoParkourPersonMask,
+    [string]$ParkourMaskFill = "terrain",
+    [switch]$FinalScene
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,6 +59,8 @@ Write-ConsoleLog "  Command receiver:    0.0.0.0:${CmdPort}"
 Write-ConsoleLog "  Locomotion policy:   parkour (depth/vision)"
 Write-ConsoleLog "  Parkour heading:     $ParkourHeadingMode"
 Write-ConsoleLog "  Parkour person mask: $(-not $NoParkourPersonMask)"
+Write-ConsoleLog "  Parkour mask fill:   $ParkourMaskFill"
+Write-ConsoleLog "  Final scene:         $([bool]$FinalScene)"
 Write-ConsoleLog "  Real-sim env preset: $([bool]$Sim2RealValidationCam)"
 Write-ConsoleLog ""
 
@@ -83,6 +87,9 @@ New-Item -ItemType File -Path $RawLog -Force | Out-Null
 $locomotionArgs = "--parkour-heading-mode $ParkourHeadingMode"
 # Person-mask is ON by default in isaac_env.py; pass the disable flag through for A/B.
 if ($NoParkourPersonMask) { $locomotionArgs += " --no-parkour-person-mask" }
+# Terrain-preserving mask fill is the default; pass it through so 'far' is selectable for A/B.
+$locomotionArgs += " --parkour-mask-fill $ParkourMaskFill"
+if ($FinalScene) { $locomotionArgs += " --final-scene" }
 
 # Isaac records the external scene Left view to scene_view.mp4 (beside opencv_preview.mp4).
 $rawArg = ""

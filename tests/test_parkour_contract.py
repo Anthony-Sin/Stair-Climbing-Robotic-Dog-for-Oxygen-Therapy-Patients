@@ -25,6 +25,7 @@ import numpy as np
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "sim", "isaac"))
 sys.path.insert(0, os.path.join(REPO, "sim", "bot"))
+sys.path.insert(0, os.path.join(REPO, "core"))
 
 ASSETS = os.path.join(REPO, "sim", "isaac", "assets", "policies", "parkour")
 BASE = os.path.join(ASSETS, "base_jit.pt")
@@ -114,6 +115,70 @@ def _test_weight_free():
     print("OK leg_command_summary swing/stance from live target")
 
 
+def _test_person_mask():
+    """Terrain-preserving person mask keeps the step the person stands on visible to the
+    policy (the stair-base fall fix), while still removing the near body that causes the
+    close-range surge. The legacy 'far' fill blanks the box to clear (reproduces the fall).
+    """
+    from parkour_depth_mask import mask_person_in_parkour_depth
+
+    H, W = 60, 106
+    # Staircase-ish ground: far at the top of the frame, nearer at the bottom (0.4..1.2 m).
+    depth = np.repeat(np.linspace(1.2, 0.4, H, dtype=np.float32)[:, None], W, axis=1)
+    # Person standing centered and near: a vertical slab at ~0.45 m occluding the steps.
+    body = depth.copy()
+    body[18:51, 42:64] = 0.45
+    pb = [0.40, 0.30, 0.60, 0.85]
+
+    out_t, box_t, st_t = mask_person_in_parkour_depth(body, pb, fill_mode="terrain")
+    out_f, box_f, st_f = mask_person_in_parkour_depth(body, pb, fill_mode="far")
+    assert box_t is not None and box_f is not None, "mask should map a valid box"
+    cx1, cy1, cx2, cy2 = box_t
+    roi_t = out_t[cy1:cy2, cx1:cx2]
+    roi_f = out_f[cy1:cy2, cx1:cx2]
+    # Terrain fill: NO far/sky values leak in (the policy still sees the riser), the body
+    # slab is removed (raised toward the terrain reference), and real terrain is preserved.
+    assert roi_t.max() < 50.0, f"terrain fill leaked a far value: max={roi_t.max()}"
+    assert st_t["terrain_ref_m"] is not None and 0.3 < st_t["terrain_ref_m"] < 1.3, \
+        f"terrain ref out of range: {st_t['terrain_ref_m']}"
+    assert st_t["preserved_terrain_px"] > 0, "terrain fill preserved no real terrain"
+    assert roi_t.min() > 0.45, "near body (0.45 m) not removed by terrain fill"
+    # Far fill: the legacy 'clear' blanking that blinds the policy to the step.
+    assert roi_f.min() >= 1e5 - 1.0, f"far fill should be 1e5, got {roi_f.min()}"
+    assert st_f["fill_mode"] == "far"
+    print("OK person mask: terrain keeps the step (ref=%.2fm, %d px kept), far blanks to clear"
+          % (st_t["terrain_ref_m"], st_t["preserved_terrain_px"]))
+
+    # Genuinely occluded (no valid terrain visible anywhere) -> far fallback, so the near
+    # body never leaks through as terrain (the surge is still suppressed).
+    sky = np.full((H, W), 1.0e5, dtype=np.float32)
+    out_o, box_o, st_o = mask_person_in_parkour_depth(sky, [0.30, 0.30, 0.70, 0.70], fill_mode="terrain")
+    assert st_o["fill_mode"] == "far_fallback", f"expected far_fallback, got {st_o['fill_mode']}"
+    assert out_o[box_o[1]:box_o[3], box_o[0]:box_o[2]].min() >= 1e5 - 1.0
+    print("OK person mask: no-terrain occlusion falls back to far-fill (no surge leak)")
+
+    # Bad/empty bbox -> input returned unchanged, no box, no stats.
+    o2, b2, s2 = mask_person_in_parkour_depth(body, None)
+    assert b2 is None and s2 is None, "bad bbox should return (input, None, None)"
+    print("OK person mask: bad bbox returns input unchanged")
+
+
+def _test_heading_slew():
+    """The parkour heading (delta_yaw) command is slew-limited so a bbox jump cannot snap
+    the bearing and jolt the gait at a terrain transition (the smoothing primitive)."""
+    from pid_controller import SlewRateLimiter
+
+    lim = SlewRateLimiter(3.0)            # 3 rad/s
+    lim.reset(0.0)
+    y = lim.update(1.0)                   # step input from 0 -> 1
+    assert 0.0 < y < 1.0, f"slew should rate-limit a step, not jump to target, got {y}"
+
+    lim0 = SlewRateLimiter(0.0)           # 0 disables slew -> pass-through
+    lim0.reset(0.0)
+    assert lim0.update(1.0) == 1.0, "slew rate 0 should pass the target through"
+    print("OK heading slew limiter rate-limits a step (%.3f<1.0) and passes through when disabled" % y)
+
+
 def _run_pipeline(cfg, label, *, delta_yaw=None):
     """Step the loaded policy and assert finite torques within the per-leg limits."""
     from parkour_locomotion_policy import ParkourLocomotionPolicy
@@ -141,6 +206,8 @@ def _run_pipeline(cfg, label, *, delta_yaw=None):
 
 def main():
     _test_weight_free()
+    _test_person_mask()
+    _test_heading_slew()
 
     if not (os.path.exists(BASE) and os.path.exists(VISION)):
         print(f"SKIP: parkour weights not found under {ASSETS} (weight-free checks passed)")
@@ -153,6 +220,15 @@ def main():
         ParkourPolicyConfig(base_model_path=BASE, vision_model_path=VISION,
                             heading_mode="command"),
         "clean + delta_yaw", delta_yaw=0.3,
+    )
+
+    # Hybrid heading mode injects the bearing at the policy level exactly like command
+    # (the "self-steer on the stairs" handoff lives upstream in _step_go2_locomotion,
+    # which passes delta_yaw=None there). Confirm hybrid is a valid mode and wires through.
+    _run_pipeline(
+        ParkourPolicyConfig(base_model_path=BASE, vision_model_path=VISION,
+                            heading_mode="hybrid"),
+        "hybrid + delta_yaw", delta_yaw=0.3,
     )
 
     # Real-simulated-env realism on: obs noise + latency + actuator imperfections

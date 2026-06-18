@@ -40,8 +40,10 @@ class SimRobotController:
     def is_ready(self) -> bool:
         return self._ready
     def move(self, vx: float, vy: float, wz: float, stairs_detected: bool = False,
-             yaw_err: float = 0.0, person_bbox=None) -> None:
-        self._send(vx, vy, wz, stairs_detected, yaw_err, person_bbox)
+             yaw_err: float = 0.0, person_bbox=None,
+             stairs_action_active: bool = False) -> None:
+        self._send(vx, vy, wz, stairs_detected, yaw_err, person_bbox,
+                   stairs_action_active)
 
     def stop(self) -> None:
         self._send(0.0, 0.0, 0.0, False, 0.0, None)
@@ -62,7 +64,8 @@ class SimRobotController:
             self._sock = None
 
     def _send(self, vx: float, vy: float, wz: float, stairs_detected: bool = False,
-              yaw_err: float = 0.0, person_bbox=None) -> None:
+              yaw_err: float = 0.0, person_bbox=None,
+              stairs_action_active: bool = False) -> None:
         if not self._sock:
             return
         vx_raw = float(vx)
@@ -86,8 +89,12 @@ class SimRobotController:
             if isinstance(person_bbox, (list, tuple)) and len(person_bbox) >= 4
             else None
         )
+        # stairs_action_active pairs with the Isaac decoder in isaac_env.py -- update
+        # both together. It tells the parkour policy (hybrid heading mode) the climb has
+        # engaged, so it self-steers from depth instead of the person bearing there.
         payload = json.dumps({"vx": vx, "vy": vy, "wz": wz, "yaw_err": float(yaw_err),
                               "stairs_detected": stairs_detected,
+                              "stairs_action_active": bool(stairs_action_active),
                               "person_bbox": _pbb}).encode()
         try:
             self._sock.sendto(payload, (self._host, self._port))

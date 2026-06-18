@@ -684,6 +684,10 @@ def main():
     stairs_depth_ever_confirmed = False
     trans_x_limiter = SlewRateLimiter(args.max_trans_x_accel)
     rotation_limiter = SlewRateLimiter(args.max_rot_accel)
+    # Slew-limits the parkour heading (delta_yaw) command so a bbox jump can't snap the
+    # bearing and jolt the gait at a terrain transition (consumed in heading_mode
+    # command/hybrid; ignored by vision self-steer).
+    yaw_err_limiter = SlewRateLimiter(args.parkour_yaw_slew_rad_s)
  
     try:
         while True:
@@ -897,6 +901,13 @@ def main():
             debug_info["stairs_consistency_required"] = int(stairs_result.get("consistency_required", 1))
             debug_info["stairs_latch_frames_remaining"] = int(stair_latch_counter)
             debug_info["stairs_bbox"] = stairs_bbox
+            # Horizontal staircase-center offset in [-1,1] (frame center = 0, +right),
+            # used by the optional approach square-up to face the stairs head-on.
+            stairs_cx_norm = None
+            if stairs_bbox is not None and len(stairs_bbox) >= 4 and img.shape[1] > 0:
+                _scx = 0.5 * (float(stairs_bbox[0]) + float(stairs_bbox[2]))
+                stairs_cx_norm = float(np.clip(_scx / float(img.shape[1]) * 2.0 - 1.0, -1.0, 1.0))
+            debug_info["stairs_cx_norm"] = stairs_cx_norm
             debug_info["stairs_conf"] = float(stairs_result.get("conf", last_stairs_conf))
             debug_info["stairs_depth_m"] = stairs_depth_m
             debug_info["stairs_depth_ever_confirmed"] = stairs_depth_ever_confirmed
@@ -1122,26 +1133,63 @@ def main():
                 debug_info["cmd_sent_ts"] = time.time()
                 debug_info["cmd_sent_mono"] = time.monotonic()
                 # Heading command for the parkour policy: the person's bearing as a yaw
-                # error (rad), clamped to the policy's trained heading envelope. The blind
-                # RL path ignores it; only the parkour policy in heading_mode=command uses it.
+                # error (rad), shaped to match the tamed wz path and smoothed so it cannot
+                # jolt the gait at a terrain transition. Consumed only by the parkour policy
+                # in heading_mode command/hybrid; the blind RL path ignores it, and in hybrid
+                # the policy itself drops it on the stairs (stairs_action_active) and
+                # self-steers from depth -- so this shaping governs flat-ground following.
+                #   1. deadband small bearings (bbox jitter) to zero;
+                #   2. on the stairs, damp the centering like the wz path (stair_centering_scale);
+                #   3. clamp to the trained heading envelope, then slew-limit across frames.
                 # Sign: rotation_error_deg>0 means the person is to the RIGHT, which needs a
                 # clockwise (negative) turn under the policy's CCW-positive yaw -> negate.
-                # (The sign is log-verifiable via the fall-diag injected_yaw field.)
+                # Sign is log-verifiable: pair debug_info yaw_err_cmd/rotation_error_deg here
+                # with the fall-diag injected_yaw vs vision_yaw on the Isaac side.
                 _rot_err_deg = debug_info.get("rotation_error_deg")
-                yaw_err_cmd = 0.0
-                if _rot_err_deg is not None:
-                    yaw_err_cmd = float(np.clip(-np.radians(float(_rot_err_deg)), -1.0, 1.0))
-                debug_info["yaw_err_cmd"] = yaw_err_cmd
+                _stairs_active = bool(debug_info.get("stairs_action_active", False))
+                _stairs_cx = debug_info.get("stairs_cx_norm")
+                _square_up = (
+                    bool(getattr(args, "stair_square_up", False))
+                    and bool(debug_info.get("stairs_detected", False))
+                    and not _stairs_active
+                    and _stairs_cx is not None
+                )
+                yaw_err_raw = 0.0
+                if _square_up:
+                    # Approach alignment: face the staircase head-on (center its bbox) so the
+                    # dog hits the first riser square. Gentle + capped; frozen once the climb
+                    # engages (then hybrid self-steers from depth). Same sign convention as the
+                    # person bearing below, so a sign flip fixes both together.
+                    yaw_err_raw = -float(args.stair_square_up_gain) * float(_stairs_cx)
+                    yaw_err_raw = float(np.clip(
+                        yaw_err_raw, -float(args.stair_square_up_max), float(args.stair_square_up_max)))
+                    debug_info["stairs_square_up_active"] = True
+                elif _rot_err_deg is not None:
+                    debug_info["stairs_square_up_active"] = False
+                    _e = float(_rot_err_deg)
+                    if abs(_e) <= float(args.parkour_yaw_deadband_deg):
+                        _e = 0.0
+                    yaw_err_raw = -np.radians(_e)
+                    if _stairs_active:
+                        yaw_err_raw *= float(args.stair_centering_scale)
+                    yaw_err_raw = float(np.clip(yaw_err_raw, -1.0, 1.0))
+                else:
+                    debug_info["stairs_square_up_active"] = False
+                yaw_err_cmd = float(np.clip(yaw_err_limiter.update(yaw_err_raw), -1.0, 1.0))
+                debug_info["yaw_err_raw"] = round(yaw_err_raw, 4)
+                debug_info["yaw_err_cmd"] = round(yaw_err_cmd, 4)
                 controller.move(
                     command_trans_x, 0.0, command_rotation,
                     stairs_detected=stairs_detected,
                     yaw_err=yaw_err_cmd,
                     person_bbox=debug_info.get("person_bbox_norm"),
+                    stairs_action_active=_stairs_active,
                 )
             elif controller is not None and controller.is_ready():
                 controller.stop()
                 trans_x_limiter.reset(0.0)
                 rotation_limiter.reset(0.0)
+                yaw_err_limiter.reset(0.0)
                 debug_info["command_trans_x_limited"] = 0.0
                 debug_info["command_rotation_limited"] = 0.0
 

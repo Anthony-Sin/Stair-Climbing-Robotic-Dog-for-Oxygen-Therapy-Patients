@@ -138,7 +138,7 @@ def attach_o2_payload(
     reference_visuals  : reference the generated ``.usda`` meshes for looks. The
                          physics (colliders/mass/joint) is created regardless.
     """
-    from pxr import Gf, Usd, UsdGeom, UsdPhysics, PhysxSchema
+    from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
     logf = log or _default_log
 
@@ -151,6 +151,11 @@ def attach_o2_payload(
     c = spec.concentrator
     holder_local = spec.holder_center_m
     tank_local = spec.tank_center_m
+    # Bounding-box extents in the trunk frame for the chosen mount orientation
+    # (flat by default): ext_x = fore-aft, ext_y = lateral, ext_z = vertical
+    # height. Flat lays the concentrator on its side so ext_z is the short 3.5 in
+    # width -- a much lower CoM than standing it tall.
+    ext_x, ext_y, ext_z = spec.mounted_extents_m
 
     # -----------------------------------------------------------------
     # 1) RAILS -- collision + mass children of the trunk link (bolted on)
@@ -168,17 +173,21 @@ def attach_o2_payload(
              path=RAILS_USDA)
 
     # Collision approximation: base plate + two side walls (invisible boxes).
+    # The footprint hugs the tank's fore-aft (ext_x) and lateral (ext_y) extents;
+    # the side walls only need to hug the tank's vertical height (ext_z), so cap
+    # their height -- a flat tank gets a low cradle, not tall upright walls.
     rail = spec.rail
-    plate_l = c.length_m + 2.0 * rail.fore_aft_overhang_m
-    plate_w = c.width_m + 2.0 * (rail.side_gap_m + rail.rail_thickness_m)
-    rail_y = c.width_m / 2.0 + rail.side_gap_m + rail.rail_thickness_m / 2.0
+    plate_l = ext_x + 2.0 * rail.fore_aft_overhang_m
+    plate_w = ext_y + 2.0 * (rail.side_gap_m + rail.rail_thickness_m)
+    rail_y = ext_y / 2.0 + rail.side_gap_m + rail.rail_thickness_m / 2.0
+    wall_h = min(rail.wall_height_m, 0.7 * ext_z)
     rail_colliders = [
         ("plate", (0.0, 0.0, -rail.base_plate_thickness_m / 2.0),
          (plate_l, plate_w, rail.base_plate_thickness_m)),
-        ("wall_l", (0.0, rail_y, rail.wall_height_m / 2.0),
-         (plate_l, rail.rail_thickness_m, rail.wall_height_m)),
-        ("wall_r", (0.0, -rail_y, rail.wall_height_m / 2.0),
-         (plate_l, rail.rail_thickness_m, rail.wall_height_m)),
+        ("wall_l", (0.0, rail_y, wall_h / 2.0),
+         (plate_l, rail.rail_thickness_m, wall_h)),
+        ("wall_r", (0.0, -rail_y, wall_h / 2.0),
+         (plate_l, rail.rail_thickness_m, wall_h)),
     ]
     rail_collision_paths: List[str] = []
     for i, (name, center, size) in enumerate(rail_colliders):
@@ -206,10 +215,12 @@ def attach_o2_payload(
         Usd.TimeCode.Default()
     )
     world_pos = trunk_world.Transform(Gf.Vec3d(*tank_local))
-    world_quat = trunk_world.ExtractRotationQuat()
+    world_quat = trunk_world.ExtractRotationQuat()  # Gf.Quatd (double precision)
     tank_xform.ClearXformOpOrder()
     tank_xform.AddTranslateOp().Set(world_pos)
-    tank_xform.AddOrientOp().Set(world_quat)
+    # AddOrientOp() defaults to float precision (expects a Quatf); ExtractRotationQuat
+    # returns a Quatd, so author the op as double to match or pxr raises a type error.
+    tank_xform.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(world_quat)
 
     # Rigid body + mass + inertia (CoM at the tank centre == this prim's origin).
     UsdPhysics.RigidBodyAPI.Apply(tank_prim)
@@ -217,22 +228,33 @@ def attach_o2_payload(
     tank_mass.CreateMassAttr(float(c.mass_kg))
     tank_mass.CreateCenterOfMassAttr(Gf.Vec3f(0.0, 0.0, 0.0))
     tank_mass.CreateDiagonalInertiaAttr(
-        _box_inertia(c.mass_kg, c.length_m, c.width_m, c.height_m)
+        _box_inertia(c.mass_kg, ext_x, ext_y, ext_z)
     )
     tank_mass.CreatePrincipalAxesAttr(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
 
     if reference_visuals and os.path.exists(CONCENTRATOR_USDA):
         vis = UsdGeom.Xform.Define(stage, f"{tank_path}/visual")
         vis.GetPrim().GetReferences().AddReference(_asset_uri(CONCENTRATOR_USDA))
+        # The mesh is authored UPRIGHT (L=+X, W=+Y, 7.2 in H=+Z). Rotate it to match
+        # the mounted collider for the chosen orientation:
+        #   * flat:      +90 deg about X -> H goes lateral, the 3.5 in W goes up.
+        #   * crosswise: +90 deg about Z (yaw) -> the 9.1 in L runs side-to-side,
+        #                the 3.5 in W runs fore-aft (stays tall, H up).
+        #   * upright:   no rotation.
+        if spec.mount.orientation == "flat":
+            vis.AddRotateXOp().Set(90.0)
+        elif spec.mount.orientation == "crosswise":
+            vis.AddRotateZOp().Set(90.0)
     elif reference_visuals:
         logf(logging.WARNING, "o2_tank_visual_missing",
              "Concentrator .usda not found -- run `python -m o2_payload.build_assets`",
              path=CONCENTRATOR_USDA)
 
-    # Clean analytic box collider sized to the shell bounding box.
+    # Clean analytic box collider sized to the shell bounding box in the mounted
+    # orientation (flat by default), matching the inertia and the rotated visual.
     tank_col_path = f"{tank_path}/collision"
     tank_cube = _define_box(stage, tank_col_path, (0.0, 0.0, 0.0),
-                            (c.length_m, c.width_m, c.height_m))
+                            (ext_x, ext_y, ext_z))
     _make_invisible(tank_cube.GetPrim())
     UsdPhysics.CollisionAPI.Apply(tank_cube.GetPrim())
 
@@ -248,9 +270,13 @@ def attach_o2_payload(
     joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
     joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
 
-    strap = PhysxSchema.PhysxJointAPI.Apply(joint.GetPrim())
-    strap.CreateBreakForceAttr().Set(float(spec.strap.break_force_n))
-    strap.CreateBreakTorqueAttr().Set(float(spec.strap.break_torque_nm))
+    # Break force/torque live on the BASE UsdPhysics.Joint schema
+    # (physics:breakForce / physics:breakTorque), not on PhysxSchema.PhysxJointAPI
+    # -- PhysX honours the core-schema values. (PhysxJointAPI carries armature /
+    # joint friction / projection, none of which we need here.) Authoring these on
+    # the FixedJoint makes the strap a breakable retaining clip.
+    joint.CreateBreakForceAttr().Set(float(spec.strap.break_force_n))
+    joint.CreateBreakTorqueAttr().Set(float(spec.strap.break_torque_nm))
 
     # -----------------------------------------------------------------
     # 4) Friction so the tank grips the cradle under normal motion.
@@ -278,6 +304,9 @@ def attach_o2_payload(
         logging.INFO, "o2_payload_attached",
         "Mounted mock-up P2-E6 oxygen concentrator + rail cradle on the Go2",
         trunk=trunk_prim_path, tank=tank_path, joint=joint_path,
+        orientation=spec.mount.orientation,
+        tank_extents_mm=[round(ext_x * 1000.0, 1), round(ext_y * 1000.0, 1),
+                         round(ext_z * 1000.0, 1)],
         tank_mass_kg=round(c.mass_kg, 3),
         rail_mass_kg=round(spec.rail.mass_kg, 3),
         payload_total_kg=round(spec.total_payload_mass_kg, 3),
@@ -285,7 +314,7 @@ def attach_o2_payload(
         com_shift_mm=[round(v * 1000.0, 1) for v in com_shift],
         static_pitch_torque_nm=round(spec.pitch_torque_nm, 3),
         strap_break_force_n=spec.strap.break_force_n,
-        lidar_clearance_mm=round(spec.mount.lidar_clearance_actual_m * 1000.0, 1),
+        lidar_clearance_mm=round(spec.lidar_clearance_actual_m * 1000.0, 1),
     )
     return handle
 

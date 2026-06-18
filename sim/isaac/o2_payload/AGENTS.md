@@ -35,9 +35,11 @@ Local rules override the global `CLAUDE.md`. Only non-obvious constraints here.
   flag: PhysX breaks the joint internally and does **not** write the broken state
   back to USD, so reading `jointEnabled` will not tell you it broke.
 
-## Not wired in yet
+## Wired in
 
-- Nothing here is called by the running sim. `isaac_env.py` has a legacy
-  `attach_robot_o2_tank` (two plain cubes, no joint/monitor) that is **not
-  currently invoked**. This package supersedes it; wiring is the developer's call
-  (see `README.md`). Do not edit `isaac_env.py` to wire it in unless asked.
+- This package IS now called by the running sim: `isaac_env.load_go2()` calls
+  `attach_o2_payload()` (before `world.reset()`) and the main loop runs an
+  `O2PayloadMonitor.update()` every step (see `README.md` → *Wiring it in*).
+- The legacy `attach_robot_o2_tank` in `isaac_env.py` (two plain cubes, no
+  joint/monitor) is still **not invoked** — this package superseded it. Leave it
+  alone unless asked to remove it.

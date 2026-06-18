@@ -689,6 +689,9 @@ def _find_first_skel_root(stage: Any, parent_path: str) -> Optional[Any]:
 def _resolve_character_with_clips(
     logger: Optional[logging.Logger],
 ) -> Tuple[str, str, str, str]:
+    walk = f"{PERSON_VISUAL_PRIM}/{_BIPED_WALK_ANIM_SUBPATH}"
+    idle = f"{PERSON_VISUAL_PRIM}/{_BIPED_IDLE_ANIM_SUBPATH}"
+
     assets_root = nucleus_utils.get_assets_root_path()
 
     candidates = [
@@ -859,9 +862,6 @@ def _resolve_character_with_clips(
             asset_path=local_usd_path,
         )
 
-    # Walk/idle clips will be referenced relative to SimWalker:
-    walk = f"{PERSON_VISUAL_PRIM}/{_BIPED_WALK_ANIM_SUBPATH}"
-    idle = f"{PERSON_VISUAL_PRIM}/{_BIPED_IDLE_ANIM_SUBPATH}"
     return local_usd_path, "BipedMannequin", walk, idle
 
 
@@ -885,9 +885,11 @@ def _initialize_extensions(logger: Optional[logging.Logger]) -> None:
         app = omni.kit.app.get_app()
         manager = app.get_extension_manager()
 
+        # The person actor binds embedded UsdSkel animations directly. It does
+        # not need omni.anim.graph.core, and enabling that extension can hang
+        # standalone scripted runs before the person asset is even selected.
         needed = [
             "omni.anim.timeline",
-            "omni.anim.graph.core",
         ]
 
         for ext_name in needed:

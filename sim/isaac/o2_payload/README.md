@@ -6,9 +6,9 @@ P2-E6 portable oxygen concentrator** that rides on the robot's back, plus the
 runtime monitor that reports if the tank **falls off**, how it **changes the
 robot's weight**, and how it **affects the robot's balance**.
 
-> Status: **models only, not wired into the sim.** The builders are ready to
-> call when you are; see *Wiring it in* below. Nothing in the rest of the repo
-> was modified.
+> Status: **wired into the sim.** `isaac_env.load_go2()` calls
+> `attach_o2_payload()` (before `world.reset()`) and the main loop runs an
+> `O2PayloadMonitor` every step. See *Wiring it in* below for the exact hooks.
 
 ---
 
@@ -17,17 +17,31 @@ robot's weight**, and how it **affects the robot's balance**.
 | Property | Source (measured mock-up) | SI |
 |---|---|---|
 | Concentrator L × W × H | 9.1 × 3.5 × 7.2 in | **0.2311 × 0.0889 × 0.1829 m** |
+| Mount orientation | — | **CROSSWISE** (tall, long axis side-to-side) → trunk-frame extents **89 × 231 × 183 mm** (fore-aft × lateral × up) |
 | Concentrator mass | 4.6 lb | **2.087 kg** |
 | Printed rail holder mass | 0.3 lb | **0.136 kg** |
 | **Total payload** | 4.9 lb | **2.223 kg** (≈ 32 % of the 6.92 kg trunk) |
-| Min LiDAR clearance | 3.3 in | 0.0838 m (actual placement: **0.200 m**) |
-| Tank centre (trunk frame) | — | (−0.15, 0.0, 0.166) m |
-| Combined CoM shift when attached | — | **(−41.6, 0, +40.4) mm** (rearward + up) |
-| Static pitch torque from payload | — | **3.27 N·m** |
-| Strap break threshold | — | 300 N / 60 N·m |
+| LiDAR clearance (tank front face) | 3.3 in | **0.0838 m** (placed exactly at the limit) |
+| Tank centre (trunk frame) | — | (**−0.078**, 0.0, 0.166) m (computed) |
+| Combined CoM shift when attached | — | **(−24.2, 0, +40.4) mm** (rearward + up) |
+| Static pitch torque from payload | — | **1.71 N·m** |
+| Strap break threshold | — | 600 N / 120 N·m (~30× static; survives the push impulse + climb, releases only in a crash) |
 
 > We deliberately model the **mock-up**, not the production P2-E6 spec sheet
 > (8.7 × 3.4 × 6.3 in, 4.37 lb). The mock-up is what is actually on the robot.
+
+> **Orientation (`MountSpec.orientation`, the developer's choice = `"crosswise"`):**
+> the concentrator stands tall but is turned a quarter-turn so its **9.1 in length
+> runs side-to-side**. That makes it only 3.5 in deep fore-aft, so the fore-aft
+> position (auto-computed to sit the tank's front face exactly 3.3 in behind the
+> LiDAR) moves **~70 mm closer to centre** than upright — halving the rearward CoM
+> shift (−42 → −24 mm) and the pitch torque (3.27 → 1.71 N·m). Trade-offs: the
+> 9.1 in length now **overhangs the robot's sides ~2 cm each**, and it still rides
+> tall (CoM +40 mm up), so the sideways tip risk on stairs is unchanged. The two
+> other options are `"upright"` (narrow, no side overhang, far back) and `"flat"`
+> (lowest CoM, steadiest, but 183 mm wide). The fore-aft placement and the cradle
+> regenerate from `spec.py` — re-run `python -m o2_payload.build_assets` after a
+> change.
 
 Print the live numbers any time:
 
@@ -96,7 +110,7 @@ surface on the preview HUD.
 
 ---
 
-## Wiring it in (do this when ready — not done for you)
+## Wiring it in (DONE — this is how it is hooked up)
 
 `isaac_mount.py` / `isaac_monitor.py` are decoupled and import `pxr` lazily, so
 you can drop them into `isaac_env.py` without touching anything else. Two hooks:
