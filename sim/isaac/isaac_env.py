@@ -133,6 +133,35 @@ parser.add_argument("--parkour-mask-fill", type=str, default="terrain",
                          "the first step at the stair base. 'far': the legacy flat far-fill "
                          "(push the whole box to max range / 'clear'); kept for A/B because it "
                          "reproduces the stair-base fall. Both kill the close-range body surge.")
+parser.add_argument("--no-speed-governor", action="store_false", dest="speed_governor",
+                    help="Disable the parkour speed governor (on by default). The governor is "
+                         "a two-stage limiter: (1) command backoff when est_vel > vx_cmd * "
+                         "--speed-governor-overspeed-ratio, and (2) action-norm cap at "
+                         "--speed-governor-action-norm-max (8.0 = no jumping, normal walk ~4-6). "
+                         "Pass this flag to disable both stages for A/B or debug runs.")
+# Speed governor is ON by default: calmer gait, no jumping. Use --no-speed-governor to disable.
+parser.set_defaults(speed_governor=True)
+parser.add_argument("--parkour-walk-mode", action="store_true", dest="parkour_walk_mode",
+                    help="(Kept for explicitness — walk mode is already the default.) "
+                         "Sets the policy one-hot to 'walk' [0,1] instead of 'parkour' [1,0]. "
+                         "The walk conditioning produces a calmer, lower-clearance gait. "
+                         "Use --no-parkour-walk-mode to restore parkour mode for testing.")
+parser.add_argument("--no-parkour-walk-mode", action="store_false", dest="parkour_walk_mode",
+                    help="Switch the policy one-hot to 'parkour' [1,0] (agile/jumping gait). "
+                         "Walk mode is the default; pass this only for A/B or parkour testing.")
+# Walk mode ON by default: trained calm-walk one-hot. Use --no-parkour-walk-mode to disable.
+parser.set_defaults(parkour_walk_mode=True)
+parser.add_argument("--speed-governor-overspeed-ratio", type=float, default=1.8,
+                    dest="speed_governor_overspeed_ratio",
+                    help="Command-backoff trigger: if est_vel > vx_cmd * ratio, back off. "
+                         "1.8 = allow up to 80%% over-run before intervening. "
+                         "Lower values = tighter speed control but more oscillation. "
+                         "Only active with --speed-governor.")
+parser.add_argument("--speed-governor-action-norm-max", type=float, default=8.0,
+                    dest="speed_governor_action_norm_max",
+                    help="Action-norm cap. Normal walking ~4-6, surging/jumping >10. "
+                         "8.0 clips aggressive gait without trimming a calm walk. "
+                         "0 disables the norm cap entirely. Only active with --speed-governor.")
 parser.add_argument("--with-o2-payload", action="store_true",
                     help="Attach the 3D-printed rail cradle + P2-E6 oxygen concentrator "
                          "to the Go2's back. Off by default so the base robot runs clean. "
@@ -3281,6 +3310,7 @@ def _create_locomotion_policy(go2):
     config = ParkourPolicyConfig(
         base_model_path=str(base_path),
         vision_model_path=str(vision_path),
+        mode="walk" if bool(getattr(args, "parkour_walk_mode", True)) else "parkour",
         control_hz=CONTROL_HZ,
         depth_update_interval=depth_interval,
         heading_mode=effective_heading_mode,
@@ -3291,6 +3321,9 @@ def _create_locomotion_policy(go2):
         backlash_rad=float(args.backlash_rad),
         torque_derate=float(args.torque_derate),
         torque_rate_limit_nm=float(args.torque_rate),
+        speed_governor=bool(args.speed_governor),
+        speed_governor_overspeed_ratio=float(args.speed_governor_overspeed_ratio),
+        speed_governor_action_norm_max=float(args.speed_governor_action_norm_max),
     )
     # Domain-randomization PD-gain perturbation around the nominal kp=40/kd=1.
     config.kp *= float(_DR.get("kp_mult", 1.0))
@@ -3304,8 +3337,12 @@ def _create_locomotion_policy(go2):
         heading_mode=effective_heading_mode, dof_count=len(dof_names),
         self_test_forced_vision=bool(getattr(args, "self_test_walk", False)),
         kp=round(float(config.kp), 3), kd=round(float(config.kd), 3),
+        parkour_mode=str(config.mode),
         obs_noise=bool(config.obs_noise_enabled), obs_latency_steps=int(config.obs_latency_steps),
         joint_limit_clamp=bool(config.joint_limit_clamp),
+        speed_governor=bool(config.speed_governor),
+        speed_governor_overspeed_ratio=round(float(config.speed_governor_overspeed_ratio), 3),
+        speed_governor_action_norm_max=round(float(config.speed_governor_action_norm_max), 3),
     )
     return policy
 
@@ -3346,7 +3383,8 @@ def _step_go2_locomotion(
         delta_yaw = None
     else:
         delta_yaw = float(yaw_err)
-    telemetry = rl_policy.step(go2, (vx, vy, wz), dt, delta_yaw=delta_yaw)
+    telemetry = rl_policy.step(go2, (vx, vy, wz), dt, delta_yaw=delta_yaw,
+                               stairs_active=bool(stairs_detected))
     # The policy just moved the joints; capture its real per-leg command so the
     # stair-demo telemetry and HUD reflect what the policy actually did this step.
     _go2_locomotion_state.leg_summary = rl_policy.leg_command_summary()

@@ -14,7 +14,9 @@ param(
     [switch]$SelfTestNoPolicy,
     [switch]$NoParkourPersonMask,
     [string]$ParkourMaskFill = "terrain",
-    [switch]$FinalScene
+    [switch]$FinalScene,
+    [switch]$NoParkourWalkMode,
+    [switch]$NoSpeedGovernor
 )
 
 $ErrorActionPreference = "Stop"
@@ -90,6 +92,9 @@ if ($NoParkourPersonMask) { $locomotionArgs += " --no-parkour-person-mask" }
 # Terrain-preserving mask fill is the default; pass it through so 'far' is selectable for A/B.
 $locomotionArgs += " --parkour-mask-fill $ParkourMaskFill"
 if ($FinalScene) { $locomotionArgs += " --final-scene" }
+# Walk mode and speed governor are ON by default in isaac_env.py; pass disable flags for A/B.
+if ($NoParkourWalkMode) { $locomotionArgs += " --no-parkour-walk-mode" }
+if ($NoSpeedGovernor) { $locomotionArgs += " --no-speed-governor" }
 
 # Isaac records the external scene Left view to scene_view.mp4 (beside opencv_preview.mp4).
 $rawArg = ""

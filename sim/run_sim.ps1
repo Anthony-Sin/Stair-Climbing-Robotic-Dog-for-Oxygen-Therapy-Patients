@@ -32,6 +32,8 @@ param(
     [switch]$SelfTestNoPolicy,
     [switch]$NoParkourPersonMask,
     [switch]$WithO2Payload,
+    [switch]$NoParkourWalkMode,
+    [switch]$NoSpeedGovernor,
     [double]$SimLatencyMs = 0.0,
     [double]$SimLatencyJitterMs = 0.0
 )
@@ -1117,6 +1119,12 @@ if ($NoIsaac) {
     }
     if ($WithO2Payload) {
         $isaacArgs += "-WithO2Payload"
+    }
+    if ($NoParkourWalkMode) {
+        $isaacArgs += "-NoParkourWalkMode"
+    }
+    if ($NoSpeedGovernor) {
+        $isaacArgs += "-NoSpeedGovernor"
     }
     if ($FinalScene) {
         $isaacArgs += "-FinalScene"

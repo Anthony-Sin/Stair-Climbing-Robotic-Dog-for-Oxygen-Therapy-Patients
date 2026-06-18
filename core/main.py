@@ -331,6 +331,91 @@ def _apply_no_reverse_follow_policy(
     return 0.0
 
 
+def _apply_follow_standoff_policy(
+    args,
+    trans_x_cmd: float,
+    gap_m: Optional[float],
+    leader_speed_mps: float,
+    is_walking: bool,
+    debug_info: Dict[str, Any],
+    state: Dict[str, Any],
+) -> float:
+    # If on stairs, bypass standoff policy completely to avoid stalls
+    if bool(debug_info.get("stairs_detected", False)) or bool(debug_info.get("stairs_action_active", False)):
+        debug_info["follow_standoff_gate_active"] = False
+        debug_info["follow_standoff_skipped_on_stairs"] = True
+        return float(trans_x_cmd)
+        
+    if gap_m is None:
+        debug_info["follow_standoff_gate_active"] = False
+        return float(trans_x_cmd)
+
+    # 1. Standoff calculation (speed adaptive)
+    standoff = args.target_distance + args.follow_standoff_speed_gain * leader_speed_mps
+    standoff = min(1.5, standoff)
+    
+    # 2. Hysteretic Go/Hold decision bounds
+    lower_bound = standoff + args.follow_standoff_band_in
+    upper_bound = standoff + args.follow_standoff_band_out
+    
+    if gap_m < lower_bound:
+        state["go_state"] = False
+    elif gap_m > upper_bound:
+        state["go_state"] = True
+        
+    # 3. Gait gate override: if patient stops, force hold
+    if args.follow_gait_gate and not is_walking:
+        state["go_state"] = False
+        debug_info["follow_gait_gate_triggered"] = True
+    else:
+        debug_info["follow_gait_gate_triggered"] = False
+        
+    original_cmd = float(trans_x_cmd)
+    
+    # Force hold state override
+    if not state["go_state"]:
+        trans_x_cmd = 0.0
+        
+    # 4. Pacing approach (if Go state is active and gap > follow_pace_distance)
+    pace_cap_active = False
+    pace_hold_active = False
+    
+    current_time = time.perf_counter()
+    dt = current_time - state.get("last_time", current_time)
+    state["last_time"] = current_time
+    
+    if state["go_state"] and gap_m > args.follow_pace_distance:
+        timer = state.get("pace_timer", 0.0) + dt
+        cycle_time = args.follow_pace_advance_time + args.follow_pace_settle_time
+        cycle_timer = timer % cycle_time
+        
+        if cycle_timer < args.follow_pace_advance_time:
+            state["pace_state"] = "advance"
+            trans_x_cmd = min(trans_x_cmd, args.follow_pace_speed)
+            pace_cap_active = True
+        else:
+            state["pace_state"] = "settle"
+            trans_x_cmd = 0.0
+            pace_hold_active = True
+            
+        state["pace_timer"] = timer
+    else:
+        # Reset pacing when close or holding
+        state["pace_state"] = "advance"
+        state["pace_timer"] = 0.0
+        
+    # Populate debug info
+    debug_info["fused_gap_m"] = float(gap_m)
+    debug_info["standoff_target_m"] = float(standoff)
+    debug_info["follow_standoff_gate_active"] = not state["go_state"]
+    debug_info["pace_state"] = state["pace_state"]
+    debug_info["pace_cap_active"] = pace_cap_active
+    debug_info["pace_hold_active"] = pace_hold_active
+    debug_info["follow_standoff_trans_x_before"] = original_cmd
+    
+    return float(trans_x_cmd)
+
+
 class _AsyncPreviewWorker:
     """Runs OpenCV preview rendering in a dedicated thread."""
 
@@ -550,6 +635,16 @@ def main():
         edge_penalty_k=args.edge_penalty_k,
         size_penalty_k=args.size_penalty_k,
         large_bbox_threshold=args.large_bbox_thresh,
+        follow_standoff_speed_gain=args.follow_standoff_speed_gain,
+        follow_standoff_band_in=args.follow_standoff_band_in,
+        follow_standoff_band_out=args.follow_standoff_band_out,
+        follow_gait_gate=args.follow_gait_gate,
+        follow_gait_history_len=args.follow_gait_history_len,
+        follow_gait_walk_threshold=args.follow_gait_walk_threshold,
+        follow_pace_distance=args.follow_pace_distance,
+        follow_pace_speed=args.follow_pace_speed,
+        follow_pace_advance_time=args.follow_pace_advance_time,
+        follow_pace_settle_time=args.follow_pace_settle_time,
     )
     person_follower = PersonFollower(person_following_config, yolo)
 
@@ -689,6 +784,19 @@ def main():
     # command/hybrid; ignored by vision self-steer).
     yaw_err_limiter = SlewRateLimiter(args.parkour_yaw_slew_rad_s)
  
+    last_command_trans_x = 0.0
+    last_command_rotation = 0.0
+    standoff_state = {
+        "go_state": False,
+        "pace_state": "advance",
+        "pace_timer": 0.0,
+        "last_time": time.perf_counter(),
+    }
+    # Timestamp of first person detection this session. Used by --follow-start-delay
+    # to hold all follow commands at zero until the delay expires. Set once and not
+    # reset on brief losses so the timer doesn't restart mid-follow.
+    _follow_delay_first_detect_ts: Optional[float] = None
+
     try:
         while True:
             frame_idx += 1
@@ -837,6 +945,8 @@ def main():
             trans_x_cmd, rotation_cmd, debug_info = person_follower.update(
                 follow_input_person, depth_img, (img.shape[0], img.shape[1]),
                 lidar_profile=frame_meta.get("lidar_profile"),
+                robot_speed=last_command_trans_x,
+                robot_yaw_speed=last_command_rotation,
             )
             # LIVE stair trigger (sensor-derived): YOLO-World detection on RGB
             # (yolo_stairs_inference) + depth-camera distance below. This is what
@@ -924,6 +1034,40 @@ def main():
             rot_err = debug_info.get('rotation_error_deg')
             if rot_err is not None:
                 last_rotation_error_deg = float(rot_err)
+            
+            # Follow-start delay: hold all commands at zero until --follow-start-delay
+            # seconds have elapsed since the person was first detected. Lets the robot
+            # settle before tracking begins and gives the operator time to step back.
+            if float(args.follow_start_delay) > 0.0:
+                if bool(debug_info.get("person_detected", False)):
+                    if _follow_delay_first_detect_ts is None:
+                        _follow_delay_first_detect_ts = time.perf_counter()
+                if _follow_delay_first_detect_ts is not None:
+                    delay_elapsed = time.perf_counter() - _follow_delay_first_detect_ts
+                    delay_remaining = max(0.0, float(args.follow_start_delay) - delay_elapsed)
+                    if delay_remaining > 0.0:
+                        trans_x_cmd = 0.0
+                        rotation_cmd = 0.0
+                        debug_info["follow_start_delay_active"] = True
+                        debug_info["follow_start_delay_remaining_sec"] = round(delay_remaining, 2)
+                    else:
+                        debug_info["follow_start_delay_active"] = False
+                        debug_info["follow_start_delay_remaining_sec"] = 0.0
+                else:
+                    debug_info["follow_start_delay_active"] = True
+                    debug_info["follow_start_delay_remaining_sec"] = round(float(args.follow_start_delay), 2)
+
+            # Apply follow standoff policy (hysteretic go/hold + pacing + speed-adaptive standoff)
+            trans_x_cmd = _apply_follow_standoff_policy(
+                args,
+                trans_x_cmd,
+                debug_info.get("depth_distance_m"),
+                debug_info.get("leader_speed_mps", 0.0),
+                debug_info.get("is_walking", False),
+                debug_info,
+                standoff_state,
+            )
+
             trans_x_cmd, rotation_cmd = _apply_stair_command_policy(
                 args, trans_x_cmd, rotation_cmd, debug_info
             )
@@ -933,6 +1077,13 @@ def main():
             trans_x_cmd = _apply_no_reverse_follow_policy(
                 args, trans_x_cmd, debug_info, source="post_follow_shaping"
             )
+
+            # Enforce zero-movement policy (linear and rotational) when the target person is not detected,
+            # both on ground and on stairs.
+            if not bool(debug_info.get("person_detected", False)):
+                trans_x_cmd = 0.0
+                rotation_cmd = 0.0
+
             debug_info["trans_x_cmd"] = float(trans_x_cmd)
             debug_info["rotation_cmd"] = float(rotation_cmd)
             stage_ms["follower"] = (time.perf_counter() - follow_start_ts) * 1000.0
@@ -1185,6 +1336,8 @@ def main():
                     person_bbox=debug_info.get("person_bbox_norm"),
                     stairs_action_active=_stairs_active,
                 )
+                last_command_trans_x = float(command_trans_x)
+                last_command_rotation = float(command_rotation)
             elif controller is not None and controller.is_ready():
                 controller.stop()
                 trans_x_limiter.reset(0.0)
@@ -1192,6 +1345,8 @@ def main():
                 yaw_err_limiter.reset(0.0)
                 debug_info["command_trans_x_limited"] = 0.0
                 debug_info["command_rotation_limited"] = 0.0
+                last_command_trans_x = 0.0
+                last_command_rotation = 0.0
 
             if motion_allowed and not raw_recording_released:
                 raw_recording_released = True

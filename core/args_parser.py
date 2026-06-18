@@ -159,7 +159,7 @@ def parse_args():
     parser.add_argument('--kd', type=float, default=0.3)
     parser.add_argument('--ki', type=float, default=0.0)
     parser.add_argument('--trans-x-max', type=float, default=0.6)
-    parser.add_argument('--trans-x-tolerance', type=float, default=0.3)
+    parser.add_argument('--trans-x-tolerance', type=float, default=0.1)
     parser.add_argument('--trans-x-antiwindup', type=float, default=0.0)
     parser.add_argument('--trans-x-alpha', type=float, default=0.4)
  
@@ -207,8 +207,40 @@ def parse_args():
     # -----------------------------------------------------------------------
     # Target distance
     # -----------------------------------------------------------------------
-    parser.add_argument('--target-distance', type=float, default=0.45,
+    parser.add_argument('--target-distance', type=float, default=1.5,
                         help='Target following distance in meters')
+    parser.add_argument('--follow-start-delay', type=float, default=0.0,
+                        dest='follow_start_delay',
+                        help='Seconds to hold all follow commands at zero after the person '
+                             'is first detected. Gives the robot time to settle and the '
+                             'operator time to step back before tracking begins. '
+                             'The timer starts on the first detection and does not reset '
+                             'if the person is briefly lost. 0 = no delay (default).')
+
+    # -----------------------------------------------------------------------
+    # Standoff, gait, and pacing follow rules
+    # -----------------------------------------------------------------------
+    parser.add_argument('--follow-standoff-speed-gain', type=float, default=0.4,
+                        help='Gain mapping leader speed to standoff distance offset')
+    parser.add_argument('--follow-standoff-band-in', type=float, default=-0.15,
+                        help='Hysteresis stop band offset relative to standoff target')
+    parser.add_argument('--follow-standoff-band-out', type=float, default=0.15,
+                        help='Hysteresis start band offset relative to standoff target')
+    parser.add_argument('--no-follow-gait-gate', dest='follow_gait_gate',
+                        action='store_false', default=True,
+                        help='Disable keypoint/speed gait follow gating')
+    parser.add_argument('--follow-gait-history-len', type=int, default=30,
+                        help='Rolling history length of keypoints for gait estimation')
+    parser.add_argument('--follow-gait-walk-threshold', type=float, default=0.5,
+                        help='Walking classification threshold for gait estimator')
+    parser.add_argument('--follow-pace-distance', type=float, default=2.0,
+                        help='Distance threshold (meters) where approach pacing engages')
+    parser.add_argument('--follow-pace-speed', type=float, default=0.4,
+                        help='Maximum forward speed command (m/s) under approach pacing')
+    parser.add_argument('--follow-pace-advance-time', type=float, default=2.0,
+                        help='Duration (seconds) of the advance phase during pacing')
+    parser.add_argument('--follow-pace-settle-time', type=float, default=1.5,
+                        help='Duration (seconds) of the settle/hold phase during pacing')
 
     # -----------------------------------------------------------------------
     # Stairs and obstacle gating
@@ -240,9 +272,10 @@ def parse_args():
     parser.add_argument('--stair-yaw-deadband-deg', type=float, default=4.0,
                         help='Zero the yaw command while on stairs when the centering error is within '
                              'this many degrees')
-    parser.add_argument('--stair-target-distance', type=float, default=0.7,
-                        help='Follow standoff (m) used while stairs are detected; larger than '
-                             '--target-distance so the dog does not park one step behind the person')
+    parser.add_argument('--stair-target-distance', type=float, default=1.2,
+                        help='Follow standoff (m) used while stairs are detected (default 1.2). '
+                             'Kept below --target-distance so the dog stays close enough to '
+                             'the person to keep climbing without losing the visual lock.')
     parser.add_argument('--parkour-yaw-deadband-deg', type=float, default=2.0,
                         help='Deadband (deg) on the parkour heading (delta_yaw) command: bearing '
                              'errors within this are sent as zero so bbox jitter does not micro-steer '
@@ -298,6 +331,13 @@ def parse_args():
     args.lost_search_min_error_deg = max(0.0, float(args.lost_search_min_error_deg))
     args.max_trans_x_accel = max(0.0, float(args.max_trans_x_accel))
     args.max_rot_accel = max(0.0, float(args.max_rot_accel))
+    args.follow_standoff_speed_gain = max(0.0, float(args.follow_standoff_speed_gain))
+    args.follow_gait_history_len = max(5, int(args.follow_gait_history_len))
+    args.follow_gait_walk_threshold = max(0.0, min(1.0, float(args.follow_gait_walk_threshold)))
+    args.follow_pace_distance = max(0.0, float(args.follow_pace_distance))
+    args.follow_pace_speed = max(0.0, float(args.follow_pace_speed))
+    args.follow_pace_advance_time = max(0.0, float(args.follow_pace_advance_time))
+    args.follow_pace_settle_time = max(0.0, float(args.follow_pace_settle_time))
     args.stairs_consistency_frames = max(1, int(args.stairs_consistency_frames))
     args.stairs_consistency_required = max(1, min(
         int(args.stairs_consistency_required),
@@ -312,6 +352,7 @@ def parse_args():
     args.stair_rot_max = max(0.0, float(args.stair_rot_max))
     args.stair_yaw_deadband_deg = max(0.0, float(args.stair_yaw_deadband_deg))
     args.stair_target_distance = max(0.0, float(args.stair_target_distance))
+    args.follow_start_delay = max(0.0, float(args.follow_start_delay))
     args.parkour_yaw_deadband_deg = max(0.0, float(args.parkour_yaw_deadband_deg))
     args.parkour_yaw_slew_rad_s = max(0.0, float(args.parkour_yaw_slew_rad_s))
     args.stair_square_up_gain = max(0.0, float(args.stair_square_up_gain))

@@ -49,6 +49,8 @@ if /I "%ARG%"=="--no-parkour-person-mask" set "ARG=-NoParkourPersonMask"
 if /I "%ARG%"=="--parkour-mask-fill" set "ARG=-ParkourMaskFill"
 if /I "%ARG%"=="--stair-square-up" set "ARG=-StairSquareUp"
 if /I "%ARG%"=="--with-o2-payload" set "ARG=-WithO2Payload"
+if /I "%ARG%"=="--no-parkour-walk-mode" set "ARG=-NoParkourWalkMode"
+if /I "%ARG%"=="--no-speed-governor" set "ARG=-NoSpeedGovernor"
 set "PS_ARGS=%PS_ARGS% "%ARG%""
 shift
 goto parse_args

@@ -119,6 +119,17 @@ class ParkourPolicyConfig:
     backlash_rad: float = 0.0          # lost-motion deadband on PD position error
     torque_derate: float = 1.0         # scale commanded torque (<1 = thermal/voltage sag)
     torque_rate_limit_nm: float = 0.0  # slew-rate limit (Nm/step; 0 = unlimited)
+    # --- Speed governor (opt-in, default off).
+    # Two complementary mechanisms that both fire when speed_governor=True:
+    #   1. Command backoff: if the policy's own velocity estimate is >overspeed_ratio*vx_cmd,
+    #      proportionally reduce the vx fed to the observation so the estimator's next
+    #      read pulls the actor back. Corrects the ~3.5x over-run without touching weights.
+    #   2. Action-norm cap: if the actor outputs a very large action vector (jumping/surging
+    #      gait), rescale it to at most action_norm_max while preserving joint-ratio direction.
+    #      0.0 = disabled. Reasonable starting value: 8.0 (normal walking ~4-6, surging >10).
+    speed_governor: bool = False
+    speed_governor_overspeed_ratio: float = 1.8
+    speed_governor_action_norm_max: float = 0.0
 
 
 class ParkourLocomotionPolicy:
@@ -185,6 +196,9 @@ class ParkourLocomotionPolicy:
         self._last_vx = 0.0
         self._last_injected_yaw: Optional[float] = None  # delta_yaw fed to slots 6:8 in command mode
         self._last_vision_yaw = 0.0                       # depth self-steer yaw (would-be / actual)
+        # Speed governor telemetry (surfaced via diagnostics()).
+        self._governor_cmd_vx_adj: float = 0.0   # vx after command-backoff (= _last_vx when governor fires)
+        self._governor_action_scale: float = 1.0  # 1.0 = no scaling; <1 = action was capped
         # Raw output of the privileged-state estimator (estimator.estimator), [9].
         # Its leading components are the base linear-velocity estimate the actor is
         # conditioned on; surfaced via diagnostics() so the fall-diag log can compare
@@ -349,7 +363,8 @@ class ParkourLocomotionPolicy:
         return (rot.T @ omega_world).astype(np.float32)
 
     def _build_proprio(
-        self, articulation: Any, vx: float, foot_contacts: Optional[np.ndarray]
+        self, articulation: Any, vx: float, foot_contacts: Optional[np.ndarray],
+        *, stairs_active: bool = False,
     ) -> torch.Tensor:
         cfg = self.config
         quat = self._base_quat_wxyz(articulation)
@@ -386,7 +401,15 @@ class ParkourLocomotionPolicy:
         else:
             contact = np.full(4, 0.5, dtype=np.float32)
 
-        parkour_walk = np.array([1.0, 0.0] if cfg.mode == "parkour" else [0.0, 1.0], dtype=np.float32)
+        # On stairs: engage parkour gait [1,0] regardless of config.mode so the
+        # policy lifts feet high enough to clear risers. On flat ground: use the
+        # configured mode (default "walk" [0,1] for calm patient following).
+        if stairs_active:
+            parkour_walk = np.array([1.0, 0.0], dtype=np.float32)
+            self._last_active_gait_mode = "parkour"
+        else:
+            parkour_walk = np.array([1.0, 0.0] if cfg.mode == "parkour" else [0.0, 1.0], dtype=np.float32)
+            self._last_active_gait_mode = cfg.mode
 
         proprio = np.concatenate([
             ang_vel,                      # 3
@@ -409,10 +432,26 @@ class ParkourLocomotionPolicy:
             self._obs_latency_buffer, proprio, int(cfg.obs_latency_steps))
         return torch.from_numpy(proprio).to(self._device).unsqueeze(0)  # [1,53]
 
-    def _infer(self, articulation: Any, vx: float, foot_contacts, delta_yaw) -> None:
+    def _infer(self, articulation: Any, vx: float, foot_contacts, delta_yaw, *, stairs_active: bool = False) -> None:
         cfg = self.config
-        self._last_vx = float(max(0.0, float(vx)))
-        proprio = self._build_proprio(articulation, vx, foot_contacts)  # [1,53]
+        vx = float(max(0.0, float(vx)))
+
+        # --- Speed governor: command-side backoff ---
+        # If the policy's own velocity estimate is much higher than the commanded vx,
+        # proportionally reduce vx so the estimator's next read pulls the actor back.
+        # Only fires when vx > 0.05 to avoid divide-by-near-zero at standstill, and
+        # only when the estimator has a valid reading (after the first inference).
+        self._governor_cmd_vx_adj = vx
+        if (cfg.speed_governor
+                and self._last_est_state is not None
+                and vx > 0.05):
+            est_vx = float(self._last_est_state[0])
+            if est_vx > vx * float(cfg.speed_governor_overspeed_ratio):
+                vx = (vx * vx) / est_vx   # proportional: vx_adj = vx^2 / est_vx
+                self._governor_cmd_vx_adj = vx
+
+        self._last_vx = vx
+        proprio = self._build_proprio(articulation, vx, foot_contacts, stairs_active=stairs_active)  # [1,53]
 
         # Update history with the PRE-yaw-overwrite proprio (matches upstream:
         # history is appended in get_proprio before turn_obs overwrites yaw).
@@ -460,6 +499,20 @@ class ParkourLocomotionPolicy:
             action = self._actor(obs)                                       # [1,12]
 
         action_np = action.detach().cpu().numpy().reshape(-1)[: self.n].astype(np.float32)
+
+        # --- Speed governor: action-norm cap ---
+        # If the actor outputs a very large action vector (jumping/surging gait), rescale
+        # it toward the cap magnitude while preserving the joint-ratio direction.
+        # Normal walking is roughly norm 4–6; surging/jumping spikes above 10.
+        self._governor_action_scale = 1.0
+        max_norm = float(cfg.speed_governor_action_norm_max)
+        if cfg.speed_governor and max_norm > 0.0:
+            norm = float(np.linalg.norm(action_np))
+            if norm > max_norm:
+                scale = max_norm / norm
+                action_np = action_np * scale
+                self._governor_action_scale = scale
+
         self.prev_action = action_np
         self._inference_count += 1
 
@@ -507,6 +560,7 @@ class ParkourLocomotionPolicy:
         *,
         foot_contacts: Optional[np.ndarray] = None,
         delta_yaw: Optional[float] = None,
+        stairs_active: bool = False,
     ) -> Dict[str, Any]:
         """Advance the policy. Runs inference at control_hz; applies torque every call."""
         self._accumulator += max(0.0, float(dt))
@@ -515,7 +569,7 @@ class ParkourLocomotionPolicy:
         if self._accumulator >= self.interval_sec:
             while self._accumulator >= self.interval_sec:
                 self._accumulator -= self.interval_sec
-            self._infer(articulation, vx, foot_contacts, delta_yaw)
+            self._infer(articulation, vx, foot_contacts, delta_yaw, stairs_active=stairs_active)
             ran_policy = True
         self._apply_torque_pd(articulation)
         return {
@@ -580,4 +634,11 @@ class ParkourLocomotionPolicy:
             # Estimated base linear velocity [vx,vy,vz] (policy's internal estimate);
             # compare est_lin_vel[0] to the measured body_vx logged alongside.
             "est_lin_vel": est_lin_vel,
+            # Speed governor telemetry. governor_cmd_vx_adj < commands[2] means the
+            # command-backoff fired. governor_action_scale < 1.0 means the action-norm
+            # cap fired (value = max_norm / original_norm).
+            "governor_cmd_vx_adj": round(float(getattr(self, "_governor_cmd_vx_adj", self._last_vx)), 3),
+            "governor_action_scale": round(float(getattr(self, "_governor_action_scale", 1.0)), 3),
+            # Active gait one-hot: "parkour" when stairs_active overrode config.mode, else config.mode.
+            "active_gait_mode": str(getattr(self, "_last_active_gait_mode", self.config.mode)),
         }

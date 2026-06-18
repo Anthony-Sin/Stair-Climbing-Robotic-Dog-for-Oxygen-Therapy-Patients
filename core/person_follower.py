@@ -6,6 +6,7 @@ from typing import Optional, Tuple, Dict, Any, Union, Sequence
 
 from pid_controller import PIDController, PIDConfig
 from depth_processor import DepthProcessor
+from gait_estimator import GaitEstimator
 from lidar_fusion import (
     decode_lidar_profile,
     person_bearing_rad,
@@ -70,6 +71,18 @@ class PersonFollowingConfig:
     size_penalty_k: float = 8.0   # Exponential decay for small-bbox penalty
     large_bbox_threshold: float = 0.5  # Suppress penalties when bbox width/frame >= threshold
 
+    # Standoff, gait, and pacing follow rules
+    follow_standoff_speed_gain: float = 0.4
+    follow_standoff_band_in: float = -0.15
+    follow_standoff_band_out: float = 0.15
+    follow_gait_gate: bool = True
+    follow_gait_history_len: int = 30
+    follow_gait_walk_threshold: float = 0.5
+    follow_pace_distance: float = 2.0
+    follow_pace_speed: float = 0.4
+    follow_pace_advance_time: float = 2.0
+    follow_pace_settle_time: float = 1.5
+
 
 class PersonFollower:
     """
@@ -114,6 +127,11 @@ class PersonFollower:
         
         # Store reference to the YoloPoseInference instance for keypoint-based depth measurement
         self.yolo_pose = yolo_pose_inference
+        
+        self.gait_estimator = GaitEstimator(
+            history_len=self.config.follow_gait_history_len,
+            walk_threshold=self.config.follow_gait_walk_threshold,
+        )
 
 
     def _suppress_reverse_follow_command(
@@ -362,7 +380,8 @@ class PersonFollower:
     
     def update(self, main_person: Optional[Union[Dict[str, Any], Sequence[float]]], depth_image: np.ndarray,
                frame_shape: Tuple[int, int], depth_mapper: Optional[Any] = None,
-               lidar_profile: Optional[Dict[str, Any]] = None) -> Tuple[float, float, Dict[str, Any]]:
+               lidar_profile: Optional[Dict[str, Any]] = None,
+               robot_speed: float = 0.0, robot_yaw_speed: float = 0.0) -> Tuple[float, float, Dict[str, Any]]:
         """
         Update person following commands
 
@@ -373,6 +392,8 @@ class PersonFollower:
             depth_mapper: Reserved for backward compatibility; ignored in current runtime.
             lidar_profile: Optional XT16 polar profile (from the sim frame sidecar);
                 its range at the person's bearing is fused with the depth estimate.
+            robot_speed: Last commanded forward velocity (m/s).
+            robot_yaw_speed: Last commanded angular velocity (rad/s).
             
         Returns:
             Tuple of (trans_x_command, rotation_command, debug_info)
@@ -397,11 +418,152 @@ class PersonFollower:
             # Grace window for "brief loss" consumers (e.g. the stair forward-floor):
             # while lost_age_sec <= this, the target is considered only momentarily lost.
             'lost_search_timeout_sec': float(self.config.lost_search_timeout_sec),
+            'is_walking': False,
+            'leader_speed_mps': 0.0,
+            'ground_point': None,
+            'gait_confidence': 0.0,
         }
         
+        # Calculate time step dt
+        dt = 0.0
+        if self.last_detection_time is not None:
+            dt = current_time - self.last_detection_time
+            
         # Update person tracking state
         self._update_person_tracking(main_person, current_time, frame_shape)
         
+        # Extract ground_point, keypoints, and bounding box
+        ground_point = None
+        keypoints = None
+        visibility = None
+        bbox = None
+        center = None
+        
+        if main_person is not None:
+            center = self._extract_center(main_person)
+            if isinstance(main_person, dict):
+                bbox = main_person.get('bbox')
+                keypoints = main_person.get('keypoints')
+                visibility = main_person.get('visibility')
+            else:
+                bbox = main_person[:4]
+                
+            if keypoints is not None and visibility is not None:
+                L_vis = visibility[15] if len(visibility) > 15 else 0.0
+                R_vis = visibility[16] if len(visibility) > 16 else 0.0
+                if L_vis >= 0.5 and R_vis >= 0.5:
+                    L_ankle = keypoints[15]
+                    R_ankle = keypoints[16]
+                    if L_ankle[1] > R_ankle[1]:
+                        ground_point = (float(L_ankle[0]), float(L_ankle[1]))
+                    else:
+                        ground_point = (float(R_ankle[0]), float(R_ankle[1]))
+                elif L_vis >= 0.5:
+                    ground_point = (float(keypoints[15][0]), float(keypoints[15][1]))
+                elif R_vis >= 0.5:
+                    ground_point = (float(keypoints[16][0]), float(keypoints[16][1]))
+                    
+            if ground_point is None and bbox is not None:
+                ground_point = (float(bbox[0] + bbox[2]) / 2.0, float(bbox[3]))
+
+        # Measure primary depth m
+        depth_m = None
+        if main_person is not None:
+            # 1. Primary ground point depth search
+            if ground_point is not None:
+                gx, gy = ground_point
+                depth_ground = self._robust_depth_measurement(
+                    depth_image, int(round(gx)), int(round(gy)), kernel_size=15, min_valid=5
+                )
+                if depth_ground is not None:
+                    depth_m = depth_ground / 1000.0
+                    debug_info['depth_method'] = 'ground_point_depth'
+
+            # 2. Fallback: bimodal
+            if depth_m is None and bbox is not None:
+                bbox_int = (int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3]))
+                depth_bimodal = DepthProcessor.foreground_depth_bimodal(depth_image, bbox_int, return_histogram=False)
+                if isinstance(depth_bimodal, tuple):
+                    depth_bimodal = depth_bimodal[0]
+                if depth_bimodal is not None:
+                    depth_m = float(depth_bimodal)
+                    debug_info['depth_method'] = 'bimodal_single_camera'
+
+            # 3. Fallback: keypoints average
+            if depth_m is None and self.yolo_pose is not None and keypoints is not None:
+                depth_m = self.yolo_pose.average_person_distance(depth_image, keypoints, visibility)
+                if depth_m is not None:
+                    debug_info['depth_method'] = 'keypoints_single_camera'
+
+            # 4. Fallback: bbox center patch
+            if depth_m is None and center is not None:
+                cx, cy = center
+                depth_mm = self._robust_depth_measurement(
+                    depth_image, cx, cy,
+                    self.config.depth_kernel_size,
+                    self.config.min_valid_depth_pixels
+                )
+                if depth_mm is not None:
+                    depth_m = depth_mm / 1000.0
+                    debug_info['depth_method'] = 'bbox_center_single_camera'
+
+            # --- LiDAR (XT16) + YOLO distance fusion ------------------------------
+            lidar_m = None
+            if self.config.lidar_fusion_enabled and lidar_profile and bbox is not None:
+                decoded = decode_lidar_profile(lidar_profile)
+                if decoded is not None:
+                    bbox_cx_for_lidar = (float(bbox[0]) + float(bbox[2])) / 2.0
+                    bearing = person_bearing_rad(
+                        bbox_cx_for_lidar,
+                        self.config.camera_cx,
+                        self.config.camera_fx,
+                        self.config.lidar_yaw_offset_rad,
+                    )
+                    if bearing is not None:
+                        lidar_m = lidar_range_at_bearing(
+                            decoded, bearing, self.config.lidar_bearing_window_deg
+                        )
+                    debug_info['lidar_distance_m'] = lidar_m
+                    debug_info['lidar_bearing_deg'] = (
+                        None if bearing is None else round(math.degrees(bearing), 2)
+                    )
+
+            if depth_m is not None or lidar_m is not None:
+                fusion = fuse_distance(
+                    depth_m, lidar_m,
+                    agree_tol_m=self.config.lidar_agree_tol_m,
+                    rel_tol=self.config.lidar_agree_rel_tol,
+                    lidar_weight=self.config.lidar_weight,
+                )
+                debug_info['depth_only_m'] = fusion['depth_m']
+                debug_info['fused_distance_m'] = fusion['fused_m']
+                debug_info['distance_confidence'] = fusion['confidence']
+                debug_info['distance_disagreement'] = fusion['disagreement']
+                debug_info['distance_source'] = fusion['source']
+                if fusion['fused_m'] is not None:
+                    depth_m = float(fusion['fused_m'])
+
+        # Update GaitEstimator
+        cam_cx = self.config.camera_cx if self.config.camera_cx > 0 else (frame_shape[1] / 2.0)
+        cam_fx = self.config.camera_fx if self.config.camera_fx > 0 else (frame_shape[1] * 0.8)
+        
+        is_walking, confidence, leader_speed_mps, est_ground_point = self.gait_estimator.update(
+            keypoints=keypoints,
+            visibility=visibility,
+            depth_m=depth_m,
+            dt=dt,
+            robot_speed=robot_speed,
+            robot_yaw_speed=robot_yaw_speed,
+            camera_cx=cam_cx,
+            camera_fx=cam_fx,
+            bbox=bbox,
+        )
+        
+        debug_info['is_walking'] = is_walking
+        debug_info['leader_speed_mps'] = leader_speed_mps
+        debug_info['ground_point'] = est_ground_point
+        debug_info['gait_confidence'] = confidence
+
         # Check if person is detected
         if main_person is None:
             if self.last_lost_time is not None:
@@ -453,98 +615,11 @@ class PersonFollower:
                 debug_info['reason'] = 'No person detected - paused'
             return 0.0, 0.0, debug_info
         
-        # Extract center coordinates
-        center = self._extract_center(main_person)
         if center is None:
             debug_info['reason'] = 'Invalid person center'
             return 0.0, 0.0, debug_info
         
         cx, cy = center
-        
-        depth_m = None
-        
-        # Single camera mode: use depth_image directly
-        # Primary method: Use bimodal histogram foreground depth (robust to background)
-        if isinstance(main_person, dict):
-            if 'bbox' in main_person:
-                x1, y1, x2, y2 = main_person['bbox']
-            else:
-                x1 = main_person.get('x1', 0)
-                y1 = main_person.get('y1', 0)
-                x2 = main_person.get('x2', 0)
-                y2 = main_person.get('y2', 0)
-        else:
-            x1, y1, x2, y2 = main_person[:4]
-
-        bbox_int = (int(x1), int(y1), int(x2), int(y2))
-        depth_bimodal = DepthProcessor.foreground_depth_bimodal(depth_image, bbox_int, return_histogram=False)
-        if isinstance(depth_bimodal, tuple):
-            depth_bimodal = depth_bimodal[0]
-        if depth_bimodal is not None:
-            depth_m = float(depth_bimodal)
-            debug_info['depth_method'] = 'bimodal_single_camera'
-
-        # Secondary method: Use keypoints-based average if bimodal fails
-        if depth_m is None and (self.yolo_pose is not None and isinstance(main_person, dict) and
-            'keypoints' in main_person and main_person['keypoints'] is not None):
-            keypoints = np.array(main_person['keypoints'])
-            visibility = np.array(main_person.get('visibility')) if 'visibility' in main_person else None
-
-            if keypoints.size > 0:
-                depth_m = self.yolo_pose.average_person_distance(depth_image, keypoints, visibility)
-                if depth_m is not None:
-                    debug_info['depth_method'] = 'keypoints_single_camera'
-
-        # Fallback method: Use the center of the bounding box
-        if depth_m is None:
-            depth_mm = self._robust_depth_measurement(
-                depth_image, cx, cy,
-                self.config.depth_kernel_size,
-                self.config.min_valid_depth_pixels
-            )
-            if depth_mm is not None:
-                depth_m = depth_mm / 1000.0
-            if debug_info.get('depth_method') is None:
-                debug_info['depth_method'] = 'bbox_center_single_camera'
-
-        # --- LiDAR (XT16) + YOLO distance fusion ------------------------------
-        # Sample the LiDAR range at the person's bearing and agreement-weight it
-        # with the depth-camera estimate. LiDAR can also rescue a frame where the
-        # depth estimate failed (lidar-only). debug fields drive the HUD readout.
-        lidar_m = None
-        if self.config.lidar_fusion_enabled and lidar_profile:
-            decoded = decode_lidar_profile(lidar_profile)
-            if decoded is not None:
-                bbox_cx_for_lidar = (float(x1) + float(x2)) / 2.0
-                bearing = person_bearing_rad(
-                    bbox_cx_for_lidar,
-                    self.config.camera_cx,
-                    self.config.camera_fx,
-                    self.config.lidar_yaw_offset_rad,
-                )
-                if bearing is not None:
-                    lidar_m = lidar_range_at_bearing(
-                        decoded, bearing, self.config.lidar_bearing_window_deg
-                    )
-                debug_info['lidar_distance_m'] = lidar_m
-                debug_info['lidar_bearing_deg'] = (
-                    None if bearing is None else round(math.degrees(bearing), 2)
-                )
-
-        if depth_m is not None or lidar_m is not None:
-            fusion = fuse_distance(
-                depth_m, lidar_m,
-                agree_tol_m=self.config.lidar_agree_tol_m,
-                rel_tol=self.config.lidar_agree_rel_tol,
-                lidar_weight=self.config.lidar_weight,
-            )
-            debug_info['depth_only_m'] = fusion['depth_m']
-            debug_info['fused_distance_m'] = fusion['fused_m']
-            debug_info['distance_confidence'] = fusion['confidence']
-            debug_info['distance_disagreement'] = fusion['disagreement']
-            debug_info['distance_source'] = fusion['source']
-            if fusion['fused_m'] is not None:
-                depth_m = float(fusion['fused_m'])
 
         if depth_m is None:
             debug_info['reason'] = 'Invalid depth measurement'
@@ -556,18 +631,10 @@ class PersonFollower:
         debug_info['distance_error_m'] = float(depth_m) - float(self.config.target_distance)
 
         # Determine bbox center x
-        if isinstance(main_person, dict) and 'bbox' in main_person:
-            x1, y1, x2, y2 = main_person['bbox']
-        elif isinstance(main_person, dict):
-            x1 = main_person.get('x1', 0)
-            y1 = main_person.get('y1', 0)
-            x2 = main_person.get('x2', 0)
-            y2 = main_person.get('y2', 0)
+        if bbox is not None:
+            x1, y1, x2, y2 = bbox
         else:
-            x1 = main_person[0]
-            y1 = main_person[1]
-            x2 = main_person[2]
-            y2 = main_person[3]
+            x1, y1, x2, y2 = main_person[:4]
         bbox_center_x = (x1 + x2) / 2.0
         debug_info['bbox_center_x'] = bbox_center_x
 
@@ -698,3 +765,10 @@ class PersonFollower:
                         smoothing_alpha=self.config.rotation_smoothing_alpha
                     )
                     self.rotation_pid_controller = PIDController(rotation_pid_config)
+
+                # Update gait estimator if relevant parameters changed
+                if key in ['follow_gait_history_len', 'follow_gait_walk_threshold']:
+                    self.gait_estimator = GaitEstimator(
+                        history_len=self.config.follow_gait_history_len,
+                        walk_threshold=self.config.follow_gait_walk_threshold,
+                    )
