@@ -402,9 +402,29 @@ def _apply_follow_standoff_policy(
     debug_info["standoff_gap_raw_m"] = None if gap_m is None else float(gap_m)
     debug_info["standoff_gap_ctrl_m"] = gap_ctrl
 
-    # On stairs, bypass only the go/hold/pace shaping to avoid stalls. Keep the smoothed gap above
-    # available to both the regular stair floor and committed-climb collision blocks.
-    if bool(debug_info.get("stairs_detected", False)) or bool(debug_info.get("stairs_action_active", False)):
+    # 1. Standoff calculation (speed adaptive). Use the follower's live target distance rather
+    # than the flat-ground CLI default. The main loop deliberately switches that live target to
+    # --stair-target-distance as soon as stairs are seen; continuing to use args.target_distance
+    # here kept the hold boundary at the short flat-ground gap and let the dog catch the patient
+    # before the first riser.
+    base_standoff = float(debug_info.get("target_distance", args.target_distance))
+    # leader_speed_mps is depth-derived and spikes to
+    #    absurd values when the gap reading jumps (observed up to ~40 m/s on lock flicker), so clamp
+    #    it to a sane walking range before it widens the standoff -- otherwise a single bad frame
+    #    pins the standoff at its cap and jolts the go/hold decision.
+    leader_speed_clamped = float(np.clip(float(leader_speed_mps), 0.0, 1.0))
+    standoff = base_standoff + args.follow_standoff_speed_gain * leader_speed_clamped
+    standoff = min(1.5, standoff)
+
+    lower_bound = standoff + args.follow_standoff_band_in
+    upper_bound = standoff + args.follow_standoff_band_out
+    debug_info["standoff_target_m"] = float(standoff)
+    debug_info["standoff_lower_bound_m"] = float(lower_bound)
+    debug_info["standoff_upper_bound_m"] = float(upper_bound)
+
+    # On stairs, bypass only the go/hold/pace shaping to avoid stalls. Keep the smoothed gap and
+    # the correct stair standoff telemetry available to the collision and hold gates.
+    if bool(debug_info.get("stairs_action_active", False)):
         debug_info["follow_standoff_gate_active"] = False
         debug_info["follow_standoff_skipped_on_stairs"] = True
         return float(trans_x_cmd)
@@ -422,20 +442,9 @@ def _apply_follow_standoff_policy(
     warmup_active = (_now - state["first_ctrl_ts"]) < float(getattr(args, "follow_settle_grace_sec", 2.0))
     debug_info["standoff_warmup_active"] = bool(warmup_active)
 
-    # 1. Standoff calculation (speed adaptive). leader_speed_mps is depth-derived and spikes to
-    #    absurd values when the gap reading jumps (observed up to ~40 m/s on lock flicker), so clamp
-    #    it to a sane walking range before it widens the standoff -- otherwise a single bad frame
-    #    pins the standoff at its cap and jolts the go/hold decision.
-    leader_speed_clamped = float(np.clip(float(leader_speed_mps), 0.0, 1.0))
-    standoff = args.target_distance + args.follow_standoff_speed_gain * leader_speed_clamped
-    standoff = min(1.5, standoff)
-
     # 2. Hysteretic Go/Hold decision bounds -- on the SMOOTHED gap. Until the filter is warm
     #    (gap_ctrl is None) leave go_state on its current (hysteretic) value rather than reacting to
     #    a raw startup spike.
-    lower_bound = standoff + args.follow_standoff_band_in
-    upper_bound = standoff + args.follow_standoff_band_out
-
     if gap_ctrl is not None:
         if gap_ctrl < lower_bound:
             state["go_state"] = False
@@ -491,9 +500,6 @@ def _apply_follow_standoff_policy(
         
     # Populate debug info
     debug_info["fused_gap_m"] = float(gap_m)
-    debug_info["standoff_target_m"] = float(standoff)
-    debug_info["standoff_lower_bound_m"] = float(lower_bound)
-    debug_info["standoff_upper_bound_m"] = float(upper_bound)
     debug_info["follow_standoff_gate_active"] = not state["go_state"]
     debug_info["pace_state"] = state["pace_state"]
     debug_info["pace_cap_active"] = pace_cap_active
@@ -1225,6 +1231,11 @@ def main():
             debug_info["stairs_conf"] = float(stairs_result.get("conf", last_stairs_conf))
             debug_info["stairs_depth_m"] = stairs_depth_m
             debug_info["stairs_depth_ever_confirmed"] = stairs_depth_ever_confirmed
+            debug_info["stairs_policy_prepare_active"] = bool(
+                stairs_detected
+                and stairs_depth_m is not None
+                and float(stairs_depth_m) <= float(args.stair_policy_prepare_distance)
+            )
             debug_info["depth_img"] = depth_img
             debug_info["frame_capture_ts"] = frame_capture_wall_ts
             debug_info["pose_infer_ts"] = pose_infer_wall_ts
@@ -1336,22 +1347,30 @@ def main():
             debug_info["front_near_m"] = None if _front_near_m is None else round(float(_front_near_m), 3)
             if _climbing_latched and not _genuine_stairs:
                 # Detection dropped mid-climb: force climb mode (gait + obstacle-gate bypass below)
-                # and hold the forward floor so the dog steps UP the un-detected riser instead of
-                # wedging. Collision-safe: never drive forward inside the patient standoff floor.
+                # and keep the command inside the stair floor/cap so the dog steps UP the
+                # un-detected riser instead of wedging. The cap is essential on reacquisition:
+                # otherwise the flat follower sees the patient >2 m ahead and its 0.85 m/s catch-up
+                # command leaks through the latch while the dog is still physically on the stairs.
+                # Collision-safe: never drive forward inside the patient standoff floor.
                 debug_info["stairs_action_active"] = True
                 debug_info["stair_climb_latch_forced"] = True
                 _climb_floor = max(0.0, min(float(args.stair_forward_floor),
                                             float(args.trans_x_max) * float(args.stair_speed_scale)))
+                _climb_cap = max(0.0, float(args.trans_x_max) * float(args.stair_speed_scale))
                 # Collision check on the LAST-KNOWN patient gap (not the live depth, which is the near
-                # riser once the patient leaves view). Block only if the patient was last seen inside
-                # the collision floor AND the loss is recent; after a brief loss the patient has
-                # climbed away, so drive the blind climb toward them instead of freezing at the base.
-                _lost_age = debug_info.get("lost_age_sec")
+                # riser once the patient leaves view). If the last trustworthy gap was unsafe, keep
+                # the drive at zero until the patient is seen again. The command still uses hold=False,
+                # so this preserves the balancing gait instead of stance-locking on the incline.
                 _coll_block = (last_person_gap_m is not None
-                               and float(last_person_gap_m) < float(args.stair_climb_collision_floor)
-                               and (_lost_age is None or float(_lost_age) < 2.0))
-                trans_x_cmd = 0.0 if _coll_block else max(float(trans_x_cmd), _climb_floor)
+                               and float(last_person_gap_m) < float(args.stair_climb_collision_floor))
+                if _coll_block:
+                    trans_x_cmd = 0.0
+                else:
+                    trans_x_cmd = max(float(trans_x_cmd), _climb_floor)
+                    if _climb_cap > 0.0:
+                        trans_x_cmd = min(float(trans_x_cmd), _climb_cap)
                 debug_info["stair_climb_latch_collision_block"] = bool(_coll_block)
+                debug_info["stair_climb_latch_speed_cap_mps"] = float(_climb_cap)
 
             trans_x_cmd = _apply_front_obstacle_gate(
                 args, trans_x_cmd, depth_img, debug_info
@@ -1582,7 +1601,11 @@ def main():
             # fall to controller.stop() and stance-lock the robot on the incline -> topple. Keep
             # treating it as on-stairs for a grace window after the last on-stairs frame so neither
             # path stance-locks on the slope; the committed climb keeps the gait alive instead.
-            _stairs_instant = bool(debug_info.get("stairs_action_active", False)) or bool(stairs_detected)
+            # Raw YOLO detection means "stairs ahead", not "robot is on the stairs". Treating a
+            # distant detection as on-stairs disabled the ordinary too-close hold/ramp almost two
+            # metres before the first riser, so the policy's intrinsic creep accelerated unchecked
+            # into the step. Suppress stance-lock only after the near/depth-gated stair action starts.
+            _stairs_instant = bool(debug_info.get("stairs_action_active", False))
             if _stairs_instant:
                 last_on_stairs_ts = current_time
             _stairs_recent = (current_time - last_on_stairs_ts) < float(args.stair_hold_suppress_sec)
@@ -1634,7 +1657,7 @@ def main():
             # mask, run_sim_20260619_032327) made any stair forward floor over-run to body_vx~1.8
             # and fall. A modest floor walks the dog UP the riser instead of creeping into it.
             _committed_stair_floor = max(0.0, min(
-                float(args.stair_forward_floor),
+                max(float(args.stair_forward_floor), float(args.stair_loss_forward_floor)),
                 float(args.trans_x_max) * float(args.stair_speed_scale)))
 
             controller = robot_controller
@@ -1845,7 +1868,7 @@ def main():
                 debug_info["yaw_err_cmd"] = round(yaw_err_cmd, 4)
                 controller.move(
                     command_trans_x, 0.0, command_rotation,
-                    stairs_detected=stairs_detected,
+                    stairs_detected=bool(debug_info.get("stairs_policy_prepare_active", False)),
                     yaw_err=yaw_err_cmd,
                     person_bbox=debug_info.get("person_bbox_norm"),
                     stairs_action_active=_stairs_active,
@@ -1876,15 +1899,13 @@ def main():
                 # None so its on-stair handling sees a real standoff.
                 # Collision check on the LAST-KNOWN patient gap, NOT the live smoothed gap: once the
                 # patient climbs out of view the live gap is the near riser (~0.2 m) and would trip
-                # this floor forever, freezing the climb at the base (run_sim_20260619_141416). Block
-                # only if the patient was last seen inside the collision floor AND the loss is recent;
-                # after a brief loss the patient has climbed away, so the blind climb toward them is safe.
+                # this floor forever, freezing the climb at the base (run_sim_20260619_141416). The
+                # last *patient* gap avoids that riser confusion. If it was unsafe, do not assume that
+                # elapsed time means the patient moved away; keep hold=False and wait for a real lock.
                 _loss_gap = last_person_gap_m
-                _loss_age = debug_info.get("lost_age_sec")
                 _loss_block = (
                     _loss_gap is not None
                     and float(_loss_gap) < float(args.stair_climb_collision_floor)
-                    and (_loss_age is None or float(_loss_age) < 2.0)
                 )
                 _loss_climb_vx = 0.0 if _loss_block else float(_committed_stair_floor)
                 debug_info["stairs_loss_collision_block"] = bool(_loss_block)

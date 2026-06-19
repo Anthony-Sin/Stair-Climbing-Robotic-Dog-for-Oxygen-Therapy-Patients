@@ -1366,9 +1366,15 @@ if ($NoDockerRun) {
         "--follow-standoff-band-in -0.15",
         "--follow-stop-ramp-sec 0.7",
         "--stair-speed-scale 0.45",
-        "--stair-forward-floor 0.30",
+        # Engage the climb only at the first riser and use the policy's validated gentle floor.
+        # The old 1.2 m / 0.30 combination entered stair drive around robot x=0.1 (first riser x=2.0)
+        # and closed the patient gap before the climb even began.
+        "--stair-forward-floor 0.0",
+        "--stair-loss-forward-floor 0.16",
         "--stair-target-distance 1.2",
-        "--stair-near-distance 1.2",
+        "--stair-near-distance 0.45",
+        "--stair-policy-prepare-distance 1.0",
+        "--stair-depth-engage-distance 0.45",
         "--stair-climb-collision-floor 0.65",
         "--ecs-log-dir /workspace/run_logs/debug/ecs",
         "--debug-trace-dir /workspace/run_logs/debug/debug_trace",

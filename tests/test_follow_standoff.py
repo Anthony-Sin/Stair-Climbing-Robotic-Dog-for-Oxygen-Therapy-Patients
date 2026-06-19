@@ -236,7 +236,11 @@ class TestFollowStandoff(unittest.TestCase):
 
     def test_stair_bypass_still_updates_collision_gap(self):
         args = MockArgs()
-        debug_info = {"stairs_detected": True}
+        debug_info = {
+            "stairs_detected": True,
+            "stairs_action_active": True,
+            "target_distance": 1.2,
+        }
         state = {
             "go_state": True,
             "pace_state": "creep",
@@ -251,6 +255,36 @@ class TestFollowStandoff(unittest.TestCase):
         self.assertEqual(cmd, 0.2)
         self.assertTrue(debug_info["follow_standoff_skipped_on_stairs"])
         self.assertAlmostEqual(debug_info["standoff_gap_ctrl_m"], 0.62, places=3)
+        self.assertAlmostEqual(debug_info["standoff_target_m"], 1.2, places=3)
+        self.assertAlmostEqual(debug_info["standoff_lower_bound_m"], 1.05, places=3)
+
+    def test_distant_stair_detection_keeps_approach_standoff(self):
+        args = MockArgs()
+        debug_info = {
+            "stairs_detected": True,
+            "stairs_action_active": False,
+            "target_distance": 1.2,
+        }
+        state = {
+            "go_state": True,
+            "pace_state": "creep",
+            "pace_timer": 0.0,
+            "last_time": time.perf_counter(),
+        }
+
+        cmd = self._feed(args, state, debug_info, 1.6, n=3, trans_x_cmd=0.6)
+
+        # A staircase merely visible in the distance is still flat-ground approach: keep the
+        # widened standoff and lean on zero-command creep instead of passing PID bursts through.
+        self.assertEqual(cmd, 0.0)
+        self.assertFalse(debug_info.get("follow_standoff_skipped_on_stairs", False))
+        self.assertAlmostEqual(debug_info["standoff_target_m"], 1.2, places=3)
+
+        # Once the smoothed gap is below the lower threshold, the approach remains in its
+        # hysteretic hold state. The main loop consumes this as stair_approach_brake while flat.
+        cmd = self._feed(args, state, debug_info, 1.0, n=5, trans_x_cmd=0.6)
+        self.assertEqual(cmd, 0.0)
+        self.assertTrue(debug_info["follow_standoff_gate_active"])
 
     def test_stair_collision_block_has_complete_telemetry(self):
         from main import _apply_stair_command_policy

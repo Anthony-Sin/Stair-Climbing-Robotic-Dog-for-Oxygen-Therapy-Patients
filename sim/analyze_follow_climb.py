@@ -148,6 +148,71 @@ def main():
             span = ep[1]-ep[0]+1
             print(f"    samples [{ep[0]}..{ep[1]}] span={span}  x_at_loss~{f(ep[2],'{:.2f}')}")
 
+    # Correlate controller decisions with Isaac ground-truth poses. The controller trace contains
+    # the real stair gates/commands while frame_meta carries sim-only actor poses for evaluation.
+    # This is diagnostic only: ground truth never feeds the controller.
+    trace = os.path.join(run, "debug", "debug_trace", "vision_main_trace.jsonl")
+    if os.path.exists(trace):
+        trace_rows = []
+        with open(trace, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    ev = json.loads(line)
+                except Exception:
+                    continue
+                data = ev.get("data") or {}
+                dbg = data.get("debug_info") or {}
+                robot = ((dbg.get("stair_demo") or {}).get("robot") or {})
+                patient = ((data.get("frame_meta") or {}).get("gt_patient"))
+                rx = robot.get("x_m")
+                px = patient[0] if isinstance(patient, list) and patient else None
+                trace_rows.append((data.get("frame_index"), rx, px, dbg))
+
+        def first_true(key):
+            return next((row for row in trace_rows if bool(row[3].get(key))), None)
+
+        def row_text(row):
+            if row is None:
+                return "never"
+            i, rx, px, dbg = row
+            center_gap = None if rx is None or px is None else float(px) - float(rx)
+            return (f"frame={i} robot_x={f(rx, '{:.2f}')} "
+                    f"patient_center_gap={f(center_gap, '{:.2f}')} "
+                    f"stair_depth={f(dbg.get('stairs_depth_m'), '{:.2f}')} "
+                    f"front_depth={f(dbg.get('front_near_m'), '{:.2f}')}")
+
+        gt_gaps = [
+            (float(px) - float(rx), i, rx, px, dbg)
+            for i, rx, px, dbg in trace_rows
+            if rx is not None and px is not None
+        ]
+        first_stair_loss = next((
+            row for row in trace_rows
+            if bool(row[3].get("stairs_action_active"))
+            and row[3].get("person_detected") is False
+        ), None)
+        print("\n=== CONTROLLER / SIM CORRELATION ===")
+        print(f"  stairs first detected : {row_text(first_true('stairs_detected'))}")
+        print(f"  stair drive first active: {row_text(first_true('stairs_action_active'))}")
+        print(f"  depth climb first engaged: {row_text(first_true('depth_climb_engage'))}")
+        print(f"  first target loss on stairs: {row_text(first_stair_loss)}")
+        if gt_gaps:
+            gap, i, rx, px, dbg = min(gt_gaps, key=lambda item: item[0])
+            print(f"  minimum GT center gap: {gap:.2f} m at frame={i} robot_x={float(rx):.2f} "
+                  f"person_x={float(px):.2f}")
+        loss_drive = [
+            row for row in trace_rows
+            if bool(row[3].get("stairs_committed_climb_on_loss"))
+        ]
+        if loss_drive:
+            moving = sum(
+                1 for row in loss_drive
+                if float(row[3].get("command_trans_x_limited") or 0.0) > 1e-4
+            )
+            blocked = sum(1 for row in loss_drive if bool(row[3].get("stairs_loss_collision_block")))
+            print(f"  stair-loss continuity frames: {len(loss_drive)} "
+                  f"(positive drive={moving}, collision-blocked/balance-gait={blocked})")
+
 
 if __name__ == "__main__":
     main()

@@ -3543,11 +3543,9 @@ def _step_go2_locomotion(
     # actually climbing (stairs_action_active -- includes the persistence latch through detection
     # dropouts). On flat this is False and the RL parkour policy drives as before. The scripted gait
     # bypasses the RL policy on the stairs because the frozen policy cannot reliably step up.
-    # Drive the policy's CLIMB GAIT (parkour high foot-lift) from stairs_detected OR
-    # stairs_action_active. YOLO (stairs_detected) blanks up close, but the controller's
-    # depth-triggered latch keeps stairs_action_active True at the riser -- without OR-ing it in,
-    # the policy reverted to the flat gait (no foot lift) the instant YOLO blanked and WEDGED on the
-    # step (run_sim_20260619_155942). Now the climb gait persists through the close-range YOLO dropout.
+    # ``stairs_detected`` on this transport is the controller's sensor-depth PREPARE stage, not a
+    # raw distant YOLO sighting. It lets the learned high-lift gait condition briefly before contact;
+    # stairs_action_active remains the nearer gate that forces stair drive and persists through loss.
     _climb_gait_active = bool(stairs_detected) or bool(stairs_action_active)
     telemetry = rl_policy.step(go2, (vx, vy, wz), dt, delta_yaw=delta_yaw,
                                stairs_active=_climb_gait_active, hold=hold,
@@ -4392,6 +4390,9 @@ def main() -> None:
                                 # near body entirely. The terrain-preserving inpaint is only needed
                                 # on/near the stairs, where far-filling would blind the policy to the
                                 # riser the person occludes; so use args.parkour_mask_fill only there.
+                                # The transport's stairs_detected flag is depth-gated preparation,
+                                # not raw distant YOLO. Terrain fill may begin in that short prepare
+                                # window so the learned policy sees the riser before contact.
                                 _on_or_near_stairs = bool(stairs_detected) or bool(stairs_action_active)
                                 _fill_mode = str(args.parkour_mask_fill) if _on_or_near_stairs else "far"
                                 _masked, _mbox, _mstats = mask_person_in_parkour_depth(

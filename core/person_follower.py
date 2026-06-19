@@ -405,6 +405,10 @@ class PersonFollower:
         
         debug_info = {
             'person_detected': main_person is not None,
+            # Always expose the live target, including early returns during target loss. The main
+            # loop switches this to stair_target_distance during the approach and its safety gates
+            # must not silently fall back to the shorter flat-ground CLI value on an occlusion.
+            'target_distance': float(self.config.target_distance),
             'depth_valid': False,
             'depth_distance_m': None,
             'depth_method': None,

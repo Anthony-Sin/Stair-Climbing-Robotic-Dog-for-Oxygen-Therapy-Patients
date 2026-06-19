@@ -305,8 +305,14 @@ def parse_args():
                              'stairs mode several metres before the dog reaches the steps')
     parser.add_argument('--stairs-latch-frames', type=int, default=40,
                         help='Frames to keep stairs_detected true after a consistent positive detection')
-    parser.add_argument('--stair-near-distance', type=float, default=1.2,
-                        help='Stair depth threshold where follow speed/centering are tightened')
+    parser.add_argument('--stair-near-distance', type=float, default=0.45,
+                        help='Stair depth threshold where follow speed/centering are tightened. '
+                             'Kept close to the first riser so stair drive does not start during '
+                             'the ordinary behind-the-patient approach.')
+    parser.add_argument('--stair-policy-prepare-distance', type=float, default=1.0,
+                        help='Sensor-confirmed stair depth (m) where the learned high-lift gait may '
+                             'prepare before the nearer stair drive gate engages. This changes gait '
+                             'conditioning only; it does not force forward stair motion.')
     parser.add_argument('--stair-speed-scale', type=float, default=0.45,
                         help='Forward command scale while stairs are detected nearby')
     parser.add_argument('--stair-approach-speed-scale', type=float, default=0.5,
@@ -317,23 +323,22 @@ def parse_args():
     parser.add_argument('--stair-centering-scale', type=float, default=0.6,
                         help='Yaw command scale while stairs are detected nearby. <1.0 suppresses the '
                              'bbox edge/size penalty amplification that otherwise saws the body on steps')
-    parser.add_argument('--stair-forward-floor', type=float, default=0.16,
-                        help='Minimum forward command (m/s) held while climbing detected nearby stairs, '
-                             'so the follow PID cannot stall the locomotion policy at the stair base. '
-                             'LOWERED 0.35 -> 0.16 (run_sim_20260619_125229): the frozen policy over-runs '
-                             'this command ~3.4x, so 0.35 became a body_vx ~1.2 m/s CHARGE into the first '
-                             'riser -> nose-dive/face-plant (pitch 22 deg, height collapse) at x~2.0. 0.16 '
-                             'over-runs to ~0.6 m/s body -- a controlled step-up that clears the riser '
-                             'instead of charging it. Still well above 0 so the follow PID cannot stall '
-                             'the climb. This is the primary surge/first-step fix AND reduces the '
-                             'run-to-run flakiness (the surge was what made step-1 vs step-5 a coin flip).')
+    parser.add_argument('--stair-forward-floor', type=float, default=0.0,
+                        help='Optional minimum forward command (m/s) while stair action is active. '
+                             'Default 0 keeps the learned high-lift gait balance-active (hold=False) '
+                             'without a blind shove; the recorded top-landing run climbed with near-zero '
+                             'mean forward command. Increase only for explicit A/B testing.')
+    parser.add_argument('--stair-loss-forward-floor', type=float, default=0.16,
+                        help='Minimum forward command (m/s) only while the stair latch is active and '
+                             'the person is temporarily not detected. Sent with hold=False so the '
+                             'robot keeps climbing/balancing instead of stance-locking mid-step.')
     parser.add_argument('--stair-seen-persist-sec', type=float, default=8.0,
                         help='How long (s) after YOLO-World last detected the staircase to keep the '
                              '"stairs ahead" context alive. YOLO sees stairs well FAR but blanks UP '
                              'CLOSE; this lets the depth camera engage the climb up close (where YOLO '
                              'fails) without re-confirming via YOLO. Sized to cover the approach + '
                              'first steps.')
-    parser.add_argument('--stair-depth-engage-distance', type=float, default=0.7,
+    parser.add_argument('--stair-depth-engage-distance', type=float, default=0.45,
                         help='Front depth (m) at/under which a riser is considered RIGHT in front, '
                              'engaging the climb from the depth camera (patient-independent) once the '
                              'stairs-ahead context is set. Tighter than --obstacle-slow-distance so it '
@@ -479,10 +484,12 @@ def parse_args():
     args.stair_depth_engage_distance = max(0.0, float(args.stair_depth_engage_distance))
     args.stairs_latch_frames = max(0, int(args.stairs_latch_frames))
     args.stair_near_distance = max(0.0, float(args.stair_near_distance))
+    args.stair_policy_prepare_distance = max(0.0, float(args.stair_policy_prepare_distance))
     args.stair_speed_scale = min(1.0, max(0.0, float(args.stair_speed_scale)))
     args.stair_approach_speed_scale = min(1.0, max(0.0, float(args.stair_approach_speed_scale)))
     args.stair_centering_scale = max(0.0, float(args.stair_centering_scale))
     args.stair_forward_floor = max(0.0, float(args.stair_forward_floor))
+    args.stair_loss_forward_floor = max(0.0, float(args.stair_loss_forward_floor))
     args.stair_rot_max = max(0.0, float(args.stair_rot_max))
     args.stair_yaw_deadband_deg = max(0.0, float(args.stair_yaw_deadband_deg))
     args.stair_target_distance = max(0.0, float(args.stair_target_distance))
