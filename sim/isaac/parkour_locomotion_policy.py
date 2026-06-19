@@ -46,6 +46,7 @@ from go2_locomotion_utils import (
     safe_joint_vector,
 )
 from parkour_depth_backbone import DepthOnlyFCBackbone58x87, RecurrentDepthBackbone
+from scripted_stair_gait import ScriptedStairGait
 
 # Policy joint order: leg-major FR, FL, RR, RL; each leg hip, thigh, calf
 # (Extreme-Parkour-Onboard RobotCfgs.Go2.dof_names -- same leg order as rl_sar).
@@ -134,9 +135,17 @@ class ParkourPolicyConfig:
     #      0.0 = disabled. Reasonable starting value: 8.0 (normal walking ~4-6, surging >10).
     speed_governor: bool = False
     speed_governor_overspeed_ratio: float = 1.8
-    # Flat ground uses a calm cap. Stairs need larger trained leg-lift actions, but extreme spikes
-    # (observed >15 immediately before sideways rolls/collapse) are still bounded by the separate
-    # stair cap. 0.0 disables the corresponding cap.
+    # Action-norm cap. 0.0 disables it. (Overridden at runtime by isaac_env's argparse --
+    # isaac_env --stair-action-norm-max is the EFFECTIVE value; this is just the library default.)
+    #
+    # Flat cap stays off. STAIR cap kept ON at 8.0 by EMPIRICAL result: cap-OFF stubbed the first
+    # riser (run_sim_20260619_132247, step 2) -- too little surge momentum to parkour up -- while
+    # cap-8.0 reached step 7 (run_sim_20260619_130218). The depth-driven forward surge (policy
+    # charging the near terrain-filled person as a proxy climb wall, since the real 0.08 m riser is
+    # in the depth-cam blind zone) IS the climb momentum; the 8.0 cap trims only extreme spikes (>8,
+    # seen before sideways rolls) while preserving it. It clips some step-up lift but net climbs
+    # FURTHER than uncapped. Surge CONSEQUENCES (over-speed slew / person-loss / topple) are managed
+    # in the controller + the on-stair person-bearing heading hold, not by clipping the action here.
     speed_governor_action_norm_max: float = 0.0
     stair_action_norm_max: float = 8.0
     hold_ramp_sec: float = 0.25
@@ -209,6 +218,10 @@ class ParkourLocomotionPolicy:
         self._accumulator = 0.0
         self._inference_count = 0
         self._active_logged = False
+        # Scripted stair-climb gait (engaged on stairs to bypass the RL policy, which cannot
+        # reliably step UP). Drives the same explicit-PD path via last_targets_isaac.
+        self._stair_gait = ScriptedStairGait()
+        self._scripted_climb_active = False
         # Sim-to-real realism state (only exercised when the matching config is on).
         # Dedicated RNG so injecting obs noise does not perturb the global np.random
         # stream the image-noise caches draw from.
@@ -658,22 +671,48 @@ class ParkourLocomotionPolicy:
         stairs_active: bool = False,
         hold: bool = False,
         body_speed: Optional[float] = None,
+        scripted_climb: bool = False,
     ) -> Dict[str, Any]:
-        """Advance the policy. Runs inference at control_hz; applies torque every call."""
+        """Advance the controller. Runs RL inference at control_hz, OR drives the scripted
+        stair-climb gait when ``scripted_climb`` is set; applies the explicit-PD torque every call.
+        """
         self._accumulator += max(0.0, float(dt))
         vx = float(list(cmd)[0]) if len(cmd) else 0.0
         ran_policy = False
-        if self._accumulator >= self.interval_sec:
-            while self._accumulator >= self.interval_sec:
-                self._accumulator -= self.interval_sec
-            self._infer(articulation, vx, foot_contacts, delta_yaw, stairs_active=stairs_active, hold=hold, body_speed=body_speed)
-            ran_policy = True
+        if scripted_climb:
+            # Bypass the RL policy: drive the deterministic stair-climb gait. Advance the gait only
+            # when commanded forward (vx > floor); a zeroed vx means the controller's collision floor
+            # / too-close gate fired, so FREEZE the stride (statically stable) rather than step into
+            # the patient. The RL inference accumulator is left intact so it resumes cleanly on flat.
+            advance = vx > 0.03
+            try:
+                _q = self._base_quat_wxyz(articulation)
+                _roll, _pitch = self._roll_pitch_from_quat(_q)
+                self._last_roll = float(_roll)
+                self._last_pitch = float(_pitch)
+            except Exception:
+                _roll = 0.0
+            target_policy = self._stair_gait.step(dt, advance=advance, roll=float(_roll))
+            self._last_target_policy = target_policy.astype(np.float32)
+            self.last_targets_isaac = self._policy_to_isaac_vector(self._last_target_policy)
+            self._scripted_climb_active = True
+        else:
+            if self._scripted_climb_active:
+                # Just left the stairs -> reset the gait phase and let the RL policy resume.
+                self._stair_gait.reset()
+                self._scripted_climb_active = False
+            if self._accumulator >= self.interval_sec:
+                while self._accumulator >= self.interval_sec:
+                    self._accumulator -= self.interval_sec
+                self._infer(articulation, vx, foot_contacts, delta_yaw, stairs_active=stairs_active, hold=hold, body_speed=body_speed)
+                ran_policy = True
         self._apply_torque_pd(articulation)
         return {
             "ran_policy": bool(ran_policy),
-            "policy_kind": "parkour",
+            "policy_kind": "scripted_stair" if scripted_climb else "parkour",
             "control_hz": float(self.config.control_hz),
             "inference_count": int(self._inference_count),
+            "scripted_climb": bool(scripted_climb),
         }
 
     # -- telemetry (per-leg swing/stance summary for the gait HUD) ---------

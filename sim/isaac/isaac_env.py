@@ -42,9 +42,9 @@ parser.add_argument("--warm-command-file", type=str, default="",
 parser.add_argument("--warm-max-runs", type=int, default=10,
                     help="Self-reboot after this many warm episodes so slow GPU/stage "
                          "leaks can't accumulate; the launcher then boots a fresh Kit.")
-parser.add_argument("--cmd-port", type=int, default=55001,
+parser.add_argument("--cmd-port", type=int, default=52001,
                     help="UDP port for incoming velocity commands")
-parser.add_argument("--frame-port", type=int, default=55002,
+parser.add_argument("--frame-port", type=int, default=52002,
                     help="UDP port for outgoing camera frames")
 parser.add_argument("--physics-hz", type=int, default=200,
                     help="Physics simulation rate in Hz. 200 Hz gives integer decimation "
@@ -179,11 +179,21 @@ parser.add_argument("--speed-governor-action-norm-max", type=float, default=8.0,
                          "recorded top-landing run while trimming larger spikes. 0 disables the "
                          "norm cap entirely. Only active with "
                          "--speed-governor.")
+parser.add_argument("--scripted-stair-gait", action="store_true", default=False,
+                    help="Engage the deterministic scripted stair-climb gait (scripted_stair_gait.py) "
+                         "on the stairs instead of the RL policy. OFF by default: the open-loop gait "
+                         "can propel OR stay stable but not both without closed-loop balance + foot-"
+                         "contact control (run_sim_20260619_15*). Kept behind this flag for future "
+                         "closed-loop development; when off the RL policy drives everywhere.")
 parser.add_argument("--stair-action-norm-max", type=float, default=8.0,
-                    help="Stair-specific action-norm cap. Normal trained climb lifts remain above "
-                         "the flat 6.0 cap, while extreme spikes above 12.0 are rescaled before "
-                         "they can roll or collapse the body. This reproduces the cap from the "
-                         "recorded top-landing run. 0 disables the stair cap.")
+                    help="Stair-specific action-norm cap; 0 disables it. KEPT AT 8.0 (empirical, "
+                         "run_sim_20260619_132247 vs _130218): cap-OFF stubbed the first riser at step 2 "
+                         "(too little surge momentum to parkour up), while cap-8.0 reached step 7. The "
+                         "depth-driven forward SURGE provides the momentum that carries the dog UP the "
+                         "riser, and the 8.0 cap trims only the extreme spikes (>8, seen before sideways "
+                         "rolls) while preserving that climb momentum. It does clip some step-up lift, but "
+                         "net it climbs FURTHER than uncapped -- the spike-trimming stability outweighs "
+                         "the lift loss on this shallow staircase.")
 parser.add_argument("--with-o2-payload", action="store_true",
                     help="Attach the 3D-printed rail cradle + P2-E6 oxygen concentrator "
                          "to the Go2's back. Off by default so the base robot runs clean. "
@@ -191,13 +201,17 @@ parser.add_argument("--with-o2-payload", action="store_true",
 parser.add_argument("--stair-preset", type=str, default="demo_gentle",
                     choices=("demo_gentle", "residential", "commercial", "steep"),
                     help="Staircase geometry preset (single source of truth in "
-                         "sim_go2_locomotion.StairSpec). demo_gentle (default) reproduces the "
-                         "original 0.08 m x 0.30 m x 12 gentle test stairs; residential/"
-                         "commercial/steep use real building-code rise/run so the sensor + "
-                         "locomotion stack faces non-trivial stairs. Drives the physics cuboids, analytical "
-                         "terrain, patient path, and stair overlay from one spec.")
+                         "sim_go2_locomotion.StairSpec). DEFAULT residential (0.178 m x 0.279 m x 12, "
+                         "US IRC home stairs): the frozen Extreme-Parkour policy is trained on real "
+                         "obstacle heights, so a realistic riser is IN-DISTRIBUTION and triggers the "
+                         "climb gait, whereas the old demo_gentle 0.08 m step is OOD-shallow (reads as a "
+                         "near-flat ramp the policy under-reacts to -> stubs the riser / face-plants, "
+                         "verified flaky across runs 20260619_125229..133100). residential is also the "
+                         "real scenario for an oxygen patient at home. demo_gentle reproduces the old "
+                         "0.08 m toy stairs. Drives the physics cuboids, analytical terrain, patient "
+                         "path, and stair overlay from one spec.")
 parser.add_argument("--stair-step-height", type=float, default=None,
-                    help="Override the preset tread rise in metres (e.g. 0.178)")
+                    help="Override the preset tread rise in metres (e.g. 0.178).")
 parser.add_argument("--stair-step-depth", type=float, default=None,
                     help="Override the preset tread run/depth in metres (e.g. 0.279)")
 parser.add_argument("--stair-step-count", type=int, default=None,
@@ -244,8 +258,13 @@ parser.add_argument("--dr-lighting-pct", type=float, default=0.0,
                     help="Fractional +/- randomization of scene light intensity when --domain-rand "
                          "is set (0 = off). Stress-tests YOLO/pose/ReID against the lighting "
                          "variation the fixed sim lighting otherwise hides.")
-parser.add_argument("--stair-follow-bearing-scale", type=float, default=0.4,
-                    help="Scale factor for follow bearing injected in hybrid mode on stairs")
+parser.add_argument("--stair-follow-bearing-scale", type=float, default=0.9,
+                    help="Scale factor for follow bearing injected in hybrid mode on stairs. RAISED "
+                         "0.4 -> 0.9 (run_sim_20260619_130218): the person walks a STRAIGHT line up, so "
+                         "the person bearing is the correct stable heading reference, but 0.4 was too weak "
+                         "to counter the physical leftward gait drift -- the dog crabbed off-axis (yaw "
+                         "-6 -> -69 deg) and rolled off the staircase edge near the top. 0.9 gives the "
+                         "bearing near-full authority to hold the dog aimed straight up at the person.")
 parser.add_argument("--hold-ramp-sec", type=float, default=0.25,
                     help="Ramp time in seconds to blend policy action to stance pose during soft hold")
 parser.add_argument("--hold-speed-threshold", type=float, default=0.15,
@@ -351,7 +370,7 @@ parser.add_argument("--ros2-bridge", dest="ros2_bridge", action="store_true", de
                          "real robot the Hesai driver publishes that topic directly instead.")
 parser.add_argument("--ros2-bridge-host", type=str, default="127.0.0.1",
                     help="Destination host for the ROS2 bridge cloud/odom UDP sidecar.")
-parser.add_argument("--ros2-bridge-port", type=int, default=55003,
+parser.add_argument("--ros2-bridge-port", type=int, default=52003,
                     help="Destination UDP port for the ROS2 bridge cloud/odom sidecar.")
 # scene_view.mp4 = the external Isaac-Sim scene Left view, recorded sim-side
 # (the robot's own front POV is streamed to the controller for opencv_preview).
@@ -3489,15 +3508,28 @@ def _step_go2_locomotion(
     # inject a damped, clamped person bearing so it is biased toward the person.
     heading_mode = str(getattr(getattr(rl_policy, "config", None), "heading_mode", "vision"))
     if heading_mode == "hybrid" and bool(stairs_action_active):
+        # On the stairs the trained depth self-steer DRIFTS off-axis on this straight staircase
+        # (run_sim_20260619_130218: under self-steer the yaw drifted -6 -> -69 deg while the person
+        # flickered out of view, crabbing the dog off the left edge -> roll/flip near the top). The
+        # person walks a STRAIGHT line up, so the person bearing is the correct, stable heading
+        # reference. Bias toward it with near-full authority and, crucially, HOLD the last bearing
+        # when the person briefly drops out instead of handing back to the drifting self-steer.
         if person_bbox is not None:
-            stair_follow_bearing_scale = float(getattr(args, "stair_follow_bearing_scale", 0.4))
+            stair_follow_bearing_scale = float(getattr(args, "stair_follow_bearing_scale", 0.9))
             delta_yaw = float(yaw_err) * stair_follow_bearing_scale
             stair_rot_max = float(getattr(args, "stair_rot_max", 0.6))
             delta_yaw = float(np.clip(delta_yaw, -stair_rot_max, stair_rot_max))
+            rl_policy._last_stair_delta_yaw = delta_yaw
         else:
-            delta_yaw = None
+            # Person lost mid-climb: hold the last commanded bearing (decaying toward straight) so a
+            # brief tracking dropout cannot let the depth self-steer drift the body off the stairs.
+            # Decay toward 0 so a long loss settles to "straight up" rather than a stale hard turn.
+            held = float(getattr(rl_policy, "_last_stair_delta_yaw", 0.0))
+            delta_yaw = held
+            rl_policy._last_stair_delta_yaw = held * 0.92
     else:
         delta_yaw = float(yaw_err)
+        rl_policy._last_stair_delta_yaw = 0.0
     # Measured horizontal body speed for the inertial-safe stop: the policy must not
     # hard-lock its legs while still moving (that pitches it over its planted feet and
     # flips it). Use the true base velocity here; the real robot supplies the
@@ -3507,9 +3539,21 @@ def _step_go2_locomotion(
         body_speed = float(math.hypot(float(_bv[0]), float(_bv[1]))) if _bv is not None else None
     except Exception:
         body_speed = None
+    # Engage the deterministic scripted stair-climb gait whenever the controller says the dog is
+    # actually climbing (stairs_action_active -- includes the persistence latch through detection
+    # dropouts). On flat this is False and the RL parkour policy drives as before. The scripted gait
+    # bypasses the RL policy on the stairs because the frozen policy cannot reliably step up.
+    # Drive the policy's CLIMB GAIT (parkour high foot-lift) from stairs_detected OR
+    # stairs_action_active. YOLO (stairs_detected) blanks up close, but the controller's
+    # depth-triggered latch keeps stairs_action_active True at the riser -- without OR-ing it in,
+    # the policy reverted to the flat gait (no foot lift) the instant YOLO blanked and WEDGED on the
+    # step (run_sim_20260619_155942). Now the climb gait persists through the close-range YOLO dropout.
+    _climb_gait_active = bool(stairs_detected) or bool(stairs_action_active)
     telemetry = rl_policy.step(go2, (vx, vy, wz), dt, delta_yaw=delta_yaw,
-                               stairs_active=bool(stairs_detected), hold=hold,
-                               body_speed=body_speed)
+                               stairs_active=_climb_gait_active, hold=hold,
+                               body_speed=body_speed,
+                               scripted_climb=(bool(stairs_action_active)
+                                               and bool(getattr(args, "scripted_stair_gait", False))))
     # The policy just moved the joints; capture its real per-leg command so the
     # stair-demo telemetry and HUD reflect what the policy actually did this step.
     _go2_locomotion_state.leg_summary = rl_policy.leg_command_summary()

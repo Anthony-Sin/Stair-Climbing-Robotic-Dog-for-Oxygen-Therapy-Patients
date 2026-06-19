@@ -98,7 +98,7 @@ class SimCameraCapture:
         self,
         width: int = 1280,
         height: int = 720,
-        frame_port: int = 55002,
+        frame_port: int = 52002,
         timeout_sec: float = 2.0,
         verbose: bool = True,
         rotate: int = 0,

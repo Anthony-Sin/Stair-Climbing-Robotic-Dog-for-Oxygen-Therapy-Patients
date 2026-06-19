@@ -151,9 +151,9 @@ Warm mode keeps one Kit/Isaac process alive across runs so the ~120 s RTX boot i
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--frame-host <ip>` | `127.0.0.1` | IP Isaac pushes camera frames to (Docker Desktop UDP forwarding). |
-| `--frame-port <port>` | `55002` | UDP port for camera frames (Isaac → Docker). |
+| `--frame-port <port>` | `52002` | UDP port for camera frames (Isaac → Docker). |
 | `--cmd-host <ip>` | `host.docker.internal` | IP Docker pushes velocity commands to (Isaac side). |
-| `--cmd-port <port>` | `55001` | UDP port for velocity commands (Docker → Isaac). |
+| `--cmd-port <port>` | `52001` | UDP port for velocity commands (Docker → Isaac). |
 
 ### 1.6  Docker Image & Container
 
@@ -233,8 +233,8 @@ These are Python argparse flags passed directly to the Isaac Sim python.bat entr
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--frame-host <ip>` | `0.0.0.0` | Destination IP for camera frame UDP (WSL2 IP when Docker is on WSL). |
-| `--frame-port <port>` | `55002` | UDP port for outgoing camera frames. |
-| `--cmd-port <port>` | `55001` | UDP port for incoming velocity commands. |
+| `--frame-port <port>` | `52002` | UDP port for outgoing camera frames. |
+| `--cmd-port <port>` | `52001` | UDP port for incoming velocity commands. |
 
 ### 2.4  Physics & Simulation Rate
 
@@ -365,7 +365,7 @@ All off / nominal by default. `--sim2real-validation-cam` turns on the full suit
 |------|---------|-------------|
 | `--ros2-bridge` | off | Emit XT16 point cloud + robot pose over UDP to the `sim_lidar_bridge` ROS2 node. |
 | `--ros2-bridge-host <ip>` | `127.0.0.1` | Destination host for the ROS2 bridge UDP sidecar. |
-| `--ros2-bridge-port <port>` | `55003` | Destination UDP port for the ROS2 bridge sidecar. |
+| `--ros2-bridge-port <port>` | `52003` | Destination UDP port for the ROS2 bridge sidecar. |
 
 ### 2.17  Video Recording
 
@@ -418,9 +418,9 @@ The launcher overrides many Python defaults for the sim use-case. If a value isn
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--sim` | off | Use Isaac Sim backend instead of real hardware. |
-| `--frame-port <port>` | `55002` | UDP port the controller listens on for Isaac camera frames. |
+| `--frame-port <port>` | `52002` | UDP port the controller listens on for Isaac camera frames. |
 | `--cmd-host <ip>` | `$SIM_CMD_HOST` or `192.168.1.91` | Host where Isaac listens for velocity commands. |
-| `--cmd-port <port>` | `55001` | UDP port Isaac listens on for commands. |
+| `--cmd-port <port>` | `52001` | UDP port Isaac listens on for commands. |
 | `--sim-frame-timeout-exit-sec <s>` | `30.0` | Exit if no frame arrives for this long (0 = disable). |
 | `--sim-latency-ms <ms>` | `0.0` | Artificial frame hold before the perception loop sees it. |
 | `--sim-latency-jitter-ms <ms>` | `0.0` | Uniform ±jitter on top of `--sim-latency-ms`. |

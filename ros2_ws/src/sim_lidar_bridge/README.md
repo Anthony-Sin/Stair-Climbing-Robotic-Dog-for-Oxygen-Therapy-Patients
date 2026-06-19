@@ -4,10 +4,10 @@ Sim-side bridge that lets the **real** Nav2 / costmap / MPPI stack run unchanged
 against Isaac sim data. It is the sim stand-in for *(Hesai driver + go2_nav_bridge)*.
 
 ```
-Isaac (cast_scan real cloud + pose) --UDP:55003--> [sim_lidar_bridge] --> /xt16/lidar_points (PointCloud2)
+Isaac (cast_scan real cloud + pose) --UDP:52003--> [sim_lidar_bridge] --> /xt16/lidar_points (PointCloud2)
                                                                           /odom (+ TF odom->base_link)
                                                                           (static TF base_link->hesai_xt16)
-                                    /cmd_vel_smoothed --> [sim_lidar_bridge] --UDP:55001--> Isaac
+                                    /cmd_vel_smoothed --> [sim_lidar_bridge] --UDP:52001--> Isaac
 ```
 
 It publishes the **same topics/types** the real robot uses, so going to hardware is
@@ -19,7 +19,7 @@ untouched. The UDP hop exists only because Isaac's bundled Python can't host
 
 1. Start Isaac with the bridge emit on:
    ```
-   <isaac-python> sim/isaac/isaac_env.py --ros2-bridge [--ros2-bridge-host <ros2 host>] [--ros2-bridge-port 55003]
+   <isaac-python> sim/isaac/isaac_env.py --ros2-bridge [--ros2-bridge-host <ros2 host>] [--ros2-bridge-port 52003]
    ```
 2. In the ROS 2 container/host:
    ```

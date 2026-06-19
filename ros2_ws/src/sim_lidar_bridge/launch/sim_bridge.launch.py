@@ -17,9 +17,9 @@ from launch_ros.actions import Node
 
 def generate_launch_description() -> LaunchDescription:
     return LaunchDescription([
-        DeclareLaunchArgument("udp_listen_port", default_value="55003"),
+        DeclareLaunchArgument("udp_listen_port", default_value="52003"),
         DeclareLaunchArgument("isaac_cmd_host", default_value="127.0.0.1"),
-        DeclareLaunchArgument("isaac_cmd_port", default_value="55001"),
+        DeclareLaunchArgument("isaac_cmd_port", default_value="52001"),
         DeclareLaunchArgument("points_topic", default_value="/xt16/lidar_points"),
         DeclareLaunchArgument("odom_topic", default_value="/odom"),
         DeclareLaunchArgument("cmd_topic", default_value="/cmd_vel_smoothed"),

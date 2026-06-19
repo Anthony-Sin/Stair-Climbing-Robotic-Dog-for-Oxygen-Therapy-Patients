@@ -54,3 +54,5 @@ librealsense/
 # API keys and environment variables
 .env
 
+# Temporary files
+*.tmp

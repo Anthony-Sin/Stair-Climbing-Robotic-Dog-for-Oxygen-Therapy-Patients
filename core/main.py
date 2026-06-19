@@ -297,8 +297,12 @@ def _apply_front_obstacle_gate(
 ) -> float:
     # On the stairs the stair policy owns the forward command, and the staircase
     # itself reads as a near "obstacle" in the central ROI -- gating here would
-    # zero the climb's forward floor. Let the stair policy govern instead.
-    if bool(debug_info.get("stairs_action_active", False)):
+    # zero the climb's forward floor. Let the stair policy govern instead. The
+    # stair_climbing_latch extends this bypass through a stairs-DETECTION dropout while
+    # the dog is still physically climbing (otherwise the next riser is read as a
+    # blocking wall and the climb command is zeroed -> the dog wedges on the step;
+    # run_sim_20260619_134034). The latch is collision-gated upstream.
+    if bool(debug_info.get("stairs_action_active", False)) or bool(debug_info.get("stair_climbing_latch", False)):
         debug_info["front_obstacle_gate_active"] = False
         debug_info["front_obstacle_skipped_on_stairs"] = True
         return float(trans_x_cmd)
@@ -963,6 +967,25 @@ def main():
     # (stairs_active=True -> depth self-steer) until this timestamp, so a mid-climb detection
     # dropout doesn't revert hybrid heading to person-bearing steering and topple it ~step 5.
     stair_climb_latch_until = 0.0
+    # Stair-climb PERSISTENCE latch (the wedge fix, always on): keeps the dog in stair-mode
+    # (front-obstacle-gate bypass + climb gait + forward floor) through a stairs-DETECTION dropout
+    # while it is still physically climbing, so the next riser is not mistaken for a blocking wall
+    # and the climb forward command is not zeroed (run_sim_20260619_134034 residential wedge:
+    # stuck 30 s at vx=0, obstacle_scale=0). Refreshed by genuine stairs frames and by a near riser
+    # ahead during a recent climb; released on reaching flat ground (front clears for the window).
+    _climbing_persist_until = 0.0
+    # Last time YOLO-World saw the staircase (it detects well FAR but blanks UP CLOSE). Latches the
+    # "there are stairs ahead" context so the depth camera (which sees the riser fine up close) can
+    # ENGAGE the climb when a step is right in front -- INDEPENDENT of the patient and of close-range
+    # YOLO. This is the fix for the wedge where the climb trigger (stairs_action_active) drops because
+    # the patient climbed out of view (it was patient-gated) -> dog reverts to flat gait -> stuck.
+    _stairs_seen_ts = 0.0
+    # Last gap (m) measured WHILE the patient was actually detected. The live depth/gap reading
+    # becomes the near RISER (~0.2 m) once the patient climbs out of view on the stairs, which would
+    # trip the stair collision floor and freeze the climb (run_sim_20260619_141416: frozen 30 s at the
+    # base, gap_ctrl=0.24 = the riser, patient lost 190 s). Use this last-known PATIENT gap for the
+    # on-loss collision check instead, so the dog climbs blind toward the departed patient.
+    last_person_gap_m = None
     # Method 1 carrot / virtual-target steering (opt-in via --carrot-follow). Body-frame breadcrumb
     # FIFO of the person; steering aims one standoff behind the newest sample. See _update_carrot_heading.
     carrot_trail: List[List[float]] = []
@@ -1253,6 +1276,83 @@ def main():
             trans_x_cmd, rotation_cmd = _apply_stair_command_policy(
                 args, trans_x_cmd, rotation_cmd, debug_info
             )
+
+            # --- Stair-climb persistence latch (the wedge fix) -------------------------------
+            # On the stairs the dog loses stairs DETECTION (pitched up, the near riser fills the
+            # camera so YOLO no longer reads a staircase) -> stairs_action_active drops -> the
+            # front-obstacle gate (next call) reads the next riser as a blocking WALL and zeroes the
+            # climb forward command, and the policy reverts to the flat-walk gait that cannot lift
+            # over the riser -> the dog WEDGES on the step and the patient walks away
+            # (run_sim_20260619_134034 residential: stuck at x=2.55 for 30 s, vx=0, obstacle_scale=0).
+            # Keep stair-mode latched while still climbing: refresh on any genuine stairs frame, and
+            # HOLD it while a near riser sits ahead during a recent climb (the dog is mid-step,
+            # detection just can't see the staircase). Released when the front clears (flat/landing).
+            _genuine_stairs = bool(debug_info.get("stairs_action_active", False))
+            # Remember the gap measured while the patient is actually detected (used by the on-loss
+            # collision check; the live gap becomes the near riser once the patient leaves view).
+            if bool(debug_info.get("person_detected", False)):
+                _pg = debug_info.get("depth_distance_m")
+                if _pg is not None and float(_pg) > 1e-3:
+                    last_person_gap_m = float(_pg)
+            try:
+                _front_near_m, _ = DepthProcessor.central_roi_nearest_depth(
+                    depth_img, width_ratio=args.obstacle_roi_width_ratio,
+                    height_ratio=args.obstacle_roi_height_ratio)
+            except Exception:
+                _front_near_m = None
+            _near_riser = (_front_near_m is not None
+                           and float(_front_near_m) <= float(args.obstacle_slow_distance))
+            # Depth-triggered, PATIENT-INDEPENDENT climb engage (the user's depth-vision insight):
+            # YOLO-World sees the staircase well from afar but blanks up close, and the old climb
+            # trigger was gated on seeing the patient -- so it dropped the instant the patient climbed
+            # out of view (run_sim_20260619_155942: wedged at x=2.58). Latch "stairs ahead" from the
+            # far YOLO detection, then let the DEPTH camera (which sees the riser fine up close) ENGAGE
+            # the climb when a step is right in front -- regardless of the patient or close-range YOLO.
+            if bool(debug_info.get("stairs_detected", False)):
+                _stairs_seen_ts = current_time
+            _stairs_seen_recent = (current_time - _stairs_seen_ts) < float(args.stair_seen_persist_sec)
+            # A riser RIGHT in front (depth): tighter than the slow-distance so it means "a step here",
+            # not just "something within slow range". Below stair_near_distance and ~one tread away.
+            _at_riser = (_front_near_m is not None
+                         and float(_front_near_m) <= float(args.stair_depth_engage_distance))
+            _depth_climb_engage = bool(_stairs_seen_recent and _at_riser)
+            debug_info["depth_climb_engage"] = _depth_climb_engage
+            # On steeper realistic stairs the patient ascends faster than the dog climbs, the gap
+            # grows, and the near terrain-masked person-proxy that TRIGGERS the policy's climb-charge
+            # disappears -> the dog wedges on the step (run_sim_20260619_140354 commercial: stuck at
+            # x=2.39, patient 3-4 m ahead). Keep the climb latch alive while the patient is still
+            # ahead after a recent climb, so the dog keeps driving UP to close the gap and re-trigger
+            # the climb, rather than releasing and stalling. Released when the gap is back near the
+            # standoff (caught up / reached the patient on the flat).
+            _gap_ctrl_now = debug_info.get("standoff_gap_ctrl_m")
+            _patient_ahead = (_gap_ctrl_now is not None
+                              and float(_gap_ctrl_now) > float(args.stair_target_distance) + 0.5)
+            if (_genuine_stairs or _depth_climb_engage
+                    or (current_time < _climbing_persist_until
+                        and (_near_riser or _patient_ahead))):
+                _climbing_persist_until = current_time + 6.0
+            _climbing_latched = current_time < _climbing_persist_until
+            debug_info["stair_climbing_latch"] = bool(_climbing_latched)
+            debug_info["front_near_m"] = None if _front_near_m is None else round(float(_front_near_m), 3)
+            if _climbing_latched and not _genuine_stairs:
+                # Detection dropped mid-climb: force climb mode (gait + obstacle-gate bypass below)
+                # and hold the forward floor so the dog steps UP the un-detected riser instead of
+                # wedging. Collision-safe: never drive forward inside the patient standoff floor.
+                debug_info["stairs_action_active"] = True
+                debug_info["stair_climb_latch_forced"] = True
+                _climb_floor = max(0.0, min(float(args.stair_forward_floor),
+                                            float(args.trans_x_max) * float(args.stair_speed_scale)))
+                # Collision check on the LAST-KNOWN patient gap (not the live depth, which is the near
+                # riser once the patient leaves view). Block only if the patient was last seen inside
+                # the collision floor AND the loss is recent; after a brief loss the patient has
+                # climbed away, so drive the blind climb toward them instead of freezing at the base.
+                _lost_age = debug_info.get("lost_age_sec")
+                _coll_block = (last_person_gap_m is not None
+                               and float(last_person_gap_m) < float(args.stair_climb_collision_floor)
+                               and (_lost_age is None or float(_lost_age) < 2.0))
+                trans_x_cmd = 0.0 if _coll_block else max(float(trans_x_cmd), _climb_floor)
+                debug_info["stair_climb_latch_collision_block"] = bool(_coll_block)
+
             trans_x_cmd = _apply_front_obstacle_gate(
                 args, trans_x_cmd, depth_img, debug_info
             )
@@ -1765,23 +1865,48 @@ def main():
                 # (run_sim_20260619_040900: body_vx held ~0.4-0.5), so vx=0 just floor-creeps the dog into
                 # the step blind and it stubs the first riser. The floor lets it walk UP instead. Heading
                 # is zeroed (no fresh detection) and the policy self-steers from depth on the stairs.
+                #
+                # COLLISION SAFETY (the goal's 'don't collapse into the person'): every OTHER stair path
+                # (the regular follow in _apply_stair_command_policy, and the committed climb) enforces a
+                # hard collision floor against the smoothed gap. This loss path was the one hole -- it drove
+                # forward BLIND (gap_m=None, no check), so a tracking dropout that happens while the patient
+                # is close (e.g. the patient paused on a step) walked the dog straight into them. Reuse the
+                # last smoothed gap (standoff_gap_ctrl_m persists across the dropout) and zero the drive when
+                # it is below the collision floor. We still pass the last-known gap to the policy instead of
+                # None so its on-stair handling sees a real standoff.
+                # Collision check on the LAST-KNOWN patient gap, NOT the live smoothed gap: once the
+                # patient climbs out of view the live gap is the near riser (~0.2 m) and would trip
+                # this floor forever, freezing the climb at the base (run_sim_20260619_141416). Block
+                # only if the patient was last seen inside the collision floor AND the loss is recent;
+                # after a brief loss the patient has climbed away, so the blind climb toward them is safe.
+                _loss_gap = last_person_gap_m
+                _loss_age = debug_info.get("lost_age_sec")
+                _loss_block = (
+                    _loss_gap is not None
+                    and float(_loss_gap) < float(args.stair_climb_collision_floor)
+                    and (_loss_age is None or float(_loss_age) < 2.0)
+                )
+                _loss_climb_vx = 0.0 if _loss_block else float(_committed_stair_floor)
+                debug_info["stairs_loss_collision_block"] = bool(_loss_block)
+                debug_info["stairs_loss_last_person_gap_m"] = (
+                    None if _loss_gap is None else round(float(_loss_gap), 3))
                 controller.move(
-                    _committed_stair_floor, 0.0, 0.0,
+                    _loss_climb_vx, 0.0, 0.0,
                     stairs_detected=True,
                     yaw_err=0.0,
                     person_bbox=None,
                     stairs_action_active=True,
                     hold=False,
                     person_detected=False,
-                    gap_m=None,
+                    gap_m=_loss_gap,
                 )
-                trans_x_limiter.reset(float(_committed_stair_floor))
+                trans_x_limiter.reset(float(_loss_climb_vx))
                 rotation_limiter.reset(0.0)
                 yaw_err_limiter.reset(0.0)
-                debug_info["command_trans_x_limited"] = float(_committed_stair_floor)
+                debug_info["command_trans_x_limited"] = float(_loss_climb_vx)
                 debug_info["command_rotation_limited"] = 0.0
                 debug_info["stairs_committed_climb_on_loss"] = True
-                last_command_trans_x = float(_committed_stair_floor)
+                last_command_trans_x = float(_loss_climb_vx)
                 last_command_rotation = 0.0
                 stop_ramp_active = False
                 stop_ramp_vx = 0.0

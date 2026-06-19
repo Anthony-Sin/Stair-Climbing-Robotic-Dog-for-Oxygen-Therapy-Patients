@@ -14,7 +14,7 @@ class SimRobotController:
     Mirrors the RobotController API so main.py needs no changes.
     """
 
-    def __init__(self, cmd_host: Optional[str] = None, cmd_port: int = 55001) -> None:
+    def __init__(self, cmd_host: Optional[str] = None, cmd_port: int = 52001) -> None:
         self._host = cmd_host or os.environ.get("SIM_CMD_HOST", "192.168.1.91")
         self._port = cmd_port
         self._sock = None

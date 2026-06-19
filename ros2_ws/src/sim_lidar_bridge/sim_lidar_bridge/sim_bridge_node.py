@@ -66,9 +66,9 @@ class SimLidarBridge(Node):
         super().__init__("sim_lidar_bridge")
 
         self.declare_parameter("udp_listen_host", "0.0.0.0")
-        self.declare_parameter("udp_listen_port", 55003)
+        self.declare_parameter("udp_listen_port", 52003)
         self.declare_parameter("isaac_cmd_host", "127.0.0.1")
-        self.declare_parameter("isaac_cmd_port", 55001)
+        self.declare_parameter("isaac_cmd_port", 52001)
         self.declare_parameter("points_topic", "/xt16/lidar_points")
         self.declare_parameter("odom_topic", "/odom")
         self.declare_parameter("cmd_topic", "/cmd_vel_smoothed")
