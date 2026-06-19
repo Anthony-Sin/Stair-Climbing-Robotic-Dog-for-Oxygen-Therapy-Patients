@@ -133,56 +133,53 @@ class TestFollowStandoff(unittest.TestCase):
         self.assertGreater(conf, 0.5)
         self.assertGreater(speed, 0.5)
 
+    def _feed(self, args, state, debug_info, gap, is_walking=True, n=5, trans_x_cmd=0.5):
+        # Feed a gap reading n times to warm the median filter (the controller debounces gap noise
+        # by deciding on the median of the last <=5 VALID readings, so a transition needs the
+        # smoothed gap -- not a single frame -- to cross the threshold).
+        cmd = 0.0
+        for _ in range(n):
+            cmd = _apply_follow_standoff_policy(
+                args, trans_x_cmd=trans_x_cmd, gap_m=gap, leader_speed_mps=0.0,
+                is_walking=is_walking, debug_info=debug_info, state=state
+            )
+        return cmd
+
     def test_standoff_hysteresis_and_gait_gate(self):
         args = MockArgs()
         debug_info = {}
         state = {
             "go_state": False,
-            "pace_state": "advance",
+            "pace_state": "creep",
             "pace_timer": 0.0,
             "last_time": time.perf_counter(),
         }
-        
-        # Initial: gap is 0.8m (below standoff 1.0m + band_in -0.15 = 0.85m)
-        cmd = _apply_follow_standoff_policy(
-            args, trans_x_cmd=0.5, gap_m=0.8, leader_speed_mps=0.0,
-            is_walking=True, debug_info=debug_info, state=state
-        )
+
+        # gap 0.8m (below standoff 1.0 + band_in -0.15 = 0.85m) -> HOLD; lean-on-creep cmd 0.
+        cmd = self._feed(args, state, debug_info, 0.8)
         self.assertEqual(cmd, 0.0)
         self.assertFalse(state["go_state"])
-        
-        # Move to 0.9m (inside hysteresis band, should remain in HOLD)
-        cmd = _apply_follow_standoff_policy(
-            args, trans_x_cmd=0.5, gap_m=0.9, leader_speed_mps=0.0,
-            is_walking=True, debug_info=debug_info, state=state
-        )
+
+        # gap 0.9m (inside hysteresis band) -> remain HOLD.
+        cmd = self._feed(args, state, debug_info, 0.9)
         self.assertEqual(cmd, 0.0)
         self.assertFalse(state["go_state"])
-        
-        # Move to 1.2m (above standoff 1.0 + band_out 0.15 = 1.15m -> should become GO).
-        # LEAN-ON-CREEP: GO no longer passes the command through. The gap (1.2) is still inside
-        # follow_pace_distance (2.0), so we lean on the policy's floor-creep and command ZERO.
-        cmd = _apply_follow_standoff_policy(
-            args, trans_x_cmd=0.5, gap_m=1.2, leader_speed_mps=0.0,
-            is_walking=True, debug_info=debug_info, state=state
-        )
+
+        # gap 1.2m (above standoff 1.0 + band_out 0.15 = 1.15m) -> GO. LEAN-ON-CREEP: GO no longer
+        # passes the command through; the smoothed gap (1.2) is still inside follow_pace_distance
+        # (2.0), so we lean on the policy's floor-creep and command ZERO.
+        cmd = self._feed(args, state, debug_info, 1.2)
         self.assertEqual(cmd, 0.0)
         self.assertTrue(state["go_state"])
         self.assertEqual(debug_info["pace_state"], "creep")
 
-        # Move back to 1.0m (inside hysteresis band, should remain in GO); still creep -> cmd 0.
-        cmd = _apply_follow_standoff_policy(
-            args, trans_x_cmd=0.5, gap_m=1.0, leader_speed_mps=0.0,
-            is_walking=True, debug_info=debug_info, state=state
-        )
+        # gap 1.0m (inside hysteresis band) -> remain GO; still creep -> cmd 0.
+        cmd = self._feed(args, state, debug_info, 1.0)
         self.assertEqual(cmd, 0.0)
         self.assertTrue(state["go_state"])
 
-        # Test Gait Gate Override: is_walking becomes False -> should force HOLD
-        cmd = _apply_follow_standoff_policy(
-            args, trans_x_cmd=0.5, gap_m=1.0, leader_speed_mps=0.0,
-            is_walking=False, debug_info=debug_info, state=state
-        )
+        # Gait gate override: is_walking False at gap <= upper -> force HOLD.
+        cmd = self._feed(args, state, debug_info, 1.0, is_walking=False)
         self.assertEqual(cmd, 0.0)
         self.assertFalse(state["go_state"])
 
@@ -198,12 +195,10 @@ class TestFollowStandoff(unittest.TestCase):
             "pace_timer": 0.0,
             "last_time": time.perf_counter(),
         }
-        # Even with a full cycle's worth of elapsed time, the far regime must NOT enter settle.
+        # Warm the median filter with a genuinely far gap (2.5 > follow_pace_distance 2.0): the
+        # far regime must NOT enter settle, and must command at least the policy floor.
         state["last_time"] = time.perf_counter() - 5.0
-        cmd = _apply_follow_standoff_policy(
-            args, trans_x_cmd=0.8, gap_m=2.5, leader_speed_mps=0.0,
-            is_walking=True, debug_info=debug_info, state=state
-        )
+        cmd = self._feed(args, state, debug_info, 2.5, trans_x_cmd=0.8)
         self.assertEqual(debug_info["pace_state"], "advance")
         self.assertFalse(debug_info["pace_hold_active"])
         # Cruise passes through, guaranteed at least the policy floor; never zeroed when far.

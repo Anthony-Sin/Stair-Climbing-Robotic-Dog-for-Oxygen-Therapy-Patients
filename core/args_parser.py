@@ -266,6 +266,13 @@ def parse_args():
                              'and the stance-lock hold may be asserted (Method 3 hold gating). Until '
                              'the ramp bleeds the command below this, hold stays False so the gait '
                              'stays alive.')
+    parser.add_argument('--follow-settle-grace-sec', type=float, default=2.0,
+                        help='Suppress the too-close stance-lock for this long after following '
+                             'starts. At startup the depth/person-detection is unstable and reads a '
+                             'SUSTAINED close gap (~0.5 m cluster, which the median filter cannot '
+                             'reject); slamming the stance-lock on then freezes the policy creep, '
+                             'opens the gap, and forces a catch-up run. During the grace the robot '
+                             'rides its creep so the gap stays at standoff while the reading settles.')
     parser.add_argument('--carrot-follow', action='store_true', default=False,
                         help='Carrot / virtual-target steering (Method 1, opt-in, OFF by default). '
                              'On flat ground, aim the parkour heading at a breadcrumb point one '
@@ -313,6 +320,12 @@ def parse_args():
     parser.add_argument('--stair-forward-floor', type=float, default=0.35,
                         help='Minimum forward command (m/s) held while climbing detected nearby stairs, '
                              'so the follow PID cannot stall the locomotion policy at the stair base')
+    parser.add_argument('--stair-hold-suppress-sec', type=float, default=4.0,
+                        help='After the last on-stairs frame, keep suppressing the stance-lock hold for '
+                             'this long. A person-lock loss mid-climb drops stairs_detected even though '
+                             'the robot is still on the incline; without this latch the hold logic '
+                             'treats it as flat ground and stance-locks, which topples it on the slope. '
+                             'During the latch the gait stays alive (committed climb) instead.')
     parser.add_argument('--stair-rot-max', type=float, default=0.6,
                         help='Yaw command cap (rad/s) while on stairs; lower than --rot-max to stop the '
                              'centering saw that destabilizes the climb')

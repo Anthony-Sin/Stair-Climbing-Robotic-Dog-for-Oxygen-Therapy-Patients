@@ -2425,7 +2425,11 @@ STAIR_BOB_AMP = 0.02
 # 0.5 m/s (~1.1 mph) is still a realistic slow ambulatory-elderly pace. (Measurement note: Isaac
 # runs ~7x slower than real-time, so wall-clock person speed reads ~7x low -- compare in SIM time.)
 PERSON_WALK_SPEED = 0.5    # flat ground — matches the robot's ~0.5 m/s trot floor
-PERSON_STAIR_SPEED = 0.4   # stairs (slower climb, but still near the robot's on-stair floor)
+PERSON_STAIR_SPEED = 0.55  # stairs: matched to the robot's on-stair body speed (~0.5-0.6 m/s).
+                           # At 0.4 the robot OUT-CLIMBED the patient -> gap closed to ~0.8 m ->
+                           # the YOLO bbox flickered at that close range on the incline -> lock lost
+                           # -> the blind climb destabilized and fell. Matching the climb speed holds
+                           # the gap (~1.0-1.5 m) so the lock survives and the dog follows up cleanly.
 
 
 def update_person_patrol(person, dt: float) -> None:
@@ -4269,9 +4273,17 @@ def main() -> None:
                             # terrain and charge at it (close-range surge). ON by
                             # default; --no-parkour-person-mask disables for A/B.
                             if person_bbox is not None and not args.no_parkour_person_mask:
+                                # On FLAT ground, clear the person to far range ('far' fill): the
+                                # close-range body surge (policy reads the near body as climbable
+                                # terrain and charges -> rams the patient) is killed by removing the
+                                # near body entirely. The terrain-preserving inpaint is only needed
+                                # on/near the stairs, where far-filling would blind the policy to the
+                                # riser the person occludes; so use args.parkour_mask_fill only there.
+                                _on_or_near_stairs = bool(stairs_detected) or bool(stairs_action_active)
+                                _fill_mode = str(args.parkour_mask_fill) if _on_or_near_stairs else "far"
                                 _masked, _mbox, _mstats = mask_person_in_parkour_depth(
                                     _depth_hw, person_bbox,
-                                    fill_mode=str(args.parkour_mask_fill))
+                                    fill_mode=_fill_mode)
                                 if _mbox is not None:
                                     if _parkour_depth_step % 50 == 0:
                                         cx1, cy1, cx2, cy2 = _mbox

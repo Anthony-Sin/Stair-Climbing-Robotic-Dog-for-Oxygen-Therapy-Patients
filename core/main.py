@@ -371,6 +371,33 @@ def _apply_follow_standoff_policy(
         debug_info["follow_standoff_gate_active"] = False
         return float(trans_x_cmd)
 
+    # 0. Gap smoothing (CRITICAL). depth_distance_m is bimodal-noisy: single-frame jumps of
+    #    ~0.4<->1.0<->2.0<->0.0 m are routine even at rest. We threshold the gap for BOTH the
+    #    too-close stance-lock (downstream) AND the catch-up command (below), so a single spurious
+    #    reading would either freeze the creep (-> gap opens -> catch-up -> a ~2 m/s run that
+    #    overshoots to within ~0.5 m of the patient) or fire a phantom catch-up directly. Median-
+    #    filter the last few VALID readings (0 / None = "no lock", not a distance) and make every
+    #    go/hold/catch-up decision on the smoothed value. Until the filter has >=3 samples we do
+    #    NOT make the aggressive (freeze / catch-up) calls -- the startup depth transient is exactly
+    #    when the noise is worst and the robot is settling from the drop.
+    gap_hist = state.setdefault("gap_hist", [])
+    if float(gap_m) > 1e-3:
+        gap_hist.append(float(gap_m))
+        if len(gap_hist) > 5:
+            del gap_hist[0]
+    gap_ctrl = float(np.median(gap_hist)) if len(gap_hist) >= 3 else None
+    debug_info["standoff_gap_raw_m"] = float(gap_m)
+    debug_info["standoff_gap_ctrl_m"] = gap_ctrl
+
+    # Settle grace: for the first follow_settle_grace_sec of following, do NOT let the too-close
+    # stance-lock fire (flag consumed in the main loop). Startup depth/detection reads a sustained
+    # close gap that the median can't reject; freezing then opens the gap and forces a catch-up run.
+    _now = time.perf_counter()
+    if "first_ctrl_ts" not in state:
+        state["first_ctrl_ts"] = _now
+    warmup_active = (_now - state["first_ctrl_ts"]) < float(getattr(args, "follow_settle_grace_sec", 2.0))
+    debug_info["standoff_warmup_active"] = bool(warmup_active)
+
     # 1. Standoff calculation (speed adaptive). leader_speed_mps is depth-derived and spikes to
     #    absurd values when the gap reading jumps (observed up to ~40 m/s on lock flicker), so clamp
     #    it to a sane walking range before it widens the standoff -- otherwise a single bad frame
@@ -378,24 +405,29 @@ def _apply_follow_standoff_policy(
     leader_speed_clamped = float(np.clip(float(leader_speed_mps), 0.0, 1.0))
     standoff = args.target_distance + args.follow_standoff_speed_gain * leader_speed_clamped
     standoff = min(1.5, standoff)
-    
-    # 2. Hysteretic Go/Hold decision bounds
+
+    # 2. Hysteretic Go/Hold decision bounds -- on the SMOOTHED gap. Until the filter is warm
+    #    (gap_ctrl is None) leave go_state on its current (hysteretic) value rather than reacting to
+    #    a raw startup spike.
     lower_bound = standoff + args.follow_standoff_band_in
     upper_bound = standoff + args.follow_standoff_band_out
-    
-    if gap_m < lower_bound:
-        state["go_state"] = False
-    elif gap_m > upper_bound:
-        state["go_state"] = True
-        
+
+    if gap_ctrl is not None:
+        if gap_ctrl < lower_bound:
+            state["go_state"] = False
+        elif gap_ctrl > upper_bound:
+            state["go_state"] = True
+
     # 3. Gait gate override: hold when a stopped patient is at/near standoff, but
-    #    never suppress approach when the gap is well past the GO threshold.
-    if args.follow_gait_gate and not is_walking and gap_m <= upper_bound:
+    #    never suppress approach when the gap is well past the GO threshold. (is_walking is noisy in
+    #    sim, but with the lean-on-creep gate a spurious hold here only toggles creep<->creep -- the
+    #    actual stance-lock is the too-close gap decision in the main loop, not go_state.)
+    if args.follow_gait_gate and not is_walking and gap_ctrl is not None and gap_ctrl <= upper_bound:
         state["go_state"] = False
         debug_info["follow_gait_gate_triggered"] = True
     else:
         debug_info["follow_gait_gate_triggered"] = False
-    debug_info["follow_gait_gate_far_override"] = bool(gap_m > upper_bound)
+    debug_info["follow_gait_gate_far_override"] = bool(gap_ctrl is not None and gap_ctrl > upper_bound)
         
     original_cmd = float(trans_x_cmd)
     
@@ -421,8 +453,9 @@ def _apply_follow_standoff_policy(
     state["last_time"] = time.perf_counter()
     state["pace_timer"] = 0.0
 
-    if state["go_state"] and gap_m > args.follow_pace_distance:
-        # Catch-up: leader far ahead -> command the floor so the policy actually moves.
+    if state["go_state"] and gap_ctrl is not None and gap_ctrl > args.follow_pace_distance:
+        # Catch-up: leader GENUINELY far ahead (on the smoothed gap, not a single noisy spike) ->
+        # command the floor so the policy actually moves.
         state["pace_state"] = "advance"
         trans_x_cmd = max(float(trans_x_cmd), float(args.follow_pace_floor_speed))
         pace_cap_active = True
@@ -893,6 +926,12 @@ def main():
     stop_ramp_vx = 0.0
     stop_ramp_active = False
     stop_ramp_last_ts = time.perf_counter()
+    # On-stairs latch: the LAST time we saw stairs (detected or actively climbing). When the person
+    # lock drops mid-climb, stairs_detected flips False even though the robot is still physically on
+    # the incline; without this latch the hold logic then treats it as flat ground and stance-locks,
+    # which topples it on the slope (the stair fall). We keep treating it as on-stairs for a grace
+    # window after the last on-stairs frame so the gait stays alive (committed climb) instead.
+    last_on_stairs_ts = 0.0
     # Method 1 carrot / virtual-target steering (opt-in via --carrot-follow). Body-frame breadcrumb
     # FIFO of the person; steering aims one standoff behind the newest sample. See _update_carrot_heading.
     carrot_trail: List[List[float]] = []
@@ -1380,13 +1419,17 @@ def main():
             # stopped and the creep closed the gap. Braking from creep speed (~0.5) sits inside the
             # policy hold's safe regime; we never stance-lock at the ~1.2 m/s run speed (the
             # nose-dive) nor freeze the creep at a healthy gap (the freeze->run->overshoot chain).
+            # Use the SMOOTHED control gap (median-filtered in _apply_follow_standoff_policy), never
+            # the raw depth_distance_m -- a single noisy close reading must not slam the stance-lock
+            # on (that froze the creep, opened the gap, and set up the run that overshot to ~0.5 m).
             _lower_bound = debug_info.get("standoff_lower_bound_m")
-            _gap_for_hold = debug_info.get("depth_distance_m")
+            _gap_for_hold = debug_info.get("standoff_gap_ctrl_m")
             too_close = (
                 _lower_bound is not None
                 and _gap_for_hold is not None
                 and float(_gap_for_hold) > 1e-3
                 and float(_gap_for_hold) < float(_lower_bound)
+                and not bool(debug_info.get("standoff_warmup_active", False))
             )
             stop_decision = (not motion_allowed) or bool(too_close)
             hold_request = bool(stop_decision)  # provisional; finalized in the motion block
@@ -1397,6 +1440,18 @@ def main():
             debug_info["live_motion_allowed"] = bool(live_motion_allowed)
             debug_info["recovery_motion_allowed"] = bool(recovery_motion_allowed)
             debug_info["stair_floor_motion_allowed"] = bool(stair_floor_motion_allowed)
+
+            # On-stairs latch (computed for BOTH the motion block and the stop path). A person-lock
+            # loss mid-climb sets motion_allowed False AND drops stairs_detected, so the code would
+            # fall to controller.stop() and stance-lock the robot on the incline -> topple. Keep
+            # treating it as on-stairs for a grace window after the last on-stairs frame so neither
+            # path stance-locks on the slope; the committed climb keeps the gait alive instead.
+            _stairs_instant = bool(debug_info.get("stairs_action_active", False)) or bool(stairs_detected)
+            if _stairs_instant:
+                last_on_stairs_ts = current_time
+            _stairs_recent = (current_time - last_on_stairs_ts) < float(args.stair_hold_suppress_sec)
+            _stairs_now = _stairs_instant or _stairs_recent
+            debug_info["stairs_hold_suppress_latched"] = bool(_stairs_recent and not _stairs_instant)
 
             controller = robot_controller
             if motion_allowed and controller is not None:
@@ -1415,7 +1470,6 @@ def main():
                 # continuous committed motion (user choice) and must never be stance-locked mid-step,
                 # so the ramp is disabled there and hold stays False (the stair forward floor and the
                 # policy's own on-stair handling own vx).
-                _stairs_now = bool(debug_info.get("stairs_action_active", False)) or bool(stairs_detected)
                 ramp_dt = max(0.0, current_time - stop_ramp_last_ts)
                 stop_ramp_last_ts = current_time
                 if _stairs_now:
@@ -1547,6 +1601,38 @@ def main():
                 )
                 last_command_trans_x = float(command_trans_x)
                 last_command_rotation = float(command_rotation)
+            elif controller is not None and controller.is_ready() and _stairs_now:
+                # Person lock lost (motion not allowed) while on / just-off the stairs. controller.stop()
+                # would send hold=True and stance-lock the robot on the incline -> topple (the stair
+                # fall). Instead keep the gait alive with hold=False and vx=0: the policy keeps
+                # stepping (no stance-blend, so no nose-dive) and settles to a low but STABLE crouch on
+                # the slope rather than tumbling. NOTE (verified run_sim_20260619_032327): a forward
+                # floor here instead of vx=0 makes the policy OVER-RUN on the stairs (body_vx->1.8) and
+                # fall, so the committed climb must NOT command forward -- vx=0 is the stable choice.
+                # The robot cannot finish the climb blind (it has lost the patient's depth/heading
+                # reference); completing the stair climb requires keeping the person lock, which is a
+                # perception problem, not a command-shaping one.
+                controller.move(
+                    0.0, 0.0, 0.0,
+                    stairs_detected=True,
+                    yaw_err=0.0,
+                    person_bbox=None,
+                    stairs_action_active=True,
+                    hold=False,
+                    person_detected=False,
+                    gap_m=None,
+                )
+                trans_x_limiter.reset(0.0)
+                rotation_limiter.reset(0.0)
+                yaw_err_limiter.reset(0.0)
+                debug_info["command_trans_x_limited"] = 0.0
+                debug_info["command_rotation_limited"] = 0.0
+                debug_info["stairs_committed_climb_on_loss"] = True
+                last_command_trans_x = 0.0
+                last_command_rotation = 0.0
+                stop_ramp_active = False
+                stop_ramp_vx = 0.0
+                stop_ramp_last_ts = current_time
             elif controller is not None and controller.is_ready():
                 controller.stop()
                 trans_x_limiter.reset(0.0)
@@ -1554,6 +1640,7 @@ def main():
                 yaw_err_limiter.reset(0.0)
                 debug_info["command_trans_x_limited"] = 0.0
                 debug_info["command_rotation_limited"] = 0.0
+                debug_info["stairs_committed_climb_on_loss"] = False
                 last_command_trans_x = 0.0
                 last_command_rotation = 0.0
                 # controller.stop() sends vx=0, hold=True directly; the policy's two-regime hold
