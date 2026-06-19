@@ -371,8 +371,12 @@ def _apply_follow_standoff_policy(
         debug_info["follow_standoff_gate_active"] = False
         return float(trans_x_cmd)
 
-    # 1. Standoff calculation (speed adaptive)
-    standoff = args.target_distance + args.follow_standoff_speed_gain * leader_speed_mps
+    # 1. Standoff calculation (speed adaptive). leader_speed_mps is depth-derived and spikes to
+    #    absurd values when the gap reading jumps (observed up to ~40 m/s on lock flicker), so clamp
+    #    it to a sane walking range before it widens the standoff -- otherwise a single bad frame
+    #    pins the standoff at its cap and jolts the go/hold decision.
+    leader_speed_clamped = float(np.clip(float(leader_speed_mps), 0.0, 1.0))
+    standoff = args.target_distance + args.follow_standoff_speed_gain * leader_speed_clamped
     standoff = min(1.5, standoff)
     
     # 2. Hysteretic Go/Hold decision bounds
@@ -399,52 +403,34 @@ def _apply_follow_standoff_policy(
     if not state["go_state"]:
         trans_x_cmd = 0.0
         
-    # 4. Pacing on vx. The frozen parkour policy cannot burst gently -- it has no trained
-    #    behaviour below ~0.2 m/s (lin_vel_clip) and over-runs slow commands -- so we shape the
-    #    AVERAGE forward speed by duty-cycling between a floor-speed burst and a hold. Three regimes:
-    #      * far  (gap > follow_pace_distance): continuous advance to catch up (no settle phase),
-    #        so a leader who walks away is never lost to the duty cycle's idle fraction.
-    #      * near (go_state True, gap <= follow_pace_distance): burst/settle duty cycle so the
-    #        time-AVERAGE sits BELOW the floor and tracks a slow leader without creeping in.
-    #      * hold (go_state False): pacing reset; trans_x_cmd is already zero from the go_state gate.
+    # 4. Pacing on vx -- LEAN ON THE FLOOR-CREEP (do NOT command catch-up bursts in normal follow).
+    #    Verified from the fall-diag logs: with vx=0 and no stance-lock the frozen policy still
+    #    FLOOR-CREEPS forward at ~0.5 m/s, which already matches the ~0.5 m/s patient. But ANY
+    #    commanded forward advance gets over-run by the policy into a ~1.2 m/s "run" that overshoots
+    #    the person, loses the lock at close range, and falls. So:
+    #      * catch-up (go_state True, gap > follow_pace_distance): the leader has genuinely walked
+    #        far ahead -- command at least the floor to close the gap. The brief run happens in open
+    #        space (no overlap risk) and the stop-ramp bleeds it as the gap closes back in.
+    #      * follow (go_state True, gap <= follow_pace_distance): command ZERO and let the intrinsic
+    #        creep hold the gap (heading still steers toward the person). No burst -> no run.
+    #      * hold (go_state False): command zero. Whether this becomes a stance-lock is decided
+    #        downstream by the GAP (too-close), NOT here -- see hold gating in the main loop.
     pace_cap_active = False
     pace_hold_active = False
 
-    current_time = time.perf_counter()
-    dt = current_time - state.get("last_time", current_time)
-    state["last_time"] = current_time
-
-    # Burst at the real policy floor; follow_pace_speed only raises it (a faster burst), never
-    # below the floor where the command is meaningless.
-    burst_speed = max(float(args.follow_pace_floor_speed), float(args.follow_pace_speed))
+    state["last_time"] = time.perf_counter()
+    state["pace_timer"] = 0.0
 
     if state["go_state"] and gap_m > args.follow_pace_distance:
-        # Far: catch up continuously. Let cruise through but guarantee at least the floor so the
-        # command actually produces motion.
+        # Catch-up: leader far ahead -> command the floor so the policy actually moves.
         state["pace_state"] = "advance"
-        state["pace_timer"] = 0.0
         trans_x_cmd = max(float(trans_x_cmd), float(args.follow_pace_floor_speed))
-        pace_cap_active = False
-    elif state["go_state"]:
-        # Near steady-state: duty-cycle the floor burst.
-        timer = state.get("pace_timer", 0.0) + dt
-        cycle_time = args.follow_pace_advance_time + args.follow_pace_settle_time
-        cycle_timer = (timer % cycle_time) if cycle_time > 0.0 else 0.0
-
-        if cycle_timer < args.follow_pace_advance_time:
-            state["pace_state"] = "advance"
-            trans_x_cmd = burst_speed
-            pace_cap_active = True
-        else:
-            state["pace_state"] = "settle"
-            trans_x_cmd = 0.0
-            pace_hold_active = True
-
-        state["pace_timer"] = timer
+        pace_cap_active = True
     else:
-        # Reset pacing when holding (too close); trans_x_cmd already zeroed by the go_state gate.
-        state["pace_state"] = "advance"
-        state["pace_timer"] = 0.0
+        # Normal following (or hold): lean on the ~0.5 m/s creep; never command forward, which
+        # would over-run into a run. trans_x_cmd is already zero in the hold case (go_state gate).
+        state["pace_state"] = "creep"
+        trans_x_cmd = 0.0
         
     # Populate debug info
     debug_info["fused_gap_m"] = float(gap_m)
@@ -1384,16 +1370,27 @@ def main():
             motion_allowed = (
                 live_motion_allowed or recovery_motion_allowed or stair_floor_motion_allowed
             )
-            # A "stop decision" means the follow logic wants the robot to come to rest: person
-            # lost / not ready, a standoff hold, or a pace settle. Whether that becomes an
-            # immediate stance-lock (hold=True) is finalized AFTER the stop ramp inside the motion
-            # block below (Method 3 Half B), so the gait can stay alive while the command bleeds out.
-            stop_decision = (
-                not motion_allowed
-                or not standoff_state.get("go_state", True)
-                or standoff_state.get("pace_state") == "settle"
+            # Hold (stance-lock) gating -- LEAN-ON-CREEP. The frozen policy floor-creeps forward
+            # (~0.5 m/s) even at vx=0, and we USE that creep to follow the patient, so a stance-lock
+            # exists ONLY to prevent OVERLAP -- never to "stop at standoff" (that froze the creep,
+            # opened the gap, and forced the catch-up run that overshot and fell). A stop is decided
+            # by the GAP, not by go_state/pace: assert hold only when (a) motion isn't allowed
+            # (person lost / not ready -- the controller.stop path arrests it gently), or (b) the
+            # robot has drifted TOO CLOSE (gap below the standoff lower bound), e.g. the patient
+            # stopped and the creep closed the gap. Braking from creep speed (~0.5) sits inside the
+            # policy hold's safe regime; we never stance-lock at the ~1.2 m/s run speed (the
+            # nose-dive) nor freeze the creep at a healthy gap (the freeze->run->overshoot chain).
+            _lower_bound = debug_info.get("standoff_lower_bound_m")
+            _gap_for_hold = debug_info.get("depth_distance_m")
+            too_close = (
+                _lower_bound is not None
+                and _gap_for_hold is not None
+                and float(_gap_for_hold) > 1e-3
+                and float(_gap_for_hold) < float(_lower_bound)
             )
+            stop_decision = (not motion_allowed) or bool(too_close)
             hold_request = bool(stop_decision)  # provisional; finalized in the motion block
+            debug_info["too_close_hold"] = bool(too_close)
             debug_info["motion_allowed"] = bool(motion_allowed)
             debug_info["stop_decision"] = bool(stop_decision)
             debug_info["hold_request"] = bool(hold_request)

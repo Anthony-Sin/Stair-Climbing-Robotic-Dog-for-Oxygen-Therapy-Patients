@@ -1350,11 +1350,14 @@ if ($NoDockerRun) {
         "--trans-x-alpha 0.65",
         "--kp 2.0",
         "--kd 0.0",
-        # follow-pace-distance small so the standoff controller stays in its FAR regime =
-        # CONTINUOUS gentle follow (advance toward the person at the policy floor, then HOLD in the
-        # standoff band) with no jarring advance/settle duty-cycle stutter. Collision margin comes
-        # from the larger --target-distance + the speed governor, not from a low duty-cycle average.
-        "--follow-pace-distance 0.5",
+        # follow-pace-distance is now the "fell genuinely behind -> catch up" threshold and MUST sit
+        # ABOVE the 1.0 m standoff. LEAN-ON-CREEP strategy: in normal following the controller
+        # commands vx=0 and rides the policy's intrinsic ~0.5 m/s floor-creep (which matches the
+        # patient) -- commanding forward over-runs into a ~1.2 m/s run that overshoots and falls.
+        # Only when the leader has walked >1.8 m ahead do we command the floor to close the gap (a
+        # brief run in open space, with no overlap risk); below it, creep holds the gap. (Was 0.5,
+        # which put EVERY frame in the catch-up regime and drove the run.)
+        "--follow-pace-distance 1.8",
         "--ecs-log-dir /workspace/run_logs/debug/ecs",
         "--debug-trace-dir /workspace/run_logs/debug/debug_trace",
         # Write the OpenCV preview straight into videos/ (no preview-save-dir, which

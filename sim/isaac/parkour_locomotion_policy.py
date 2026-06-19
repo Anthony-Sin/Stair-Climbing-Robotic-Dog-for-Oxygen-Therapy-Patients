@@ -143,6 +143,10 @@ class ParkourPolicyConfig:
     hold_decel_sec: float = 0.7
     hold_moving_max: float = 0.6
     hold_release_tilt_rad: float = 0.14
+    # The stance-blend can only safely brake a SLOW body. Above this speed the blend would nose-dive
+    # the robot before the tilt release catches it, so the hold does not engage at all -- the policy
+    # keeps trotting (stable, self-righting) to follow, instead of face-planting trying to stop.
+    hold_engage_max_speed: float = 0.7
 
 
 
@@ -563,27 +567,26 @@ class ParkourLocomotionPolicy:
         # longer used here -- the moving regime now ramps to a full lock, just slower.)
         tilt = max(abs(float(getattr(self, "_last_pitch", 0.0))),
                    abs(float(getattr(self, "_last_roll", 0.0))))
+        est = getattr(self, "_last_est_state", None)
+        est_speed = math.hypot(float(est[0]), float(est[1])) if est is not None else 0.0
+        spd = float(body_speed) if body_speed is not None else est_speed
+        gentle_rate = 1.0 / max(1e-4, float(cfg.hold_decel_sec))
         hold_released = False
-        if hold:
-            est = getattr(self, "_last_est_state", None)
-            est_speed = math.hypot(float(est[0]), float(est[1])) if est is not None else 0.0
-            spd = float(body_speed) if body_speed is not None else est_speed
-            if tilt >= float(cfg.hold_release_tilt_rad):
-                # The blend-to-stance is tipping the body over (it can no longer step-catch with
-                # near-frozen legs). ABORT the hold and hand the action back to the gait fast so the
-                # parkour policy can plant a foot and recover; never keep blending into a nose-dive.
-                self.hold_strength = max(0.0, self.hold_strength - ramp_rate * step_dt)
-                hold_released = True
-            elif spd <= float(cfg.hold_speed_threshold):
-                # At rest and level: safe to snap to a full lock.
-                self.hold_strength = min(1.0, self.hold_strength + ramp_rate * step_dt)
-            else:
-                # Moving but still level: ramp toward a full lock gently so the body decelerates as
-                # the blend strengthens. The tilt release above bounds the pitch if it starts to tip.
-                gentle_rate = 1.0 / max(1e-4, float(cfg.hold_decel_sec))
-                self.hold_strength = min(1.0, self.hold_strength + gentle_rate * step_dt)
+        if (hold
+                and tilt < float(cfg.hold_release_tilt_rad)
+                and spd <= float(cfg.hold_engage_max_speed)):
+            # Safe to brake: the body is slow enough that blending to stance will not pitch it over,
+            # and it is level. Snap fast when nearly stopped, ramp gently otherwise.
+            rate = ramp_rate if spd <= float(cfg.hold_speed_threshold) else gentle_rate
+            self.hold_strength = min(1.0, self.hold_strength + rate * step_dt)
         else:
+            # No hold, OR the body is moving too fast to brake without nose-diving, OR it is already
+            # tilting. RELEASE the hold and let the walking gait run: a trotting parkour gait is
+            # stable and self-rights -- it is the static-stance blend AT SPEED that face-plants the
+            # robot. Following (trotting to maintain the gap) is safer than stopping from speed.
             self.hold_strength = max(0.0, self.hold_strength - ramp_rate * step_dt)
+            hold_released = bool(hold and (tilt >= float(cfg.hold_release_tilt_rad)
+                                           or spd > float(cfg.hold_engage_max_speed)))
         self._hold_released = hold_released
         action_np = action_np * (1.0 - self.hold_strength)
 

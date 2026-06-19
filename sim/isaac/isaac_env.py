@@ -259,6 +259,12 @@ parser.add_argument("--hold-release-tilt-rad", type=float, default=0.14,
                          "step-catch instead of nose-diving over its planted feet. ~0.14 rad = 8 deg "
                          "(above normal walk tilt ~5-6 deg). Lower = aborts earlier/safer; too low "
                          "trips on normal gait wobble and the robot never locks.")
+parser.add_argument("--hold-engage-max-speed", type=float, default=0.7,
+                    help="Max body speed (m/s) at which a commanded hold may engage the stance "
+                         "blend. Above this the hold does NOT engage -- blending to stance at speed "
+                         "nose-dives the robot before the tilt release catches it, so instead the "
+                         "policy keeps TROTTING (stable, self-righting) to maintain the follow gap. "
+                         "The brake only takes hold once the body has slowed below this.")
 
 parser.add_argument("--sim2real-validation-cam", dest="sim2real_validation_cam", action="store_true", default=False,
                     help="REAL-SIMULATED ENV preset: validate the whole stack against realistic "
@@ -2411,10 +2417,15 @@ def update_distractor(prim_path: str, dt: float) -> None:
 STAIR_LEAN_RAD = 0.10
 STAIR_BOB_AMP = 0.02
 
-# Patient walking pace. Matched to the robot cruise speed (trans_x_max 0.35 m/s)
-# so the follower can maintain a constant gap without accelerating to close it.
-PERSON_WALK_SPEED = 0.35   # flat ground — matches robot cruise speed
-PERSON_STAIR_SPEED = 0.25  # stairs (slow; robot in parkour mode handles it)
+# Patient walking pace. Matched to the frozen parkour policy's REAL motion floor (~0.5 m/s),
+# NOT the nominal command cap (trans_x_max 0.35): the policy ignores small commands and floors at
+# ~0.5 m/s when it walks, so a 0.30-0.35 m/s patient is slower than the robot's slowest trot and
+# the follower is forced into stop-and-go (the stops are what destabilised it). At ~0.5 m/s the
+# patient and the robot's natural trot match, so the dog follows CONTINUOUSLY and holds the gap.
+# 0.5 m/s (~1.1 mph) is still a realistic slow ambulatory-elderly pace. (Measurement note: Isaac
+# runs ~7x slower than real-time, so wall-clock person speed reads ~7x low -- compare in SIM time.)
+PERSON_WALK_SPEED = 0.5    # flat ground — matches the robot's ~0.5 m/s trot floor
+PERSON_STAIR_SPEED = 0.4   # stairs (slower climb, but still near the robot's on-stair floor)
 
 
 def update_person_patrol(person, dt: float) -> None:
@@ -3396,6 +3407,7 @@ def _create_locomotion_policy(go2):
         hold_decel_sec=float(args.hold_decel_sec),
         hold_moving_max=float(args.hold_moving_max),
         hold_release_tilt_rad=float(args.hold_release_tilt_rad),
+        hold_engage_max_speed=float(args.hold_engage_max_speed),
     )
     # Domain-randomization PD-gain perturbation around the nominal kp=40/kd=1.
     config.kp *= float(_DR.get("kp_mult", 1.0))
@@ -3419,6 +3431,7 @@ def _create_locomotion_policy(go2):
         hold_decel_sec=round(float(config.hold_decel_sec), 3),
         hold_moving_max=round(float(config.hold_moving_max), 3),
         hold_release_tilt_rad=round(float(config.hold_release_tilt_rad), 3),
+        hold_engage_max_speed=round(float(config.hold_engage_max_speed), 3),
     )
     return policy
 

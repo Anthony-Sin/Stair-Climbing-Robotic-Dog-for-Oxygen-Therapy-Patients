@@ -159,20 +159,23 @@ class TestFollowStandoff(unittest.TestCase):
         self.assertEqual(cmd, 0.0)
         self.assertFalse(state["go_state"])
         
-        # Move to 1.2m (above standoff 1.0 + band_out 0.15 = 1.15m -> should become GO)
+        # Move to 1.2m (above standoff 1.0 + band_out 0.15 = 1.15m -> should become GO).
+        # LEAN-ON-CREEP: GO no longer passes the command through. The gap (1.2) is still inside
+        # follow_pace_distance (2.0), so we lean on the policy's floor-creep and command ZERO.
         cmd = _apply_follow_standoff_policy(
             args, trans_x_cmd=0.5, gap_m=1.2, leader_speed_mps=0.0,
             is_walking=True, debug_info=debug_info, state=state
         )
-        self.assertEqual(cmd, 0.5)
+        self.assertEqual(cmd, 0.0)
         self.assertTrue(state["go_state"])
-        
-        # Move back to 1.0m (inside hysteresis band, should remain in GO)
+        self.assertEqual(debug_info["pace_state"], "creep")
+
+        # Move back to 1.0m (inside hysteresis band, should remain in GO); still creep -> cmd 0.
         cmd = _apply_follow_standoff_policy(
             args, trans_x_cmd=0.5, gap_m=1.0, leader_speed_mps=0.0,
             is_walking=True, debug_info=debug_info, state=state
         )
-        self.assertEqual(cmd, 0.5)
+        self.assertEqual(cmd, 0.0)
         self.assertTrue(state["go_state"])
 
         # Test Gait Gate Override: is_walking becomes False -> should force HOLD
@@ -207,37 +210,48 @@ class TestFollowStandoff(unittest.TestCase):
         self.assertGreaterEqual(cmd, args.follow_pace_floor_speed)
         self.assertEqual(cmd, 0.8)
 
-    def test_near_regime_duty_cycle(self):
-        # NEAR (go_state True, gap <= follow_pace_distance): burst at the policy FLOOR then settle
-        # to zero, so the time-average forward speed can sit below the floor and track a slow leader.
+    def test_near_regime_creep(self):
+        # NEAR (go_state True, gap <= follow_pace_distance): LEAN ON THE CREEP. The frozen policy
+        # floor-creeps at ~0.5 m/s with vx=0, matching a slow leader, so we command ZERO instead of
+        # bursting -- any commanded advance is over-run into a ~1.2 m/s run that overshoots and falls.
         args = MockArgs()
         debug_info = {}
         state = {
             "go_state": True,  # force GO
-            "pace_state": "advance",
+            "pace_state": "creep",
             "pace_timer": 0.0,
             "last_time": time.perf_counter(),
         }
-        # Advance phase (first follow_pace_advance_time seconds of the cycle); ~1s elapsed.
-        state["last_time"] = time.perf_counter() - 1.0
         cmd = _apply_follow_standoff_policy(
             args, trans_x_cmd=0.8, gap_m=1.1, leader_speed_mps=0.0,
             is_walking=True, debug_info=debug_info, state=state
         )
-        self.assertEqual(debug_info["pace_state"], "advance")
-        self.assertTrue(debug_info["pace_cap_active"])
-        # Burst is at the real floor (max of floor and pace_speed), NOT the sub-floor pace_speed.
-        self.assertEqual(cmd, max(args.follow_pace_floor_speed, args.follow_pace_speed))
+        self.assertEqual(debug_info["pace_state"], "creep")
+        self.assertFalse(debug_info["pace_cap_active"])
+        self.assertFalse(debug_info["pace_hold_active"])
+        self.assertEqual(cmd, 0.0)  # no forward command; the creep does the following
 
-        # Settle phase (cumulative time past the advance window: ~2.5s into a 3.5s cycle).
-        state["last_time"] = time.perf_counter() - 1.5
+        # Still creep a frame later (no duty-cycle phases anymore).
         cmd = _apply_follow_standoff_policy(
             args, trans_x_cmd=0.8, gap_m=1.1, leader_speed_mps=0.0,
             is_walking=True, debug_info=debug_info, state=state
         )
-        self.assertEqual(debug_info["pace_state"], "settle")
-        self.assertTrue(debug_info["pace_hold_active"])
-        self.assertEqual(cmd, 0.0)  # settle forces 0 speed
+        self.assertEqual(debug_info["pace_state"], "creep")
+        self.assertEqual(cmd, 0.0)
+
+    def test_garbage_leader_speed_clamped(self):
+        # leader_speed_mps is depth-derived and can spike to absurd values (observed ~40 m/s on a
+        # lock flicker). It must be clamped before widening the standoff, else one bad frame pins the
+        # standoff at its 1.5 m cap. Feed a 42 m/s leader speed at a far gap and confirm the standoff
+        # (target 1.0 + gain 0.4 * clamp(42 -> 1.0) = 1.4) is bounded, not blown out.
+        args = MockArgs()
+        debug_info = {}
+        state = {"go_state": True, "pace_state": "creep", "pace_timer": 0.0, "last_time": time.perf_counter()}
+        _apply_follow_standoff_policy(
+            args, trans_x_cmd=0.0, gap_m=3.0, leader_speed_mps=42.9,
+            is_walking=True, debug_info=debug_info, state=state
+        )
+        self.assertAlmostEqual(debug_info["standoff_target_m"], 1.4, places=3)
 
     def test_no_movement_when_person_not_detected(self):
         # We simulate the command flow from main.py when person_detected is False.
