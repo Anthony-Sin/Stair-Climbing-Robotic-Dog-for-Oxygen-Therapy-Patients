@@ -362,6 +362,53 @@ def parse_args():
     parser.add_argument('--stair-square-up-max', type=float, default=0.4,
                         help='Cap (rad) on the --stair-square-up heading command, so approach alignment '
                              'stays gentle and never snaps the body toward the stairs.')
+    # --- Committed straight-up stair climb (the climb method) -------------------
+    # Follow control (standoff / gait gate / person-lock loss) keeps collapsing the
+    # forward drive to ~0 at the first riser, so the policy never gets a stable
+    # climb-gait + forward drive and stubs the step instead of stepping up. Once the
+    # dog reaches a CONFIRMED staircase, COMMIT: drive a steady forward speed straight
+    # up with climb-gait engaged, bypassing those gates, until a max window. The
+    # patient climbs AHEAD so straight-up == following; the standoff resumes on the top.
+    parser.add_argument('--stair-climb-commit', dest='stair_climb_commit', action='store_true',
+                        default=False,
+                        help='Enable the committed straight-up stair climb (default OFF). Once the dog '
+                             'reaches a confirmed staircase within --stair-climb-commit-distance it drives '
+                             'a steady forward speed straight up (climb-gait forced, follow gates bypassed) '
+                             'until --stair-climb-max-sec elapses. DEFAULT OFF: its forced drive either '
+                             'over-charges the riser (body_vx~1.4 -> face-plant) or stalls; the gentler '
+                             'follow-up-stairs drive + the climb latch (--stair-climb-latch) climb better.')
+    parser.add_argument('--no-stair-climb-commit', dest='stair_climb_commit', action='store_false',
+                        help='Disable the committed straight-up stair climb (default).')
+    parser.add_argument('--stair-climb-latch', dest='stair_climb_latch', action='store_true',
+                        default=False,
+                        help='Hold the policy in climb-gait (stairs_active=True -> depth self-steer) for '
+                             '--stair-climb-max-sec after the dog first reaches a confirmed staircase. '
+                             'DEFAULT OFF: forcing depth self-steer through the climb made the dog STALL '
+                             'earlier (~step 1-3) than letting hybrid use person-bearing steering toward the '
+                             'patient climbing ahead, which aims the dog UP the stairs and climbed further '
+                             '(~step 5, run_sim_20260619_052408). Enable only if mid-climb yaw drift recurs.')
+    parser.add_argument('--no-stair-climb-latch', dest='stair_climb_latch', action='store_false',
+                        help='Disable the climb-gait latch (revert to detection-gated stairs_active).')
+    parser.add_argument('--stair-climb-commit-distance', type=float, default=1.0,
+                        help='Stair depth (m) at/under which the committed climb engages (robot has reached '
+                             'the staircase). Should be <= --stair-near-distance.')
+    parser.add_argument('--stair-climb-max-sec', type=float, default=12.0,
+                        help='Max duration (s) of one committed climb before releasing back to follow. '
+                             'Sized to cover the full staircase; the climb releases earlier if the dog '
+                             'clears the stairs (sustained flat/no-near-stair).')
+    parser.add_argument('--stair-climb-speed', type=float, default=0.16,
+                        help='Steady forward command (m/s) during the committed climb. The frozen policy '
+                             'over-runs this ~4x (to ~0.6 m/s body speed) -- enough to step UP each riser. '
+                             'Kept LOW (~the 0.158 stair floor): with the on-stairs action cap removed the '
+                             'policy charges hard, and 0.30 over-charged to body_vx~1.0 and BEACHED on the '
+                             'first step (run_sim_20260619_053024). 0.16 gives the gentle, sustained climb '
+                             'that cleared steps 1-5 (run_sim_20260619_052408) while the committed climb '
+                             'latches stairs_active + depth self-steer through the whole ascent.')
+    parser.add_argument('--stair-climb-collision-floor', type=float, default=0.55,
+                        help='Hard collision floor (m) during the committed climb: if the smoothed gap to '
+                             'the patient drops below this, zero the forward drive (no stance-lock) so the '
+                             'dog never climbs into the person. Below the normal standoff so it only fires '
+                             'on a genuine imminent contact, not the cruise gap.')
     parser.add_argument('--raw-video-path', type=str, default='',
                         help='MP4 path for raw camera frame recording (no overlays); empty disables')
     parser.add_argument('--no-raw-video', action='store_true',
@@ -426,6 +473,10 @@ def parse_args():
     args.parkour_yaw_slew_rad_s = max(0.0, float(args.parkour_yaw_slew_rad_s))
     args.stair_square_up_gain = max(0.0, float(args.stair_square_up_gain))
     args.stair_square_up_max = max(0.0, float(args.stair_square_up_max))
+    args.stair_climb_commit_distance = max(0.0, float(args.stair_climb_commit_distance))
+    args.stair_climb_max_sec = max(0.0, float(args.stair_climb_max_sec))
+    args.stair_climb_speed = max(0.0, float(args.stair_climb_speed))
+    args.stair_climb_collision_floor = max(0.0, float(args.stair_climb_collision_floor))
     args.obstacle_stop_distance = max(0.0, float(args.obstacle_stop_distance))
     args.obstacle_slow_distance = max(args.obstacle_stop_distance, float(args.obstacle_slow_distance))
     args.obstacle_target_clearance = max(0.0, float(args.obstacle_target_clearance))

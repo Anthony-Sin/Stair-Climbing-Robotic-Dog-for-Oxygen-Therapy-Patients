@@ -23,8 +23,19 @@ param(
     [int]$KeepRunLogs = 1,
     [int]$MaxRunTimeSec = 900,
     [string]$ParkourHeadingMode = "hybrid",
+    # 'terrain' (restored): the terrain-inpaint near-fill in the patient region is what
+    # TRIGGERS the policy's climb charge at the staircase -- perf history shows terrain
+    # mask + governor reached the top landing (max_x 5.61 m), while 'far' opened that
+    # region and the dog stopped climbing entirely (beach/face-plant at the first riser,
+    # runs 040900-050159). 'far' does kill the flat-ground person-ram surge, but it also
+    # kills the climb, so it is the wrong trade. The flat-approach surge is instead tamed
+    # by square-up (straight entry) + the speed governor. A/B with --parkour-mask-fill far.
+    # See [[project_parkour_stair_base_fall_mask]].
     [string]$ParkourMaskFill = "terrain",
     [switch]$StairSquareUp,
+    # Approach square-up now defaults ON (the dog was drifting to ~ -18 deg yaw / -25 deg roll
+    # and hitting the first riser crooked+rolled -> topple). Pass --no-stair-square-up to disable.
+    [switch]$NoStairSquareUp,
     [switch]$Sim2RealValidationCam,
     [switch]$SelfTestWalk,
     [double]$SelfTestVx = 0.5,
@@ -1371,8 +1382,10 @@ if ($NoDockerRun) {
     if (-not $VisionPreview) {
         $visionArgs += "--headless"
     }
-    # Experimental approach square-up (off by default; validate the mask + heading first).
-    if ($StairSquareUp) {
+    # Approach square-up: face the staircase head-on so the dog hits the first riser SQUARE
+    # instead of crabbing into it crooked+rolled (the first-step topple). Default ON; the
+    # legacy -StairSquareUp switch still forces it on, -NoStairSquareUp disables for A/B.
+    if (-not $NoStairSquareUp) {
         $visionArgs += "--stair-square-up"
     }
     $visionCommand = $visionArgs -join " "

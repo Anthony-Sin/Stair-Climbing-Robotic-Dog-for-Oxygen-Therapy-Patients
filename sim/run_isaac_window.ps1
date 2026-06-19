@@ -13,6 +13,8 @@ param(
     [double]$SelfTestSec = 15.0,
     [switch]$SelfTestNoPolicy,
     [switch]$NoParkourPersonMask,
+    # 'terrain' (restored): the near-fill triggers the policy's climb charge; 'far' killed
+    # the climb. run_sim.ps1 passes this explicitly anyway. See [[project_parkour_stair_base_fall_mask]].
     [string]$ParkourMaskFill = "terrain",
     [switch]$FinalScene,
     [switch]$NoParkourWalkMode,

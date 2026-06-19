@@ -129,6 +129,9 @@ class ParkourPolicyConfig:
     #      0.0 = disabled. Reasonable starting value: 8.0 (normal walking ~4-6, surging >10).
     speed_governor: bool = False
     speed_governor_overspeed_ratio: float = 1.8
+    # Action-norm cap (flat ground only -- DISABLED on stairs in _infer, where the large-norm
+    # action is the trained climb leg-lift and must pass; capping it makes the dog beach/face-plant
+    # at the first riser). 0.0 = disabled entirely.
     speed_governor_action_norm_max: float = 0.0
     hold_ramp_sec: float = 0.25
     hold_speed_threshold: float = 0.15
@@ -533,9 +536,15 @@ class ParkourLocomotionPolicy:
         # If the actor outputs a very large action vector (jumping/surging gait), rescale
         # it toward the cap magnitude while preserving the joint-ratio direction.
         # Normal walking is roughly norm 4–6; surging/jumping spikes above 10.
+        # DISABLED on stairs (THE key stair-climb fix): the large-norm action IS the trained climb
+        # leg-lift. The 6.0 flat-ground cap clips it so the foot stubs the riser and the dog beaches /
+        # face-plants at the first step and never gains a step (runs 040900-051643). On the stairs the
+        # policy needs its full trained action to step UP each riser -- the governor is a CALM-FLAT-
+        # GROUND limiter only. Uncapping here is what lets the dog climb (it reached ~step 5 once the
+        # cap was off, run_sim_20260619_052408). The over-run governor command-backoff still applies.
         self._governor_action_scale = 1.0
         max_norm = float(cfg.speed_governor_action_norm_max)
-        if cfg.speed_governor and max_norm > 0.0:
+        if cfg.speed_governor and max_norm > 0.0 and not stairs_active:
             norm = float(np.linalg.norm(action_np))
             if norm > max_norm:
                 scale = max_norm / norm

@@ -932,6 +932,17 @@ def main():
     # which topples it on the slope (the stair fall). We keep treating it as on-stairs for a grace
     # window after the last on-stairs frame so the gait stays alive (committed climb) instead.
     last_on_stairs_ts = 0.0
+    # Committed straight-up stair climb state (--stair-climb-commit). Once the dog reaches a
+    # confirmed staircase it commits to driving straight up (climb-gait forced, follow gates
+    # bypassed) for up to --stair-climb-max-sec, because the follow controller otherwise keeps
+    # collapsing the forward drive to ~0 at the riser and the policy stubs the step.
+    stair_climb_committed = False
+    stair_climb_commit_ts = 0.0
+    # Climb-gait latch (--stair-climb-latch). Once the dog genuinely reaches a confirmed staircase
+    # (stairs_action_active fires from real detection+depth), hold the policy in climb-gait
+    # (stairs_active=True -> depth self-steer) until this timestamp, so a mid-climb detection
+    # dropout doesn't revert hybrid heading to person-bearing steering and topple it ~step 5.
+    stair_climb_latch_until = 0.0
     # Method 1 carrot / virtual-target steering (opt-in via --carrot-follow). Body-frame breadcrumb
     # FIFO of the person; steering aims one standoff behind the newest sample. See _update_carrot_heading.
     carrot_trail: List[List[float]] = []
@@ -1453,8 +1464,117 @@ def main():
             _stairs_now = _stairs_instant or _stairs_recent
             debug_info["stairs_hold_suppress_latched"] = bool(_stairs_recent and not _stairs_instant)
 
+            # Climb-gait latch: once the dog GENUINELY reaches a confirmed staircase (real
+            # stairs_action_active, set by _apply_stair_command_policy above from detection+near
+            # depth), hold the policy in climb-gait for stair_climb_max_sec so the heading stays
+            # DEPTH SELF-STEER through the whole ascent. The mid-climb detection dropout otherwise
+            # flips hybrid back to person-bearing steering and the dog steers off-axis and topples
+            # ~step 5 (run_sim_20260619_052408). The genuine detection (read at L_stairs_instant,
+            # BEFORE any override this frame) drives the latch -- no self-refreshing loop -- and
+            # YOLO re-detecting the upper steps during the climb keeps refreshing it. Drive is
+            # unchanged (the follow/stair-floor command sustains the climb); only heading is held.
+            if bool(getattr(args, "stair_climb_latch", True)):
+                if bool(debug_info.get("stairs_action_active", False)):
+                    stair_climb_latch_until = current_time + float(args.stair_climb_max_sec)
+                if current_time < stair_climb_latch_until:
+                    debug_info["stairs_action_active"] = True
+                    debug_info["stair_climb_latched"] = True
+                else:
+                    debug_info["stair_climb_latched"] = False
+
+            # Climb-mode continuity through the CLOSE-RANGE detection dropout ONLY. At the
+            # first riser YOLO can no longer frame the staircase (it fills / drops below the
+            # RGB view), so detection flickers off ~0.8 m short of the step and the policy
+            # reverts to its FLAT-walk gait -> it does not lift onto the 0.08 m riser
+            # (run_sim_20260619_040900). Force the policy's climb-mode flag on ONLY when a
+            # confirmed staircase was recently NEAR and detection has just dropped -- i.e. the
+            # robot is AT the step. Do NOT force it during the far approach (stairs still
+            # detected): forcing it there switches the policy to depth self-steer, which gives
+            # ~0 heading correction and lets the body yaw drift/crab into a crooked, rolled
+            # step entry (run_sim_20260619_042155: yaw drifted to -18 deg, roll to -25 deg,
+            # toppled at the riser). On the far approach the person-bearing / square-up heading
+            # must stay live to keep the dog aimed straight up the stairs. Within-frame only:
+            # _apply_stair_command_policy recomputes stairs_action_active from fresh detection
+            # next frame, so last_on_stairs_ts (above) stays driven by REAL detection.
+            _stair_close_dropout = (
+                _stairs_recent and not _stairs_instant
+                and last_stairs_depth_m is not None
+                and float(last_stairs_depth_m) <= float(args.stair_near_distance)
+            )
+            if _stair_close_dropout:
+                debug_info["stairs_action_active"] = True
+            debug_info["stair_close_dropout"] = bool(_stair_close_dropout)
+            # Stair forward floor for the committed climb through the dropout. RE-ENABLED now
+            # that --parkour-mask-fill far removed the near-wall surge that previously (terrain
+            # mask, run_sim_20260619_032327) made any stair forward floor over-run to body_vx~1.8
+            # and fall. A modest floor walks the dog UP the riser instead of creeping into it.
+            _committed_stair_floor = max(0.0, min(
+                float(args.stair_forward_floor),
+                float(args.trans_x_max) * float(args.stair_speed_scale)))
+
             controller = robot_controller
-            if motion_allowed and controller is not None:
+
+            # --- Committed straight-up stair climb (the climb method) ---
+            # Engage once the dog reaches a CONFIRMED staircase (within commit distance) and stay
+            # committed for a bounded window. The follow controller (standoff / gait gate / person-
+            # lock loss) otherwise keeps collapsing the forward drive to ~0 right at the first riser,
+            # so the policy never gets a stable climb-gait + forward drive and stubs the step instead
+            # of stepping up (runs 040900/042155/043502: dog reached x~2.0 and nose-dived, never
+            # gained a step). While committed we drive a steady forward speed straight up with climb-
+            # gait forced and the follow gates bypassed; the patient climbs AHEAD so straight-up ==
+            # following, and the standoff resumes on the flat top (the window then elapses).
+            if bool(getattr(args, "stair_climb_commit", True)):
+                _near_conf_stairs = (
+                    stairs_depth_ever_confirmed
+                    and (
+                        (stairs_depth_m is not None
+                         and float(stairs_depth_m) <= float(args.stair_climb_commit_distance))
+                        or (last_stairs_depth_m is not None
+                            and float(last_stairs_depth_m) <= float(args.stair_climb_commit_distance))
+                    )
+                )
+                if stair_climb_committed and (current_time - stair_climb_commit_ts) > float(args.stair_climb_max_sec):
+                    stair_climb_committed = False  # window elapsed -> resume gated follow (standoff on the top)
+                if _near_conf_stairs and _stairs_now and not stair_climb_committed:
+                    stair_climb_committed = True
+                    stair_climb_commit_ts = current_time
+            debug_info["stair_climb_committed"] = bool(stair_climb_committed)
+
+            if (stair_climb_committed and controller is not None and controller.is_ready()
+                    and not preparation_mode):
+                # Steady forward drive + climb-gait, follow gates bypassed. yaw_err=0 -> the policy
+                # self-steers up the stairs from depth (hybrid drops delta_yaw when stairs_active).
+                # Hard collision floor ONLY: if the smoothed gap drops below the collision floor,
+                # zero the drive (no stance-lock -- a blend at speed on the slope nose-dives) so the
+                # dog never climbs into the patient.
+                _gap_ctrl = debug_info.get("standoff_gap_ctrl_m")
+                _climb_block = (
+                    _gap_ctrl is not None and float(_gap_ctrl) > 1e-3
+                    and float(_gap_ctrl) < float(args.stair_climb_collision_floor)
+                )
+                _climb_vx = 0.0 if _climb_block else float(args.stair_climb_speed)
+                command_trans_x = trans_x_limiter.update(_climb_vx)
+                rotation_limiter.reset(0.0)
+                yaw_err_limiter.reset(0.0)
+                controller.move(
+                    command_trans_x, 0.0, 0.0,
+                    stairs_detected=True,
+                    yaw_err=0.0,
+                    person_bbox=debug_info.get("person_bbox_norm"),
+                    stairs_action_active=True,
+                    hold=False,
+                    person_detected=bool(debug_info.get("person_detected", False)),
+                    gap_m=debug_info.get("depth_distance_m"),
+                )
+                debug_info["command_trans_x_limited"] = float(command_trans_x)
+                debug_info["command_rotation_limited"] = 0.0
+                debug_info["stair_climb_collision_block"] = bool(_climb_block)
+                last_command_trans_x = float(command_trans_x)
+                last_command_rotation = 0.0
+                stop_ramp_active = False
+                stop_ramp_vx = 0.0
+                stop_ramp_last_ts = current_time
+            elif motion_allowed and controller is not None:
                 if motion_start_ts is None:
                     motion_start_ts = current_time
                 elapsed_motion = current_time - motion_start_ts
@@ -1476,8 +1596,15 @@ def main():
                     # Continuous follow on stairs (user choice): never stance-lock mid-step; the
                     # stair forward floor and the policy's on-stair handling own vx there.
                     stop_ramp_active = False
-                    stop_ramp_vx = max(0.0, float(trans_x_cmd))
                     hold_request = False
+                    # In the close-range dropout (robot AT the step, stairs un-detected) hold the
+                    # stair forward floor so the climb keeps DRIVING up the riser -- otherwise
+                    # _apply_follow_standoff_policy / the front-obstacle gate collapse vx to ~0 the
+                    # instant stairs flicker off and the dog creeps into the step blind and stubs it.
+                    # NOT applied on the far approach (let the standoff/heading own vx there).
+                    if _stair_close_dropout:
+                        trans_x_cmd = max(float(trans_x_cmd), _committed_stair_floor)
+                    stop_ramp_vx = max(0.0, float(trans_x_cmd))
                 elif stop_decision and live_motion_allowed:
                     # Following a VISIBLE person on flat ground and deciding to stop: ramp the
                     # forward command down (gait stays alive so the policy step-catches its
@@ -1604,16 +1731,15 @@ def main():
             elif controller is not None and controller.is_ready() and _stairs_now:
                 # Person lock lost (motion not allowed) while on / just-off the stairs. controller.stop()
                 # would send hold=True and stance-lock the robot on the incline -> topple (the stair
-                # fall). Instead keep the gait alive with hold=False and vx=0: the policy keeps
-                # stepping (no stance-blend, so no nose-dive) and settles to a low but STABLE crouch on
-                # the slope rather than tumbling. NOTE (verified run_sim_20260619_032327): a forward
-                # floor here instead of vx=0 makes the policy OVER-RUN on the stairs (body_vx->1.8) and
-                # fall, so the committed climb must NOT command forward -- vx=0 is the stable choice.
-                # The robot cannot finish the climb blind (it has lost the patient's depth/heading
-                # reference); completing the stair climb requires keeping the person lock, which is a
-                # perception problem, not a command-shaping one.
+                # fall). Instead keep the gait alive (hold=False) WITH a modest stair forward floor so
+                # the climb keeps advancing up the riser toward the last-known heading. vx=0 here was a
+                # workaround for the TERRAIN-mask surge (run_sim_20260619_032327: a forward floor over-ran
+                # to body_vx~1.8 and fell) -- but with --parkour-mask-fill far that surge is gone
+                # (run_sim_20260619_040900: body_vx held ~0.4-0.5), so vx=0 just floor-creeps the dog into
+                # the step blind and it stubs the first riser. The floor lets it walk UP instead. Heading
+                # is zeroed (no fresh detection) and the policy self-steers from depth on the stairs.
                 controller.move(
-                    0.0, 0.0, 0.0,
+                    _committed_stair_floor, 0.0, 0.0,
                     stairs_detected=True,
                     yaw_err=0.0,
                     person_bbox=None,
@@ -1622,13 +1748,13 @@ def main():
                     person_detected=False,
                     gap_m=None,
                 )
-                trans_x_limiter.reset(0.0)
+                trans_x_limiter.reset(float(_committed_stair_floor))
                 rotation_limiter.reset(0.0)
                 yaw_err_limiter.reset(0.0)
-                debug_info["command_trans_x_limited"] = 0.0
+                debug_info["command_trans_x_limited"] = float(_committed_stair_floor)
                 debug_info["command_rotation_limited"] = 0.0
                 debug_info["stairs_committed_climb_on_loss"] = True
-                last_command_trans_x = 0.0
+                last_command_trans_x = float(_committed_stair_floor)
                 last_command_rotation = 0.0
                 stop_ramp_active = False
                 stop_ramp_vx = 0.0
