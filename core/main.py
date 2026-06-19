@@ -236,17 +236,30 @@ def _apply_stair_command_policy(
     original_x = float(trans_x_cmd)
     original_wz = float(rotation_cmd)
 
-    # Forward floor while climbing: the person-follow PID collapses vx to ~0 once
-    # the dog reaches its standoff at the stair base, which strands the (blind) RL
-    # policy with no drive to step up. Hold a minimum forward command and cap it at
-    # the stair speed limit so the climb keeps advancing instead of parking.
-    max_forward = max(0.0, float(args.trans_x_max) * float(args.stair_speed_scale))
-    forward_floor = max(0.0, float(args.stair_forward_floor))
-    if max_forward > 0.0:
-        forward_floor = min(forward_floor, max_forward)
-    trans_x_cmd = max(float(trans_x_cmd), forward_floor)
-    if max_forward > 0.0 and trans_x_cmd > max_forward:
-        trans_x_cmd = max_forward
+    # Hard collision floor on stairs: if the smoothed gap drops below the collision floor,
+    # zero the drive (no stance-lock -- a blend at speed on the slope nose-dives) so the
+    # dog never climbs into the patient.
+    _gap_ctrl = debug_info.get("standoff_gap_ctrl_m")
+    _climb_block = (
+        _gap_ctrl is not None and float(_gap_ctrl) > 1e-3
+        and float(_gap_ctrl) < float(args.stair_climb_collision_floor)
+    )
+    if _climb_block:
+        trans_x_cmd = 0.0
+        debug_info["stair_follow_collision_block"] = True
+    else:
+        debug_info["stair_follow_collision_block"] = False
+        # Forward floor while climbing: the person-follow PID collapses vx to ~0 once
+        # the dog reaches its standoff at the stair base, which strands the (blind) RL
+        # policy with no drive to step up. Hold a minimum forward command and cap it at
+        # the stair speed limit so the climb keeps advancing instead of parking.
+        max_forward = max(0.0, float(args.trans_x_max) * float(args.stair_speed_scale))
+        forward_floor = max(0.0, float(args.stair_forward_floor))
+        if max_forward > 0.0:
+            forward_floor = min(forward_floor, max_forward)
+        trans_x_cmd = max(float(trans_x_cmd), forward_floor)
+        if max_forward > 0.0 and trans_x_cmd > max_forward:
+            trans_x_cmd = max_forward
 
     # Tame yaw on the stairs. The follower's bbox edge/size penalty amplifies the
     # centering error; on a step that becomes a +/-max yaw saw that twists the body
@@ -1435,12 +1448,17 @@ def main():
             # on (that froze the creep, opened the gap, and set up the run that overshot to ~0.5 m).
             _lower_bound = debug_info.get("standoff_lower_bound_m")
             _gap_for_hold = debug_info.get("standoff_gap_ctrl_m")
+            _rot_err = debug_info.get("rotation_error_deg")
+            _bearing_aligned = True
+            if _rot_err is not None:
+                _bearing_aligned = abs(float(_rot_err)) <= float(args.rot_tolerance)
             too_close = (
                 _lower_bound is not None
                 and _gap_for_hold is not None
                 and float(_gap_for_hold) > 1e-3
                 and float(_gap_for_hold) < float(_lower_bound)
                 and not bool(debug_info.get("standoff_warmup_active", False))
+                and _bearing_aligned
             )
             stop_decision = (not motion_allowed) or bool(too_close)
             hold_request = bool(stop_decision)  # provisional; finalized in the motion block

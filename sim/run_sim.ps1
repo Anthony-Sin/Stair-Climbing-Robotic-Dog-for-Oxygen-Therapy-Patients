@@ -1353,7 +1353,7 @@ if ($NoDockerRun) {
         # over-run: it surges to ~1.4 m/s even at a zero command (depth-driven), and at 0.45 m
         # there was no room before contact (it collided). At ~1.0 m a surge has room to be caught
         # by the soft-hold/tilt-release before reaching the person.
-        "--target-distance 1.0",
+        "--target-distance 0.8",
         # Three-zone cruise/brake: cruise when far, hold within ±tolerance of target, brake when
         # too close (forward-only; the parkour policy floors at ~0.5 m/s and ignores small commands).
         "--trans-x-max 0.35",
@@ -1368,7 +1368,12 @@ if ($NoDockerRun) {
         # Only when the leader has walked >1.8 m ahead do we command the floor to close the gap (a
         # brief run in open space, with no overlap risk); below it, creep holds the gap. (Was 0.5,
         # which put EVERY frame in the catch-up regime and drove the run.)
-        "--follow-pace-distance 1.8",
+        "--follow-pace-distance 1.3",
+        "--follow-standoff-band-out 0.15",
+        "--follow-standoff-band-in -0.10",
+        "--stair-speed-scale 0.85",
+        "--stair-target-distance 1.0",
+        "--stair-near-distance 1.8",
         "--ecs-log-dir /workspace/run_logs/debug/ecs",
         "--debug-trace-dir /workspace/run_logs/debug/debug_trace",
         # Write the OpenCV preview straight into videos/ (no preview-save-dir, which
