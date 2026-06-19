@@ -234,6 +234,51 @@ class TestFollowStandoff(unittest.TestCase):
         self.assertEqual(debug_info["pace_state"], "creep")
         self.assertEqual(cmd, 0.0)
 
+    def test_stair_bypass_still_updates_collision_gap(self):
+        args = MockArgs()
+        debug_info = {"stairs_detected": True}
+        state = {
+            "go_state": True,
+            "pace_state": "creep",
+            "pace_timer": 0.0,
+            "last_time": time.perf_counter(),
+        }
+
+        cmd = self._feed(
+            args, state, debug_info, 0.62, n=3, trans_x_cmd=0.2
+        )
+
+        self.assertEqual(cmd, 0.2)
+        self.assertTrue(debug_info["follow_standoff_skipped_on_stairs"])
+        self.assertAlmostEqual(debug_info["standoff_gap_ctrl_m"], 0.62, places=3)
+
+    def test_stair_collision_block_has_complete_telemetry(self):
+        from main import _apply_stair_command_policy
+
+        args = MockArgs()
+        args.stair_near_distance = 0.6
+        args.stair_approach_speed_scale = 1.0
+        args.trans_x_max = 0.35
+        args.stair_speed_scale = 0.55
+        args.stair_forward_floor = 0.35
+        args.stair_climb_collision_floor = 0.70
+        args.stair_yaw_deadband_deg = 5.0
+        args.stair_centering_scale = 0.5
+        args.stair_rot_max = 0.4
+        debug_info = {
+            "stairs_detected": True,
+            "person_detected": True,
+            "stairs_depth_m": 0.3,
+            "stairs_depth_ever_confirmed": True,
+            "standoff_gap_ctrl_m": 0.62,
+        }
+
+        tx, _ = _apply_stair_command_policy(args, 0.2, 0.0, debug_info)
+
+        self.assertEqual(tx, 0.0)
+        self.assertTrue(debug_info["stair_follow_collision_block"])
+        self.assertAlmostEqual(debug_info["stairs_forward_floor_mps"], 0.1925, places=4)
+
     def test_garbage_leader_speed_clamped(self):
         # leader_speed_mps is depth-derived and can spike to absurd values (observed ~40 m/s on a
         # lock flicker). It must be clamped before widening the standoff, else one bad frame pins the

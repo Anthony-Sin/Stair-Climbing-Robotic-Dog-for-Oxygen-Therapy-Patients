@@ -76,6 +76,7 @@ def _fake_policy():
 def _test_weight_free():
     from parkour_locomotion_policy import (
         ParkourLocomotionPolicy, ParkourPolicyConfig, PARKOUR_DEFAULT_POS, PARKOUR_JOINT_ORDER,
+        max_body_tilt_rad,
     )
 
     # 1) depth preprocess: [60,106] metres -> [1,58,87] in [-0.5, 0.5]
@@ -94,6 +95,8 @@ def _test_weight_free():
     assert cfg.obs_noise_enabled is False and int(cfg.obs_latency_steps) == 0
     assert cfg.joint_limit_clamp is False
     assert cfg.backlash_rad == 0.0 and cfg.torque_derate == 1.0 and cfg.torque_rate_limit_nm == 0.0
+    assert cfg.stair_action_norm_max == 8.0
+    assert abs(max_body_tilt_rad(-0.41, 0.22) - 0.41) < 1e-9
     print("OK config contract: control_hz=50, kp=40/kd=1, realism off by default")
 
     # 3) leg_command_summary swing/stance from the live target (no model needed).

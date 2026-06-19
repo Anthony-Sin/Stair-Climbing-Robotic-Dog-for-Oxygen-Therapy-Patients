@@ -74,6 +74,11 @@ PARKOUR_N_HIST = 10
 PARKOUR_N_DEPTH_LATENT = 32
 PARKOUR_DEPTH_HW = (58, 87)
 
+
+def max_body_tilt_rad(pitch_rad: float, roll_rad: float) -> float:
+    """Largest absolute body tilt component, shared by hold and stair governor."""
+    return max(abs(float(pitch_rad)), abs(float(roll_rad)))
+
 # Heading-command clamp: keep an externally injected delta_yaw (e.g. from person
 # follow) inside the trained vision-yaw envelope. The depth encoder's yaw passes a
 # Tanh then * yaw_scale (1.5) -> [-1.5, 1.5] rad; stay comfortably inside so the
@@ -129,10 +134,11 @@ class ParkourPolicyConfig:
     #      0.0 = disabled. Reasonable starting value: 8.0 (normal walking ~4-6, surging >10).
     speed_governor: bool = False
     speed_governor_overspeed_ratio: float = 1.8
-    # Action-norm cap (flat ground only -- DISABLED on stairs in _infer, where the large-norm
-    # action is the trained climb leg-lift and must pass; capping it makes the dog beach/face-plant
-    # at the first riser). 0.0 = disabled entirely.
+    # Flat ground uses a calm cap. Stairs need larger trained leg-lift actions, but extreme spikes
+    # (observed >15 immediately before sideways rolls/collapse) are still bounded by the separate
+    # stair cap. 0.0 disables the corresponding cap.
     speed_governor_action_norm_max: float = 0.0
+    stair_action_norm_max: float = 8.0
     hold_ramp_sec: float = 0.25
     hold_speed_threshold: float = 0.15
     # Inertial-safe stop. A moving quadruped cannot be stopped by snapping its legs to a
@@ -536,15 +542,16 @@ class ParkourLocomotionPolicy:
         # If the actor outputs a very large action vector (jumping/surging gait), rescale
         # it toward the cap magnitude while preserving the joint-ratio direction.
         # Normal walking is roughly norm 4–6; surging/jumping spikes above 10.
-        # DISABLED on stairs (THE key stair-climb fix): the large-norm action IS the trained climb
-        # leg-lift. The 6.0 flat-ground cap clips it so the foot stubs the riser and the dog beaches /
-        # face-plants at the first step and never gains a step (runs 040900-051643). On the stairs the
-        # policy needs its full trained action to step UP each riser -- the governor is a CALM-FLAT-
-        # GROUND limiter only. Uncapping here is what lets the dog climb (it reached ~step 5 once the
-        # cap was off, run_sim_20260619_052408). The over-run governor command-backoff still applies.
+        # The 6.0 flat cap is too small for trained stair leg lifts, so stairs use their own higher
+        # cap. This preserves normal climb actions while trimming only the extreme spikes that
+        # preceded large pitch/roll excursions in end-to-end runs.
         self._governor_action_scale = 1.0
-        max_norm = float(cfg.speed_governor_action_norm_max)
-        if cfg.speed_governor and max_norm > 0.0 and not stairs_active:
+        max_norm = float(
+            cfg.stair_action_norm_max if stairs_active
+            else cfg.speed_governor_action_norm_max
+        )
+        self._governor_action_norm_limit = max_norm
+        if cfg.speed_governor and max_norm > 0.0:
             norm = float(np.linalg.norm(action_np))
             if norm > max_norm:
                 scale = max_norm / norm
@@ -574,8 +581,10 @@ class ParkourLocomotionPolicy:
         # action, which is what actually kills the forward drive and stops the runaway.
         # (hold_moving_max is retained as a CLI/config field for compatibility but is no
         # longer used here -- the moving regime now ramps to a full lock, just slower.)
-        tilt = max(abs(float(getattr(self, "_last_pitch", 0.0))),
-                   abs(float(getattr(self, "_last_roll", 0.0))))
+        tilt = max_body_tilt_rad(
+            getattr(self, "_last_pitch", 0.0),
+            getattr(self, "_last_roll", 0.0),
+        )
         est = getattr(self, "_last_est_state", None)
         est_speed = math.hypot(float(est[0]), float(est[1])) if est is not None else 0.0
         spd = float(body_speed) if body_speed is not None else est_speed
@@ -727,6 +736,7 @@ class ParkourLocomotionPolicy:
             # cap fired (value = max_norm / original_norm).
             "governor_cmd_vx_adj": round(float(getattr(self, "_governor_cmd_vx_adj", self._last_vx)), 3),
             "governor_action_scale": round(float(getattr(self, "_governor_action_scale", 1.0)), 3),
+            "governor_action_norm_limit": round(float(getattr(self, "_governor_action_norm_limit", 0.0)), 3),
             # Active gait one-hot: "parkour" when stairs_active overrode config.mode, else config.mode.
             "active_gait_mode": str(getattr(self, "_last_active_gait_mode", self.config.mode)),
             "hold_active": bool(self.hold_strength > 0.0),

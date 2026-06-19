@@ -165,19 +165,25 @@ parser.add_argument("--no-parkour-walk-mode", action="store_false", dest="parkou
                          "Walk mode is the default; pass this only for A/B or parkour testing.")
 # Walk mode ON by default: trained calm-walk one-hot. Use --no-parkour-walk-mode to disable.
 parser.set_defaults(parkour_walk_mode=True)
-parser.add_argument("--speed-governor-overspeed-ratio", type=float, default=1.3,
+parser.add_argument("--speed-governor-overspeed-ratio", type=float, default=1.8,
                     dest="speed_governor_overspeed_ratio",
                     help="Command-backoff trigger: if est_vel > vx_cmd * ratio, back off. "
-                         "1.3 = allow up to 30%% over-run before intervening (tightened from 1.8 "
-                         "to curb the forward surge that closed the gap to the followed person). "
+                         "1.8 reproduces the recorded top-landing policy and avoids starving the "
+                         "flat-to-stair transition before the learned leg lift engages. "
                          "Lower values = tighter speed control but more oscillation. "
                          "Only active with --speed-governor.")
-parser.add_argument("--speed-governor-action-norm-max", type=float, default=6.0,
+parser.add_argument("--speed-governor-action-norm-max", type=float, default=8.0,
                     dest="speed_governor_action_norm_max",
                     help="Action-norm cap. Normal walking ~4-6 (measured p50~1.6, p90~5.1), "
-                         "surging >6. 6.0 trims the aggressive surge spikes without clipping a "
-                         "calm walk. 0 disables the norm cap entirely. Only active with "
+                         "surging >8. 8.0 preserves the flat-to-stair transition lift from the "
+                         "recorded top-landing run while trimming larger spikes. 0 disables the "
+                         "norm cap entirely. Only active with "
                          "--speed-governor.")
+parser.add_argument("--stair-action-norm-max", type=float, default=8.0,
+                    help="Stair-specific action-norm cap. Normal trained climb lifts remain above "
+                         "the flat 6.0 cap, while extreme spikes above 12.0 are rescaled before "
+                         "they can roll or collapse the body. This reproduces the cap from the "
+                         "recorded top-landing run. 0 disables the stair cap.")
 parser.add_argument("--with-o2-payload", action="store_true",
                     help="Attach the 3D-printed rail cradle + P2-E6 oxygen concentrator "
                          "to the Go2's back. Off by default so the base robot runs clean. "
@@ -618,6 +624,10 @@ ROBOT_COLLAPSE_HEIGHT_M = 0.18
 # Sustain the fall condition this long (sim seconds) before the live watchdog
 # exits, so a transient deep stair step or single bad frame is not a false fall.
 ROBOT_FALL_SUSTAIN_SEC = 0.4
+# Conservative root-to-patient separation used only for verification. Control
+# still uses the vision/depth collision floor; this ground-truth value never
+# feeds motion commands.
+ROBOT_PERSON_COLLISION_DISTANCE_M = 0.55
 
 # Telemetry-only state for the stair demo; the RL policy owns joint control.
 _go2_locomotion_state = Go2LocomotionState()
@@ -3406,6 +3416,7 @@ def _create_locomotion_policy(go2):
         speed_governor=bool(args.speed_governor),
         speed_governor_overspeed_ratio=float(args.speed_governor_overspeed_ratio),
         speed_governor_action_norm_max=float(args.speed_governor_action_norm_max),
+        stair_action_norm_max=max(0.0, float(args.stair_action_norm_max)),
         hold_ramp_sec=float(args.hold_ramp_sec),
         hold_speed_threshold=float(args.hold_speed_threshold),
         hold_decel_sec=float(args.hold_decel_sec),
@@ -3431,6 +3442,7 @@ def _create_locomotion_policy(go2):
         speed_governor=bool(config.speed_governor),
         speed_governor_overspeed_ratio=round(float(config.speed_governor_overspeed_ratio), 3),
         speed_governor_action_norm_max=round(float(config.speed_governor_action_norm_max), 3),
+        stair_action_norm_max=round(float(config.stair_action_norm_max), 3),
         hold_speed_threshold=round(float(config.hold_speed_threshold), 3),
         hold_decel_sec=round(float(config.hold_decel_sec), 3),
         hold_moving_max=round(float(config.hold_moving_max), 3),
@@ -3597,6 +3609,7 @@ def _run_evaluation_and_save_images(
     evaluation_exit_reason: str = "not_recorded",
     motion_elapsed_sim_sec: float = 0.0,
     robot_stair_phase_sim_sec: float = 0.0,
+    robot_top_landing_seen: bool = False,
     rl_policy=None,
 ) -> None:
     """Capture final verification image, evaluate straight-line walking / balance, and log summary."""
@@ -3613,7 +3626,11 @@ def _run_evaluation_and_save_images(
     robot_rotated = False
     robot_fell = False
     robot_fall_type = "upright"
+    robot_balance_violation = False
     leg_details = []
+    peak_abs_pitch_deg = 0.0
+    peak_abs_roll_deg = 0.0
+    minimum_body_height_m = None
     
     if robot_trajectory:
         # Check drift (Y deviation)
@@ -3626,19 +3643,23 @@ def _run_evaluation_and_save_images(
         if max_yaw > math.radians(5):
             robot_rotated = True
             
-        # Check if fell (Z height too low relative to terrain or flipped orientation)
+        # Record every balance excursion, but reserve "fell" for a sustained live-watchdog
+        # exit or a final fallen pose. This prevents a single stair-edge height sample from
+        # contradicting the final ground-truth telemetry while keeping the excursion visible.
         for pt in robot_trajectory:
             rx, ry, rz = pt["pos"]
             roll, pitch, yaw = pt["rpy"]
             terrain_z = get_terrain_height(rx, ry)
             height = rz - terrain_z
+            peak_abs_roll_deg = max(peak_abs_roll_deg, abs(math.degrees(roll)))
+            peak_abs_pitch_deg = max(peak_abs_pitch_deg, abs(math.degrees(pitch)))
+            minimum_body_height_m = (
+                height if minimum_body_height_m is None else min(minimum_body_height_m, height)
+            )
             if abs(roll) > ROBOT_FALL_TILT_RAD or abs(pitch) > ROBOT_FALL_TILT_RAD:
-                robot_fell = True
-                robot_fall_type = "flipped over"
-                break
+                robot_balance_violation = True
             if height < ROBOT_COLLAPSE_HEIGHT_M:
-                robot_fell = True
-                robot_fall_type = "collapsed"
+                robot_balance_violation = True
 
         # Analyze final state details
         last_pt = robot_trajectory[-1]
@@ -3646,6 +3667,12 @@ def _run_evaluation_and_save_images(
         roll, pitch, yaw = last_pt["rpy"]
         terrain_z = get_terrain_height(rx, ry)
         height = rz - terrain_z
+        final_pose_fallen = (
+            abs(roll) > ROBOT_FALL_TILT_RAD
+            or abs(pitch) > ROBOT_FALL_TILT_RAD
+            or height < ROBOT_COLLAPSE_HEIGHT_M
+        )
+        robot_fell = bool(evaluation_exit_reason == "robot_fell" or final_pose_fallen)
 
         if robot_fell:
             if abs(roll) > ROBOT_FALL_TILT_RAD or abs(pitch) > ROBOT_FALL_TILT_RAD:
@@ -3670,6 +3697,20 @@ def _run_evaluation_and_save_images(
             else:
                 leg_details.append(f"  - {leg.upper()} leg: NOT_TRACKED")
                 
+    minimum_person_clearance_m = None
+    for robot_pt, person_pt in zip(robot_trajectory, person_trajectory):
+        rx, ry, rz = robot_pt["pos"]
+        px, py, pz = person_pt["pos"]
+        clearance = math.sqrt((rx - px) ** 2 + (ry - py) ** 2 + (rz - pz) ** 2)
+        minimum_person_clearance_m = (
+            clearance if minimum_person_clearance_m is None
+            else min(minimum_person_clearance_m, clearance)
+        )
+    person_collision = bool(
+        minimum_person_clearance_m is not None
+        and minimum_person_clearance_m < ROBOT_PERSON_COLLISION_DISTANCE_M
+    )
+
     # Evaluate human
     human_drifted = False
     human_rotated = False
@@ -3696,8 +3737,12 @@ def _run_evaluation_and_save_images(
             
     # Summarize states
     robot_summary = "straight"
-    if robot_fell:
+    if person_collision:
+        robot_summary = "collided with patient"
+    elif robot_fell:
         robot_summary = f"fell ({robot_fall_type})"
+    elif robot_balance_violation:
+        robot_summary = "balance violation"
     elif robot_drifted:
         robot_summary = "drifted"
     elif robot_rotated:
@@ -3754,6 +3799,30 @@ def _run_evaluation_and_save_images(
                         "exit_reason": evaluation_exit_reason,
                         "motion_elapsed_sim_sec": round(float(motion_elapsed_sim_sec), 3),
                         "robot_stair_phase_sim_sec": round(float(robot_stair_phase_sim_sec), 3),
+                        "verification": {
+                            "point_a_to_b_complete": bool(robot_top_landing_seen),
+                            "robot_top_landing_seen": bool(robot_top_landing_seen),
+                            "person_collision": bool(person_collision),
+                            "minimum_person_clearance_m": (
+                                None if minimum_person_clearance_m is None
+                                else round(float(minimum_person_clearance_m), 3)
+                            ),
+                            "collision_threshold_m": float(ROBOT_PERSON_COLLISION_DISTANCE_M),
+                            "robot_fell": bool(robot_fell),
+                            "robot_balance_violation": bool(robot_balance_violation),
+                            "peak_abs_pitch_deg": round(float(peak_abs_pitch_deg), 2),
+                            "peak_abs_roll_deg": round(float(peak_abs_roll_deg), 2),
+                            "minimum_body_height_m": (
+                                None if minimum_body_height_m is None
+                                else round(float(minimum_body_height_m), 3)
+                            ),
+                            "passed": bool(
+                                robot_top_landing_seen
+                                and not person_collision
+                                and not robot_fell
+                                and not robot_balance_violation
+                            ),
+                        },
                         "data_statement": "Synthetic demo data generated from Isaac Sim stair geometry; values are geometry-exact for the scene and are not hardware LiDAR or trained RL output.",
                         "physics_statement": "Stair collisions and contact physics remain enabled; commanded motion uses physics gait only, with no rigid-body, kinematic, body-height, or anti-tip fallback.",
                         "stair_demo": stair_demo,
@@ -4531,6 +4600,8 @@ def main() -> None:
                             # (forward) vs body_vx reveals whether the actor is being
                             # fed an under-reported speed (=> over-drives the gait).
                             est_lin_vel=policy_diag.get("est_lin_vel"),
+                            governor_action_scale=policy_diag.get("governor_action_scale"),
+                            governor_action_norm_limit=policy_diag.get("governor_action_norm_limit"),
                             inferences=policy_diag.get("inference_count"),
                             person_detected=bool(person_detected),
                             gap_m=round(float(gap_m), 3) if gap_m is not None else None,
@@ -4597,17 +4668,10 @@ def main() -> None:
                     elif (
                         destination_reached_sim_sec is not None
                         and (motion_elapsed_sim_sec - destination_reached_sim_sec) >= 5.0
-                        and (
-                            robot_top_landing_seen
-                            or robot_stair_phase_sim_sec >= ROBOT_STAIR_VISIBLE_HOLD_SEC
-                        )
+                        and robot_top_landing_seen
                     ):
                         evaluation_done = True
-                        evaluation_exit_reason = (
-                            "patient_destination_and_robot_stair_climb_visible"
-                            if not robot_top_landing_seen
-                            else "patient_destination_and_robot_top_landing"
-                        )
+                        evaluation_exit_reason = "patient_destination_and_robot_top_landing"
                         log_event(
                             LOGGER,
                             logging.INFO,
@@ -4964,6 +5028,7 @@ def main() -> None:
                 evaluation_exit_reason=evaluation_exit_reason,
                 motion_elapsed_sim_sec=motion_elapsed_sim_sec,
                 robot_stair_phase_sim_sec=robot_stair_phase_sim_sec,
+                robot_top_landing_seen=robot_top_landing_seen,
                 rl_policy=rl_policy,
             )
 

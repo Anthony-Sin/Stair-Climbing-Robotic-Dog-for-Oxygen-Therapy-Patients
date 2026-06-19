@@ -236,6 +236,13 @@ def _apply_stair_command_policy(
     original_x = float(trans_x_cmd)
     original_wz = float(rotation_cmd)
 
+    # Calculate the bounded stair floor before either safety branch so telemetry remains valid
+    # when the collision block forces the command to zero.
+    max_forward = max(0.0, float(args.trans_x_max) * float(args.stair_speed_scale))
+    forward_floor = max(0.0, float(args.stair_forward_floor))
+    if max_forward > 0.0:
+        forward_floor = min(forward_floor, max_forward)
+
     # Hard collision floor on stairs: if the smoothed gap drops below the collision floor,
     # zero the drive (no stance-lock -- a blend at speed on the slope nose-dives) so the
     # dog never climbs into the patient.
@@ -253,10 +260,6 @@ def _apply_stair_command_policy(
         # the dog reaches its standoff at the stair base, which strands the (blind) RL
         # policy with no drive to step up. Hold a minimum forward command and cap it at
         # the stair speed limit so the climb keeps advancing instead of parking.
-        max_forward = max(0.0, float(args.trans_x_max) * float(args.stair_speed_scale))
-        forward_floor = max(0.0, float(args.stair_forward_floor))
-        if max_forward > 0.0:
-            forward_floor = min(forward_floor, max_forward)
         trans_x_cmd = max(float(trans_x_cmd), forward_floor)
         if max_forward > 0.0 and trans_x_cmd > max_forward:
             trans_x_cmd = max_forward
@@ -374,17 +377,10 @@ def _apply_follow_standoff_policy(
     debug_info: Dict[str, Any],
     state: Dict[str, Any],
 ) -> float:
-    # If on stairs, bypass standoff policy completely to avoid stalls
-    if bool(debug_info.get("stairs_detected", False)) or bool(debug_info.get("stairs_action_active", False)):
-        debug_info["follow_standoff_gate_active"] = False
-        debug_info["follow_standoff_skipped_on_stairs"] = True
-        return float(trans_x_cmd)
-        
-    if gap_m is None:
-        debug_info["follow_standoff_gate_active"] = False
-        return float(trans_x_cmd)
-
-    # 0. Gap smoothing (CRITICAL). depth_distance_m is bimodal-noisy: single-frame jumps of
+    # 0. Gap smoothing (CRITICAL). This MUST run before the stair early-return: the stair
+    # collision floor consumes standoff_gap_ctrl_m. The old ordering returned first and silently
+    # disabled that safety gate for the whole climb.
+    # depth_distance_m is bimodal-noisy: single-frame jumps of
     #    ~0.4<->1.0<->2.0<->0.0 m are routine even at rest. We threshold the gap for BOTH the
     #    too-close stance-lock (downstream) AND the catch-up command (below), so a single spurious
     #    reading would either freeze the creep (-> gap opens -> catch-up -> a ~2 m/s run that
@@ -394,13 +390,24 @@ def _apply_follow_standoff_policy(
     #    NOT make the aggressive (freeze / catch-up) calls -- the startup depth transient is exactly
     #    when the noise is worst and the robot is settling from the drop.
     gap_hist = state.setdefault("gap_hist", [])
-    if float(gap_m) > 1e-3:
+    if gap_m is not None and float(gap_m) > 1e-3:
         gap_hist.append(float(gap_m))
         if len(gap_hist) > 5:
             del gap_hist[0]
     gap_ctrl = float(np.median(gap_hist)) if len(gap_hist) >= 3 else None
-    debug_info["standoff_gap_raw_m"] = float(gap_m)
+    debug_info["standoff_gap_raw_m"] = None if gap_m is None else float(gap_m)
     debug_info["standoff_gap_ctrl_m"] = gap_ctrl
+
+    # On stairs, bypass only the go/hold/pace shaping to avoid stalls. Keep the smoothed gap above
+    # available to both the regular stair floor and committed-climb collision blocks.
+    if bool(debug_info.get("stairs_detected", False)) or bool(debug_info.get("stairs_action_active", False)):
+        debug_info["follow_standoff_gate_active"] = False
+        debug_info["follow_standoff_skipped_on_stairs"] = True
+        return float(trans_x_cmd)
+
+    if gap_m is None:
+        debug_info["follow_standoff_gate_active"] = False
+        return float(trans_x_cmd)
 
     # Settle grace: for the first follow_settle_grace_sec of following, do NOT let the too-close
     # stance-lock fire (flag consumed in the main loop). Startup depth/detection reads a sustained
@@ -1560,8 +1567,9 @@ def main():
 
             if (stair_climb_committed and controller is not None and controller.is_ready()
                     and not preparation_mode):
-                # Steady forward drive + climb-gait, follow gates bypassed. yaw_err=0 -> the policy
-                # self-steers up the stairs from depth (hybrid drops delta_yaw when stairs_active).
+                # Steady low-speed forward drive + climb gait, follow gates bypassed. Depth
+                # self-steering owns the stair heading so a stale person bearing cannot turn the
+                # body sideways across the risers during a visual dropout.
                 # Hard collision floor ONLY: if the smoothed gap drops below the collision floor,
                 # zero the drive (no stance-lock -- a blend at speed on the slope nose-dives) so the
                 # dog never climbs into the patient.
@@ -1586,6 +1594,7 @@ def main():
                 )
                 debug_info["command_trans_x_limited"] = float(command_trans_x)
                 debug_info["command_rotation_limited"] = 0.0
+                debug_info["stair_climb_heading_source"] = "depth_self_steer"
                 debug_info["stair_climb_collision_block"] = bool(_climb_block)
                 last_command_trans_x = float(command_trans_x)
                 last_command_rotation = 0.0

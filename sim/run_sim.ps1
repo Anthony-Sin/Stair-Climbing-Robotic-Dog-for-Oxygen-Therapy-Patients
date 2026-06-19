@@ -28,13 +28,13 @@ param(
     # mask + governor reached the top landing (max_x 5.61 m), while 'far' opened that
     # region and the dog stopped climbing entirely (beach/face-plant at the first riser,
     # runs 040900-050159). 'far' does kill the flat-ground person-ram surge, but it also
-    # kills the climb, so it is the wrong trade. The flat-approach surge is instead tamed
-    # by square-up (straight entry) + the speed governor. A/B with --parkour-mask-fill far.
+    # kills the climb, so it is the wrong trade. The flat-approach surge is bounded by the
+    # speed governor; square-up remains an explicit A/B option. A/B mask with --parkour-mask-fill far.
     # See [[project_parkour_stair_base_fall_mask]].
     [string]$ParkourMaskFill = "terrain",
     [switch]$StairSquareUp,
-    # Approach square-up now defaults ON (the dog was drifting to ~ -18 deg yaw / -25 deg roll
-    # and hitting the first riser crooked+rolled -> topple). Pass --no-stair-square-up to disable.
+    # Optional approach square-up. The recorded top-landing configuration kept this OFF and let
+    # the person bearing own the approach; pass --stair-square-up only for an explicit A/B run.
     [switch]$NoStairSquareUp,
     [switch]$Sim2RealValidationCam,
     [switch]$SelfTestWalk,
@@ -1349,31 +1349,27 @@ if ($NoDockerRun) {
         "--sim-frame-timeout-exit-sec $effSimFrameTimeoutExitSec",
         "--sim-latency-ms $effLatencyMs",
         "--sim-latency-jitter-ms $effLatencyJitterMs",
-        # Follow standoff raised 0.45 -> 1.0 m to give MARGIN for the parkour policy's forward
-        # over-run: it surges to ~1.4 m/s even at a zero command (depth-driven), and at 0.45 m
-        # there was no room before contact (it collided). At ~1.0 m a surge has room to be caught
-        # by the soft-hold/tilt-release before reaching the person.
-        "--target-distance 0.8",
+        # Exact follow/PID shape from recorded top-landing run run_sim_20260618_222324_391.
+        # The repaired stair collision gate below retains a separate no-contact floor.
+        "--target-distance 0.45",
         # Three-zone cruise/brake: cruise when far, hold within ±tolerance of target, brake when
         # too close (forward-only; the parkour policy floors at ~0.5 m/s and ignores small commands).
-        "--trans-x-max 0.35",
+        "--trans-x-max 0.85",
         "--trans-x-tolerance 0.12",
         "--trans-x-alpha 0.65",
-        "--kp 2.0",
-        "--kd 0.0",
-        # follow-pace-distance is now the "fell genuinely behind -> catch up" threshold and MUST sit
-        # ABOVE the 1.0 m standoff. LEAN-ON-CREEP strategy: in normal following the controller
-        # commands vx=0 and rides the policy's intrinsic ~0.5 m/s floor-creep (which matches the
-        # patient) -- commanding forward over-runs into a ~1.2 m/s run that overshoots and falls.
-        # Only when the leader has walked >1.8 m ahead do we command the floor to close the gap (a
-        # brief run in open space, with no overlap risk); below it, creep holds the gap. (Was 0.5,
-        # which put EVERY frame in the catch-up regime and drove the run.)
-        "--follow-pace-distance 1.3",
+        "--kp 1.1",
+        "--kd 0.15",
+        "--follow-standoff-speed-gain 0.4",
+        "--follow-pace-distance 2.0",
+        "--follow-pace-floor-speed 0.5",
         "--follow-standoff-band-out 0.15",
-        "--follow-standoff-band-in -0.10",
-        "--stair-speed-scale 0.85",
-        "--stair-target-distance 1.0",
-        "--stair-near-distance 1.8",
+        "--follow-standoff-band-in -0.15",
+        "--follow-stop-ramp-sec 0.7",
+        "--stair-speed-scale 0.45",
+        "--stair-forward-floor 0.35",
+        "--stair-target-distance 1.2",
+        "--stair-near-distance 1.2",
+        "--stair-climb-collision-floor 0.65",
         "--ecs-log-dir /workspace/run_logs/debug/ecs",
         "--debug-trace-dir /workspace/run_logs/debug/debug_trace",
         # Write the OpenCV preview straight into videos/ (no preview-save-dir, which
@@ -1387,10 +1383,8 @@ if ($NoDockerRun) {
     if (-not $VisionPreview) {
         $visionArgs += "--headless"
     }
-    # Approach square-up: face the staircase head-on so the dog hits the first riser SQUARE
-    # instead of crabbing into it crooked+rolled (the first-step topple). Default ON; the
-    # legacy -StairSquareUp switch still forces it on, -NoStairSquareUp disables for A/B.
-    if (-not $NoStairSquareUp) {
+    # Approach square-up remains opt-in; the known top-landing run kept person-bearing steering.
+    if ($StairSquareUp -and -not $NoStairSquareUp) {
         $visionArgs += "--stair-square-up"
     }
     $visionCommand = $visionArgs -join " "
