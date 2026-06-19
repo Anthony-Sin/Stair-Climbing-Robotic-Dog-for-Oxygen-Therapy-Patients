@@ -46,17 +46,16 @@ class YoloStairsInference:
 
     def initialize(self) -> bool:
         """Initialize the YOLO-World model and set its query classes."""
+        import os
+        os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp/ultralytics")
+        LOGGER.info(f"Loading YOLO-World model from {self.model_path}...")
         try:
             from ultralytics import YOLOWorld
-            if self.verbose:
-                LOGGER.info(f"Loading YOLO-World model from {self.model_path}...")
-            
             self.model = YOLOWorld(self.model_path)
             # Define queries/classes dynamically
             self.model.set_classes(["stairs", "staircase", "steps", "brick stairs", "brick steps", "concrete stairs"])
             
-            if self.verbose:
-                LOGGER.info("YOLO-World initialized and classes set to ['stairs', 'staircase', 'steps', 'brick stairs', 'brick steps', 'concrete stairs']")
+            LOGGER.info("YOLO-World initialized and classes set to ['stairs', 'staircase', 'steps', 'brick stairs', 'brick steps', 'concrete stairs']")
             
             # Start background worker thread
             self._thread = threading.Thread(
@@ -93,6 +92,7 @@ class YoloStairsInference:
 
     def _run_inference_loop(self) -> None:
         """Background loop running YOLO-World predictions on the latest frame."""
+        loop_counter = 0
         while not self._stop_event.is_set():
             self._new_frame_event.wait()
             self._new_frame_event.clear()
@@ -130,6 +130,10 @@ class YoloStairsInference:
                             if best_conf >= self.confidence:
                                 detected = True
                                 best_bbox = boxes.xyxy[best_idx].cpu().numpy().tolist()
+
+                loop_counter += 1
+                if loop_counter % 50 == 0:
+                    LOGGER.info(f"[yolo-stairs-worker] Raw best confidence: {best_conf:.4f} (threshold: {self.confidence:.4f})")
 
                 self._positive_history.append(bool(detected))
                 positive_count = sum(1 for item in self._positive_history if item)

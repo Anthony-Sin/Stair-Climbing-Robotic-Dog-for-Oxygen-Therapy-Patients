@@ -5,6 +5,23 @@ import time
 from typing import Any, Dict
 
 
+def _json_trace_default(obj: Any) -> str:
+    """Fallback for json.dumps so the diagnostic trace never crashes the control
+    loop on a non-JSON value (e.g. debug_info["depth_img"] is a SimDepthFrame /
+    numpy array, not a scalar). Array-like objects are summarized by shape+dtype
+    instead of dumping their data; everything else is stringified."""
+    shape = getattr(obj, "shape", None)
+    if shape is not None:
+        try:
+            return f"<{type(obj).__name__} shape={tuple(shape)} dtype={getattr(obj, 'dtype', '?')}>"
+        except Exception:
+            pass
+    try:
+        return str(obj)
+    except Exception:
+        return f"<{type(obj).__name__}>"
+
+
 class DebugTraceLogger:
     # DEBUG-TRACE REMOVE-ME: Temporary structured JSONL trace logger for stall debugging.
     def __init__(self, trace_dir: str, filename: str, source: str) -> None:
@@ -37,9 +54,17 @@ class DebugTraceLogger:
         }
         self._seq += 1
 
-        line = json.dumps(payload, separators=(",", ":"), sort_keys=True)
-        with self._lock:
-            self._handle.write(line + "\n")
+        # The trace must never take down the controller: serialize with a fallback
+        # for non-JSON values, and swallow any remaining write/serialize error.
+        try:
+            line = json.dumps(
+                payload, separators=(",", ":"), sort_keys=True,
+                default=_json_trace_default,
+            )
+            with self._lock:
+                self._handle.write(line + "\n")
+        except Exception:
+            pass
 
     def close(self) -> None:
         if not self.enabled or self._handle is None:

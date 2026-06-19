@@ -22,7 +22,7 @@ param(
     [int]$IsaacReadyTimeoutSec = 420,
     [int]$KeepRunLogs = 1,
     [int]$MaxRunTimeSec = 900,
-    [string]$ParkourHeadingMode = "vision",
+    [string]$ParkourHeadingMode = "hybrid",
     [string]$ParkourMaskFill = "terrain",
     [switch]$StairSquareUp,
     [switch]$Sim2RealValidationCam,
@@ -35,7 +35,12 @@ param(
     [switch]$NoParkourWalkMode,
     [switch]$NoSpeedGovernor,
     [double]$SimLatencyMs = 0.0,
-    [double]$SimLatencyJitterMs = 0.0
+    [double]$SimLatencyJitterMs = 0.0,
+    [switch]$Headless,
+    [switch]$FastRender,
+    [switch]$WarmIsaac,
+    [switch]$WarmShutdown,
+    [int]$WarmMaxRuns = 10
 )
 
 $ErrorActionPreference = "Stop"
@@ -69,6 +74,57 @@ $SummaryLog = Join-Path $RunLogDir "00_READ_ME_FIRST.txt"
 $LatestRunFile = Join-Path (Join-Path $RepoRoot "log") "latest_run.txt"
 $DockerContainerName = "go2-pose-sim-" + ($Stamp -replace '[^A-Za-z0-9_.-]', '-')
 
+# --- Warm-iteration mode (-WarmIsaac) ---------------------------------------
+# Keep ONE booted Kit process alive across runs and drive episodes via file
+# sentinels in log/warm_isaac/, so the ~120s RTX boot is paid once. The default
+# one-shot path ignores everything in this block.
+$WarmStateDir    = Join-Path (Join-Path $RepoRoot "log") "warm_isaac"
+$WarmCommandFile = Join-Path $WarmStateDir "command.json"
+$WarmStatusFile  = Join-Path $WarmStateDir "warm_status.json"
+
+function Test-WarmIsaacAlive {
+    param([string]$StatusFile)
+    if (-not (Test-Path -LiteralPath $StatusFile)) { return $false }
+    try {
+        $st = Get-Content -LiteralPath $StatusFile -Raw -ErrorAction Stop | ConvertFrom-Json
+    } catch { return $false }
+    if (-not $st.pid) { return $false }
+    if (-not (Get-Process -Id ([int]$st.pid) -ErrorAction SilentlyContinue)) { return $false }
+    # Heartbeat freshness (Python time.time() epoch seconds). Stale => hung/dead.
+    try {
+        $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() / 1000.0
+        if (($now - [double]$st.heartbeat_ts) -gt 20.0) { return $false }
+    } catch {}
+    return $true
+}
+
+function Get-NextWarmSeq {
+    param([string]$CommandFile)
+    $seq = 0
+    if (Test-Path -LiteralPath $CommandFile) {
+        try { $seq = [int]((Get-Content -LiteralPath $CommandFile -Raw | ConvertFrom-Json).seq) } catch { $seq = 0 }
+    }
+    return ($seq + 1)
+}
+
+function Write-WarmCommand {
+    param([string]$CommandFile, [int]$Seq, [string]$Action, [string]$RunDir)
+    $dir = Split-Path -Parent $CommandFile
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    $obj = [ordered]@{ seq = $Seq; action = $Action; run_dir = $RunDir; stamp = (Get-Date -Format o) }
+    $tmp = "$CommandFile.tmp"
+    $obj | ConvertTo-Json -Compress | Set-Content -LiteralPath $tmp -Encoding UTF8
+    Move-Item -LiteralPath $tmp -Destination $CommandFile -Force
+}
+
+if ($WarmShutdown) {
+    if (-not (Test-Path -LiteralPath $WarmStateDir)) { New-Item -ItemType Directory -Force -Path $WarmStateDir | Out-Null }
+    $seq = Get-NextWarmSeq -CommandFile $WarmCommandFile
+    Write-WarmCommand -CommandFile $WarmCommandFile -Seq $seq -Action "shutdown" -RunDir ""
+    Write-Host "Warm Isaac shutdown requested (seq=$seq); the warm Kit process will close."
+    exit 0
+}
+
 # Clear stale simulation runs (Docker containers and local processes) to release file locks
 Write-Host "Cleaning up stale Docker containers and Isaac processes..."
 if (-not $DryRun) {
@@ -86,17 +142,20 @@ if (-not $DryRun) {
         }
     } catch {}
 
-    # Terminate any running local processes associated with the Isaac environment
-    try {
-        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-            $_.CommandLine -and $_.CommandLine.Contains("isaac_env.py")
-        } | ForEach-Object {
-            try {
-                Write-Host "Stopping stale Isaac process PID: $($_.ProcessId)"
-                Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
-            } catch {}
-        }
-    } catch {}
+    # Terminate any running local processes associated with the Isaac environment.
+    # In warm mode we deliberately keep the live warm Isaac, so skip this kill.
+    if (-not $WarmIsaac) {
+        try {
+            Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+                $_.CommandLine -and $_.CommandLine.Contains("isaac_env.py")
+            } | ForEach-Object {
+                try {
+                    Write-Host "Stopping stale Isaac process PID: $($_.ProcessId)"
+                    Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+                } catch {}
+            }
+        } catch {}
+    }
 
     # Terminate any running Omniverse hub.exe processes that might hold file locks
     try {
@@ -107,9 +166,11 @@ if (-not $DryRun) {
     } catch {}
 }
 
-# Clear the log folder at startup to prevent old runs from clashing
+# Clear the log folder at startup to prevent old runs from clashing. In warm mode the
+# folder is preserved (the warm Isaac is mid-session and owns log/warm_isaac/ plus the
+# active run folder); old run_sim_* folders are still bounded by Prune-OldRunLogs.
 $LogRoot = Join-Path $RepoRoot "log"
-if (Test-Path -LiteralPath $LogRoot) {
+if (-not $WarmIsaac -and (Test-Path -LiteralPath $LogRoot)) {
     # Try deleting via WSL to bypass any WSL/Docker mount locks
     try {
         $wslLogRoot = ConvertTo-WslPath -WindowsPath $LogRoot
@@ -1011,6 +1072,9 @@ Write-Stage "setup" "start" "Preparing run_sim launch" @{
     no_isaac_ready_wait = [bool]$NoIsaacReadyWait
     no_model_preflight = [bool]$NoModelPreflight
     vision_preview = [bool]$VisionPreview
+    headless = [bool]$Headless
+    no_docker_run = [bool]$NoDockerRun
+    self_test_walk = [bool]$SelfTestWalk
     final_scene = [bool]$FinalScene
     pause_after_isaac = [bool]$PauseAfterIsaac
     keep_run_logs = [int]$KeepRunLogs
@@ -1126,6 +1190,12 @@ if ($NoIsaac) {
     if ($NoSpeedGovernor) {
         $isaacArgs += "-NoSpeedGovernor"
     }
+    if ($Headless) {
+        $isaacArgs += "-Headless"
+    }
+    if ($FastRender) {
+        $isaacArgs += "-FastRender"
+    }
     if ($FinalScene) {
         $isaacArgs += "-FinalScene"
     }
@@ -1136,6 +1206,21 @@ if ($NoIsaac) {
         if ($SelfTestNoPolicy) { $isaacArgs += "-SelfTestNoPolicy" }
     }
 
+    # Warm mode: reuse a live warm Isaac if present (skip the ~120s boot); otherwise
+    # add the warm flags and clear stale sentinels so the new Kit ignores old commands.
+    $warmReuse = $false
+    if ($WarmIsaac) {
+        $isaacArgs += "-WarmIsaac"
+        $isaacArgs += "-WarmCommandFile"; $isaacArgs += $WarmCommandFile
+        $isaacArgs += "-WarmMaxRuns";     $isaacArgs += [string]$WarmMaxRuns
+        if (Test-WarmIsaacAlive -StatusFile $WarmStatusFile) {
+            $warmReuse = $true
+        } else {
+            Remove-Item -LiteralPath $WarmCommandFile -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $WarmStatusFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     $isaacCommandLine = Format-CommandLine -FilePath "powershell.exe" -Arguments $isaacArgs
     if ($DryRun) {
         Write-Stage "isaac" "dry-run" "Would open Isaac Sim PowerShell window" @{
@@ -1143,14 +1228,38 @@ if ($NoIsaac) {
             raw_log = $IsaacRawLog
             console_log = $IsaacFilteredLog
         }
+    } elseif ($WarmIsaac -and $warmReuse) {
+        # Live warm Isaac: do not launch a new Kit; just command it into this run folder.
+        $proc = $null
+        Write-Stage "isaac" "warm_reuse" "Reusing live warm Isaac; skipping the ~120s Kit boot" @{
+            event_log = $IsaacEventLog
+            status_file = $WarmStatusFile
+        }
+        $seq = Get-NextWarmSeq -CommandFile $WarmCommandFile
+        Write-WarmCommand -CommandFile $WarmCommandFile -Seq $seq -Action "begin" -RunDir $RunLogDir
+        Write-Stage "isaac" "warm_begin" "Posted warm begin to the live Isaac" @{ command = "seq=$seq"; run_log_dir = $RunLogDir }
     } else {
-        $proc = Start-Process -FilePath "powershell.exe" -ArgumentList $isaacArgs -PassThru
-        Write-Stage "isaac" "launched" "Opened Isaac Sim PowerShell window" @{
+        $startParams = @{
+            FilePath = "powershell.exe"
+            ArgumentList = $isaacArgs
+            PassThru = $true
+        }
+        if ($Headless) {
+            $startParams["NoNewWindow"] = $true
+        }
+        $proc = Start-Process @startParams
+        $launchMsg = if ($WarmIsaac) { "Booted warm Isaac (this first run pays the ~120s Kit boot)" } else { "Opened Isaac Sim PowerShell window" }
+        Write-Stage "isaac" "launched" $launchMsg @{
             pid = $proc.Id
             isaac_sim_dir = $IsaacSimDir
             raw_log = $IsaacRawLog
             console_log = $IsaacFilteredLog
             event_log = $IsaacEventLog
+        }
+        if ($WarmIsaac) {
+            $seq = Get-NextWarmSeq -CommandFile $WarmCommandFile
+            Write-WarmCommand -CommandFile $WarmCommandFile -Seq $seq -Action "begin" -RunDir $RunLogDir
+            Write-Stage "isaac" "warm_begin" "Posted warm begin to the new Isaac" @{ command = "seq=$seq"; run_log_dir = $RunLogDir }
         }
     }
 }
@@ -1180,6 +1289,20 @@ if ($PauseAfterIsaac -and -not $NoPauseAfterIsaac -and -not $NoIsaac -and -not $
 
 if ($NoDockerRun) {
     Write-Stage "docker" "skipped" "Docker run skipped by --no-docker-run"
+    if (-not $NoIsaac -and $proc) {
+        Write-Host "Waiting for Isaac Sim process (PID $($proc.Id)) to complete..."
+        $totalWait = 0
+        $checkInterval = 1
+        $timeout = if ($SelfTestWalk) { [int]$SelfTestSec + 60 } else { 300 }
+        while (-not $proc.HasExited -and $totalWait -lt $timeout) {
+            Start-Sleep -Seconds $checkInterval
+            $totalWait += $checkInterval
+        }
+        if (-not $proc.HasExited) {
+            Write-Warning "Isaac Sim process did not exit within $timeout seconds. Terminating..."
+            Stop-IsaacProcess -Process $proc -Reason "self-test timeout"
+        }
+    }
 } else {
     Stop-StaleSimContainers `
         -ImageName $Image `
@@ -1199,6 +1322,10 @@ if ($NoDockerRun) {
     if ($Sim2RealValidationCam -and -not $PSBoundParameters.ContainsKey('SimLatencyJitterMs')) {
         $effLatencyJitterMs = 20.0
     }
+    $effSimFrameTimeoutExitSec = $SimFrameTimeoutExitSec
+    if ($Headless -and -not $PSBoundParameters.ContainsKey('SimFrameTimeoutExitSec')) {
+        $effSimFrameTimeoutExitSec = 90.0
+    }
     $visionArgs = @(
         "python3 sim/main.py",
         "--sim",
@@ -1208,19 +1335,26 @@ if ($NoDockerRun) {
         "--cmd-port $CmdPort",
         "--frame-port $FramePort",
         "--trt-engine '$TrtEngine'",
-        "--sim-frame-timeout-exit-sec $SimFrameTimeoutExitSec",
+        "--sim-frame-timeout-exit-sec $effSimFrameTimeoutExitSec",
         "--sim-latency-ms $effLatencyMs",
         "--sim-latency-jitter-ms $effLatencyJitterMs",
-        "--target-distance 0.45",
-        # Forward cap restored to the commit-02e441e value so the no-arg default
-        # reproduces the vision-mode parkour follow that ran there. (The 0.2 cap
-        # was tuned against command-mode self-tests; with vision self-steer the
-        # default, 0.85 matches the run the dog tracked the person in.)
-        "--trans-x-max 0.85",
+        # Follow standoff raised 0.45 -> 1.0 m to give MARGIN for the parkour policy's forward
+        # over-run: it surges to ~1.4 m/s even at a zero command (depth-driven), and at 0.45 m
+        # there was no room before contact (it collided). At ~1.0 m a surge has room to be caught
+        # by the soft-hold/tilt-release before reaching the person.
+        "--target-distance 1.0",
+        # Three-zone cruise/brake: cruise when far, hold within ±tolerance of target, brake when
+        # too close (forward-only; the parkour policy floors at ~0.5 m/s and ignores small commands).
+        "--trans-x-max 0.35",
         "--trans-x-tolerance 0.12",
         "--trans-x-alpha 0.65",
-        "--kp 1.1",
-        "--kd 0.15",
+        "--kp 2.0",
+        "--kd 0.0",
+        # follow-pace-distance small so the standoff controller stays in its FAR regime =
+        # CONTINUOUS gentle follow (advance toward the person at the policy floor, then HOLD in the
+        # standoff band) with no jarring advance/settle duty-cycle stutter. Collision margin comes
+        # from the larger --target-distance + the speed governor, not from a low duty-cycle average.
+        "--follow-pace-distance 0.5",
         "--ecs-log-dir /workspace/run_logs/debug/ecs",
         "--debug-trace-dir /workspace/run_logs/debug/debug_trace",
         # Write the OpenCV preview straight into videos/ (no preview-save-dir, which
@@ -1299,7 +1433,11 @@ if ($NoDockerRun) {
             Remove-Job -Job $isaacMonitorJob -Force -ErrorAction SilentlyContinue
         }
         $null = Stop-DockerContainer -ContainerName $DockerContainerName -Reason "launcher cleanup"
-        $null = Stop-IsaacProcess -Process $proc -Reason "Docker controller stopped"
+        # Warm mode leaves Isaac running for the next episode; only the one-shot path
+        # tears it down when the Docker controller stops.
+        if (-not $WarmIsaac) {
+            $null = Stop-IsaacProcess -Process $proc -Reason "Docker controller stopped"
+        }
     }
     if ($dockerExit -ne 0) {
         $null = Write-DockerFailureDiagnosis -LogPath $dockerLog

@@ -130,6 +130,21 @@ class ParkourPolicyConfig:
     speed_governor: bool = False
     speed_governor_overspeed_ratio: float = 1.8
     speed_governor_action_norm_max: float = 0.0
+    hold_ramp_sec: float = 0.25
+    hold_speed_threshold: float = 0.15
+    # Inertial-safe stop. A moving quadruped cannot be stopped by snapping its legs to a
+    # static stance: the forward momentum pitches the body over its planted feet (it can no
+    # longer step-catch) and it flips -- and this happens whether the blend plateaus or
+    # reaches a full lock (the static stance IS the nose-dive). The robust guard is a TILT
+    # RELEASE: blend toward a lock, but the instant the body pitches/rolls past
+    # hold_release_tilt_rad, ABORT the blend and hand the action back to the gait so the
+    # parkour policy can step-catch (it is trained to recover from large tilts). hold_decel_sec
+    # is the gentle ramp time while moving; hold_moving_max is retained for CLI compat (unused).
+    hold_decel_sec: float = 0.7
+    hold_moving_max: float = 0.6
+    hold_release_tilt_rad: float = 0.14
+
+
 
 
 class ParkourLocomotionPolicy:
@@ -205,6 +220,8 @@ class ParkourLocomotionPolicy:
         # the speed the policy THINKS it has against the measured body_vx (an estimate
         # that lags the true speed makes the frozen actor over-drive the gait).
         self._last_est_state: Optional[np.ndarray] = None
+        self.hold_strength = 0.0
+
 
         log_event(
             self.logger, logging.INFO, "parkour_policy_joint_map",
@@ -289,6 +306,8 @@ class ParkourLocomotionPolicy:
         self._last_target_policy = self.default_pos_policy.copy()
         self.last_targets_isaac = self._policy_to_isaac_vector(self.default_pos_policy)
         self._obs_latency_buffer.clear()
+        self.hold_strength = 0.0
+
 
     # -- depth -------------------------------------------------------------
 
@@ -370,6 +389,11 @@ class ParkourLocomotionPolicy:
         quat = self._base_quat_wxyz(articulation)
         ang_vel_phys = self._body_ang_vel(articulation, quat)  # rad/s, body frame
         roll, pitch = self._roll_pitch_from_quat(quat)
+        # Clean (pre-noise) body tilt, cached for the soft-hold safety release: if the body
+        # starts pitching/rolling over while the hold is blending the legs to stance, the hold
+        # must abort and hand control back to the gait so the policy can step-catch.
+        self._last_pitch = float(pitch)
+        self._last_roll = float(roll)
 
         q_isaac = safe_joint_vector(
             articulation, ("get_joint_positions",), len(self.dof_names))
@@ -432,8 +456,9 @@ class ParkourLocomotionPolicy:
             self._obs_latency_buffer, proprio, int(cfg.obs_latency_steps))
         return torch.from_numpy(proprio).to(self._device).unsqueeze(0)  # [1,53]
 
-    def _infer(self, articulation: Any, vx: float, foot_contacts, delta_yaw, *, stairs_active: bool = False) -> None:
+    def _infer(self, articulation: Any, vx: float, foot_contacts, delta_yaw, *, stairs_active: bool = False, hold: bool = False, body_speed: Optional[float] = None) -> None:
         cfg = self.config
+
         vx = float(max(0.0, float(vx)))
 
         # --- Speed governor: command-side backoff ---
@@ -513,6 +538,55 @@ class ParkourLocomotionPolicy:
                 action_np = action_np * scale
                 self._governor_action_scale = scale
 
+        # --- Soft-Hold action blending ---
+        ramp_rate = 1.0 / max(1e-4, float(cfg.hold_ramp_sec))
+        step_dt = self.interval_sec
+        
+        # Soft-hold engagement. A commanded stand (hold=True, i.e. a zero velocity
+        # command) must actually bring the robot to rest -- the frozen parkour policy
+        # does NOT self-decelerate at zero command, it keeps stepping forward, so the
+        # action blend toward the stance pose is the only brake. The blend ALWAYS ramps
+        # toward a FULL lock (1.0); the rate is gated on the MEASURED body speed (the
+        # policy's own est is biased high at rest):
+        #   * body slow (<= hold_speed_threshold): safe to snap -> ramp at the fast rate.
+        #   * body still moving: ramp at the GENTLE rate (over hold_decel_sec) so the body
+        #     decelerates as the blend strengthens and the lock COMPLETES.
+        # It is critical that the moving regime still reaches a FULL lock and does NOT
+        # plateau at a partial strength: a sustained PARTIAL blend at the policy's ~0.5 m/s
+        # speed floor never brings the body below hold_speed_threshold (so it can never
+        # full-lock), while the standing-stance blend under forward momentum pitches the
+        # body over its planted feet -- a positive feedback (pitch -> more drive -> more
+        # pitch) that runs away and flips it (observed run 20260619_002808 when capped at
+        # hold_moving_max=0.6: pitch ran 15->86 deg). Reaching the full lock zeros the
+        # action, which is what actually kills the forward drive and stops the runaway.
+        # (hold_moving_max is retained as a CLI/config field for compatibility but is no
+        # longer used here -- the moving regime now ramps to a full lock, just slower.)
+        tilt = max(abs(float(getattr(self, "_last_pitch", 0.0))),
+                   abs(float(getattr(self, "_last_roll", 0.0))))
+        hold_released = False
+        if hold:
+            est = getattr(self, "_last_est_state", None)
+            est_speed = math.hypot(float(est[0]), float(est[1])) if est is not None else 0.0
+            spd = float(body_speed) if body_speed is not None else est_speed
+            if tilt >= float(cfg.hold_release_tilt_rad):
+                # The blend-to-stance is tipping the body over (it can no longer step-catch with
+                # near-frozen legs). ABORT the hold and hand the action back to the gait fast so the
+                # parkour policy can plant a foot and recover; never keep blending into a nose-dive.
+                self.hold_strength = max(0.0, self.hold_strength - ramp_rate * step_dt)
+                hold_released = True
+            elif spd <= float(cfg.hold_speed_threshold):
+                # At rest and level: safe to snap to a full lock.
+                self.hold_strength = min(1.0, self.hold_strength + ramp_rate * step_dt)
+            else:
+                # Moving but still level: ramp toward a full lock gently so the body decelerates as
+                # the blend strengthens. The tilt release above bounds the pitch if it starts to tip.
+                gentle_rate = 1.0 / max(1e-4, float(cfg.hold_decel_sec))
+                self.hold_strength = min(1.0, self.hold_strength + gentle_rate * step_dt)
+        else:
+            self.hold_strength = max(0.0, self.hold_strength - ramp_rate * step_dt)
+        self._hold_released = hold_released
+        action_np = action_np * (1.0 - self.hold_strength)
+
         self.prev_action = action_np
         self._inference_count += 1
 
@@ -561,6 +635,8 @@ class ParkourLocomotionPolicy:
         foot_contacts: Optional[np.ndarray] = None,
         delta_yaw: Optional[float] = None,
         stairs_active: bool = False,
+        hold: bool = False,
+        body_speed: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Advance the policy. Runs inference at control_hz; applies torque every call."""
         self._accumulator += max(0.0, float(dt))
@@ -569,7 +645,7 @@ class ParkourLocomotionPolicy:
         if self._accumulator >= self.interval_sec:
             while self._accumulator >= self.interval_sec:
                 self._accumulator -= self.interval_sec
-            self._infer(articulation, vx, foot_contacts, delta_yaw, stairs_active=stairs_active)
+            self._infer(articulation, vx, foot_contacts, delta_yaw, stairs_active=stairs_active, hold=hold, body_speed=body_speed)
             ran_policy = True
         self._apply_torque_pd(articulation)
         return {
@@ -641,4 +717,7 @@ class ParkourLocomotionPolicy:
             "governor_action_scale": round(float(getattr(self, "_governor_action_scale", 1.0)), 3),
             # Active gait one-hot: "parkour" when stairs_active overrode config.mode, else config.mode.
             "active_gait_mode": str(getattr(self, "_last_active_gait_mode", self.config.mode)),
+            "hold_active": bool(self.hold_strength > 0.0),
+            "hold_strength": round(float(self.hold_strength), 3),
+            "hold_released": bool(getattr(self, "_hold_released", False)),
         }

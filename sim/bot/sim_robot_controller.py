@@ -41,12 +41,13 @@ class SimRobotController:
         return self._ready
     def move(self, vx: float, vy: float, wz: float, stairs_detected: bool = False,
              yaw_err: float = 0.0, person_bbox=None,
-             stairs_action_active: bool = False) -> None:
+             stairs_action_active: bool = False, hold: bool = False,
+             person_detected: bool = False, gap_m: Optional[float] = None) -> None:
         self._send(vx, vy, wz, stairs_detected, yaw_err, person_bbox,
-                   stairs_action_active)
+                   stairs_action_active, hold, person_detected, gap_m)
 
     def stop(self) -> None:
-        self._send(0.0, 0.0, 0.0, False, 0.0, None)
+        self._send(0.0, 0.0, 0.0, False, 0.0, None, False, True, False, None)
 
     def shutdown(self) -> None:
         self.stop()
@@ -65,7 +66,8 @@ class SimRobotController:
 
     def _send(self, vx: float, vy: float, wz: float, stairs_detected: bool = False,
               yaw_err: float = 0.0, person_bbox=None,
-              stairs_action_active: bool = False) -> None:
+              stairs_action_active: bool = False, hold: bool = False,
+              person_detected: bool = False, gap_m: Optional[float] = None) -> None:
         if not self._sock:
             return
         vx_raw = float(vx)
@@ -95,7 +97,10 @@ class SimRobotController:
         payload = json.dumps({"vx": vx, "vy": vy, "wz": wz, "yaw_err": float(yaw_err),
                               "stairs_detected": stairs_detected,
                               "stairs_action_active": bool(stairs_action_active),
-                              "person_bbox": _pbb}).encode()
+                              "person_bbox": _pbb,
+                              "hold": bool(hold),
+                              "person_detected": bool(person_detected),
+                              "gap_m": float(gap_m) if gap_m is not None else None}).encode()
         try:
             self._sock.sendto(payload, (self._host, self._port))
             self._total_sent += 1

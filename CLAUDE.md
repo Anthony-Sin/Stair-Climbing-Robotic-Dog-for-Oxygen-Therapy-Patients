@@ -135,6 +135,10 @@ Do NOT include directory trees, tech stack summaries, style guides, obvious best
 **LESSON:** Update `_BBOX_TO_DEPTH_SCALE_H/V` and the UDP fixed-size datagram together.
 **WHY:** One-sided changes silently drop the mask across the process boundary.
 
+**TRIGGER:** Robot overshoots target distance, walks past the person, and takes several seconds to stop.
+**LESSON:** The cruise-and-brake model in `person_follower.py` must have THREE zones: far→cruise, at-target→stop (cmd=0), too-close→brake. The old two-zone condition (`distance_error >= -tolerance → cruise`) made the robot always walk forward even when exactly at the target. Also verify kp satisfies `kp >= cruise / (target - tolerance - min_safe_depth)` or braking can never reach zero. Pacing (`follow_pace_distance`) must be set large (10.0) in sim to avoid 1.5 s settle stalls.
+**WHY:** Two-zone cruise-and-brake has no "hold at target" state. With target=0.45 m, kp=0.8, the brake formula can never produce zero output before the robot contacts the person.
+
 ---
 
 ## 9. Testing & Verification

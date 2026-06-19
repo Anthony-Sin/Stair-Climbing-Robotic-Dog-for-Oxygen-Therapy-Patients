@@ -51,6 +51,12 @@ if /I "%ARG%"=="--stair-square-up" set "ARG=-StairSquareUp"
 if /I "%ARG%"=="--with-o2-payload" set "ARG=-WithO2Payload"
 if /I "%ARG%"=="--no-parkour-walk-mode" set "ARG=-NoParkourWalkMode"
 if /I "%ARG%"=="--no-speed-governor" set "ARG=-NoSpeedGovernor"
+if /I "%ARG%"=="--headless" set "ARG=-Headless"
+if /I "%ARG%"=="--fast-render" set "ARG=-FastRender"
+if /I "%ARG%"=="--warm" set "ARG=-WarmIsaac"
+if /I "%ARG%"=="--warm-isaac" set "ARG=-WarmIsaac"
+if /I "%ARG%"=="--warm-shutdown" set "ARG=-WarmShutdown"
+if /I "%ARG%"=="--warm-max-runs" set "ARG=-WarmMaxRuns"
 set "PS_ARGS=%PS_ARGS% "%ARG%""
 shift
 goto parse_args

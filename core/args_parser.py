@@ -224,8 +224,11 @@ def parse_args():
                         help='Gain mapping leader speed to standoff distance offset')
     parser.add_argument('--follow-standoff-band-in', type=float, default=-0.15,
                         help='Hysteresis stop band offset relative to standoff target')
-    parser.add_argument('--follow-standoff-band-out', type=float, default=0.15,
-                        help='Hysteresis start band offset relative to standoff target')
+    parser.add_argument('--follow-standoff-band-out', type=float, default=0.35,
+                        help='Hysteresis start band offset relative to standoff target. Widened '
+                             'from 0.15 so a floor-speed burst overshoots the slow leader drift '
+                             'and settles well inside the band instead of immediately re-triggering '
+                             'a go state (the frozen policy cannot burst gently).')
     parser.add_argument('--no-follow-gait-gate', dest='follow_gait_gate',
                         action='store_false', default=True,
                         help='Disable keypoint/speed gait follow gating')
@@ -236,11 +239,51 @@ def parse_args():
     parser.add_argument('--follow-pace-distance', type=float, default=2.0,
                         help='Distance threshold (meters) where approach pacing engages')
     parser.add_argument('--follow-pace-speed', type=float, default=0.4,
-                        help='Maximum forward speed command (m/s) under approach pacing')
+                        help='Desired forward speed command (m/s) for a pacing burst. Raised to the '
+                             'policy floor when it sits below it (see --follow-pace-floor-speed): '
+                             'the frozen parkour policy has no trained behaviour below ~0.2 m/s and '
+                             'over-runs slow commands, so a burst below the floor is meaningless.')
+    parser.add_argument('--follow-pace-floor-speed', type=float, default=0.5,
+                        help='Forward command (m/s) issued during the duty-cycle ADVANCE phase: the '
+                             'real motion floor of the frozen policy. The duty cycle bursts at this '
+                             'speed then settles to zero, so the time-AVERAGE can sit below the floor '
+                             'and track a slow-walking patient without creeping into them. The burst '
+                             'speed is max(this, --follow-pace-speed).')
     parser.add_argument('--follow-pace-advance-time', type=float, default=2.0,
                         help='Duration (seconds) of the advance phase during pacing')
     parser.add_argument('--follow-pace-settle-time', type=float, default=1.5,
                         help='Duration (seconds) of the settle/hold phase during pacing')
+    parser.add_argument('--follow-stop-ramp-sec', type=float, default=0.7,
+                        help='Momentum-aware stop (Method 3). On a flat-ground stop decision the '
+                             'forward command is ramped from the floor speed down to zero over this '
+                             'many seconds instead of stepping to 0, so the frozen policy keeps '
+                             'stepping and catches its forward momentum (capture step) rather than '
+                             'being slammed into a stance blend at speed -- which pitches it over. '
+                             'Longer = gentler but more forward creep before the stop; shorter = '
+                             'snappier but risks the flip. Disabled on stairs.')
+    parser.add_argument('--follow-stop-ramp-eps', type=float, default=0.05,
+                        help='Forward command (m/s) below which the stop ramp is considered complete '
+                             'and the stance-lock hold may be asserted (Method 3 hold gating). Until '
+                             'the ramp bleeds the command below this, hold stays False so the gait '
+                             'stays alive.')
+    parser.add_argument('--carrot-follow', action='store_true', default=False,
+                        help='Carrot / virtual-target steering (Method 1, opt-in, OFF by default). '
+                             'On flat ground, aim the parkour heading at a breadcrumb point one '
+                             'standoff BEHIND the person instead of straight at them, so the robot '
+                             'follows their path and does not cut the inside of a turn toward them. '
+                             'Heading-only (does not touch vx); auto-suppressed on stairs (depth '
+                             'self-steer owns footholds). Controller-side ego-motion registration is '
+                             'approximate (body yaw rate is not observed; the policy over-runs the '
+                             'forward command), so enable only after verifying the speed-control '
+                             'fixes and treat as experimental path-quality tuning.')
+    parser.add_argument('--carrot-standoff-m', type=float, default=0.0,
+                        help='Arc-length (m) behind the person to place the carrot point. 0 (default) '
+                             'uses the live speed-adaptive standoff (standoff_target_m).')
+    parser.add_argument('--carrot-trail-len-m', type=float, default=2.5,
+                        help='Arc-length cap (m) of the breadcrumb FIFO used by --carrot-follow.')
+    parser.add_argument('--carrot-min-leader-speed', type=float, default=0.25,
+                        help='Below this leader ground speed (m/s) the carrot falls back to the '
+                             'direct person bearing (a near-stationary person has no path to track).')
 
     # -----------------------------------------------------------------------
     # Stairs and obstacle gating
@@ -249,6 +292,10 @@ def parse_args():
                         help='Window size for temporal consistency in stairs detection')
     parser.add_argument('--stairs-consistency-required', type=int, default=3,
                         help='Positive stair detections required inside the consistency window')
+    parser.add_argument('--stairs-confidence', type=float, default=0.40,
+                        help='YOLO-World confidence threshold for a stair detection. Raised from the '
+                             '0.20 model default so a distant staircase (or the person) does not latch '
+                             'stairs mode several metres before the dog reaches the steps')
     parser.add_argument('--stairs-latch-frames', type=int, default=40,
                         help='Frames to keep stairs_detected true after a consistent positive detection')
     parser.add_argument('--stair-near-distance', type=float, default=1.2,
@@ -276,6 +323,12 @@ def parse_args():
                         help='Follow standoff (m) used while stairs are detected (default 1.2). '
                              'Kept below --target-distance so the dog stays close enough to '
                              'the person to keep climbing without losing the visual lock.')
+    parser.add_argument('--stair-follow-bearing-scale', type=float, default=0.4,
+                        help='Scale factor for follow bearing injected in hybrid mode on stairs')
+    parser.add_argument('--hold-ramp-sec', type=float, default=0.25,
+                        help='Ramp time in seconds to blend policy action to stance pose during soft hold')
+    parser.add_argument('--stairs-model', type=str, default='yolov8x-worldv2.pt',
+                        help='Path to YOLO-World model for stairs detection')
     parser.add_argument('--parkour-yaw-deadband-deg', type=float, default=2.0,
                         help='Deadband (deg) on the parkour heading (delta_yaw) command: bearing '
                              'errors within this are sent as zero so bbox jitter does not micro-steer '
@@ -343,6 +396,7 @@ def parse_args():
         int(args.stairs_consistency_required),
         int(args.stairs_consistency_frames),
     ))
+    args.stairs_confidence = min(1.0, max(0.0, float(args.stairs_confidence)))
     args.stairs_latch_frames = max(0, int(args.stairs_latch_frames))
     args.stair_near_distance = max(0.0, float(args.stair_near_distance))
     args.stair_speed_scale = min(1.0, max(0.0, float(args.stair_speed_scale)))
@@ -352,6 +406,8 @@ def parse_args():
     args.stair_rot_max = max(0.0, float(args.stair_rot_max))
     args.stair_yaw_deadband_deg = max(0.0, float(args.stair_yaw_deadband_deg))
     args.stair_target_distance = max(0.0, float(args.stair_target_distance))
+    args.stair_follow_bearing_scale = max(0.0, float(args.stair_follow_bearing_scale))
+    args.hold_ramp_sec = max(0.0, float(args.hold_ramp_sec))
     args.follow_start_delay = max(0.0, float(args.follow_start_delay))
     args.parkour_yaw_deadband_deg = max(0.0, float(args.parkour_yaw_deadband_deg))
     args.parkour_yaw_slew_rad_s = max(0.0, float(args.parkour_yaw_slew_rad_s))

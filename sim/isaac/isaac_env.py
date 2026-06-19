@@ -26,6 +26,22 @@ from sim_logging_utils import configure_sim_logger, log_event
 
 parser = argparse.ArgumentParser(description="Isaac Sim Go2 environment")
 parser.add_argument("--headless", action="store_true", help="Run without GUI")
+parser.add_argument("--fast-render", action="store_true",
+                    help="Use the lighter RaytracedLighting renderer instead of the "
+                         "default RealTimePathTracing. Cuts Kit/RTX boot and per-frame "
+                         "cost for fast test iteration at the price of slightly less "
+                         "photorealistic recorded video. Off by default.")
+parser.add_argument("--warm-isaac", action="store_true",
+                    help="Warm-iteration mode: keep THIS Kit process alive (the ~120s RTX "
+                         "boot is paid once) and rebuild the scene per episode on command "
+                         "instead of exiting. Driven by --warm-command-file from "
+                         "run_sim_warm.ps1; the default one-shot path is unaffected.")
+parser.add_argument("--warm-command-file", type=str, default="",
+                    help="Path to the JSON sentinel the warm launcher writes to drive "
+                         "episodes: {seq:int, action:'begin'|'shutdown', run_dir:str}.")
+parser.add_argument("--warm-max-runs", type=int, default=10,
+                    help="Self-reboot after this many warm episodes so slow GPU/stage "
+                         "leaks can't accumulate; the launcher then boots a fresh Kit.")
 parser.add_argument("--cmd-port", type=int, default=55001,
                     help="UDP port for incoming velocity commands")
 parser.add_argument("--frame-port", type=int, default=55002,
@@ -47,18 +63,16 @@ parser.add_argument("--record-every", type=int, default=3,
                          "command loop stay on --render-every). With --physics-hz 200, "
                          "3 -> ~66 fps recording vs ~28 fps perception. The extra renders only "
                          "cost GPU wall-clock; physics still steps every frame at --physics-hz.")
-parser.add_argument("--person-x", type=float, default=1.4,
-                    help="Initial X position of the person target (kept well beyond "
-                         "target_distance from the robot so the robot has forward-follow "
-                         "room on flat ground before the stairs at x=2.0)")
+parser.add_argument("--person-x", type=float, default=-3.5,
+                    help="Initial X position of the person target. Default -3.5 gives "
+                         "~15 seconds of flat-ground following at 0.35 m/s before the "
+                         "stairs at x≈2.0 (distance: 5.5 m / 0.35 m/s = 15.7 s).")
 parser.add_argument("--person-y", type=float, default=0.0,
                     help="Initial Y position of the person target")
-parser.add_argument("--go2-x", type=float, default=0.35,
-                    help="Initial X position of the Go2 robot. Must be strictly farther "
-                         "than target_distance behind the person (here ~1.05 m of "
-                         "separation) — do NOT set it to person_x - target_distance, "
-                         "which puts the person exactly at the stop distance and makes "
-                         "depth noise trip the no-reverse hold so the robot looks stuck.")
+parser.add_argument("--go2-x", type=float, default=-4.5,
+                    help="Initial X position of the Go2 robot. Default -4.5 keeps a "
+                         "~1.0 m separation from the person at -3.5, giving the robot "
+                         "room to establish cruise-speed following before the stairs.")
 parser.add_argument("--person-move", action="store_true",
                     help="Make the person walk a simple patrol path")
 parser.add_argument("--frame-host", type=str, default='0.0.0.0',
@@ -103,7 +117,7 @@ parser.add_argument("--parkour-depth-noise-mult", type=float, default=0.0,
                          "shadows + range holes) the YOLO/fusion stream already uses, so the "
                          "perceptive policy sees the noisy depth the real camera produces. "
                          "Set by the --sim2real-validation-cam preset to 1.0 (nominal D435).")
-parser.add_argument("--parkour-heading-mode", type=str, default="vision",
+parser.add_argument("--parkour-heading-mode", type=str, default="hybrid",
                     choices=("vision", "command", "hybrid"),
                     help="Parkour steering: 'vision' (policy self-steers from depth), "
                          "'command' (always steer toward the person-follow bearing), or "
@@ -136,8 +150,8 @@ parser.add_argument("--parkour-mask-fill", type=str, default="terrain",
 parser.add_argument("--no-speed-governor", action="store_false", dest="speed_governor",
                     help="Disable the parkour speed governor (on by default). The governor is "
                          "a two-stage limiter: (1) command backoff when est_vel > vx_cmd * "
-                         "--speed-governor-overspeed-ratio, and (2) action-norm cap at "
-                         "--speed-governor-action-norm-max (8.0 = no jumping, normal walk ~4-6). "
+                         "--speed-governor-overspeed-ratio (default 1.3), and (2) action-norm cap "
+                         "at --speed-governor-action-norm-max (default 6.0; normal walk ~4-6). "
                          "Pass this flag to disable both stages for A/B or debug runs.")
 # Speed governor is ON by default: calmer gait, no jumping. Use --no-speed-governor to disable.
 parser.set_defaults(speed_governor=True)
@@ -151,17 +165,19 @@ parser.add_argument("--no-parkour-walk-mode", action="store_false", dest="parkou
                          "Walk mode is the default; pass this only for A/B or parkour testing.")
 # Walk mode ON by default: trained calm-walk one-hot. Use --no-parkour-walk-mode to disable.
 parser.set_defaults(parkour_walk_mode=True)
-parser.add_argument("--speed-governor-overspeed-ratio", type=float, default=1.8,
+parser.add_argument("--speed-governor-overspeed-ratio", type=float, default=1.3,
                     dest="speed_governor_overspeed_ratio",
                     help="Command-backoff trigger: if est_vel > vx_cmd * ratio, back off. "
-                         "1.8 = allow up to 80%% over-run before intervening. "
+                         "1.3 = allow up to 30%% over-run before intervening (tightened from 1.8 "
+                         "to curb the forward surge that closed the gap to the followed person). "
                          "Lower values = tighter speed control but more oscillation. "
                          "Only active with --speed-governor.")
-parser.add_argument("--speed-governor-action-norm-max", type=float, default=8.0,
+parser.add_argument("--speed-governor-action-norm-max", type=float, default=6.0,
                     dest="speed_governor_action_norm_max",
-                    help="Action-norm cap. Normal walking ~4-6, surging/jumping >10. "
-                         "8.0 clips aggressive gait without trimming a calm walk. "
-                         "0 disables the norm cap entirely. Only active with --speed-governor.")
+                    help="Action-norm cap. Normal walking ~4-6 (measured p50~1.6, p90~5.1), "
+                         "surging >6. 6.0 trims the aggressive surge spikes without clipping a "
+                         "calm walk. 0 disables the norm cap entirely. Only active with "
+                         "--speed-governor.")
 parser.add_argument("--with-o2-payload", action="store_true",
                     help="Attach the 3D-printed rail cradle + P2-E6 oxygen concentrator "
                          "to the Go2's back. Off by default so the base robot runs clean. "
@@ -222,6 +238,28 @@ parser.add_argument("--dr-lighting-pct", type=float, default=0.0,
                     help="Fractional +/- randomization of scene light intensity when --domain-rand "
                          "is set (0 = off). Stress-tests YOLO/pose/ReID against the lighting "
                          "variation the fixed sim lighting otherwise hides.")
+parser.add_argument("--stair-follow-bearing-scale", type=float, default=0.4,
+                    help="Scale factor for follow bearing injected in hybrid mode on stairs")
+parser.add_argument("--hold-ramp-sec", type=float, default=0.25,
+                    help="Ramp time in seconds to blend policy action to stance pose during soft hold")
+parser.add_argument("--hold-speed-threshold", type=float, default=0.15,
+                    help="Body speed (m/s) at or below which a commanded hold fully locks the legs "
+                         "to stance; above it the hold engages only partially so the robot "
+                         "decelerates instead of pitching over its planted feet")
+parser.add_argument("--hold-decel-sec", type=float, default=0.7,
+                    help="Time (s) over which the soft hold engages while the robot is still moving "
+                         "-- longer = gentler stop that bleeds momentum before the legs lock")
+parser.add_argument("--hold-moving-max", type=float, default=0.6,
+                    help="(Deprecated/unused) Former cap on soft-hold strength while moving. The "
+                         "hold now uses a tilt release instead (see --hold-release-tilt-rad); kept "
+                         "for CLI compatibility.")
+parser.add_argument("--hold-release-tilt-rad", type=float, default=0.14,
+                    help="Body tilt (rad, max of |pitch| and |roll|) at or above which a commanded "
+                         "soft hold ABORTS and hands the action back to the gait, so the policy can "
+                         "step-catch instead of nose-diving over its planted feet. ~0.14 rad = 8 deg "
+                         "(above normal walk tilt ~5-6 deg). Lower = aborts earlier/safer; too low "
+                         "trips on normal gait wobble and the robot never locks.")
+
 parser.add_argument("--sim2real-validation-cam", dest="sim2real_validation_cam", action="store_true", default=False,
                     help="REAL-SIMULATED ENV preset: validate the whole stack against realistic "
                          "sensing + actuation instead of the clean 'perfect env' default. Turns ON, "
@@ -392,11 +430,20 @@ log_event(
     log_path=getattr(LOGGER, "sim_log_path", ""),
 )
 
-simulation_app = SimulationApp({
+_sim_app_config = {
     "headless": args.headless,
     "width": 1280,
     "height": 720,
-})
+    # One discrete GPU on this box -> skip multi-GPU init (pure wasted boot time;
+    # Isaac's default is multi_gpu=True). Single-GPU is strictly correct here.
+    "multi_gpu": False,
+}
+if args.fast_render:
+    # Isaac's default renderer is RealTimePathTracing (heaviest RTX init + per-frame
+    # cost). RaytracedLighting is the lighter real-time mode; opt-in via --fast-render
+    # so default recorded-video fidelity is unchanged.
+    _sim_app_config["renderer"] = "RaytracedLighting"
+simulation_app = SimulationApp(_sim_app_config)
 
 # ---------------------------------------------------------------------------
 # Omniverse / Isaac imports (after SimulationApp is created)
@@ -590,6 +637,10 @@ _cmd_vel    = {
     "count": 0,
     "active_count": 0,
     "last_nonzero_ts": 0.0,
+    "hold": False,
+    "person_detected": False,
+    "gap_m": None,
+    "stairs_detected": False,
 }
 _running    = True
 _front_camera_smoothed_position = None
@@ -597,6 +648,15 @@ _front_camera_smoothed_position = None
 # In that case the camera moves with the body from physics, so the manual per-frame
 # tracker set_front_camera_local_pose() is a no-op (no EMA smoothing / synthetic shake).
 _using_go2_builtin_camera: bool = False
+
+# Warm-iteration mode (see --warm-isaac). The UDP command receiver thread and the
+# FramePublisher are created ONCE and reused across episodes; only the World/stage is
+# rebuilt per episode. These are inert unless --warm-isaac is set.
+_warm_cmd_thread_started = False
+_warm_publisher = None
+_warm_status_file = ""
+_warm_runs_served = 0
+_warm_current_seq = 0
 
 # ---------------------------------------------------------------------------
 # UDP command receiver  (background thread)
@@ -633,6 +693,11 @@ def _cmd_receiver_thread(port: int) -> None:
             # self-steers from depth while this is true. CONTRACT: encoder side is
             # sim/bot/sim_robot_controller.py _send -- update both together.
             stairs_action_active = bool(payload.get("stairs_action_active", False))
+            hold = bool(payload.get("hold", False))
+            person_detected = bool(payload.get("person_detected", False))
+            gap_m = payload.get("gap_m")
+            if gap_m is not None:
+                gap_m = float(gap_m)
             # Followed person's bbox in RGB-frame normalized [0,1] coords (or None
             # if no detection this frame). Forwarded so the parkour depth policy can
             # mask the person out of its depth input. List of 4 floats or None.
@@ -663,6 +728,9 @@ def _cmd_receiver_thread(port: int) -> None:
                 _cmd_vel["stairs_detected"] = stairs_detected
                 _cmd_vel["stairs_action_active"] = stairs_action_active
                 _cmd_vel["person_bbox"] = person_bbox
+                _cmd_vel["hold"] = hold
+                _cmd_vel["person_detected"] = person_detected
+                _cmd_vel["gap_m"] = gap_m
                 _cmd_vel["ts"] = time.monotonic()
                 _cmd_vel["count"] = int(_cmd_vel.get("count", 0)) + 1
                 cmd_count = int(_cmd_vel["count"])
@@ -2343,11 +2411,10 @@ def update_distractor(prim_path: str, dt: float) -> None:
 STAIR_LEAN_RAD = 0.10
 STAIR_BOB_AMP = 0.02
 
-# Patient walking pace. Kept just under the robot's caps (trans_x_max 0.85 m/s on
-# flat ground, * stair_speed_scale 0.45 -> ~0.38 m/s on stairs) so the follower
-# can actually keep up instead of crawling behind a too-slow target.
-PERSON_WALK_SPEED = 0.70   # flat ground (was 0.28)
-PERSON_STAIR_SPEED = 0.30  # stairs (was 0.16)
+# Patient walking pace. Matched to the robot cruise speed (trans_x_max 0.35 m/s)
+# so the follower can maintain a constant gap without accelerating to close it.
+PERSON_WALK_SPEED = 0.35   # flat ground — matches robot cruise speed
+PERSON_STAIR_SPEED = 0.25  # stairs (slow; robot in parkour mode handles it)
 
 
 def update_person_patrol(person, dt: float) -> None:
@@ -3324,6 +3391,11 @@ def _create_locomotion_policy(go2):
         speed_governor=bool(args.speed_governor),
         speed_governor_overspeed_ratio=float(args.speed_governor_overspeed_ratio),
         speed_governor_action_norm_max=float(args.speed_governor_action_norm_max),
+        hold_ramp_sec=float(args.hold_ramp_sec),
+        hold_speed_threshold=float(args.hold_speed_threshold),
+        hold_decel_sec=float(args.hold_decel_sec),
+        hold_moving_max=float(args.hold_moving_max),
+        hold_release_tilt_rad=float(args.hold_release_tilt_rad),
     )
     # Domain-randomization PD-gain perturbation around the nominal kp=40/kd=1.
     config.kp *= float(_DR.get("kp_mult", 1.0))
@@ -3343,6 +3415,10 @@ def _create_locomotion_policy(go2):
         speed_governor=bool(config.speed_governor),
         speed_governor_overspeed_ratio=round(float(config.speed_governor_overspeed_ratio), 3),
         speed_governor_action_norm_max=round(float(config.speed_governor_action_norm_max), 3),
+        hold_speed_threshold=round(float(config.hold_speed_threshold), 3),
+        hold_decel_sec=round(float(config.hold_decel_sec), 3),
+        hold_moving_max=round(float(config.hold_moving_max), 3),
+        hold_release_tilt_rad=round(float(config.hold_release_tilt_rad), 3),
     )
     return policy
 
@@ -3358,6 +3434,8 @@ def _step_go2_locomotion(
     stairs_detected: bool = False,
     yaw_err: float = 0.0,
     stairs_action_active: bool = False,
+    person_bbox: Optional[list] = None,
+    hold: bool = False,
 ) -> None:
     vx = max(0.0, float(vx))
     if rl_policy is None:
@@ -3378,13 +3456,31 @@ def _step_go2_locomotion(
     # bearing on flat ground but hands back to depth self-steer once the climb
     # engages (stairs_action_active) -- pass delta_yaw=None there so the policy's
     # vision-yaw drives and the follow bearing never fights foothold selection.
+    # We change this to: if on stairs and the person is detected (person_bbox is not None),
+    # inject a damped, clamped person bearing so it is biased toward the person.
     heading_mode = str(getattr(getattr(rl_policy, "config", None), "heading_mode", "vision"))
     if heading_mode == "hybrid" and bool(stairs_action_active):
-        delta_yaw = None
+        if person_bbox is not None:
+            stair_follow_bearing_scale = float(getattr(args, "stair_follow_bearing_scale", 0.4))
+            delta_yaw = float(yaw_err) * stair_follow_bearing_scale
+            stair_rot_max = float(getattr(args, "stair_rot_max", 0.6))
+            delta_yaw = float(np.clip(delta_yaw, -stair_rot_max, stair_rot_max))
+        else:
+            delta_yaw = None
     else:
         delta_yaw = float(yaw_err)
+    # Measured horizontal body speed for the inertial-safe stop: the policy must not
+    # hard-lock its legs while still moving (that pitches it over its planted feet and
+    # flips it). Use the true base velocity here; the real robot supplies the
+    # equivalent from its state estimator.
+    try:
+        _bv = go2.get_linear_velocity()
+        body_speed = float(math.hypot(float(_bv[0]), float(_bv[1]))) if _bv is not None else None
+    except Exception:
+        body_speed = None
     telemetry = rl_policy.step(go2, (vx, vy, wz), dt, delta_yaw=delta_yaw,
-                               stairs_active=bool(stairs_detected))
+                               stairs_active=bool(stairs_detected), hold=hold,
+                               body_speed=body_speed)
     # The policy just moved the joints; capture its real per-leg command so the
     # stair-demo telemetry and HUD reflect what the policy actually did this step.
     _go2_locomotion_state.leg_summary = rl_policy.leg_command_summary()
@@ -3659,6 +3755,7 @@ def _run_evaluation_and_save_images(
 # ---------------------------------------------------------------------------
 def main() -> None:
     global _running, _camera_mount_update_warned, _final_scene_handle
+    global _warm_cmd_thread_started, _warm_publisher
 
     log_event(LOGGER, logging.INFO, "world_build_start", "Building Isaac world")
     world = build_world(args.physics_hz)
@@ -3723,13 +3820,24 @@ def main() -> None:
         log_event(LOGGER, logging.WARNING, "calf_prims_cache_failed", "Failed to cache calf/foot prims", error=str(exc))
 
     view_camera = None
-    if stage is not None and not args.headless and not args.no_view_follow_camera:
+    follow_view_camera = None
+    if stage is not None and not args.no_view_follow_camera:
         view_camera = ViewFollowCameraRig(
             stage,
             distance_m=args.view_camera_distance,
             height_m=args.view_camera_height,
             side_offset_m=args.view_camera_side_offset,
         )
+        if args.headless and args.log_dir:
+            try:
+                follow_view_camera = Camera(prim_path=view_camera.path, name="follow_view_camera", resolution=(1280, 720))
+                log_event(LOGGER, logging.INFO, "follow_view_camera_created",
+                          "Follow-view Camera sensor created for headless recording",
+                          camera_path=view_camera.path)
+            except Exception as _fvc_exc:
+                log_event(LOGGER, logging.WARNING, "follow_view_camera_failed",
+                          "Could not create follow-view Camera sensor; follow_view.mp4 will be skipped",
+                          error=str(_fvc_exc))
 
     if stage is None:
         raise RuntimeError("USD stage is unavailable; cannot create the Go2 front camera")
@@ -3780,6 +3888,18 @@ def main() -> None:
                       "Scene Left camera init failed; scene_view.mp4 recording will be skipped",
                       error=str(_sl_exc))
             scene_left_camera = None
+
+    if follow_view_camera is not None:
+        try:
+            follow_view_camera.initialize()
+            follow_view_camera.add_rgb_to_frame()
+            log_event(LOGGER, logging.INFO, "follow_view_camera_initialized",
+                      "Follow-view camera sensor initialized for headless recording")
+        except Exception as _fvc_init_exc:
+            log_event(LOGGER, logging.WARNING, "follow_view_camera_init_failed",
+                      "Follow-view camera init failed; follow_view.mp4 recording will be skipped",
+                      error=str(_fvc_init_exc))
+            follow_view_camera = None
 
     # After world.reset() the articulation is fully initialised; set the Go2
     # joints to the standing pose so the robot doesn't collapse.
@@ -3847,15 +3967,27 @@ def main() -> None:
         locomotion_policy_active=bool(rl_policy is not None),
     )
 
-    # Start background thread for receiving velocity commands
-    cmd_thread = threading.Thread(
-        target=_cmd_receiver_thread,
-        args=(args.cmd_port,),
-        daemon=True,
-    )
-    cmd_thread.start()
+    # Start background thread for receiving velocity commands. The receiver binds a
+    # UDP port and writes into the module-global _cmd_vel; in warm mode it must start
+    # exactly once and stay alive across episodes (re-binding per episode would fail).
+    # Default path: always the first call, so behaviour is identical.
+    if not _warm_cmd_thread_started:
+        cmd_thread = threading.Thread(
+            target=_cmd_receiver_thread,
+            args=(args.cmd_port,),
+            daemon=True,
+        )
+        cmd_thread.start()
+        _warm_cmd_thread_started = True
 
-    publisher  = FramePublisher(host=args.frame_host, port=args.frame_port)
+    # Reuse one FramePublisher across warm episodes (it owns a UDP socket); the default
+    # one-shot path still creates and closes it per run.
+    if args.warm_isaac:
+        if _warm_publisher is None:
+            _warm_publisher = FramePublisher(host=args.frame_host, port=args.frame_port)
+        publisher = _warm_publisher
+    else:
+        publisher = FramePublisher(host=args.frame_host, port=args.frame_port)
     ros2_bridge_sender = (
         Ros2BridgeCloudSender(args.ros2_bridge_host, args.ros2_bridge_port)
         if args.ros2_bridge else None
@@ -3901,6 +4033,14 @@ def main() -> None:
     else:
         raw_video_path = ""
 
+    # Follow-view video (headless only): records the robot-tracking chase camera to follow_view.mp4
+    follow_view_video_path = os.path.join(_log_bucket(args.log_dir, "videos"), "follow_view.mp4") if (follow_view_camera is not None and args.log_dir) else ""
+    follow_view_video_writer = None
+    if follow_view_video_path:
+        fv_video_dir = os.path.dirname(follow_view_video_path)
+        if fv_video_dir:
+            os.makedirs(fv_video_dir, exist_ok=True)
+
     # Simulated Hesai XT16 LiDAR: real PhysX raycasts against the scene geometry,
     # rendered to log_dir/lidar_preview.mp4 (BEV scatter + range image). Scanned at
     # --lidar-hz, throttled relative to the camera render rate.
@@ -3940,7 +4080,7 @@ def main() -> None:
                   azimuth_step_deg=lidar_config.azimuth_step_deg)
 
     # Stale command timeout: stop robot if no command received for this long
-    CMD_TIMEOUT_SEC = 1.0
+    CMD_TIMEOUT_SEC = 10.0 if args.headless else 2.0
     motion_wait_logged = False
     motion_start_logged = False
 
@@ -3971,10 +4111,13 @@ def main() -> None:
     # topdown/scene_view recording surfaces in the logs instead of producing no mp4 silently.
     _topdown_empty_record_ticks = 0
     _raw_empty_record_ticks = 0
+    _follow_view_empty_record_ticks = 0
     _topdown_starved_logged = False
     _raw_starved_logged = False
+    _follow_view_starved_logged = False
     _topdown_codec_failed_logged = False
     _raw_codec_failed_logged = False
+    _follow_view_codec_failed_logged = False
     DEMO_SIM_TIMEOUT_SEC = 120.0
     ROBOT_STAIR_VISIBLE_HOLD_SEC = 8.0
 
@@ -3989,7 +4132,27 @@ def main() -> None:
             # not have to draw 200 fps. The camera frame block below uses the same
             # cadence, so a fresh render is available exactly when it reads RGB.
             step_count += 1
-            _render_enabled = (not args.headless) or bool(args.front_cam_out)
+            # Warm-iteration mode: end this episode when the launcher preempts it (the
+            # Docker controller for this run exited and the launcher wrote the next
+            # command), and refresh the liveness heartbeat so a busy warm Isaac is not
+            # mistaken for dead. No-op on the default one-shot path.
+            if args.warm_isaac and (step_count % 30 == 0):
+                _warm_write_status("running")
+                if _warm_should_abort_episode():
+                    log_event(LOGGER, logging.INFO, "warm_episode_preempted",
+                              "New warm command observed; ending episode for the next run")
+                    break
+            # Headless means "no GUI window", not "no renderer".  A normal
+            # full-stack headless run still has to render the Go2 RGB camera so
+            # FramePublisher can feed the Docker vision/controller process.  Only
+            # the Isaac-only locomotion self-test has no camera consumer and may
+            # safely skip rendering unless an explicit camera output requested it.
+            _render_enabled = (
+                (not args.headless)
+                or (not args.self_test_walk)
+                or bool(args.front_cam_out)
+                or (follow_view_camera is not None)
+            )
             # Perception/control reads RGB on --render-every. The recording cameras
             # (topdown + scene_view) capture on the finer --record-every once recording
             # is released, so render on the UNION of the two cadences: a fresh RTX frame
@@ -4020,6 +4183,9 @@ def main() -> None:
                     stairs_action_active = False
                     person_bbox = None
                     command_fresh = False
+                    hold = True
+                    person_detected = False
+                    gap_m = None
                 else:
                     vx = _cmd_vel["vx"]
                     vy = _cmd_vel["vy"]
@@ -4029,6 +4195,9 @@ def main() -> None:
                     stairs_action_active = _cmd_vel.get("stairs_action_active", False)
                     person_bbox = _cmd_vel.get("person_bbox", None)
                     command_fresh = True
+                    hold = _cmd_vel.get("hold", False)
+                    person_detected = _cmd_vel.get("person_detected", False)
+                    gap_m = _cmd_vel.get("gap_m")
             # Self-test: bypass the Docker/vision controller entirely and drive a
             # constant forward command straight into the locomotion policy. Lets us
             # verify flat-ground walking and balance in isolation (headless, no UDP).
@@ -4136,12 +4305,13 @@ def main() -> None:
             elif controller_ready and nonzero_command_fresh:
                 _step_go2_locomotion(go2, rl_policy, vx, vy, wz, dt,
                                      stairs_detected=stairs_detected, yaw_err=yaw_err,
-                                     stairs_action_active=stairs_action_active)
+                                     stairs_action_active=stairs_action_active,
+                                     person_bbox=person_bbox, hold=hold)
             else:
                 # Demo running, momentarily no fresh command: hold a balanced stand
                 # with the policy (the robot has already started walking, so do not
                 # re-freeze -- that would teleport it back).
-                _step_go2_locomotion(go2, rl_policy, 0.0, 0.0, 0.0, dt, stairs_detected=False)
+                _step_go2_locomotion(go2, rl_policy, 0.0, 0.0, 0.0, dt, stairs_detected=False, hold=True)
 
             # Domain-randomization push disturbances: periodically shove the base
             # with a random horizontal velocity impulse to test the policy's
@@ -4337,6 +4507,13 @@ def main() -> None:
                             # fed an under-reported speed (=> over-drives the gait).
                             est_lin_vel=policy_diag.get("est_lin_vel"),
                             inferences=policy_diag.get("inference_count"),
+                            person_detected=bool(person_detected),
+                            gap_m=round(float(gap_m), 3) if gap_m is not None else None,
+                            stairs_detected=bool(stairs_detected),
+                            hold_request=bool(hold),
+                            hold_active=policy_diag.get("hold_active"),
+                            hold_strength=policy_diag.get("hold_strength"),
+                            hold_released=policy_diag.get("hold_released"),
                         )
                     if not robot_fallen_now:
                         robot_fall_since_sim_sec = None
@@ -4698,6 +4875,61 @@ def main() -> None:
                                       "Scene_view recording capture raised; scene_view.mp4 may be empty",
                                       error=str(_raw_exc))
 
+                # Follow-view chase camera recording -> follow_view.mp4 (headless mode)
+                if follow_view_camera is not None and follow_view_video_path:
+                    try:
+                        import cv2 as _cv2_fv
+                        fv_rgb = follow_view_camera.get_rgb()
+                        fv_arr = np.asarray(fv_rgb) if fv_rgb is not None else None
+                        if fv_arr is not None and fv_arr.size != 0:
+                            if fv_arr.ndim == 3 and fv_arr.shape[2] == 4:
+                                fv_arr = fv_arr[:, :, :3]
+                            fv_bgr = _cv2_fv.cvtColor(fv_arr.astype(np.uint8), _cv2_fv.COLOR_RGB2BGR)
+                            fv_bgr = _downscale_for_recording(fv_bgr)
+                            if follow_view_video_writer is None:
+                                fv_h, fv_w = fv_bgr.shape[:2]
+                                import platform as _fv_plat
+                                _fv_codecs = ("avc1", "mp4v") if _fv_plat.system() == "Windows" else ("mp4v",)
+                                _fvvw = None
+                                for _codec in _fv_codecs:
+                                    _fvvw = _cv2_fv.VideoWriter(
+                                        follow_view_video_path,
+                                        _cv2_fv.VideoWriter_fourcc(*_codec),
+                                        max(1.0, record_fps),
+                                        (int(fv_w), int(fv_h)),
+                                    )
+                                    if _fvvw.isOpened():
+                                        break
+                                    _fvvw.release(); _fvvw = None
+                                if _fvvw is not None and _fvvw.isOpened():
+                                    follow_view_video_writer = _fvvw
+                                    log_event(LOGGER, logging.INFO, "follow_view_video_started",
+                                              "Follow-view chase camera recording started",
+                                              path=follow_view_video_path, fps=round(float(record_fps), 2),
+                                              resolution=f"{int(fv_w)}x{int(fv_h)}")
+                                elif not _follow_view_codec_failed_logged:
+                                    _follow_view_codec_failed_logged = True
+                                    log_event(LOGGER, logging.WARNING, "follow_view_recording_codec_failed",
+                                              "No codec could open the follow_view VideoWriter; follow_view.mp4 will be missing.",
+                                              codecs_tried=list(_fv_codecs),
+                                              resolution=f"{int(fv_w)}x{int(fv_h)}",
+                                              fps=round(float(record_fps), 2))
+                            if follow_view_video_writer is not None:
+                                follow_view_video_writer.write(fv_bgr)
+                        elif follow_view_video_writer is None:
+                            _follow_view_empty_record_ticks += 1
+                            if not _follow_view_starved_logged and _follow_view_empty_record_ticks == 30:
+                                _follow_view_starved_logged = True
+                                log_event(LOGGER, logging.WARNING, "follow_view_recording_starved",
+                                          "Follow-view camera returned no frame on 30 record ticks; follow_view.mp4 will be empty.",
+                                          empty_record_ticks=int(_follow_view_empty_record_ticks))
+                    except Exception as _fv_exc:
+                        if not _follow_view_starved_logged:
+                            _follow_view_starved_logged = True
+                            log_event(LOGGER, logging.WARNING, "follow_view_recording_failed",
+                                      "Follow-view recording capture raised; follow_view.mp4 may be empty",
+                                      error=str(_fv_exc))
+
         # After loop exits, run evaluation and capture final image
         if evaluation_done or (_robot_positions_over_time or _person_positions_over_time):
             _run_evaluation_and_save_images(
@@ -4713,8 +4945,12 @@ def main() -> None:
     except KeyboardInterrupt:
         log_event(LOGGER, logging.INFO, "keyboard_interrupt", "KeyboardInterrupt - shutting down")
     finally:
-        _running = False
-        publisher.close()
+        # Warm mode keeps the receiver thread + publisher + Kit alive for the next
+        # episode; the one-shot path tears everything down here. The video writers
+        # are released in BOTH modes so each episode's mp4s finalize into its folder.
+        if not args.warm_isaac:
+            _running = False
+            publisher.close()
         if topdown_video_writer is not None:
             try:
                 topdown_video_writer.release()
@@ -4746,9 +4982,195 @@ def main() -> None:
                       "scene_view.mp4 was never recorded: the scene_view render product returned no frame on every record tick",
                       empty_record_ticks=int(_raw_empty_record_ticks),
                       locomotion_mode="parkour")
-        simulation_app.close()
-        log_event(LOGGER, logging.INFO, "simulation_shutdown", "Simulation shutdown completed")
+        if follow_view_video_writer is not None:
+            try:
+                follow_view_video_writer.release()
+                log_event(LOGGER, logging.INFO, "follow_view_video_saved", "Follow-view chase camera recording finalized",
+                          path=follow_view_video_path)
+            except Exception:
+                pass
+        elif follow_view_video_path and _follow_view_empty_record_ticks > 0:
+            log_event(LOGGER, logging.WARNING, "follow_view_recording_missing",
+                      "follow_view.mp4 was never recorded: the follow-view render product returned no frame on every record tick",
+                      empty_record_ticks=int(_follow_view_empty_record_ticks))
+        if not args.warm_isaac:
+            simulation_app.close()
+            log_event(LOGGER, logging.INFO, "simulation_shutdown", "Simulation shutdown completed")
+
+
+# ---------------------------------------------------------------------------
+# Warm-iteration mode (--warm-isaac): keep the booted Kit process alive and
+# rebuild the scene per episode on launcher command, so the ~120s RTX boot is
+# paid once instead of every test run. The default one-shot path above is
+# untouched; everything here runs only when --warm-isaac is set.
+# ---------------------------------------------------------------------------
+def _warm_write_status(state: str) -> None:
+    """Write the liveness/heartbeat file the launcher polls to decide reuse-vs-boot."""
+    if not _warm_status_file:
+        return
+    try:
+        import json as _json
+        tmp = _warm_status_file + ".tmp"
+        with open(tmp, "w") as f:
+            _json.dump({
+                "pid": os.getpid(),
+                "state": state,
+                "runs_served": int(_warm_runs_served),
+                "seq": int(_warm_current_seq),
+                "heartbeat_ts": time.time(),
+            }, f)
+        os.replace(tmp, _warm_status_file)
+    except Exception:
+        pass
+
+
+def _warm_read_command():
+    """Read the launcher's command sentinel; return the dict or None."""
+    path = args.warm_command_file
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        import json as _json
+        with open(path) as f:
+            return _json.load(f)
+    except Exception:
+        return None
+
+
+def _warm_should_abort_episode() -> bool:
+    """True if the launcher has posted a newer command (next run) or a shutdown,
+    meaning the current episode should end so the next one can start."""
+    cmd = _warm_read_command()
+    if not cmd:
+        return False
+    if str(cmd.get("action", "")) == "shutdown":
+        return True
+    return int(cmd.get("seq", 0)) > int(_warm_current_seq)
+
+
+def _warm_retarget_logger(run_dir: str) -> None:
+    """Point the JSONL logger + args.log_dir (drives video/report paths) at the new
+    per-run folder. reset=True truncates the new isaac_env.jsonl so the launcher sees
+    exactly one fresh world_ready for THIS folder."""
+    global LOGGER
+    args.log_dir = run_dir
+    LOGGER = configure_sim_logger(
+        "isaac_env",
+        log_dir=(_log_bucket(run_dir, "debug") if run_dir else run_dir),
+        reset=True,
+        console=not args.quiet_console_log,
+    )
+
+
+def _warm_reset_state_for_new_episode() -> None:
+    """Reset the module-global state that carries across episodes and open a fresh USD
+    stage, so the next main() call composes a clean scene in the same warm Kit. The
+    UDP receiver thread and the FramePublisher are intentionally kept alive."""
+    global _go2_locomotion_state, _o2_payload_handle, _final_scene_handle
+    global _front_camera_smoothed_position, _using_go2_builtin_camera
+    global _camera_mount_update_warned, _final_scene_wall_camera_update_warned
+    global _distractor_t
+    _go2_locomotion_state = Go2LocomotionState()
+    _o2_payload_handle = None
+    _final_scene_handle = None
+    _front_camera_smoothed_position = None
+    _using_go2_builtin_camera = False
+    _camera_mount_update_warned = False
+    _final_scene_wall_camera_update_warned = False
+    _distractor_t = 0.0
+    if hasattr(update_final_scene_recording_cameras, "_logged_robot_pose"):
+        try:
+            del update_final_scene_recording_cameras._logged_robot_pose
+        except Exception:
+            pass
+    # Reset the cross-thread command state so the new episode's motion gate starts from
+    # zero (the receiver thread keeps running and writing into this same dict).
+    with _cmd_lock:
+        _cmd_vel.update({
+            "vx": 0.0, "vy": 0.0, "wz": 0.0, "yaw_err": 0.0,
+            "person_bbox": None, "ts": 0.0, "count": 0,
+            "active_count": 0, "last_nonzero_ts": 0.0,
+            "hold": False, "person_detected": False, "gap_m": None, "stairs_detected": False,
+        })
+    # Drop the old World singleton and open a fresh, empty stage so build_world() and
+    # the spawn helpers start clean (no leftover prims / stacked USD references).
+    try:
+        World.clear_instance()
+    except Exception:
+        pass
+    try:
+        import omni.usd
+        omni.usd.get_context().new_stage()
+        simulation_app.update()
+    except Exception as exc:
+        log_event(LOGGER, logging.WARNING, "warm_new_stage_failed",
+                  "Could not open a fresh stage for the next warm episode", error=str(exc))
+
+
+def _warm_run_loop() -> None:
+    """Boot-once driver: wait for the launcher's begin/shutdown commands, run one
+    main() episode per begin, and keep Kit alive between episodes. Self-reboots after
+    --warm-max-runs (or on episode failure) so the launcher transparently boots fresh."""
+    global _warm_status_file, _warm_runs_served, _warm_current_seq, _running
+    cmd_file = args.warm_command_file
+    _warm_status_file = (
+        os.path.join(os.path.dirname(cmd_file), "warm_status.json") if cmd_file else ""
+    )
+    last_seq = 0
+    log_event(LOGGER, logging.INFO, "warm_isaac_started",
+              "Warm Isaac is up; waiting for episode commands",
+              command_file=cmd_file, max_runs=int(args.warm_max_runs))
+    _warm_write_status("idle")
+
+    while simulation_app.is_running():
+        cmd = _warm_read_command()
+        if not cmd or int(cmd.get("seq", 0)) <= last_seq:
+            # Idle wait: keep Kit responsive and the heartbeat fresh.
+            simulation_app.update()
+            _warm_write_status("idle")
+            time.sleep(0.05)
+            continue
+        last_seq = int(cmd.get("seq", 0))
+        action = str(cmd.get("action", ""))
+        if action == "shutdown":
+            log_event(LOGGER, logging.INFO, "warm_shutdown_requested",
+                      "Warm Isaac received shutdown; closing Kit")
+            break
+        if action != "begin":
+            continue
+        run_dir = str(cmd.get("run_dir", ""))
+        _warm_current_seq = last_seq
+        _warm_write_status("running")
+        _warm_retarget_logger(run_dir)
+        _warm_reset_state_for_new_episode()
+        try:
+            main()
+        except Exception as exc:
+            log_event(LOGGER, logging.ERROR, "warm_episode_failed",
+                      "Warm episode raised; self-rebooting so the launcher boots fresh",
+                      error=str(exc))
+            break
+        _warm_runs_served += 1
+        _warm_write_status("idle")
+        if _warm_runs_served >= int(args.warm_max_runs):
+            log_event(LOGGER, logging.INFO, "warm_max_runs_reached",
+                      "Warm run cap reached; self-rebooting Kit",
+                      runs_served=int(_warm_runs_served))
+            break
+
+    _running = False
+    try:
+        if _warm_publisher is not None:
+            _warm_publisher.close()
+    except Exception:
+        pass
+    _warm_write_status("stopped")
+    simulation_app.close()
+    log_event(LOGGER, logging.INFO, "simulation_shutdown", "Warm Isaac shutdown completed")
 
 
 if __name__ == "__main__":
-    main()
+    if args.warm_isaac:
+        _warm_run_loop()
+    else:
+        main()

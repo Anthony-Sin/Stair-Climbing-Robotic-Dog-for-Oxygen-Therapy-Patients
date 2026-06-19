@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory = $true)][string]$FrameHost,
     [int]$FramePort = 55002,
     [int]$CmdPort = 55001,
-    [string]$ParkourHeadingMode = "vision",
+    [string]$ParkourHeadingMode = "hybrid",
     [switch]$Sim2RealValidationCam,
     [switch]$SelfTestWalk,
     [double]$SelfTestVx = 0.5,
@@ -16,7 +16,12 @@ param(
     [string]$ParkourMaskFill = "terrain",
     [switch]$FinalScene,
     [switch]$NoParkourWalkMode,
-    [switch]$NoSpeedGovernor
+    [switch]$NoSpeedGovernor,
+    [switch]$Headless,
+    [switch]$FastRender,
+    [switch]$WarmIsaac,
+    [string]$WarmCommandFile = "",
+    [int]$WarmMaxRuns = 10
 )
 
 $ErrorActionPreference = "Stop"
@@ -95,6 +100,10 @@ if ($FinalScene) { $locomotionArgs += " --final-scene" }
 # Walk mode and speed governor are ON by default in isaac_env.py; pass disable flags for A/B.
 if ($NoParkourWalkMode) { $locomotionArgs += " --no-parkour-walk-mode" }
 if ($NoSpeedGovernor) { $locomotionArgs += " --no-speed-governor" }
+# Faster test iteration: run Isaac without the GUI window and/or with the lighter
+# RaytracedLighting renderer. Both off by default (live window, full-fidelity render).
+if ($Headless) { $locomotionArgs += " --headless" }
+if ($FastRender) { $locomotionArgs += " --fast-render" }
 
 # Isaac records the external scene Left view to scene_view.mp4 (beside opencv_preview.mp4).
 $rawArg = ""
@@ -123,7 +132,15 @@ if ($SelfTestWalk) {
     Write-ConsoleLog "  Self-test:           vx=$SelfTestVx, ${SelfTestSec}s, no-policy=$SelfTestNoPolicy (headless, no controller)"
 }
 
-$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" --person-move --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera $rawArg $locomotionArgs $validationCamArg $selfTestArg > `"$RawLog`" 2>&1`""
+# Warm-iteration mode: keep this Kit process alive and rebuild the scene per episode
+# on command from run_sim.ps1 (the ~120s RTX boot is paid once). Off => one-shot.
+$warmArg = ""
+if ($WarmIsaac) {
+    $warmArg = "--warm-isaac --warm-command-file `"$WarmCommandFile`" --warm-max-runs $WarmMaxRuns"
+    Write-ConsoleLog "  Warm mode:           command-file=$WarmCommandFile max-runs=$WarmMaxRuns"
+}
+
+$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" --person-move --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera $rawArg $locomotionArgs $validationCamArg $selfTestArg $warmArg > `"$RawLog`" 2>&1`""
 
 # Start the process with direct OS redirection to prevent pipeline blocking
 $process = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs -PassThru -NoNewWindow

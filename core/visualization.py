@@ -606,27 +606,6 @@ def _draw_stair_boundary_overlay(
     cv2.putText(combined, badge, (x1 + 4, max(13, y1 - 4)),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.38, STAIR_COLOR, 1, cv2.LINE_AA)
 
-    # Extract and draw real horizontal step edges inside the YOLO box
-    step_edges = _detect_stair_pixel_edges(source_frame if source_frame is not None else combined)
-    if not step_edges:
-        return
-
-    # Filter step edges to only those that fall within the vertical and horizontal range of the bbox
-    filtered_edges = []
-    for ex1, ex2, ey in step_edges:
-        if y1 - 20 <= ey <= y2 + 20:
-            # Overlap in X
-            overlap_x1 = max(ex1, x1)
-            overlap_x2 = min(ex2, x2)
-            if overlap_x2 - overlap_x1 > 10:  # Valid overlap width
-                filtered_edges.append((ex1, ex2, ey))
-
-    # Draw the image-derived step edges.
-    for ex1, ex2, ey in filtered_edges:
-        color_edge = HUD_BLUE
-        cv2.line(combined, (ex1, ey), (ex2, ey), color_edge, 1)
-        cv2.circle(combined, (ex1, ey), 3, color_edge, -1)
-        cv2.circle(combined, (ex2, ey), 3, color_edge, -1)
 
 
 def _draw_stair_vision_panel(combined: np.ndarray, debug_info: Dict[str, Any], 
@@ -657,6 +636,67 @@ def _draw_stair_vision_panel(combined: np.ndarray, debug_info: Dict[str, Any],
     
     cv2.putText(combined, "Model: YOLO-World stair detector", (x + 12, y + 84), cv2.FONT_HERSHEY_SIMPLEX, 0.38, HUD_MUTED, 1, cv2.LINE_AA)
     cv2.putText(combined, f"Conf: {conf_text}  BBox: {bbox_text}", (x + 12, y + 104), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 255), 1, cv2.LINE_AA)
+
+    # Render colorized depth map of the stairs if available
+    depth_img = debug_info.get("depth_img") if debug_info else None
+    depth_w_px, depth_h_px = 180, 80
+    depth_x_pos = x + 175
+    depth_y_pos = y + 38
+    
+    # Draw a bounding frame for the depth map preview
+    cv2.rectangle(combined, (depth_x_pos, depth_y_pos), (depth_x_pos + depth_w_px, depth_y_pos + depth_h_px), HUD_EDGE_DIM, 1, cv2.LINE_AA)
+    cv2.putText(combined, "STAIRS DEPTH MAP" if stairs_detected else "DETECTION SCANNING", (depth_x_pos, depth_y_pos - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.32, HUD_MUTED, 1, cv2.LINE_AA)
+
+    depth_rendered = False
+    if depth_img is not None:
+        try:
+            dh, dw = depth_img.shape[:2]
+            if stairs_detected and bbox is not None and len(bbox) >= 4:
+                rgb_h, rgb_w = combined.shape[:2]
+                rx1, ry1, rx2, ry2 = bbox
+                # Map to depth dimensions
+                dx1 = int(np.clip(rx1 * dw / rgb_w, 0, dw - 1))
+                dy1 = int(np.clip(ry1 * dh / rgb_h, 0, dh - 1))
+                dx2 = int(np.clip(rx2 * dw / rgb_w, 0, dw - 1))
+                dy2 = int(np.clip(ry2 * dh / rgb_h, 0, dh - 1))
+            else:
+                # Central crop as scanning mode
+                dx1 = int(dw * 0.25)
+                dx2 = int(dw * 0.75)
+                dy1 = int(dh * 0.20)
+                dy2 = int(dh * 0.90)
+
+            if dx2 > dx1 and dy2 > dy1:
+                crop = np.array(depth_img[dy1:dy2, dx1:dx2], dtype=np.uint16)
+                if crop.size > 0:
+                    # Convert to meters
+                    crop_m = crop.astype(np.float32) * 0.001
+                    # Filter out invalid depth values (0 or very far values)
+                    valid_mask = (crop_m > 0.1) & (crop_m < 5.0)
+                    if np.any(valid_mask):
+                        # Normalize to 0-255 based on 0.5m to 3.0m range (typical stair range)
+                        near_m, far_m = 0.5, 3.0
+                        norm = np.clip((crop_m - near_m) / (far_m - near_m), 0.0, 1.0)
+                        # Map so that closer points are brighter/warmer in colormap
+                        gray_depth = (norm * 255.0).astype(np.uint8)
+                        # Colorize using JET colormap
+                        color_crop = cv2.applyColorMap(255 - gray_depth, cv2.COLORMAP_JET)
+                        # Zero out invalid pixels (make them black)
+                        color_crop[~valid_mask] = 0
+                    else:
+                        color_crop = np.zeros((crop.shape[0], crop.shape[1], 3), dtype=np.uint8)
+                    
+                    # Resize to fit the HUD panel view area
+                    resized_crop = cv2.resize(color_crop, (depth_w_px, depth_h_px), interpolation=cv2.INTER_AREA)
+                    combined[depth_y_pos:depth_y_pos + depth_h_px, depth_x_pos:depth_x_pos + depth_w_px] = resized_crop
+                    depth_rendered = True
+        except Exception as e:
+            pass
+
+    if not depth_rendered:
+        # Placeholder / empty state
+        cv2.putText(combined, "DEPTH STREAM N/A", (depth_x_pos + 35, depth_y_pos + 45),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, HUD_MUTED, 1, cv2.LINE_AA)
     
     # Plot history on the right
     graph_x = x + panel_w - 200
@@ -1102,6 +1142,7 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
     frame_center_y = h_f // 2
     _draw_reference_guides(combined, frame_center_x, frame_center_y, w_f, h_f)
     _draw_stair_boundary_overlay(combined, debug_info, source_frame=source_frame)
+    _draw_stair_vision_panel(combined, debug_info, active_color, alert=hud_alert)
 
     # Swing legs for the LEG ACTUATORS panel (Panel 4) below.
     swing_list = []

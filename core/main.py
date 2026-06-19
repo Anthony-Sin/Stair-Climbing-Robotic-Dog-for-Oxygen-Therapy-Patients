@@ -49,12 +49,15 @@ def _build_camera(args):
     if args.sim:
         from sim_camera_capture import SimCameraCapture
         print("[main] Sim mode: using SimCameraCapture")
+        sim_frame_timeout_exit_sec = getattr(args, "sim_frame_timeout_exit_sec", 30.0)
+        timeout_sec = max(10.0, sim_frame_timeout_exit_sec) if sim_frame_timeout_exit_sec > 0.0 else 30.0
         return SimCameraCapture(
             width=1280,
             height=720,
             frame_port=args.frame_port,
             rotate=args.rotate,
             verbose=args.debug,
+            timeout_sec=timeout_sec,
             latency_ms=getattr(args, "sim_latency_ms", 0.0),
             latency_jitter_ms=getattr(args, "sim_latency_jitter_ms", 0.0),
         )
@@ -140,6 +143,15 @@ def _depth_from_bbox_excluding_person(
 
         valid = region[region > 0.0]
         if len(valid) < 10:
+            # Too few non-person pixels remain to read the stair edge. When a person
+            # is in frame, do NOT fall back to the person-inclusive bbox depth -- that
+            # returns the near person as the "stair" depth, which trips stairs_near and
+            # engages the climb forward-floor on flat ground (the dog then drives
+            # into/past the person). Report unknown; the main loop keeps the last
+            # sensor-confirmed stair depth. With no person present, the bbox depth is
+            # still a valid stair estimate.
+            if person_bbox is not None:
+                return None
             return _depth_from_bbox(depth_img, stairs_bbox)
 
         depth_mm = float(np.percentile(valid, 25))
@@ -173,6 +185,15 @@ def _apply_stair_command_policy(
             and lost_grace is not None
             and float(lost_age) <= float(lost_grace)
         )
+        # Bounded stair finish-to-footing: stop early if we have reached flat ground/top or pitch levels off
+        stair_demo = debug_info.get("stair_demo")
+        if brief_loss and stair_demo and isinstance(stair_demo, dict):
+            phase = stair_demo.get("phase")
+            robot_data = stair_demo.get("robot", {})
+            pitch_deg = robot_data.get("pitch_deg", 0.0)
+            if phase in ("top_landing", "flat_follow") or abs(pitch_deg) <= 5.0:
+                brief_loss = False
+                debug_info["stair_finish_completed"] = True
         if not brief_loss:
             debug_info["stairs_action_active"] = False
             debug_info["stairs_gated_no_person"] = True
@@ -363,12 +384,14 @@ def _apply_follow_standoff_policy(
     elif gap_m > upper_bound:
         state["go_state"] = True
         
-    # 3. Gait gate override: if patient stops, force hold
-    if args.follow_gait_gate and not is_walking:
+    # 3. Gait gate override: hold when a stopped patient is at/near standoff, but
+    #    never suppress approach when the gap is well past the GO threshold.
+    if args.follow_gait_gate and not is_walking and gap_m <= upper_bound:
         state["go_state"] = False
         debug_info["follow_gait_gate_triggered"] = True
     else:
         debug_info["follow_gait_gate_triggered"] = False
+    debug_info["follow_gait_gate_far_override"] = bool(gap_m > upper_bound)
         
     original_cmd = float(trans_x_cmd)
     
@@ -376,44 +399,134 @@ def _apply_follow_standoff_policy(
     if not state["go_state"]:
         trans_x_cmd = 0.0
         
-    # 4. Pacing approach (if Go state is active and gap > follow_pace_distance)
+    # 4. Pacing on vx. The frozen parkour policy cannot burst gently -- it has no trained
+    #    behaviour below ~0.2 m/s (lin_vel_clip) and over-runs slow commands -- so we shape the
+    #    AVERAGE forward speed by duty-cycling between a floor-speed burst and a hold. Three regimes:
+    #      * far  (gap > follow_pace_distance): continuous advance to catch up (no settle phase),
+    #        so a leader who walks away is never lost to the duty cycle's idle fraction.
+    #      * near (go_state True, gap <= follow_pace_distance): burst/settle duty cycle so the
+    #        time-AVERAGE sits BELOW the floor and tracks a slow leader without creeping in.
+    #      * hold (go_state False): pacing reset; trans_x_cmd is already zero from the go_state gate.
     pace_cap_active = False
     pace_hold_active = False
-    
+
     current_time = time.perf_counter()
     dt = current_time - state.get("last_time", current_time)
     state["last_time"] = current_time
-    
+
+    # Burst at the real policy floor; follow_pace_speed only raises it (a faster burst), never
+    # below the floor where the command is meaningless.
+    burst_speed = max(float(args.follow_pace_floor_speed), float(args.follow_pace_speed))
+
     if state["go_state"] and gap_m > args.follow_pace_distance:
+        # Far: catch up continuously. Let cruise through but guarantee at least the floor so the
+        # command actually produces motion.
+        state["pace_state"] = "advance"
+        state["pace_timer"] = 0.0
+        trans_x_cmd = max(float(trans_x_cmd), float(args.follow_pace_floor_speed))
+        pace_cap_active = False
+    elif state["go_state"]:
+        # Near steady-state: duty-cycle the floor burst.
         timer = state.get("pace_timer", 0.0) + dt
         cycle_time = args.follow_pace_advance_time + args.follow_pace_settle_time
-        cycle_timer = timer % cycle_time
-        
+        cycle_timer = (timer % cycle_time) if cycle_time > 0.0 else 0.0
+
         if cycle_timer < args.follow_pace_advance_time:
             state["pace_state"] = "advance"
-            trans_x_cmd = min(trans_x_cmd, args.follow_pace_speed)
+            trans_x_cmd = burst_speed
             pace_cap_active = True
         else:
             state["pace_state"] = "settle"
             trans_x_cmd = 0.0
             pace_hold_active = True
-            
+
         state["pace_timer"] = timer
     else:
-        # Reset pacing when close or holding
+        # Reset pacing when holding (too close); trans_x_cmd already zeroed by the go_state gate.
         state["pace_state"] = "advance"
         state["pace_timer"] = 0.0
         
     # Populate debug info
     debug_info["fused_gap_m"] = float(gap_m)
     debug_info["standoff_target_m"] = float(standoff)
+    debug_info["standoff_lower_bound_m"] = float(lower_bound)
+    debug_info["standoff_upper_bound_m"] = float(upper_bound)
     debug_info["follow_standoff_gate_active"] = not state["go_state"]
     debug_info["pace_state"] = state["pace_state"]
     debug_info["pace_cap_active"] = pace_cap_active
     debug_info["pace_hold_active"] = pace_hold_active
     debug_info["follow_standoff_trans_x_before"] = original_cmd
-    
+
     return float(trans_x_cmd)
+
+
+def _update_carrot_heading(
+    args,
+    trail: List[List[float]],
+    gap_m: float,
+    bearing_rad: float,
+    leader_speed_mps: float,
+    standoff_m: float,
+    ego_dx: float,
+    ego_dyaw: float,
+) -> Optional[float]:
+    """Body-frame breadcrumb follower (Method 1, opt-in via --carrot-follow).
+
+    Maintains ``trail`` -- a FIFO of the person's position in the robot's CURRENT body frame
+    (x forward, y left), newest last -- and returns the heading (rad, policy yaw convention where
+    +left, matching ``-radians(rotation_error_deg)``) to the trail point one ``standoff`` BEHIND the
+    newest sample. Steering at that point makes the robot follow the person's PATH rather than
+    pointing straight at them, so it does not cut the inside of a turn toward them. Returns None to
+    fall back to the direct bearing when the leader is too slow or the trail is shorter than the
+    standoff (a stationary person yields a degenerate trail).
+
+    Registration caveats (documented, opt-in v1): the robot's body yaw rate is NOT observable
+    controller-side (the frozen policy self-steers and ignores the wz command), so pass
+    ``ego_dyaw=0.0`` unless a real estimate exists; and the policy over-runs the forward command, so
+    ``ego_dx`` (built from the commanded speed) under-estimates true travel. The trail is kept short
+    (arc-length capped) and the heading is slew-limited downstream, which bounds these errors.
+    """
+    # 1. Re-register stored points into the current body frame (undo this frame's ego-motion).
+    if trail:
+        c = float(np.cos(-ego_dyaw))
+        s = float(np.sin(-ego_dyaw))
+        for p in trail:
+            x = p[0] - ego_dx
+            y = p[1]
+            p[0] = c * x - s * y
+            p[1] = s * x + c * y
+    # 2. Append the current detection.
+    trail.append([float(gap_m) * float(np.cos(bearing_rad)),
+                  float(gap_m) * float(np.sin(bearing_rad))])
+    # 3. Cap the trail by arc length (drop the oldest beyond carrot_trail_len_m).
+    max_len = max(0.1, float(args.carrot_trail_len_m))
+    acc = 0.0
+    cut = 0
+    for i in range(len(trail) - 1, 0, -1):
+        acc += float(np.hypot(trail[i][0] - trail[i - 1][0], trail[i][1] - trail[i - 1][1]))
+        if acc > max_len:
+            cut = i
+            break
+    if cut > 0:
+        del trail[:cut]
+    # 4. Quality gate: need an actual path to follow.
+    if leader_speed_mps < float(args.carrot_min_leader_speed) or len(trail) < 2:
+        return None
+    # 5. Walk back one standoff along the trail and interpolate the carrot point.
+    cfg_standoff = float(args.carrot_standoff_m)
+    target = cfg_standoff if cfg_standoff > 0.0 else float(standoff_m)
+    if target <= 0.0:
+        return None
+    acc = 0.0
+    for i in range(len(trail) - 1, 0, -1):
+        seg = float(np.hypot(trail[i][0] - trail[i - 1][0], trail[i][1] - trail[i - 1][1]))
+        if acc + seg >= target:
+            t = (target - acc) / seg if seg > 1e-6 else 0.0
+            cx = trail[i][0] + t * (trail[i - 1][0] - trail[i][0])
+            cy = trail[i][1] + t * (trail[i - 1][1] - trail[i][1])
+            return float(np.arctan2(cy, cx))
+        acc += seg
+    return None  # trail shorter than the standoff -> fall back to the direct bearing
 
 
 class _AsyncPreviewWorker:
@@ -577,6 +690,8 @@ def main():
     trt_infer  = TRTInference(args.trt_engine, verbose=args.debug)
 
     yolo_stairs = YoloStairsInference(
+        model_path=args.stairs_model,
+        confidence=args.stairs_confidence,
         verbose=args.debug,
         consistency_frames=args.stairs_consistency_frames,
         consistency_required=args.stairs_consistency_required,
@@ -786,6 +901,16 @@ def main():
  
     last_command_trans_x = 0.0
     last_command_rotation = 0.0
+    # Method 3 momentum-aware stop ramp state. On a flat-ground stop decision the forward command
+    # is ramped down over --follow-stop-ramp-sec (gait stays alive) and the stance-lock hold is
+    # only asserted once the ramp has bled the command below --follow-stop-ramp-eps.
+    stop_ramp_vx = 0.0
+    stop_ramp_active = False
+    stop_ramp_last_ts = time.perf_counter()
+    # Method 1 carrot / virtual-target steering (opt-in via --carrot-follow). Body-frame breadcrumb
+    # FIFO of the person; steering aims one standoff behind the newest sample. See _update_carrot_heading.
+    carrot_trail: List[List[float]] = []
+    carrot_state: Dict[str, float] = {"last_ts": time.perf_counter()}
     standoff_state = {
         "go_state": False,
         "pace_state": "advance",
@@ -1021,6 +1146,7 @@ def main():
             debug_info["stairs_conf"] = float(stairs_result.get("conf", last_stairs_conf))
             debug_info["stairs_depth_m"] = stairs_depth_m
             debug_info["stairs_depth_ever_confirmed"] = stairs_depth_ever_confirmed
+            debug_info["depth_img"] = depth_img
             debug_info["frame_capture_ts"] = frame_capture_wall_ts
             debug_info["pose_infer_ts"] = pose_infer_wall_ts
             debug_info["pose_infer_done_mono"] = pose_infer_done_ts
@@ -1258,6 +1384,19 @@ def main():
             motion_allowed = (
                 live_motion_allowed or recovery_motion_allowed or stair_floor_motion_allowed
             )
+            # A "stop decision" means the follow logic wants the robot to come to rest: person
+            # lost / not ready, a standoff hold, or a pace settle. Whether that becomes an
+            # immediate stance-lock (hold=True) is finalized AFTER the stop ramp inside the motion
+            # block below (Method 3 Half B), so the gait can stay alive while the command bleeds out.
+            stop_decision = (
+                not motion_allowed
+                or not standoff_state.get("go_state", True)
+                or standoff_state.get("pace_state") == "settle"
+            )
+            hold_request = bool(stop_decision)  # provisional; finalized in the motion block
+            debug_info["motion_allowed"] = bool(motion_allowed)
+            debug_info["stop_decision"] = bool(stop_decision)
+            debug_info["hold_request"] = bool(hold_request)
             debug_info["live_motion_allowed"] = bool(live_motion_allowed)
             debug_info["recovery_motion_allowed"] = bool(recovery_motion_allowed)
             debug_info["stair_floor_motion_allowed"] = bool(stair_floor_motion_allowed)
@@ -1268,6 +1407,48 @@ def main():
                     motion_start_ts = current_time
                 elapsed_motion = current_time - motion_start_ts
                 cmd_scale = motion_slow_factor if elapsed_motion < motion_slow_duration_sec else 1.0
+
+                # --- Method 3: momentum-aware stop ramp + hold gating (flat ground only) ---
+                # On a stop decision, ramp the forward command from the speed we were just
+                # commanding down to zero over --follow-stop-ramp-sec instead of stepping to 0.
+                # Keeping vx > 0 through the ramp keeps the gait alive so the frozen policy steps
+                # the feet home (capture step) and bleeds momentum, rather than being slammed into a
+                # stance blend at speed -> pitch-over. The stance-lock hold is asserted only once the
+                # ramp has bled the command below --follow-stop-ramp-eps. On stairs the climb is a
+                # continuous committed motion (user choice) and must never be stance-locked mid-step,
+                # so the ramp is disabled there and hold stays False (the stair forward floor and the
+                # policy's own on-stair handling own vx).
+                _stairs_now = bool(debug_info.get("stairs_action_active", False)) or bool(stairs_detected)
+                ramp_dt = max(0.0, current_time - stop_ramp_last_ts)
+                stop_ramp_last_ts = current_time
+                if _stairs_now:
+                    # Continuous follow on stairs (user choice): never stance-lock mid-step; the
+                    # stair forward floor and the policy's on-stair handling own vx there.
+                    stop_ramp_active = False
+                    stop_ramp_vx = max(0.0, float(trans_x_cmd))
+                    hold_request = False
+                elif stop_decision and live_motion_allowed:
+                    # Following a VISIBLE person on flat ground and deciding to stop: ramp the
+                    # forward command down (gait stays alive so the policy step-catches its
+                    # momentum) and assert the stance-lock only once the ramp has bled it out.
+                    if not stop_ramp_active:
+                        # Begin the ramp from the speed actually being commanded last frame.
+                        stop_ramp_vx = max(float(last_command_trans_x), float(trans_x_cmd), 0.0)
+                        stop_ramp_active = True
+                    ramp_rate = float(args.follow_pace_floor_speed) / max(1e-3, float(args.follow_stop_ramp_sec))
+                    stop_ramp_vx = max(0.0, stop_ramp_vx - ramp_rate * ramp_dt)
+                    trans_x_cmd = max(float(trans_x_cmd), stop_ramp_vx)  # keep the gait alive
+                    hold_request = bool(stop_ramp_vx <= float(args.follow_stop_ramp_eps))
+                else:
+                    # Recovery / non-visible motion: preserve the original immediate-hold semantics
+                    # (no forward momentum source to manage gently here).
+                    stop_ramp_active = False
+                    stop_ramp_vx = max(0.0, float(trans_x_cmd))
+                    hold_request = bool(stop_decision)
+                debug_info["stop_ramp_active"] = bool(stop_ramp_active)
+                debug_info["stop_ramp_vx"] = round(float(stop_ramp_vx), 4)
+                debug_info["hold_request"] = bool(hold_request)
+
                 command_trans_x = trans_x_limiter.update(trans_x_cmd * cmd_scale)
                 command_rotation = rotation_limiter.update(rotation_cmd * cmd_scale)
                 if command_trans_x < 0.0:
@@ -1321,6 +1502,34 @@ def main():
                     if abs(_e) <= float(args.parkour_yaw_deadband_deg):
                         _e = 0.0
                     yaw_err_raw = -np.radians(_e)
+                    # Carrot / virtual-target steering (Method 1, opt-in). On flat ground aim the
+                    # heading at the trail point one standoff BEHIND the person instead of straight
+                    # at them. Falls back to the direct bearing (above) when disabled, on stairs, or
+                    # when the trail/leader-speed gate is not met. Heading-only; vx is untouched.
+                    debug_info["carrot_active"] = False
+                    _c_gap = debug_info.get("depth_distance_m")
+                    if (bool(getattr(args, "carrot_follow", False))
+                            and not _stairs_active
+                            and not bool(debug_info.get("stairs_detected", False))
+                            and _c_gap is not None and float(_c_gap) > 0.0):
+                        _c_dt = max(0.0, current_time - carrot_state.get("last_ts", current_time))
+                        carrot_state["last_ts"] = current_time
+                        _carrot_yaw = _update_carrot_heading(
+                            args,
+                            carrot_trail,
+                            float(_c_gap),
+                            -np.radians(float(_rot_err_deg)),          # raw bearing (no deadband)
+                            float(debug_info.get("leader_speed_mps", 0.0) or 0.0),
+                            float(debug_info.get("standoff_target_m", 0.0) or 0.0),
+                            float(last_command_trans_x) * _c_dt,       # translation estimate
+                            0.0,                                       # body yaw rate not observed
+                        )
+                        if _carrot_yaw is not None:
+                            if abs(np.degrees(_carrot_yaw)) <= float(args.parkour_yaw_deadband_deg):
+                                _carrot_yaw = 0.0
+                            yaw_err_raw = float(_carrot_yaw)
+                            debug_info["carrot_active"] = True
+                            debug_info["carrot_yaw_rad"] = round(float(_carrot_yaw), 4)
                     if _stairs_active:
                         yaw_err_raw *= float(args.stair_centering_scale)
                     yaw_err_raw = float(np.clip(yaw_err_raw, -1.0, 1.0))
@@ -1335,6 +1544,9 @@ def main():
                     yaw_err=yaw_err_cmd,
                     person_bbox=debug_info.get("person_bbox_norm"),
                     stairs_action_active=_stairs_active,
+                    hold=hold_request,
+                    person_detected=bool(debug_info.get("person_detected", False)),
+                    gap_m=debug_info.get("depth_distance_m"),
                 )
                 last_command_trans_x = float(command_trans_x)
                 last_command_rotation = float(command_rotation)
@@ -1347,6 +1559,11 @@ def main():
                 debug_info["command_rotation_limited"] = 0.0
                 last_command_trans_x = 0.0
                 last_command_rotation = 0.0
+                # controller.stop() sends vx=0, hold=True directly; the policy's two-regime hold
+                # arrests the residual momentum gently. Reset the ramp so a re-acquire starts fresh.
+                stop_ramp_active = False
+                stop_ramp_vx = 0.0
+                stop_ramp_last_ts = current_time
 
             if motion_allowed and not raw_recording_released:
                 raw_recording_released = True

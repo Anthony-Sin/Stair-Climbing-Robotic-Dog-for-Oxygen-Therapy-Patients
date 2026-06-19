@@ -99,7 +99,7 @@ class RobotController:
             return False
     
     def move(self, trans_x: float, trans_y: float, rotation: float, stairs_detected: bool = False,
-             yaw_err: float = 0.0) -> bool:
+             yaw_err: float = 0.0, **kwargs) -> bool:
         """
         Send movement command to robot
         

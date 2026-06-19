@@ -192,7 +192,7 @@ class PersonFollower:
         
         patch = depth_img[y1:y2, x1:x2].astype(np.float32)
         vals = patch.flatten()
-        vals = vals[vals > 0]  # Remove invalid depth values
+        vals = vals[(vals > 0) & (vals < 65000)]  # Remove invalid depth values & 0xFFFF sentinel
         
         if vals.size < min_valid:
             return None
@@ -344,6 +344,8 @@ class PersonFollower:
         base_error, principal_x_used, principal_source = self._rotation_error_from_center(
             bbox_center_x, frame_shape, use_camera_intrinsics=use_camera_intrinsics
         )
+        if abs(base_error) <= self.config.rotation_tolerance:
+            base_error = 0.0
 
         bbox_width = max(1.0, float(x2 - x1))
         size_ratio = 0.0
@@ -543,6 +545,9 @@ class PersonFollower:
                 if fusion['fused_m'] is not None:
                     depth_m = float(fusion['fused_m'])
 
+            if depth_m is not None and depth_m >= 65.0:
+                depth_m = None
+
         # Update GaitEstimator
         cam_cx = self.config.camera_cx if self.config.camera_cx > 0 else (frame_shape[1] / 2.0)
         cam_fx = self.config.camera_fx if self.config.camera_fx > 0 else (frame_shape[1] * 0.8)
@@ -640,13 +645,36 @@ class PersonFollower:
 
         debug_info['center_x'] = float(bbox_center_x)
 
-        # Calculate X-axis translation (forward/backward) command using PID controller
-        trans_x_cmd_raw = self.trans_x_pid_controller.update(float(depth_m), self.config.target_distance)
+        # Three-zone distance control:
+        #   far zone  (error > +tolerance)          → cruise toward person
+        #   stop band (-tolerance to +tolerance)    → hold at target distance
+        #   brake zone (error < -tolerance)         → brake proportionally when too close
+        cruise = float(self.config.max_trans_x_speed)
+        distance_error = float(depth_m) - float(self.config.target_distance)
+        tolerance = float(self.config.trans_x_tolerance)
+        if distance_error > tolerance:
+            # Person farther than target+tolerance: approach at cruise speed.
+            trans_x_cmd_raw = cruise
+        elif distance_error >= -tolerance:
+            # Person within target band (±tolerance): hold position.
+            trans_x_cmd_raw = 0.0
+        else:
+            # Too close: never command forward velocity.
+            trans_x_cmd_raw = 0.0
+        # Keep PID ticking so state stays fresh if we switch back; reset integral to avoid stale windup.
+        self.trans_x_pid_controller.integral_error = 0.0
         debug_info['trans_x_cmd_raw'] = float(trans_x_cmd_raw)
+        debug_info['trans_x_cruise_speed'] = cruise
+        debug_info['trans_x_distance_error_m'] = round(distance_error, 4)
+        debug_info['distance_zone'] = (
+            'cruise' if distance_error > tolerance else
+            'stop' if distance_error >= -tolerance else
+            'brake'
+        )
         trans_x_cmd = self._suppress_reverse_follow_command(
             float(trans_x_cmd_raw),
             debug_info,
-            source='live_depth_pid',
+            source='cruise_brake',
         )
         debug_info['trans_x_cmd'] = trans_x_cmd
         debug_info['trans_x_pid_state'] = self.trans_x_pid_controller.get_state()

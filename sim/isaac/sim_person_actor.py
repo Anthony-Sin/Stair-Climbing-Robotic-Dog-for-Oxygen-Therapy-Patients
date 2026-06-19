@@ -73,6 +73,15 @@ _BIPED_SETUP_USD_CANDIDATES = [
     "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.1/Isaac/People/Characters/Biped_Setup.usd",
 ]
 
+# Persistent cross-run cache of the *modified* Biped_Setup (root motion zeroed,
+# head/neck rotation zeroed, walk_1 looped at _PERSON_GAIT_CADENCE_MULT). Building
+# it opens a remote S3/Nucleus stage + Export + USD edits (~20s of every startup);
+# persisting the finished result locally lets later runs skip all of that (CLAUDE.md:
+# copy remote USD locally and reference the local copy). Bump the version whenever
+# the modify logic in _resolve_character_with_clips changes so stale caches
+# regenerate; delete the file to force a one-off refresh.
+_BIPED_MODIFIED_CACHE_VERSION = "v1"
+
 
 @dataclass
 class SimPersonTarget:
@@ -692,6 +701,31 @@ def _resolve_character_with_clips(
     walk = f"{PERSON_VISUAL_PRIM}/{_BIPED_WALK_ANIM_SUBPATH}"
     idle = f"{PERSON_VISUAL_PRIM}/{_BIPED_IDLE_ANIM_SUBPATH}"
 
+    import os
+    assets_dir = os.path.join(os.path.dirname(__file__), "assets")
+    os.makedirs(assets_dir, exist_ok=True)
+    cache_path = os.path.join(
+        assets_dir, f"Biped_Setup_modified.{_BIPED_MODIFIED_CACHE_VERSION}.usd"
+    ).replace("\\", "/")
+
+    # Cross-run fast path: reuse a previously generated modified copy instead of
+    # re-opening the remote S3/Nucleus asset and re-exporting it (~20s of startup).
+    # Validate it opens first so a corrupt/partial cache silently regenerates.
+    if os.path.exists(cache_path):
+        try:
+            if Usd.Stage.Open(cache_path) is not None:
+                if logger is not None:
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "person_asset_cache_hit",
+                        "Reusing cached modified Biped_Setup copy (skipped remote export)",
+                        asset_path=cache_path,
+                    )
+                return cache_path, "BipedMannequin", walk, idle
+        except Exception:
+            pass  # fall through and regenerate
+
     assets_root = nucleus_utils.get_assets_root_path()
 
     candidates = [
@@ -853,16 +887,38 @@ def _resolve_character_with_clips(
             f"Failed to verify/modify local Biped_Setup copy: {e}"
         ) from e
 
+    # Persist the finished modified copy to the cross-run cache so later runs reuse
+    # it and skip the remote open + Export + modify above. Export to a sibling temp
+    # then atomically replace: a crash mid-write can't leave a half-written cache,
+    # and the swap needs no open handle on the destination (the original per-PID
+    # lock concern). Best-effort -- fall back to this run's per-PID copy on failure.
+    final_usd_path = local_usd_path
+    try:
+        cache_tmp = f"{cache_path}.{os.getpid()}.tmp"
+        local_stage.Export(cache_tmp)
+        local_stage = None
+        os.replace(cache_tmp, cache_path)
+        final_usd_path = cache_path
+    except Exception as e:
+        if logger is not None:
+            log_event(
+                logger,
+                logging.WARNING,
+                "person_asset_cache_write_failed",
+                f"Could not persist modified Biped_Setup cache: {e}; using per-run copy",
+                path=local_usd_path,
+            )
+
     if logger is not None:
         log_event(
             logger,
             logging.INFO,
             "person_asset_selected",
             "Using local modified Biped_Setup mannequin as the animated character asset",
-            asset_path=local_usd_path,
+            asset_path=final_usd_path,
         )
 
-    return local_usd_path, "BipedMannequin", walk, idle
+    return final_usd_path, "BipedMannequin", walk, idle
 
 
 _EXTENSIONS_READY = False

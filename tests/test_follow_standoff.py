@@ -30,6 +30,7 @@ class MockArgs:
         self.follow_gait_gate = True
         self.follow_pace_distance = 2.0
         self.follow_pace_speed = 0.4
+        self.follow_pace_floor_speed = 0.5
         self.follow_pace_advance_time = 2.0
         self.follow_pace_settle_time = 1.5
 
@@ -182,37 +183,61 @@ class TestFollowStandoff(unittest.TestCase):
         self.assertEqual(cmd, 0.0)
         self.assertFalse(state["go_state"])
 
-    def test_approach_pacing_timers(self):
+    def test_far_regime_continuous_advance(self):
+        # FAR (gap > follow_pace_distance): catch up continuously -- no duty-cycle settle phase,
+        # so a leader who walks away is never lost to the idle fraction. (Method 2 inverted the
+        # old behaviour where a far gap triggered the advance/settle pacing.)
         args = MockArgs()
         debug_info = {}
         state = {
-            "go_state": True, # force GO
+            "go_state": True,  # force GO
             "pace_state": "advance",
             "pace_timer": 0.0,
             "last_time": time.perf_counter(),
         }
-        
-        # Gap is 2.5m (above pace threshold of 2.0m)
-        # Advance phase first (first 2.0s of cycle)
-        # We simulate 1 second elapsed
-        state["last_time"] = time.perf_counter() - 1.0
+        # Even with a full cycle's worth of elapsed time, the far regime must NOT enter settle.
+        state["last_time"] = time.perf_counter() - 5.0
         cmd = _apply_follow_standoff_policy(
             args, trans_x_cmd=0.8, gap_m=2.5, leader_speed_mps=0.0,
             is_walking=True, debug_info=debug_info, state=state
         )
         self.assertEqual(debug_info["pace_state"], "advance")
-        self.assertTrue(debug_info["pace_cap_active"])
-        self.assertEqual(cmd, args.follow_pace_speed) # capped at 0.4
-        
-        # Settle phase (time > 2.0s in cycle, e.g. 2.5s)
-        state["last_time"] = time.perf_counter() - 1.5 # cumulative 2.5s
+        self.assertFalse(debug_info["pace_hold_active"])
+        # Cruise passes through, guaranteed at least the policy floor; never zeroed when far.
+        self.assertGreaterEqual(cmd, args.follow_pace_floor_speed)
+        self.assertEqual(cmd, 0.8)
+
+    def test_near_regime_duty_cycle(self):
+        # NEAR (go_state True, gap <= follow_pace_distance): burst at the policy FLOOR then settle
+        # to zero, so the time-average forward speed can sit below the floor and track a slow leader.
+        args = MockArgs()
+        debug_info = {}
+        state = {
+            "go_state": True,  # force GO
+            "pace_state": "advance",
+            "pace_timer": 0.0,
+            "last_time": time.perf_counter(),
+        }
+        # Advance phase (first follow_pace_advance_time seconds of the cycle); ~1s elapsed.
+        state["last_time"] = time.perf_counter() - 1.0
         cmd = _apply_follow_standoff_policy(
-            args, trans_x_cmd=0.8, gap_m=2.5, leader_speed_mps=0.0,
+            args, trans_x_cmd=0.8, gap_m=1.1, leader_speed_mps=0.0,
+            is_walking=True, debug_info=debug_info, state=state
+        )
+        self.assertEqual(debug_info["pace_state"], "advance")
+        self.assertTrue(debug_info["pace_cap_active"])
+        # Burst is at the real floor (max of floor and pace_speed), NOT the sub-floor pace_speed.
+        self.assertEqual(cmd, max(args.follow_pace_floor_speed, args.follow_pace_speed))
+
+        # Settle phase (cumulative time past the advance window: ~2.5s into a 3.5s cycle).
+        state["last_time"] = time.perf_counter() - 1.5
+        cmd = _apply_follow_standoff_policy(
+            args, trans_x_cmd=0.8, gap_m=1.1, leader_speed_mps=0.0,
             is_walking=True, debug_info=debug_info, state=state
         )
         self.assertEqual(debug_info["pace_state"], "settle")
         self.assertTrue(debug_info["pace_hold_active"])
-        self.assertEqual(cmd, 0.0) # settle forces 0 speed
+        self.assertEqual(cmd, 0.0)  # settle forces 0 speed
 
     def test_no_movement_when_person_not_detected(self):
         # We simulate the command flow from main.py when person_detected is False.

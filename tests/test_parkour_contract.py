@@ -204,10 +204,86 @@ def _run_pipeline(cfg, label, *, delta_yaw=None):
     print(f"OK pipeline [{label}]: {diag}")
 
 
+def _test_soft_hold():
+    """Verify that when hold=True is passed, self.hold_strength ramps up and blends the action_np to 0.0,
+    and when hold=False is passed, it ramps down to 0.0.
+    """
+    from parkour_locomotion_policy import ParkourLocomotionPolicy, ParkourPolicyConfig
+    cfg = ParkourPolicyConfig(
+        base_model_path=BASE, vision_model_path=VISION,
+        hold_ramp_sec=0.25,  # 0.25 seconds to ramp
+        hold_speed_threshold=0.0  # disable gating for pure ramping check
+    )
+    policy = ParkourLocomotionPolicy(cfg, ISAAC_DOF_NAMES, logger=logging.getLogger("parkour_test"))
+    go2 = StubGo2(ISAAC_DOF_NAMES)
+    policy.reset()
+    raw = np.zeros((60, 106), dtype=np.float32)
+    dt = policy.interval_sec  # nominal control step time (0.02s)
+
+    # 1. Initially hold_strength should be 0.0
+    assert policy.hold_strength == 0.0
+    
+    # 2. Run a step with hold=False. hold_strength should remain 0.0
+    policy.submit_depth(raw)
+    policy.step(go2, (0.0, 0.0, 0.0), dt, hold=False)
+    assert policy.hold_strength == 0.0
+    diag = policy.diagnostics()
+    assert diag["hold_active"] is False
+    assert diag["hold_strength"] == 0.0
+
+    # 3. Run step(s) with hold=True. hold_strength should increase.
+    # With hold_ramp_sec = 0.25 and control_hz = 50 (interval = 0.02),
+    # step_dt = 0.02. Ramping up: 0.02 / 0.25 = 0.08 per step.
+    # After 1 step of hold=True: hold_strength should be 0.08
+    policy.submit_depth(raw)
+    policy.step(go2, (0.0, 0.0, 0.0), dt, hold=True)
+    assert abs(policy.hold_strength - 0.08) < 1e-4, f"expected hold_strength ~0.08, got {policy.hold_strength}"
+    diag = policy.diagnostics()
+    assert diag["hold_active"] is True
+    assert diag["hold_strength"] == 0.08
+
+    # After 13 steps (13 * 0.08 = 1.04), hold_strength should saturate to 1.0.
+    # Let's run 15 steps of hold=True.
+    for _ in range(15):
+        policy.submit_depth(raw)
+        policy.step(go2, (0.0, 0.0, 0.0), dt, hold=True)
+    
+    assert policy.hold_strength == 1.0
+    diag = policy.diagnostics()
+    assert diag["hold_active"] is True
+    assert diag["hold_strength"] == 1.0
+    
+    # When hold_strength is 1.0, action_np should be exactly 0.0, and prev_action should be 0.0.
+    assert np.all(policy.prev_action == 0.0)
+
+    # 4. Now run step(s) with hold=False. hold_strength should ramp down.
+    # After 1 step: 1.0 - 0.08 = 0.92
+    policy.submit_depth(raw)
+    policy.step(go2, (0.0, 0.0, 0.0), dt, hold=False)
+    assert abs(policy.hold_strength - 0.92) < 1e-4, f"expected hold_strength ~0.92, got {policy.hold_strength}"
+
+    # After 15 steps of hold=False, it should saturate to 0.0.
+    for _ in range(15):
+        policy.submit_depth(raw)
+        policy.step(go2, (0.0, 0.0, 0.0), dt, hold=False)
+    assert policy.hold_strength == 0.0
+    diag = policy.diagnostics()
+    assert diag["hold_active"] is False
+    assert diag["hold_strength"] == 0.0
+    
+    # 5. reset() should also clear hold_strength
+    policy.hold_strength = 0.5
+    policy.reset()
+    assert policy.hold_strength == 0.0
+
+    print("OK soft-hold ramping and blending")
+
+
 def main():
     _test_weight_free()
     _test_person_mask()
     _test_heading_slew()
+    _test_soft_hold()
 
     if not (os.path.exists(BASE) and os.path.exists(VISION)):
         print(f"SKIP: parkour weights not found under {ASSETS} (weight-free checks passed)")
