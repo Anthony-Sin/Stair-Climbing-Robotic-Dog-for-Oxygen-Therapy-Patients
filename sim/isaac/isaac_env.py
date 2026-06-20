@@ -42,6 +42,11 @@ parser.add_argument("--warm-command-file", type=str, default="",
 parser.add_argument("--warm-max-runs", type=int, default=10,
                     help="Self-reboot after this many warm episodes so slow GPU/stage "
                          "leaks can't accumulate; the launcher then boots a fresh Kit.")
+parser.add_argument("--bench", action="store_true",
+                    help="Terrain-benchmark mode (terrain_bench): read a per-episode "
+                         "terrain spec + Docker-free drive command from the warm "
+                         "command-file and build/drive THAT terrain. Off by default; "
+                         "the one-shot and self-test paths are unaffected.")
 parser.add_argument("--cmd-port", type=int, default=52001,
                     help="UDP port for incoming velocity commands")
 parser.add_argument("--frame-port", type=int, default=52002,
@@ -180,11 +185,27 @@ parser.add_argument("--speed-governor-action-norm-max", type=float, default=8.0,
                          "norm cap entirely. Only active with "
                          "--speed-governor.")
 parser.add_argument("--scripted-stair-gait", action="store_true", default=False,
-                    help="Engage the deterministic scripted stair-climb gait (scripted_stair_gait.py) "
+                    help="Engage the OPEN-LOOP scripted stair-climb gait (scripted_stair_gait.py) "
                          "on the stairs instead of the RL policy. OFF by default: the open-loop gait "
                          "can propel OR stay stable but not both without closed-loop balance + foot-"
-                         "contact control (run_sim_20260619_15*). Kept behind this flag for future "
-                         "closed-loop development; when off the RL policy drives everywhere.")
+                         "contact control (run_sim_20260619_15*). Superseded by the closed-loop "
+                         "climber below; kept for A/B only.")
+parser.add_argument("--closed-loop-stair-climb", dest="closed_loop_stair_climb",
+                    action="store_true", default=False,
+                    help="Engage the CLOSED-LOOP stair climber (closed_loop_stair_climber.py) on the "
+                         "stairs instead of the frozen RL policy. It plans swing feet as Cartesian "
+                         "trajectories through 2-link leg IK, regulates trunk pose (height/pitch/roll) "
+                         "with PD + angular-velocity damping, and tilt/contact-gates the leg sequencing. "
+                         "DEFAULT OFF (2026-06-20): it SOLVES roll stability + uprightness but does NOT "
+                         "yet complete the step-up -- the RL hand-off at ~0.5 m/s pitches it over and it "
+                         "sticks (0 net steps). The RL policy (default) reliably climbs ~2 steps on the "
+                         "commercial preset, so it is the better-verified 'walks up' result. Enable this "
+                         "flag to continue developing the climber (needs a dynamic gait / contact "
+                         "feedback for the hand-off). See project_closed_loop_stair_climber memory.")
+parser.add_argument("--no-closed-loop-stair-climb", dest="closed_loop_stair_climb",
+                    action="store_false",
+                    help="Disable the closed-loop stair climber (revert to the frozen RL policy on "
+                         "the stairs -- it stubs/rears and rolls off; A/B only).")
 parser.add_argument("--stair-action-norm-max", type=float, default=8.0,
                     help="Stair-specific action-norm cap; 0 disables it. KEPT AT 8.0 (empirical, "
                          "run_sim_20260619_132247 vs _130218): cap-OFF stubbed the first riser at step 2 "
@@ -692,6 +713,13 @@ _warm_publisher = None
 _warm_status_file = ""
 _warm_runs_served = 0
 _warm_current_seq = 0
+
+# Bench mode (terrain_bench): the per-episode terrain spec dict + drive command
+# ({vx, sec}) the warm loop pulls from command.json before each main() episode.
+# Both stay None on the default/one-shot path, so spawn_obstacles() and the drive
+# loop fall through to their normal behaviour.
+_BENCH_TERRAIN = None
+_BENCH_DRIVE = None
 
 # ---------------------------------------------------------------------------
 # UDP command receiver  (background thread)
@@ -1921,6 +1949,14 @@ def spawn_scene_visual_details(world: World) -> None:
 
 def spawn_obstacles(world: World) -> None:
     """Spawn the clean test environment: stairs and corridor walls only."""
+    # Bench mode: a non-stairs terrain (ramp/flat) is built by terrain_bench instead
+    # of the staircase. Stairs terrains fall through to the normal path below (the warm
+    # loop already applied configure_stairs() for them). Gated on --bench so the
+    # default scene is byte-identical.
+    if args.bench and _BENCH_TERRAIN and str(_BENCH_TERRAIN.get("kind")) not in ("", "stairs"):
+        from terrain_bench.terrain_registry import build_terrain
+        build_terrain(world, _BENCH_TERRAIN)
+        return
     try:
         from omni.isaac.core.objects import FixedCuboid
     except ModuleNotFoundError:
@@ -3547,11 +3583,25 @@ def _step_go2_locomotion(
     # raw distant YOLO sighting. It lets the learned high-lift gait condition briefly before contact;
     # stairs_action_active remains the nearer gate that forces stair drive and persists through loss.
     _climb_gait_active = bool(stairs_detected) or bool(stairs_action_active)
+    # Engage a deterministic stair climber whenever the controller says the dog is climbing
+    # (stairs_action_active). The closed-loop climber (default) supersedes the open-loop scripted
+    # gait; either one bypasses the frozen RL policy, which cannot reliably step UP.
+    _use_closed_loop = bool(getattr(args, "closed_loop_stair_climb", True))
+    _use_open_loop = bool(getattr(args, "scripted_stair_gait", False))
+    _scripted_climb = bool(stairs_action_active) and (_use_closed_loop or _use_open_loop)
+    # Trunk height above the tread directly under the body -- closes the climber's body-height loop.
+    _height_above_step = None
+    if _scripted_climb:
+        try:
+            _bp, _ = go2.get_world_pose()
+            _height_above_step = float(_bp[2]) - get_terrain_height(float(_bp[0]), float(_bp[1]))
+        except Exception:
+            _height_above_step = None
     telemetry = rl_policy.step(go2, (vx, vy, wz), dt, delta_yaw=delta_yaw,
                                stairs_active=_climb_gait_active, hold=hold,
                                body_speed=body_speed,
-                               scripted_climb=(bool(stairs_action_active)
-                                               and bool(getattr(args, "scripted_stair_gait", False))))
+                               scripted_climb=_scripted_climb,
+                               height_above_step=_height_above_step)
     # The policy just moved the joints; capture its real per-leg command so the
     # stair-demo telemetry and HUD reflect what the policy actually did this step.
     _go2_locomotion_state.leg_summary = rl_policy.leg_command_summary()
@@ -4338,6 +4388,17 @@ def main() -> None:
                 command_fresh = True
                 cmd_count = max(cmd_count, 1)
                 active_count = max(active_count, 1)
+            # Bench mode: same Docker-free constant-forward drive as the self-test, but
+            # the forward speed comes from this terrain's per-episode drive command.
+            elif args.bench and _BENCH_DRIVE is not None:
+                vx, vy, wz = float(_BENCH_DRIVE.get("vx", 0.0)), 0.0, 0.0
+                yaw_err = 0.0
+                stairs_detected = False
+                stairs_action_active = False
+                person_bbox = None
+                command_fresh = True
+                cmd_count = max(cmd_count, 1)
+                active_count = max(active_count, 1)
             controller_stream_seen = cmd_count > 0
             nonzero_command_fresh = (
                 command_fresh
@@ -4441,7 +4502,14 @@ def main() -> None:
                     go2, _go2_locomotion_state, base_link_name=BASE_LINK_NAME,
                     logger=LOGGER, vx=0.0, vy=0.0, wz=0.0,
                 )
-            elif controller_ready and nonzero_command_fresh:
+            elif controller_ready and (nonzero_command_fresh or bool(stairs_action_active)):
+                # Run the locomotion step on any fresh nonzero command OR whenever the controller
+                # says the dog is climbing (stairs_action_active). The latter is essential: on the
+                # stairs the commanded vx can dip to ~0 (collision floor / lean-on-creep), which would
+                # otherwise route to the hold branch below with stairs_action_active=False and
+                # DISENGAGE the closed-loop climber mid-climb (run_sim_20260619_210115: climber never
+                # took over, the RL policy reared and stuck at the base). The climber freezes its own
+                # stride when vx<=0.03, so a zero command still pauses safely.
                 _step_go2_locomotion(go2, rl_policy, vx, vy, wz, dt,
                                      stairs_detected=stairs_detected, yaw_err=yaw_err,
                                      stairs_action_active=stairs_action_active,
@@ -4534,6 +4602,26 @@ def main() -> None:
                         reason=evaluation_exit_reason,
                         motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
                         self_test_vx=float(args.self_test_vx),
+                    )
+                    break
+                # Bench terrain: self-exit when this terrain's drive duration elapses so
+                # the warm loop can advance to the next terrain.
+                if (
+                    args.bench
+                    and _BENCH_DRIVE is not None
+                    and motion_elapsed_sim_sec >= float(_BENCH_DRIVE.get("sec", 30.0))
+                ):
+                    evaluation_done = True
+                    evaluation_exit_reason = "bench_terrain_complete"
+                    log_event(
+                        LOGGER,
+                        logging.INFO,
+                        "evaluation_exit",
+                        "Bench terrain duration reached; stopping episode",
+                        reason=evaluation_exit_reason,
+                        motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
+                        terrain_id=str((_BENCH_TERRAIN or {}).get("terrain_id", "")),
+                        drive_vx=float(_BENCH_DRIVE.get("vx", 0.0)),
                     )
                     break
                 stair_demo_now = get_stair_demo_telemetry(_go2_locomotion_state)
@@ -4651,6 +4739,13 @@ def main() -> None:
                             person_detected=bool(person_detected),
                             gap_m=round(float(gap_m), 3) if gap_m is not None else None,
                             stairs_detected=bool(stairs_detected),
+                            # Controller's climb gate (depth/near-confirmed). Lets the fall_diag
+                            # stream show WHERE the climb policy actually engages vs the robot x,
+                            # so "engages too far / never engages" is verifiable from the log.
+                            stairs_action_active=bool(stairs_action_active),
+                            # Closed-loop stair climber engagement + gait state (verifies it took over).
+                            scripted_climb=policy_diag.get("scripted_climb"),
+                            climber=policy_diag.get("stair_climber"),
                             hold_request=bool(hold),
                             hold_active=policy_diag.get("hold_active"),
                             hold_strength=policy_diag.get("hold_strength"),
@@ -5247,6 +5342,7 @@ def _warm_run_loop() -> None:
     main() episode per begin, and keep Kit alive between episodes. Self-reboots after
     --warm-max-runs (or on episode failure) so the launcher transparently boots fresh."""
     global _warm_status_file, _warm_runs_served, _warm_current_seq, _running
+    global _BENCH_TERRAIN, _BENCH_DRIVE
     cmd_file = args.warm_command_file
     _warm_status_file = (
         os.path.join(os.path.dirname(cmd_file), "warm_status.json") if cmd_file else ""
@@ -5277,6 +5373,20 @@ def _warm_run_loop() -> None:
         _warm_current_seq = last_seq
         _warm_write_status("running")
         _warm_retarget_logger(run_dir)
+        # Bench mode: stash this episode's terrain spec + drive command so
+        # spawn_obstacles()/the drive loop build and drive THIS terrain. For a stairs
+        # terrain, apply the preset now (before main() spawns) so every stair consumer
+        # -- spawn_obstacles, the HUD/terrain-height helpers, the patient path -- reads
+        # the same geometry. Non-bench runs leave both globals None.
+        _BENCH_TERRAIN = cmd.get("terrain")
+        _BENCH_DRIVE = cmd.get("drive")
+        if _BENCH_TERRAIN and str(_BENCH_TERRAIN.get("kind")) == "stairs":
+            try:
+                configure_stairs(preset=str(_BENCH_TERRAIN.get("stair_preset") or "demo_gentle"))
+            except Exception as exc:
+                log_event(LOGGER, logging.WARNING, "bench_configure_stairs_failed",
+                          "Could not apply bench stair preset; using current active stairs",
+                          error=str(exc), terrain_id=str(_BENCH_TERRAIN.get("terrain_id", "")))
         _warm_reset_state_for_new_episode()
         try:
             main()

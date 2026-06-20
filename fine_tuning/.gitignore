@@ -1,0 +1,14 @@
+# Secrets (also covered by the repo-root .gitignore; belt-and-suspenders).
+.env
+
+# Training artifacts.
+checkpoints/
+runs/
+wandb/
+episodes/
+*.pt
+*.onnx
+
+# Python.
+__pycache__/
+*.py[cod]

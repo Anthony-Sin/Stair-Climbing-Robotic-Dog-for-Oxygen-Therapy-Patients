@@ -1184,7 +1184,15 @@ if ($NoIsaac) {
         "-FramePort", [string]$FramePort,
         "-CmdPort", [string]$CmdPort,
         "-ParkourHeadingMode", $ParkourHeadingMode,
-        "-ParkourMaskFill", $ParkourMaskFill
+        "-ParkourMaskFill", $ParkourMaskFill,
+        # Staircase preset (now selectable via -StairPreset). The launcher previously passed NOTHING,
+        # so isaac_env's argparse default 'demo_gentle' (0.08 m) ran silently -- the OOD-shallow toy
+        # step the frozen policy face-plants on (regression vs the prior-session intent of 'commercial').
+        # Restored to 'commercial' (0.150 m, ~6"/12" ADA): the documented climbable-realistic-middle and
+        # the closest-to-in-distribution preset for the frozen Extreme-Parkour policy. NOTE: the step-UP
+        # itself is still a frozen-policy limit on every preset (closed-loop control / fine-tune needed);
+        # see project_follow_up_stairs_goal + project_stair_approach_commit.
+        "-StairPreset", "commercial"
     )
     if ($Sim2RealValidationCam) {
         $isaacArgs += "-Sim2RealValidationCam"
@@ -1366,16 +1374,28 @@ if ($NoDockerRun) {
         "--follow-standoff-band-in -0.15",
         "--follow-stop-ramp-sec 0.7",
         "--stair-speed-scale 0.45",
-        # Engage the climb only at the first riser and use the policy's validated gentle floor.
-        # The old 1.2 m / 0.30 combination entered stair drive around robot x=0.1 (first riser x=2.0)
-        # and closed the patient gap before the climb even began.
-        "--stair-forward-floor 0.0",
-        "--stair-loss-forward-floor 0.16",
+        # Engage the climb only at the first riser (stair-near-distance 0.45) but RESTORE a
+        # sustained walk-up drive there. With forward-floor 0.0 the dog reached the riser on the
+        # policy creep, reared up (pitch +13 deg) and BEACHED with cmd_vx=0 (run_sim_20260619_190725).
+        # The riser-gated floor only fires once depth<=0.45 (AT the step), so it cannot re-introduce
+        # the old far-engage surge; the patient climbs ahead and the 0.65 collision floor blocks contact.
+        # The person leaves the camera the instant the climb starts, so the loss-floor governs most of
+        # the ascent -- raised 0.16 -> 0.22 because 0.16 was too weak to mount the step.
+        "--stair-forward-floor 0.16",
+        "--stair-loss-forward-floor 0.22",
         "--stair-target-distance 1.2",
         "--stair-near-distance 0.45",
         "--stair-policy-prepare-distance 1.0",
         "--stair-depth-engage-distance 0.45",
         "--stair-climb-collision-floor 0.65",
+        # Square up to the staircase during the APPROACH (stairs detected, climb not yet engaged):
+        # steer the heading to centre the staircase bbox so the dog hits the first riser HEAD-ON.
+        # A crooked entry (yaw ~30-48 deg, run_sim_20260619_193145) makes the left/right legs meet
+        # different step heights -> roll -18 deg -> topple. Gentle + capped (gain 0.5, max 0.4 rad),
+        # heading-only; it never touches vx and frozen once the climb engages (then depth self-steer).
+        "--stair-square-up",
+        "--stair-square-up-gain 0.5",
+        "--stair-square-up-max 0.4",
         "--ecs-log-dir /workspace/run_logs/debug/ecs",
         "--debug-trace-dir /workspace/run_logs/debug/debug_trace",
         # Write the OpenCV preview straight into videos/ (no preview-save-dir, which

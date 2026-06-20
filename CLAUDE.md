@@ -139,6 +139,22 @@ Do NOT include directory trees, tech stack summaries, style guides, obvious best
 **LESSON:** The cruise-and-brake model in `person_follower.py` must have THREE zones: far→cruise, at-target→stop (cmd=0), too-close→brake. The old two-zone condition (`distance_error >= -tolerance → cruise`) made the robot always walk forward even when exactly at the target. Also verify kp satisfies `kp >= cruise / (target - tolerance - min_safe_depth)` or braking can never reach zero. Pacing (`follow_pace_distance`) must be set large (10.0) in sim to avoid 1.5 s settle stalls.
 **WHY:** Two-zone cruise-and-brake has no "hold at target" state. With target=0.45 m, kp=0.8, the brake formula can never produce zero output before the robot contacts the person.
 
+**TRIGGER:** A sibling module under `sim/isaac/` needs the live `isaac_env` logger (or any `isaac_env` symbol) at runtime.
+**LESSON:** Do NOT `from isaac_env import LOGGER`. `isaac_env.py` runs as `__main__` (launched as a script), so importing it by name RE-EXECUTES the whole module — a second `SimulationApp` boot. Use `logging.getLogger("isaac_env")` (loggers are singletons by name; it returns the same retargeted instance).
+**WHY:** Importing the entry-point module by name creates a duplicate module object and re-runs its top-level code.
+
+**TRIGGER:** Writing the warm/bench `command.json` (or any JSON a Python Kit reads) from PowerShell.
+**LESSON:** Write UTF-8 WITHOUT a BOM (`[System.IO.File]::WriteAllText($p,$json,(New-Object System.Text.UTF8Encoding $false))`). PS 5.1 `Set-Content -Encoding UTF8` prepends a BOM that `json.load(open(path))` rejects. `terrain_bench/run_bench.ps1` does this; the legacy `run_sim.ps1 Write-WarmCommand` still uses `-Encoding UTF8` (latent BOM risk if warm IPC is ever exercised hard).
+**WHY:** Python's plain `open()`/`read_text("utf-8")` does not strip a BOM; `json` then fails on the leading `﻿`.
+
+**TRIGGER:** Recording per-episode videos in `--warm-isaac`/`--bench` mode.
+**LESSON:** Do NOT pass `-RawVideoPath` (scene_view) at boot. `topdown/lidar/follow` derive from `args.log_dir` (retargeted per episode by `_warm_retarget_logger`), but `scene_view` uses `args.raw_video_path` if set and only falls back to the per-episode `log_dir` when it is empty. A fixed boot path makes every episode overwrite ONE scene_view.mp4.
+**WHY:** `raw_video_path = args.raw_video_path or (log_dir-derived)`; a non-empty boot arg pins it.
+
+**TRIGGER:** Driving the dog with a constant forward command (self-test / `terrain_bench`) with the person in the scene.
+**LESSON:** Park the person OFF the forward lane (`--person-x -8 --person-y 8`, no `--person-move`). The default spawn `(-3.5, 0)` sits ~1 m ahead of the robot in its path, so an open-loop forward drive collides with it and corrupts the run.
+**WHY:** Without a follow controller nothing steers around the person; constant `vx` walks straight into it.
+
 ---
 
 ## 9. Testing & Verification

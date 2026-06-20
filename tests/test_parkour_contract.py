@@ -215,7 +215,7 @@ def _test_soft_hold():
     cfg = ParkourPolicyConfig(
         base_model_path=BASE, vision_model_path=VISION,
         hold_ramp_sec=0.25,  # 0.25 seconds to ramp
-        hold_speed_threshold=0.0  # disable gating for pure ramping check
+        hold_speed_threshold=10.0  # disable gating for pure ramping check
     )
     policy = ParkourLocomotionPolicy(cfg, ISAAC_DOF_NAMES, logger=logging.getLogger("parkour_test"))
     go2 = StubGo2(ISAAC_DOF_NAMES)

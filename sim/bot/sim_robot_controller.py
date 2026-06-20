@@ -42,7 +42,11 @@ class SimRobotController:
     def move(self, vx: float, vy: float, wz: float, stairs_detected: bool = False,
              yaw_err: float = 0.0, person_bbox=None,
              stairs_action_active: bool = False, hold: bool = False,
-             person_detected: bool = False, gap_m: Optional[float] = None) -> None:
+             person_detected: bool = False, gap_m: Optional[float] = None,
+             depth_img=None) -> None:
+        # depth_img is accepted for caller compatibility but NOT sent: this controller transmits the
+        # velocity command over a fixed-size UDP datagram (a depth frame would not fit); the sim's
+        # depth lives on the Isaac side. Ignored here so callers may pass it uniformly.
         self._send(vx, vy, wz, stairs_detected, yaw_err, person_bbox,
                    stairs_action_active, hold, person_detected, gap_m)
 

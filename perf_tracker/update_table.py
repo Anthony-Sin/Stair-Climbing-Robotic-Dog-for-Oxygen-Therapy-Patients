@@ -41,6 +41,7 @@ sys.path.insert(0, str(_SCRIPT_DIR))
 COLUMNS = [
     # --- Identity ---
     "run_id",
+    "terrain_id",           # terrain_bench terrain key (empty for normal run_sim runs)
     "timestamp",
     "git_branch",
     "git_commit_sha",       # 7-char short SHA at run time

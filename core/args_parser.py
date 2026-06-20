@@ -450,6 +450,23 @@ def parse_args():
                         help='Central ROI width fraction for front obstacle depth sampling')
     parser.add_argument('--obstacle-roi-height-ratio', type=float, default=0.42,
                         help='Lower-center ROI height fraction for front obstacle depth sampling')
+
+    # -----------------------------------------------------------------------
+    # Low-level Locomotion Policy
+    # -----------------------------------------------------------------------
+    low_level_group = parser.add_argument_group("Low-level Locomotion")
+    low_level_group.add_argument(
+        '--low-level-locomotion', action='store_true',
+        help='Run direct low-level joint PD control and perceptive parkour locomotion policy'
+    )
+    low_level_group.add_argument(
+        '--parkour-base-jit', type=str, default='sim/isaac/assets/policies/parkour/base_jit.pt',
+        help='Path to the JIT compiled Extreme-Parkour base policy weights'
+    )
+    low_level_group.add_argument(
+        '--parkour-vision-weight', type=str, default='sim/isaac/assets/policies/parkour/vision_weight.pt',
+        help='Path to the Extreme-Parkour recurrent vision depth encoder checkpoint'
+    )
  
     args = parser.parse_args()
     args.log_components = _normalize_log_components(parser, args.log_components)

@@ -85,7 +85,15 @@ def _build_robot_controller(args):
         return ctrl
 
     from robot_controller import RobotController
-    ctrl = RobotController(network_interface=args.network_interface)
+    low_level = getattr(args, "low_level_locomotion", False)
+    base_model = getattr(args, "parkour_base_jit", "sim/isaac/assets/policies/parkour/base_jit.pt")
+    vision_model = getattr(args, "parkour_vision_weight", "sim/isaac/assets/policies/parkour/vision_weight.pt")
+    ctrl = RobotController(
+        network_interface=args.network_interface,
+        low_level_locomotion=low_level,
+        base_model_path=base_model,
+        vision_model_path=vision_model
+    )
     if not ctrl.initialize():
         return None
     return ctrl
@@ -1612,6 +1620,43 @@ def main():
             _stairs_now = _stairs_instant or _stairs_recent
             debug_info["stairs_hold_suppress_latched"] = bool(_stairs_recent and not _stairs_instant)
 
+            # Stair-approach commit gate (consumed in the command-dispatch chain below). The
+            # patient climbs out of the camera's view right at the base (steep risers drop them
+            # above the frame), so the follow stalls and the dog parks ~0.8 m SHORT of the stairs
+            # -- too far for the depth climb gate (front riser <= engage distance) to ever engage,
+            # so it holds there forever while the patient climbs away (residential
+            # run_sim_20260619_201310: held at x=1.21, stairs at 2.0, climb never engaged). This is
+            # the user's "it stops too far and never starts to walk up". When a staircase was just
+            # seen (recent YOLO) and a riser sits within reach ahead but the climb has NOT engaged,
+            # keep creeping STRAIGHT toward it until the front riser crosses the engage distance and
+            # the normal climb path takes over. Only meaningful once the follow has stalled, which
+            # the elif-chain position below guarantees (it sits after the motion-allowed block).
+            _stair_approach_commit = (
+                _stairs_seen_recent
+                and not _stairs_now
+                and _front_near_m is not None
+                and float(args.stair_depth_engage_distance) < float(_front_near_m) <= 1.5
+            )
+            debug_info["stair_approach_commit_eligible"] = bool(_stair_approach_commit)
+
+            # Flat-ground anti-SPIRAL gate (consumed in the dispatch chain). On a person-loss while
+            # moving on flat ground the frozen RL policy will not stance-lock at speed, so it free-runs
+            # the gait with no heading reference into a full 360 deg spiral that carries it metres
+            # off-axis and never reaches the stairs (run_sim_20260619_220957: |y|=4.3 m, yaw 358 deg).
+            # When the person is briefly lost on flat ground AND the path ahead is CLEAR (live front
+            # depth, not the stale patient gap that caused the earlier near-collision), glide STRAIGHT
+            # (yaw_err=0) so the dog keeps its heading toward where the patient went instead of looping.
+            # A blocked front (something close ahead) falls through to the normal stop -- no blind drive.
+            _glide_lost_age = debug_info.get("lost_age_sec")
+            _flat_loss_glide = (
+                not bool(debug_info.get("person_detected", False))
+                and not _stairs_now
+                and not _stair_approach_commit
+                and _glide_lost_age is not None and float(_glide_lost_age) <= 4.0
+                and _front_near_m is not None and float(_front_near_m) > 0.9
+            )
+            debug_info["flat_loss_glide_eligible"] = bool(_flat_loss_glide)
+
             # Climb-gait latch: once the dog GENUINELY reaches a confirmed staircase (real
             # stairs_action_active, set by _apply_stair_command_policy above from detection+near
             # depth), hold the policy in climb-gait for stair_climb_max_sec so the heading stays
@@ -1714,6 +1759,7 @@ def main():
                     hold=False,
                     person_detected=bool(debug_info.get("person_detected", False)),
                     gap_m=debug_info.get("depth_distance_m"),
+                    depth_img=depth_img,
                 )
                 debug_info["command_trans_x_limited"] = float(command_trans_x)
                 debug_info["command_rotation_limited"] = 0.0
@@ -1875,6 +1921,7 @@ def main():
                     hold=hold_request,
                     person_detected=bool(debug_info.get("person_detected", False)),
                     gap_m=debug_info.get("depth_distance_m"),
+                    depth_img=depth_img,
                 )
                 last_command_trans_x = float(command_trans_x)
                 last_command_rotation = float(command_rotation)
@@ -1920,6 +1967,7 @@ def main():
                     hold=False,
                     person_detected=False,
                     gap_m=_loss_gap,
+                    depth_img=depth_img,
                 )
                 trans_x_limiter.reset(float(_loss_climb_vx))
                 rotation_limiter.reset(0.0)
@@ -1932,6 +1980,70 @@ def main():
                 stop_ramp_active = False
                 stop_ramp_vx = 0.0
                 stop_ramp_last_ts = current_time
+            elif (controller is not None and controller.is_ready() and not preparation_mode
+                    and _stair_approach_commit):
+                # --- Stair-approach commit (close the last 0.8 m to the staircase) ---
+                # The follow stalled with a confirmed staircase just ahead but the climb not yet
+                # engaged (patient climbed out of view at the base). Creep STRAIGHT toward the
+                # riser so the dog reaches the engage distance and the climb takes over, instead of
+                # parking short forever. Heading is dead-straight (the square-up already aligned the
+                # approach; the staircase is the only thing ahead). Collision-safe: hold the drive
+                # at zero if the last trustworthy patient gap was inside the collision floor.
+                _ap_block = (
+                    last_person_gap_m is not None
+                    and float(last_person_gap_m) < float(args.stair_climb_collision_floor)
+                )
+                _ap_vx = 0.0 if _ap_block else float(_committed_stair_floor)
+                command_trans_x = trans_x_limiter.update(_ap_vx)
+                rotation_limiter.reset(0.0)
+                yaw_err_limiter.reset(0.0)
+                controller.move(
+                    command_trans_x, 0.0, 0.0,
+                    stairs_detected=True,
+                    yaw_err=0.0,
+                    person_bbox=None,
+                    stairs_action_active=False,
+                    hold=False,
+                    person_detected=False,
+                    gap_m=last_person_gap_m,
+                    depth_img=depth_img,
+                )
+                debug_info["stair_approach_commit_active"] = True
+                debug_info["stair_approach_commit_block"] = bool(_ap_block)
+                debug_info["command_trans_x_limited"] = float(command_trans_x)
+                debug_info["command_rotation_limited"] = 0.0
+                debug_info["stairs_committed_climb_on_loss"] = False
+                last_command_trans_x = float(command_trans_x)
+                last_command_rotation = 0.0
+                stop_ramp_active = False
+                stop_ramp_vx = 0.0
+                stop_ramp_last_ts = current_time
+            elif (controller is not None and controller.is_ready() and not preparation_mode
+                    and _flat_loss_glide):
+                # --- Flat-ground anti-spiral straight glide ---
+                # Person briefly lost on flat ground with a CLEAR path ahead: keep gliding STRAIGHT at
+                # a gentle pace (heading dead-ahead) so the dog continues toward where the patient went
+                # instead of free-running into a spiral. Live front-depth gated (the eligibility above
+                # required front>0.9 m), so it never drives into a close obstacle/person.
+                _gl_vx = float(args.follow_pace_floor_speed) * 0.5
+                command_trans_x = trans_x_limiter.update(_gl_vx)
+                rotation_limiter.reset(0.0)
+                yaw_err_limiter.reset(0.0)
+                controller.move(
+                    command_trans_x, 0.0, 0.0,
+                    stairs_detected=False, yaw_err=0.0, person_bbox=None,
+                    stairs_action_active=False, hold=False,
+                    person_detected=False, gap_m=None, depth_img=depth_img,
+                )
+                debug_info["flat_loss_glide_active"] = True
+                debug_info["command_trans_x_limited"] = float(command_trans_x)
+                debug_info["command_rotation_limited"] = 0.0
+                debug_info["stairs_committed_climb_on_loss"] = False
+                last_command_trans_x = float(command_trans_x)
+                last_command_rotation = 0.0
+                stop_ramp_active = False
+                stop_ramp_vx = 0.0
+                stop_ramp_last_ts = current_time
             elif controller is not None and controller.is_ready():
                 controller.stop()
                 trans_x_limiter.reset(0.0)
@@ -1940,6 +2052,8 @@ def main():
                 debug_info["command_trans_x_limited"] = 0.0
                 debug_info["command_rotation_limited"] = 0.0
                 debug_info["stairs_committed_climb_on_loss"] = False
+                debug_info["stair_approach_commit_active"] = False
+                debug_info["flat_loss_glide_active"] = False
                 last_command_trans_x = 0.0
                 last_command_rotation = 0.0
                 # controller.stop() sends vx=0, hold=True directly; the policy's two-regime hold

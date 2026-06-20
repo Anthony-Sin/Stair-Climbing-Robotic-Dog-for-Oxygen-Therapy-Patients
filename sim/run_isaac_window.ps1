@@ -16,6 +16,12 @@ param(
     # 'terrain' (restored): the near-fill triggers the policy's climb charge; 'far' killed
     # the climb. run_sim.ps1 passes this explicitly anyway. See [[project_parkour_stair_base_fall_mask]].
     [string]$ParkourMaskFill = "terrain",
+    # Staircase geometry. 'residential' (0.178 m riser, US IRC home stairs) is the realistic
+    # oxygen-patient scenario AND in-distribution for the frozen Extreme-Parkour policy, which is
+    # trained on real obstacle heights and triggers its climb gait on a realistic riser. The old
+    # 'demo_gentle' 0.08 m step is OOD-shallow -- the policy reads it as a near-flat ramp,
+    # under-reacts, and face-plants at the first riser (confirmed across runs ..190725..200400).
+    [string]$StairPreset = "residential",
     [switch]$FinalScene,
     [switch]$NoParkourWalkMode,
     [switch]$NoSpeedGovernor,
@@ -23,7 +29,8 @@ param(
     [switch]$FastRender,
     [switch]$WarmIsaac,
     [string]$WarmCommandFile = "",
-    [int]$WarmMaxRuns = 10
+    [int]$WarmMaxRuns = 10,
+    [switch]$Bench
 )
 
 $ErrorActionPreference = "Stop"
@@ -98,6 +105,8 @@ $locomotionArgs = "--parkour-heading-mode $ParkourHeadingMode"
 if ($NoParkourPersonMask) { $locomotionArgs += " --no-parkour-person-mask" }
 # Terrain-preserving mask fill is the default; pass it through so 'far' is selectable for A/B.
 $locomotionArgs += " --parkour-mask-fill $ParkourMaskFill"
+# Staircase geometry preset (default residential = realistic + in-distribution for the policy).
+$locomotionArgs += " --stair-preset $StairPreset"
 if ($FinalScene) { $locomotionArgs += " --final-scene" }
 # Walk mode and speed governor are ON by default in isaac_env.py; pass disable flags for A/B.
 if ($NoParkourWalkMode) { $locomotionArgs += " --no-parkour-walk-mode" }
@@ -142,7 +151,19 @@ if ($WarmIsaac) {
     Write-ConsoleLog "  Warm mode:           command-file=$WarmCommandFile max-runs=$WarmMaxRuns"
 }
 
-$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" --person-move --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera $rawArg $locomotionArgs $validationCamArg $selfTestArg $warmArg > `"$RawLog`" 2>&1`""
+# Terrain-benchmark mode: pass --bench so isaac_env reads the per-episode terrain + drive
+# from the warm command-file. The person is a pure locomotion-test distractor here, so keep
+# it STATIC and well off the robot's forward lane (default -3.5,0 sits directly in the path,
+# and a constant-forward drive would collide with it on every terrain).
+$benchArg = ""
+$personArgs = "--person-move"
+if ($Bench) {
+    $benchArg = "--bench"
+    $personArgs = "--person-x -8.0 --person-y 8.0"
+    Write-ConsoleLog "  Bench mode:          terrain from warm command-file; person parked off-lane"
+}
+
+$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" $personArgs --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera $rawArg $locomotionArgs $validationCamArg $selfTestArg $warmArg $benchArg > `"$RawLog`" 2>&1`""
 
 # Start the process with direct OS redirection to prevent pipeline blocking
 $process = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs -PassThru -NoNewWindow

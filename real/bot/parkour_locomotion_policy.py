@@ -521,7 +521,6 @@ class ParkourLocomotionPolicy:
                 roll_rate=float(_roll_rate), pitch_rate=float(_pitch_rate),
                 height_above_step=height_above_step,
                 foot_contacts=foot_contacts,
-                body_speed=body_speed,
                 advance=advance,
             )
             self._last_target_policy = target_policy.astype(np.float32)
