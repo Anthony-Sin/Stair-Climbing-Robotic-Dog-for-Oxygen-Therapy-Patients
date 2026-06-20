@@ -27,6 +27,11 @@ param(
     # the curriculum checkpoint (level03..level20; higher = trained on taller stairs).
     [string]$LocomotionPolicy = "pgtt",
     [string]$PgttLevel = "level17",
+    # PGTT "stats" tuning knobs (climb aggressiveness). action-scale amplifies joint
+    # motions (leg lift); heightscan-scale amplifies the perceived step. Both default
+    # to the trained sim values (0.5 / 1.0).
+    [double]$PgttActionScale = 0.5,
+    [double]$PgttHeightscanScale = 1.0,
     # Go2 spawn X (m). Default -4.5 (full follow demo). Set near the stair base
     # (e.g. 1.0; stairs start at x=2.0) for a Docker-free climb self-test that
     # spends the sim-time budget climbing rather than walking to the stairs.
@@ -1195,6 +1200,8 @@ if ($NoIsaac) {
         "-CmdPort", [string]$CmdPort,
         "-LocomotionPolicy", $LocomotionPolicy,
         "-PgttLevel", $PgttLevel,
+        "-PgttActionScale", [string]$PgttActionScale,
+        "-PgttHeightscanScale", [string]$PgttHeightscanScale,
         "-Go2X", [string]$Go2X,
         "-ParkourHeadingMode", $ParkourHeadingMode,
         "-ParkourMaskFill", $ParkourMaskFill,

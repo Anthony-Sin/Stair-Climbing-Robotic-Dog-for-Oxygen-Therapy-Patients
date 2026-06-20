@@ -142,6 +142,7 @@ class PgttLocomotionPolicy:
         self.last_targets_isaac = self.default_isaac.copy()
         self._inference_count = 0
         self._first_phase_done = False
+        self._last_heightscan_stats = (0.0, 0.0, 0.0, 0.0, 0.0)
 
         self.height_fn = height_fn if height_fn is not None else (lambda x, y: 0.0)
         self.command_clip = np.asarray(config.command_clip, dtype=np.float32)
@@ -241,6 +242,14 @@ class PgttLocomotionPolicy:
             dist_x=self.config.dist_x, dist_y=self.config.dist_y,
             n_rows=self.config.n_rows, n_cols=self.config.n_cols,
             scale=self.config.heightscan_scale,
+        )
+        # Stash for the runtime heightscan diagnostic (proves the policy is fed the
+        # stair geometry, not flat ground). Front-center = the cell ~0.5 m ahead.
+        self._last_heightscan_stats = (
+            float(np.min(heightscan)), float(np.max(heightscan)),
+            float(heightscan.reshape(self.config.n_rows, self.config.n_cols)[0,
+                  self.config.n_cols // 2]),
+            float(base_xy[0]), float(base_xy[1]),
         )
 
         gait_freq = np.array([float(self.config.gait_freq)], dtype=np.float32)
@@ -348,6 +357,20 @@ class PgttLocomotionPolicy:
                 self._accumulator -= self.interval_sec
             self._infer(articulation, cmd)
             ran_policy = True
+            # Periodic heightscan diagnostic (~every 1 s) so the run logs PROVE the
+            # policy is fed the stair geometry (hs_max rises approaching a riser),
+            # not flat ground -- separates a perception/code issue from a climb gap.
+            if self.logger is not None and self._inference_count % 50 == 1:
+                hmn, hmx, hfront, bx, by = self._last_heightscan_stats
+                log_event(
+                    self.logger, logging.INFO, "pgtt_heightscan",
+                    "PGTT heightscan diagnostic",
+                    inferences=int(self._inference_count),
+                    hs_min=round(hmn, 3), hs_max=round(hmx, 3),
+                    hs_front_center=round(hfront, 3),
+                    base_x=round(bx, 3), base_y=round(by, 3),
+                    action_norm=round(float(np.linalg.norm(self.prev_action)), 3),
+                )
         self._apply_drive(articulation)
         return {
             "ran_policy": bool(ran_policy),

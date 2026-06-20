@@ -9,6 +9,8 @@ param(
     # Low-level controller selection + PGTT curriculum checkpoint (see run_sim.ps1).
     [string]$LocomotionPolicy = "pgtt",
     [string]$PgttLevel = "level17",
+    [double]$PgttActionScale = 0.5,
+    [double]$PgttHeightscanScale = 1.0,
     [double]$Go2X = -4.5,
     [string]$ParkourHeadingMode = "hybrid",
     [switch]$Sim2RealValidationCam,
@@ -108,6 +110,7 @@ New-Item -ItemType File -Path $RawLog -Force | Out-Null
 # PGTT is the default low-level controller; --pgtt-level picks the curriculum checkpoint.
 # (--parkour-heading-mode etc. below are parsed but unused on the PGTT path.)
 $locomotionArgs = "--locomotion-policy $LocomotionPolicy --pgtt-level $PgttLevel"
+$locomotionArgs += " --pgtt-action-scale $PgttActionScale --pgtt-heightscan-scale $PgttHeightscanScale"
 $locomotionArgs += " --parkour-heading-mode $ParkourHeadingMode"
 # Person-mask is ON by default in isaac_env.py; pass the disable flag through for A/B.
 if ($NoParkourPersonMask) { $locomotionArgs += " --no-parkour-person-mask" }
