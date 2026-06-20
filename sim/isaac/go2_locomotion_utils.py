@@ -55,6 +55,20 @@ PARKOUR_DEFAULT_POSE: Dict[Tuple[str, str], float] = {
     ("rl", "hip"):  0.1, ("rl", "thigh"): 1.0, ("rl", "calf"): -1.5,
 }
 
+# PGTT (Phase-Guided Terrain Traversal) default joint pose (radians) keyed by
+# (leg, joint). This is the MuJoCo "home" keyframe the PGTT policy was trained
+# and deployed around (action = 0 -> this pose): UNIFORM across all four legs
+# (hip 0.0, thigh 0.9, calf -1.8), unlike the asymmetric PARKOUR_DEFAULT_POSE.
+# pgtt_locomotion_policy builds its obs/action default arrays from this, and
+# isaac_env seeds the spawn-freeze + USD drive target from it when the PGTT
+# controller is active so the freeze matches what the policy expects.
+PGTT_DEFAULT_POSE: Dict[Tuple[str, str], float] = {
+    ("fr", "hip"): 0.0, ("fr", "thigh"): 0.9, ("fr", "calf"): -1.8,
+    ("fl", "hip"): 0.0, ("fl", "thigh"): 0.9, ("fl", "calf"): -1.8,
+    ("rr", "hip"): 0.0, ("rr", "thigh"): 0.9, ("rr", "calf"): -1.8,
+    ("rl", "hip"): 0.0, ("rl", "thigh"): 0.9, ("rl", "calf"): -1.8,
+}
+
 
 # ---------------------------------------------------------------------------
 # Articulation helpers

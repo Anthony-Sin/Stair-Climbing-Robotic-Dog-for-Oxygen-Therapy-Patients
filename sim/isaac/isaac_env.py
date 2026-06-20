@@ -106,6 +106,43 @@ parser.add_argument("--verification-image", type=str, default="",
                     help="Write a wide scene verification PNG showing robot, person, and stairs")
 parser.add_argument("--exit-after-verification", action="store_true",
                     help="Exit after writing --verification-image")
+# ---- PGTT (Phase-Guided Terrain Traversal) locomotion policy ----
+# PGTT is the heightmap-driven phase-guided stair policy that REPLACES the depth
+# parkour stack. It is the default low-level Go2 controller; --locomotion-policy
+# parkour selects the legacy depth policy (+ climbers) for A/B comparison.
+parser.add_argument("--locomotion-policy", type=str, default="pgtt",
+                    choices=("pgtt", "parkour"),
+                    help="Low-level Go2 controller: 'pgtt' (default, phase-guided heightmap "
+                         "policy) or 'parkour' (legacy depth/vision policy + stair climbers).")
+parser.add_argument("--pgtt-level", type=str, default="level17",
+                    choices=("level03", "level07", "level10", "level13", "level17", "level20"),
+                    help="PGTT curriculum checkpoint (higher = trained on taller stairs). "
+                         "Selects weights/pgtt/pgtt_go2_<level>.npz.")
+parser.add_argument("--pgtt-weights-dir", type=str,
+                    default=str(REPO_ROOT / "weights" / "pgtt"),
+                    help="Directory holding the converted PGTT .npz checkpoints.")
+parser.add_argument("--pgtt-spawn-z", type=float, default=0.30,
+                    help="Spawn/stand base Z (m) for the PGTT default pose (uniform "
+                         "hip0/thigh0.9/calf-1.8 stands lower than the parkour pose).")
+parser.add_argument("--pgtt-kp", type=float, default=40.0,
+                    help="PGTT PD position-drive stiffness (Kp), radian units. Training=40.")
+parser.add_argument("--pgtt-kd", type=float, default=0.5,
+                    help="PGTT PD position-drive damping (Kd), radian units. Training=0.5.")
+parser.add_argument("--pgtt-action-scale", type=float, default=0.5,
+                    help="PGTT action scale: motor_targets = default + scale*action. Training=0.5.")
+parser.add_argument("--pgtt-gait-freq", type=float, default=2.0,
+                    help="PGTT gait frequency (Hz) driving the phase clock. Deploy default=2.")
+parser.add_argument("--pgtt-heightscan-scale", type=float, default=1.0,
+                    help="Multiplier on the (subtract-min) heightscan. Sim=1.0; the real "
+                         "robot used 1.5 (a sim2real knob, not the trained sim value).")
+parser.add_argument("--pgtt-height-backend", type=str, default="ground_truth",
+                    choices=("ground_truth", "raycast"),
+                    help="PGTT heightmap source: 'ground_truth' (analytic terrain height, "
+                         "sim-first default) or 'raycast' (PhysX down-rays, sim2real fidelity).")
+parser.add_argument("--pgtt-drive-mode", type=str, default="position",
+                    choices=("position", "torque"),
+                    help="PGTT actuation: 'position' (engine PD at Kp/Kd, faithful to MuJoCo "
+                         "position servos, default) or 'torque' (explicit-PD efforts, sim2real).")
 parser.add_argument("--parkour-base-model", type=str,
                     default=str(REPO_ROOT / "sim" / "isaac" / "assets" / "policies" / "parkour" / "base_jit.pt"),
                     help="Extreme-Parkour base_jit.pt (TorchScript actor+estimator) for the parkour locomotion policy")
@@ -617,7 +654,7 @@ log_event(
     lidar_dropout_prob=float(args.lidar_dropout_prob),
     dr_lighting_pct=float(args.dr_lighting_pct),
 )
-from go2_locomotion_utils import PARKOUR_DEFAULT_POSE, classify_dof, get_dof_names
+from go2_locomotion_utils import PARKOUR_DEFAULT_POSE, PGTT_DEFAULT_POSE, classify_dof, get_dof_names
 from sim_person_actor import spawn_sim_person
 from sim_lidar_xt16 import Xt16Config, cast_scan, render_preview, profile_from_scan
 
@@ -948,7 +985,7 @@ def load_go2(world: World):
     # Spawn just above the standing height so the feet touch down gently.  A larger
     # drop combined with the settle-loop joint commands used to pitch the robot over
     # backward at startup.  Shared with the root-xform realignment below.
-    _SPAWN_Z = GO2_SPAWN_Z
+    _SPAWN_Z = _active_spawn_z()
     _set_xform_ops(go2_prim, translate=(args.go2_x, 0.0, _SPAWN_Z), rotate_xyz=(0.0, 0.0, 0.0))
 
     # For URDF-imported local assets the visual geometry has purpose='guide'.
@@ -966,12 +1003,12 @@ def load_go2(world: World):
     if changed_count > 0:
         print(f"[load_go2] Changed purpose to 'default' on {changed_count} prims (local URDF asset).")
 
-    # Go2 spawn joint positions (radians) = the parkour policy's neutral/default
-    # pose (go2_locomotion_utils.PARKOUR_DEFAULT_POSE: hips +/-0.1, front thighs
-    # 0.8 / rear 1.0, calves -1.5), keyed by (leg, joint). Spawning at the policy's
-    # default stance means the first observation starts from the in-distribution
-    # pose the policy was trained around.
-    STANDING_POSE_RAD = PARKOUR_DEFAULT_POSE
+    # Go2 spawn joint positions (radians) = the ACTIVE policy's neutral/default
+    # pose, keyed by (leg, joint). For PGTT this is the uniform hip0/thigh0.9/calf-1.8
+    # home stance; for the legacy parkour policy the asymmetric PARKOUR_DEFAULT_POSE.
+    # Spawning at the policy's default stance means the first observation starts from
+    # the in-distribution pose the policy was trained around.
+    STANDING_POSE_RAD = _active_default_pose()
 
     art_path = ""
     if go2_prim and go2_prim.IsValid():
@@ -1730,6 +1767,21 @@ def _get_person_pose_z(x: float, y: float, *, smooth: bool = True) -> float:
         return base_z
     from final_scene import person_pose_z
     return person_pose_z(base_z, _FINAL_SCENE_SPEC)
+
+
+def _pgtt_raycast_height(x: float, y: float, origin_z: float) -> float:
+    """Terrain-top Z at (x, y) via a PhysX down-ray (PGTT --pgtt-height-backend raycast).
+
+    Mirrors what the real robot's LiDAR elevation map provides: a ray cast straight
+    down from above returns the world Z of the first hit. Falls back to the analytic
+    ground-truth height if the physics query is unavailable.
+    """
+    dist = _physx_raycast_distance(
+        (float(x), float(y), float(origin_z)), (0.0, 0.0, -1.0), float(origin_z) + 2.0
+    )
+    if dist is None:
+        return get_terrain_height(float(x), float(y))
+    return float(origin_z) - float(dist)
 
 
 _PHYSX_QUERY_IFACE = None
@@ -3262,15 +3314,35 @@ def _set_go2_drive_gains(go2, kp: float, kd: float, torque_limit: float, *, reas
                   "No runtime gain API succeeded; relying on USD DriveAPI authoring (degrees)")
 
 
+def _active_default_pose():
+    """The (leg, joint)->rad default pose for the ACTIVE locomotion controller.
+
+    PGTT trains around a uniform stance (hip0/thigh0.9/calf-1.8); the legacy
+    parkour policy around the asymmetric PARKOUR_DEFAULT_POSE. Spawn/freeze/recover
+    seed from whichever is active so the first observation is in-distribution.
+    """
+    if str(getattr(args, "locomotion_policy", "pgtt")) == "pgtt":
+        return PGTT_DEFAULT_POSE
+    return PARKOUR_DEFAULT_POSE
+
+
+def _active_spawn_z() -> float:
+    """Standing base Z for the active controller's default pose."""
+    if str(getattr(args, "locomotion_policy", "pgtt")) == "pgtt":
+        return float(getattr(args, "pgtt_spawn_z", 0.30))
+    return float(GO2_SPAWN_Z)
+
+
 def _go2_standing_joint_targets(go2):
-    """Return (standing_rad, dof_names, unmatched): the parkour policy default pose
+    """Return (standing_rad, dof_names, unmatched): the ACTIVE policy default pose
     in the articulation's own DOF order, matched BY (leg, joint) NAME.
 
-    Leg-aware (front vs rear thighs differ; see PARKOUR_DEFAULT_POSE), so the
-    standing/freeze hold pose matches the pose the policy commands around. The
+    Uses _active_default_pose() (PGTT uniform stance, or the parkour leg-aware pose),
+    so the standing/freeze hold pose matches the pose the policy commands around. The
     Nucleus Go2 reports its DOFs joint-type-major (all hips, then thighs, then
     calves), so a positional array would scramble the pose -- hence the name match.
     """
+    pose = _active_default_pose()
     dof_names = get_dof_names(go2)
     standing_rad = np.zeros(len(dof_names), dtype=float)
     unmatched = []
@@ -3279,7 +3351,7 @@ def _go2_standing_joint_targets(go2):
         if key is None:
             unmatched.append(str(raw))
             continue
-        standing_rad[idx] = float(PARKOUR_DEFAULT_POSE.get(key, 0.0))
+        standing_rad[idx] = float(pose.get(key, 0.0))
     return standing_rad, dof_names, unmatched
 
 
@@ -3306,7 +3378,7 @@ def _freeze_go2_at_spawn(go2) -> None:
     try:
         if hasattr(go2, "set_world_pose"):
             go2.set_world_pose(
-                position=np.array([float(args.go2_x), 0.0, float(GO2_SPAWN_Z)]),
+                position=np.array([float(args.go2_x), 0.0, float(_active_spawn_z())]),
                 orientation=np.array([1.0, 0.0, 0.0, 0.0]),  # (w,x,y,z) identity -> faces +X
             )
         if hasattr(go2, "set_linear_velocity"):
@@ -3338,7 +3410,7 @@ def _recover_go2_in_place(go2, x: float, y: float) -> None:
     except Exception:
         pass
     try:
-        stand_z = get_terrain_height(float(x), float(y)) + float(GO2_SPAWN_Z)
+        stand_z = get_terrain_height(float(x), float(y)) + float(_active_spawn_z())
         if hasattr(go2, "set_world_pose"):
             go2.set_world_pose(
                 position=np.array([float(x), float(y), float(stand_z)]),
@@ -3412,7 +3484,7 @@ def _init_go2_standing_pose(go2) -> None:
         stage = omni.usd.get_context().get_stage()
         go2_prim = stage.GetPrimAtPath(GO2_USD_PATH)
         if go2_prim and go2_prim.IsValid():
-            _set_xform_ops(go2_prim, translate=(args.go2_x, 0.0, GO2_SPAWN_Z), rotate_xyz=(0.0, 0.0, 0.0))
+            _set_xform_ops(go2_prim, translate=(args.go2_x, 0.0, _active_spawn_z()), rotate_xyz=(0.0, 0.0, 0.0))
     except Exception:
         pass
 
@@ -3423,15 +3495,71 @@ def _init_go2_standing_pose(go2) -> None:
 CONTROL_HZ = 50.0
 
 
-def _create_locomotion_policy(go2):
-    """Construct the Extreme-Parkour perceptive depth/vision locomotion policy.
+def _create_pgtt_policy(go2):
+    """Construct the PGTT phase-guided heightmap locomotion policy (the default).
 
-    The sole low-level Go2 controller. Lazy-imports the parkour runner so the
-    module top level stays torch-free. Sim-to-real realism is off by default (the
-    "perfect env"); the --sim2real-validation-cam preset / override flags turn the
-    suite on and it is threaded into the policy here. Domain-randomization PD-gain
-    perturbation is applied to the nominal kp=40/kd=1.
+    Lazy-imports the torch runner so the module top level stays torch-free. Loads
+    the converted JAX-free .npz for --pgtt-level and feeds it the ground-truth
+    terrain-height backend; the raycast backend (sim2real) is selected per-step in
+    _step_go2_locomotion (it needs the live base Z for the ray origin).
     """
+    from pgtt_locomotion_policy import PgttLocomotionPolicy, PgttPolicyConfig
+
+    dof_names = get_dof_names(go2)
+    weights_dir = Path(args.pgtt_weights_dir)
+    if not weights_dir.is_absolute():
+        weights_dir = (REPO_ROOT / weights_dir).resolve()
+    npz_path = weights_dir / f"pgtt_go2_{args.pgtt_level}.npz"
+    if not npz_path.exists():
+        raise FileNotFoundError(
+            f"PGTT weights not found: {npz_path}. Convert the checkpoint with "
+            f"tools/convert_pgtt_checkpoint.py (offline, in a JAX env), or pass "
+            f"--locomotion-policy parkour to use the legacy depth controller."
+        )
+    config = PgttPolicyConfig(
+        policy_path=str(npz_path),
+        control_hz=CONTROL_HZ,
+        action_scale=float(args.pgtt_action_scale),
+        kp=float(args.pgtt_kp),
+        kd=float(args.pgtt_kd),
+        gait_freq=float(args.pgtt_gait_freq),
+        heightscan_scale=float(args.pgtt_heightscan_scale),
+        drive_mode=str(args.pgtt_drive_mode),
+        # Sim2real realism passthroughs (torque drive mode only; off by default).
+        joint_limit_clamp=bool(args.joint_limit_clamp),
+        backlash_rad=float(args.backlash_rad),
+        torque_derate=float(args.torque_derate),
+        torque_rate_limit_nm=float(args.torque_rate),
+    )
+    # Domain-randomization PD-gain perturbation (matches the parkour path).
+    config.kp *= float(_DR.get("kp_mult", 1.0))
+    config.kd *= float(_DR.get("kd_mult", 1.0))
+    policy = PgttLocomotionPolicy(
+        config, dof_names, height_fn=get_terrain_height, logger=LOGGER
+    )
+    log_event(
+        LOGGER, logging.INFO, "pgtt_locomotion_policy_loaded",
+        "Loaded PGTT phase-guided locomotion policy",
+        policy=npz_path.name, pgtt_level=str(args.pgtt_level), control_hz=CONTROL_HZ,
+        kp=round(float(config.kp), 3), kd=round(float(config.kd), 3),
+        action_scale=float(config.action_scale), gait_freq=float(config.gait_freq),
+        drive_mode=str(config.drive_mode), height_backend=str(args.pgtt_height_backend),
+        heightscan_scale=float(config.heightscan_scale), dof_count=len(dof_names),
+    )
+    return policy
+
+
+def _create_locomotion_policy(go2):
+    """Construct the active low-level Go2 controller.
+
+    Default is the PGTT phase-guided heightmap policy (--locomotion-policy pgtt).
+    --locomotion-policy parkour selects the legacy Extreme-Parkour depth/vision
+    policy below. Lazy-imports the torch runner so the module top level stays
+    torch-free. Sim-to-real realism is off by default (the "perfect env"); the
+    --sim2real-validation-cam preset / override flags turn the suite on.
+    """
+    if str(getattr(args, "locomotion_policy", "pgtt")) == "pgtt":
+        return _create_pgtt_policy(go2)
     from parkour_locomotion_policy import ParkourLocomotionPolicy, ParkourPolicyConfig
 
     dof_names = get_dof_names(go2)
@@ -3529,6 +3657,31 @@ def _step_go2_locomotion(
         # authored default pose (the settle loop keeps the drives live for this
         # mode). If the robot stands here but flips with the policy on, the
         # obs/policy path is at fault, not physics/gains/asset.
+        record_go2_telemetry(
+            go2, _go2_locomotion_state, base_link_name=BASE_LINK_NAME,
+            logger=LOGGER, vx=vx, vy=vy, wz=wz,
+        )
+        return
+    # PGTT controller path: it takes an explicit body-frame yaw-RATE command (wz)
+    # and self-stabilizes from the heightmap, so it bypasses the depth-era
+    # heading-mode/delta_yaw injection, the person depth-mask, and the scripted /
+    # closed-loop stair climbers entirely. command = [vx, vy, wz].
+    if str(getattr(args, "locomotion_policy", "pgtt")) == "pgtt":
+        _hf = None
+        if str(getattr(args, "pgtt_height_backend", "ground_truth")) == "raycast":
+            try:
+                _bp, _ = go2.get_world_pose()
+                _origin_z = float(_bp[2]) + 0.6
+                _hf = lambda gx, gy, _oz=_origin_z: _pgtt_raycast_height(gx, gy, _oz)
+            except Exception:
+                _hf = None
+        telemetry = rl_policy.step(go2, (vx, vy, wz), dt, hold=hold, height_fn=_hf)
+        _go2_locomotion_state.leg_summary = rl_policy.leg_command_summary()
+        _go2_locomotion_state.policy_name = rl_policy.policy_path.name
+        if not getattr(rl_policy, "_active_logged", False):
+            setattr(rl_policy, "_active_logged", True)
+            log_event(LOGGER, logging.INFO, "locomotion_policy_active",
+                      "Go2 PGTT locomotion policy is writing joint targets", **telemetry)
         record_go2_telemetry(
             go2, _go2_locomotion_state, base_link_name=BASE_LINK_NAME,
             logger=LOGGER, vx=vx, vy=vy, wz=wz,
@@ -3633,22 +3786,32 @@ def _settle_go2_spawn(world: World, go2, rl_policy, steps: int, dt: float) -> No
     settle_steps = max(0, int(steps))
     if settle_steps <= 0:
         return
-    # Hand the joints over to the policy. The parkour policy applies its own PD as
-    # explicit joint efforts (kp40/kd1 inside the policy), so the PhysX position
-    # drive is zeroed here -- at the start of the loop that applies torque every
-    # step -- to avoid double control. Until this point the position-hold gains kept
-    # the robot standing. Exception: --self-test-no-policy keeps the position-hold
-    # drives live (it skips the policy, so the drives are what hold the pose).
+    # Hand the joints over to the policy.
+    #  - PGTT position drive (default): the engine runs the PD at Kp/Kd, so we set
+    #    those gains here and the policy writes position TARGETS. Never zero them or
+    #    the robot goes limp.
+    #  - PGTT torque mode / legacy parkour: the policy applies its own explicit-PD
+    #    joint efforts, so the PhysX drive is zeroed to avoid double control.
+    # Until this point the stiff position-hold gains kept the robot standing.
+    # Exception: --self-test-no-policy keeps the hold drives live (no policy runs).
     if not getattr(args, "self_test_no_policy", False):
-        _set_go2_drive_gains(go2, 0.0, 0.0, 40.0,
-                             reason="zeroed_for_explicit_torque_control")
+        _is_pgtt_pos = (
+            str(getattr(args, "locomotion_policy", "pgtt")) == "pgtt"
+            and str(getattr(args, "pgtt_drive_mode", "position")) == "position"
+        )
+        if _is_pgtt_pos:
+            _set_go2_drive_gains(go2, float(args.pgtt_kp), float(args.pgtt_kd), 1000.0,
+                                 reason="pgtt_position_drive")
+        else:
+            _set_go2_drive_gains(go2, 0.0, 0.0, 40.0,
+                                 reason="zeroed_for_explicit_torque_control")
     log_event(
         LOGGER,
         logging.INFO,
         "go2_spawn_settle_start",
         "Settling Go2 at zero command before world_ready",
         steps=settle_steps,
-        locomotion_mode="parkour",
+        locomotion_mode=str(getattr(args, "locomotion_policy", "pgtt")),
     )
     for i in range(settle_steps):
         if rl_policy is not None:
@@ -4386,6 +4549,10 @@ def main() -> None:
                 stairs_action_active = False
                 person_bbox = None
                 command_fresh = True
+                # We are explicitly commanding motion with no UDP controller, so the
+                # stale-command read above forced hold=True -- clear it, else the
+                # locomotion policy is told to stand still and never walks.
+                hold = False
                 cmd_count = max(cmd_count, 1)
                 active_count = max(active_count, 1)
             # Bench mode: same Docker-free constant-forward drive as the self-test, but
@@ -4397,6 +4564,7 @@ def main() -> None:
                 stairs_action_active = False
                 person_bbox = None
                 command_fresh = True
+                hold = False  # open-loop drive: clear the stale-command hold
                 cmd_count = max(cmd_count, 1)
                 active_count = max(active_count, 1)
             controller_stream_seen = cmd_count > 0

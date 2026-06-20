@@ -6,6 +6,10 @@ param(
     [Parameter(Mandatory = $true)][string]$FrameHost,
     [int]$FramePort = 52002,
     [int]$CmdPort = 52001,
+    # Low-level controller selection + PGTT curriculum checkpoint (see run_sim.ps1).
+    [string]$LocomotionPolicy = "pgtt",
+    [string]$PgttLevel = "level17",
+    [double]$Go2X = -4.5,
     [string]$ParkourHeadingMode = "hybrid",
     [switch]$Sim2RealValidationCam,
     [switch]$SelfTestWalk,
@@ -100,7 +104,10 @@ $env:PYTHONUNBUFFERED = "1"
 # Initialize RawLog file first
 New-Item -ItemType File -Path $RawLog -Force | Out-Null
 
-$locomotionArgs = "--parkour-heading-mode $ParkourHeadingMode"
+# PGTT is the default low-level controller; --pgtt-level picks the curriculum checkpoint.
+# (--parkour-heading-mode etc. below are parsed but unused on the PGTT path.)
+$locomotionArgs = "--locomotion-policy $LocomotionPolicy --pgtt-level $PgttLevel"
+$locomotionArgs += " --parkour-heading-mode $ParkourHeadingMode"
 # Person-mask is ON by default in isaac_env.py; pass the disable flag through for A/B.
 if ($NoParkourPersonMask) { $locomotionArgs += " --no-parkour-person-mask" }
 # Terrain-preserving mask fill is the default; pass it through so 'far' is selectable for A/B.
@@ -157,13 +164,16 @@ if ($WarmIsaac) {
 # and a constant-forward drive would collide with it on every terrain).
 $benchArg = ""
 $personArgs = "--person-move"
-if ($Bench) {
-    $benchArg = "--bench"
+if ($Bench) { $benchArg = "--bench" }
+if ($Bench -or $SelfTestWalk) {
+    # Open-loop constant-forward drive (bench OR self-test) would collide with the
+    # default person spawn (-3.5,0) sitting in the forward lane, so park the person
+    # static and well off-lane. See the CLAUDE.md incident ledger entry.
     $personArgs = "--person-x -8.0 --person-y 8.0"
-    Write-ConsoleLog "  Bench mode:          terrain from warm command-file; person parked off-lane"
+    Write-ConsoleLog "  Person parked off-lane (open-loop bench/self-test drive)"
 }
 
-$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" $personArgs --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera $rawArg $locomotionArgs $validationCamArg $selfTestArg $warmArg $benchArg > `"$RawLog`" 2>&1`""
+$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" $personArgs --go2-x $Go2X --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera $rawArg $locomotionArgs $validationCamArg $selfTestArg $warmArg $benchArg > `"$RawLog`" 2>&1`""
 
 # Start the process with direct OS redirection to prevent pipeline blocking
 $process = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs -PassThru -NoNewWindow

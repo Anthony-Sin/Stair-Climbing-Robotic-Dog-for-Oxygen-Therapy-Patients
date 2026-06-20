@@ -22,6 +22,15 @@ param(
     [int]$IsaacReadyTimeoutSec = 420,
     [int]$KeepRunLogs = 1,
     [int]$MaxRunTimeSec = 900,
+    # Low-level Go2 controller: 'pgtt' (default, phase-guided heightmap stair policy)
+    # or 'parkour' (legacy depth/vision policy + climbers) for A/B. PgttLevel selects
+    # the curriculum checkpoint (level03..level20; higher = trained on taller stairs).
+    [string]$LocomotionPolicy = "pgtt",
+    [string]$PgttLevel = "level17",
+    # Go2 spawn X (m). Default -4.5 (full follow demo). Set near the stair base
+    # (e.g. 1.0; stairs start at x=2.0) for a Docker-free climb self-test that
+    # spends the sim-time budget climbing rather than walking to the stairs.
+    [double]$Go2X = -4.5,
     [string]$ParkourHeadingMode = "hybrid",
     # 'terrain' (restored): the terrain-inpaint near-fill in the patient region is what
     # TRIGGERS the policy's climb charge at the staircase -- perf history shows terrain
@@ -1183,6 +1192,9 @@ if ($NoIsaac) {
         "-FrameHost", $FrameHost,
         "-FramePort", [string]$FramePort,
         "-CmdPort", [string]$CmdPort,
+        "-LocomotionPolicy", $LocomotionPolicy,
+        "-PgttLevel", $PgttLevel,
+        "-Go2X", [string]$Go2X,
         "-ParkourHeadingMode", $ParkourHeadingMode,
         "-ParkourMaskFill", $ParkourMaskFill,
         # Staircase preset (now selectable via -StairPreset). The launcher previously passed NOTHING,
