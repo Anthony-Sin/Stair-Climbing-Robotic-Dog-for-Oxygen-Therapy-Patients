@@ -387,6 +387,11 @@ parser.add_argument("--self-test-vx", type=float, default=0.5,
                     help="Forward velocity command (m/s) used by --self-test-walk")
 parser.add_argument("--self-test-sec", type=float, default=15.0,
                     help="Simulated seconds to run --self-test-walk before exiting")
+parser.add_argument("--self-test-heading-hold", action="store_true",
+                    help="In --self-test-walk, command wz to hold the robot facing +X "
+                         "(yaw->0), mimicking the person-follow steering loop. Lets the "
+                         "Docker-free self-test climb stairs straight instead of drifting "
+                         "off-axis (open-loop wz=0 crabs sideways). Diagnostic for PGTT climb.")
 parser.add_argument("--self-test-no-policy", action="store_true",
                     help="During self-test, do NOT run the locomotion policy: hold the default pose "
                          "via the PD drives only. Isolates whether physics/gains/asset alone can stand.")
@@ -4553,6 +4558,18 @@ def main() -> None:
                 # stale-command read above forced hold=True -- clear it, else the
                 # locomotion policy is told to stand still and never walks.
                 hold = False
+                # Optional heading-hold: command wz to keep the robot facing +X (yaw->0),
+                # standing in for the person-follow steering loop so the open-loop climb
+                # test goes straight up the stairs instead of crabbing off-axis.
+                if getattr(args, "self_test_heading_hold", False):
+                    try:
+                        _q = np.asarray(go2.get_world_pose()[1], dtype=float).reshape(-1)[:4]
+                        _w, _xq, _yq, _zq = (float(v) for v in _q)
+                        _yaw = math.atan2(2.0 * (_w * _zq + _xq * _yq),
+                                          1.0 - 2.0 * (_yq * _yq + _zq * _zq))
+                        wz = float(np.clip(-2.0 * _yaw, -0.8, 0.8))
+                    except Exception:
+                        wz = 0.0
                 cmd_count = max(cmd_count, 1)
                 active_count = max(active_count, 1)
             # Bench mode: same Docker-free constant-forward drive as the self-test, but

@@ -50,6 +50,7 @@ param(
     [double]$SelfTestVx = 0.5,
     [double]$SelfTestSec = 15.0,
     [switch]$SelfTestNoPolicy,
+    [switch]$SelfTestHeadingHold,
     [switch]$NoParkourPersonMask,
     [switch]$WithO2Payload,
     [switch]$NoParkourWalkMode,
@@ -1235,6 +1236,7 @@ if ($NoIsaac) {
         $isaacArgs += "-SelfTestVx";  $isaacArgs += [string]$SelfTestVx
         $isaacArgs += "-SelfTestSec"; $isaacArgs += [string]$SelfTestSec
         if ($SelfTestNoPolicy) { $isaacArgs += "-SelfTestNoPolicy" }
+        if ($SelfTestHeadingHold) { $isaacArgs += "-SelfTestHeadingHold" }
     }
 
     # Warm mode: reuse a live warm Isaac if present (skip the ~120s boot); otherwise

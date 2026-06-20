@@ -16,6 +16,7 @@ param(
     [double]$SelfTestVx = 0.5,
     [double]$SelfTestSec = 15.0,
     [switch]$SelfTestNoPolicy,
+    [switch]$SelfTestHeadingHold,
     [switch]$NoParkourPersonMask,
     # 'terrain' (restored): the near-fill triggers the policy's climb charge; 'far' killed
     # the climb. run_sim.ps1 passes this explicitly anyway. See [[project_parkour_stair_base_fall_mask]].
@@ -147,6 +148,7 @@ $selfTestArg = ""
 if ($SelfTestWalk) {
     $selfTestArg = "--self-test-walk --self-test-vx $SelfTestVx --self-test-sec $SelfTestSec --headless"
     if ($SelfTestNoPolicy) { $selfTestArg += " --self-test-no-policy" }
+    if ($SelfTestHeadingHold) { $selfTestArg += " --self-test-heading-hold" }
     Write-ConsoleLog "  Self-test:           vx=$SelfTestVx, ${SelfTestSec}s, no-policy=$SelfTestNoPolicy (headless, no controller)"
 }
 
