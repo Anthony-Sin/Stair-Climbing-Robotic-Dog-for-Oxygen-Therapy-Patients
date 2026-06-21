@@ -2,7 +2,7 @@
 
 Fine-tunes the robot's **vision depth model** — the Extreme-Parkour-Onboard
 `RecurrentDepthBackbone` (shipped as
-`sim/isaac/assets/policies/parkour/vision_weight.pt`) — for the oxygen-therapy
+`sim/models/locomotion/parkour/vision_weight.pt`) — for the oxygen-therapy
 environment, on a cloud GPU (RunPod **RTX 6000 Ada**, 48 GB).
 
 This is the **groundwork**: it loads today's real model, validates the environment up

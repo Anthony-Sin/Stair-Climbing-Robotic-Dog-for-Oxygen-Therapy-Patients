@@ -22,7 +22,7 @@ Usage:
 
     # convert a single file
     python tools/convert_pgtt_checkpoint.py --src /path/to/policy_go2_pgtt_level17_run0 \
-        --out-dir weights/pgtt
+        --out-dir sim/models/pgtt
 """
 
 from __future__ import annotations
@@ -151,8 +151,8 @@ def main() -> None:
     ap.add_argument("--src", required=True,
                     help="A checkpoint file, or a directory of PGTT 'policies'.")
     repo_root = Path(__file__).resolve().parents[1]
-    ap.add_argument("--out-dir", default=str(repo_root / "weights" / "pgtt"),
-                    help="Output dir for .npz (default: weights/pgtt).")
+    ap.add_argument("--out-dir", default=str(repo_root / "sim" / "models" / "pgtt"),
+                    help="Output dir for .npz (default: sim/models/pgtt).")
     ap.add_argument("--levels", nargs="*", default=DEFAULT_LEVELS,
                     help="Levels to convert when --src is a directory.")
     args = ap.parse_args()

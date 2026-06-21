@@ -2,7 +2,7 @@ import tensorrt as trt
 import onnx
 
 # Validate the ONNX file first
-model = onnx.load('/models/osnet_ain_x1_0.onnx')
+model = onnx.load('/models/reid/osnet_ain_x1_0.onnx')
 onnx.checker.check_model(model)
 print(f'ONNX model opset: {model.opset_import[0].version}')
 
@@ -11,7 +11,7 @@ builder = trt.Builder(logger)
 network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
 parser = trt.OnnxParser(network, logger)
 
-with open('/models/osnet_ain_x1_0.onnx', 'rb') as f:
+with open('/models/reid/osnet_ain_x1_0.onnx', 'rb') as f:
     success = parser.parse(f.read())
 
 if not success:
@@ -47,6 +47,6 @@ engine_bytes = builder.build_serialized_network(network, config)
 if engine_bytes is None:
     raise RuntimeError('build_serialized_network returned None — check TRT logs above')
 
-with open('/models/osnet_ain_x1_0.trt', 'wb') as f:
+with open('/models/reid/osnet_ain_x1_0.trt', 'wb') as f:
     f.write(engine_bytes)
-print('Done: /models/osnet_ain_x1_0.trt')
+print('Done: /models/reid/osnet_ain_x1_0.trt')

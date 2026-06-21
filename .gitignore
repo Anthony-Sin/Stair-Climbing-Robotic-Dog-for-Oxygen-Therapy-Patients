@@ -6,6 +6,8 @@ debug_logs/
 *.csv
 *.tar
 *.tar.gz
+# generated prior-run snapshot (see perf_tracker/update_table.py)
+perf_tracker/data/last_run.json
 
 # Temporary folders
 tmp/

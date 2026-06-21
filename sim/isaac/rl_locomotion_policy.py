@@ -135,7 +135,7 @@ class RLLocomotionPolicy:
         if not self.policy_path.exists():
             raise FileNotFoundError(
                 f"RL locomotion policy not found: {self.policy_path}. "
-                "Place the Go2 policy at sim/isaac/assets/policies/go2_robot_lab_policy.pt "
+                "Place the Go2 policy at sim/models/locomotion/go2_robot_lab_policy.pt "
                 "(rl_sar policy/go2/robot_lab/policy.pt)."
             )
 

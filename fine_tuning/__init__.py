@@ -1,7 +1,7 @@
 """Fine-tuning scaffold for the Extreme-Parkour Go2 depth-vision policy.
 
 This package fine-tunes the perceptive *depth encoder* (`RecurrentDepthBackbone`,
-shipped as ``sim/isaac/assets/policies/parkour/vision_weight.pt``) for the
+shipped as ``sim/models/locomotion/parkour/vision_weight.pt``) for the
 oxygen-therapy environment, on a cloud GPU (RunPod RTX 6000 Ada).
 
 It deliberately reuses the live model code in ``sim/isaac/`` as the single source

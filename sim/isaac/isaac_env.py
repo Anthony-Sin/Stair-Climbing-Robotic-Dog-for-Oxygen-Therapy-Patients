@@ -22,7 +22,11 @@ for d in (SIM_BOT_DIR, CORE_DIR):
     if str(d) not in sys.path:
         sys.path.insert(0, str(d))
 
-from sim_logging_utils import configure_sim_logger, log_event
+from sim_logging_utils import (
+    configure_sim_logger,
+    log_event,
+    log_scene_baseline,
+)
 
 parser = argparse.ArgumentParser(description="Isaac Sim Go2 environment")
 parser.add_argument("--headless", action="store_true", help="Run without GUI")
@@ -117,9 +121,9 @@ parser.add_argument("--locomotion-policy", type=str, default="pgtt",
 parser.add_argument("--pgtt-level", type=str, default="level17",
                     choices=("level03", "level07", "level10", "level13", "level17", "level20"),
                     help="PGTT curriculum checkpoint (higher = trained on taller stairs). "
-                         "Selects weights/pgtt/pgtt_go2_<level>.npz.")
+                         "Selects sim/models/pgtt/pgtt_go2_<level>.npz.")
 parser.add_argument("--pgtt-weights-dir", type=str,
-                    default=str(REPO_ROOT / "weights" / "pgtt"),
+                    default=str(REPO_ROOT / "sim" / "models" / "pgtt"),
                     help="Directory holding the converted PGTT .npz checkpoints.")
 parser.add_argument("--pgtt-spawn-z", type=float, default=0.30,
                     help="Spawn/stand base Z (m) for the PGTT default pose (uniform "
@@ -214,14 +218,13 @@ parser.add_argument("--handoff-engage-standoff", type=float, default=0.65,
 parser.add_argument("--handoff-min-room", type=float, default=0.40,
                     help="Do not engage the climber if the riser is closer than this ahead of the base "
                          "(m): the front feet are jammed, leaving no room (causes a backward shove/flip).")
-parser.add_argument("--handoff-climb-backend", type=str, default="parkour",
+parser.add_argument("--handoff-climb-backend", type=str, default="blind_rl",
                     choices=("parkour", "blind_rl", "ik"),
-                    help="Climb backend for the PGTT dual-policy handoff: 'parkour' (default) HOT-SWAPS "
-                         "the active policy to the Extreme-Parkour depth/vision RL net -- PGTT walks, "
-                         "the trained vision policy climbs the stairs, then PGTT resumes (the drive "
-                         "gains swap position<->torque on each transition). 'blind_rl' HOT-SWAPS to the "
-                         "proprioceptive (blind) rl_sar Go2 RL net instead (no depth; --rl-* knobs) -- "
-                         "PGTT walks, the blind RL net climbs, then PGTT resumes. 'ik' uses the "
+                    help="Climb backend for the PGTT dual-policy handoff: 'blind_rl' (default) HOT-SWAPS "
+                         "the active policy to the proprioceptive (blind) rl_sar Go2 RL net (no depth; "
+                         "--rl-* knobs) -- PGTT walks, the blind RL net climbs the stairs, then PGTT "
+                         "resumes (the drive gains swap position<->torque on each transition). 'parkour' "
+                         "HOT-SWAPS to the Extreme-Parkour depth/vision RL net instead. 'ik' uses the "
                          "deterministic ClosedLoopStairClimber instead (gated by --handoff-climb-attempt; "
                          "flips in PhysX).")
 parser.add_argument("--handoff-climb-keep-governor", dest="handoff_climb_keep_governor",
@@ -240,7 +243,7 @@ parser.add_argument("--handoff-climb-vx", type=float, default=0.22,
 # walks, this blind RL net hot-swaps in to climb the stairs (no depth). These knobs ARE
 # the rl_sar deployment contract (policy/go2/robot_lab/config.yaml) -- see rl_locomotion_policy.
 parser.add_argument("--rl-policy-path", type=str,
-                    default=str(REPO_ROOT / "sim" / "isaac" / "assets" / "policies" / "go2_robot_lab_policy.pt"),
+                    default=str(REPO_ROOT / "sim" / "models" / "locomotion" / "go2_robot_lab_policy.pt"),
                     help="Local TorchScript/ONNX Go2 policy path (rl_sar go2 robot_lab) for the blind_rl climb backend")
 parser.add_argument("--rl-policy-format", type=str, default="auto",
                     choices=("auto", "torchscript", "torch", "pt", "jit", "onnx"),
@@ -272,10 +275,10 @@ parser.add_argument("--rl-backlash-rad", type=float, default=0.0,
 parser.add_argument("--rl-torque-derate", type=float, default=1.0,
                     help="Multiplier on commanded blind RL joint torque to model thermal/voltage sag (1.0 = no effect).")
 parser.add_argument("--parkour-base-model", type=str,
-                    default=str(REPO_ROOT / "sim" / "isaac" / "assets" / "policies" / "parkour" / "base_jit.pt"),
+                    default=str(REPO_ROOT / "sim" / "models" / "locomotion" / "parkour" / "base_jit.pt"),
                     help="Extreme-Parkour base_jit.pt (TorchScript actor+estimator) for the parkour locomotion policy")
 parser.add_argument("--parkour-vision-model", type=str,
-                    default=str(REPO_ROOT / "sim" / "isaac" / "assets" / "policies" / "parkour" / "vision_weight.pt"),
+                    default=str(REPO_ROOT / "sim" / "models" / "locomotion" / "parkour" / "vision_weight.pt"),
                     help="Extreme-Parkour vision_weight.pt (depth-encoder state_dict) for the parkour locomotion policy")
 parser.add_argument("--parkour-depth-hz", type=float, default=10.0,
                     help="Rate (Hz) the rigid depth camera is rendered/submitted to the parkour policy")
@@ -856,6 +859,14 @@ ROBOT_COLLAPSE_HEIGHT_M = 0.18
 # Sustain the fall condition this long (sim seconds) before the live watchdog
 # exits, so a transient deep stair step or single bad frame is not a false fall.
 ROBOT_FALL_SUSTAIN_SEC = 0.4
+# Stair-waypoint CLIMB-QUALITY gate. Reaching the planar waypoint is NOT enough to
+# pass the climb test: a robot can plow nose-first into the risers and wedge --
+# staying upright (never tripping the 60-deg fall watchdog) yet dragging low and
+# never cleanly topping out. A genuine clean climb stands at least this far above
+# the step below it and keeps |roll|/|pitch| within this band, SUSTAINED over the
+# 2 s hold (a collided/wedged dog cannot hold a clean upright stance that long).
+STAIR_WAYPOINT_MIN_STAND_M = 0.22   # height above the step below (collision run dragged to 0.12-0.17)
+STAIR_WAYPOINT_MAX_TILT_DEG = 25.0  # upright band; a clean climb does not exceed this
 # Conservative root-to-patient separation used only for verification. Control
 # still uses the vision/depth collision floor; this ground-truth value never
 # feeds motion commands.
@@ -2567,7 +2578,9 @@ def spawn_person(world, x: float = 1.0, y: float = 0.0):
     global _patient_state
     _patient_state = PatientLocomotionState(start_x=x, start_y=y)
     
-    person = spawn_sim_person(world, x=x, y=y, logger=LOGGER)
+    person = spawn_sim_person(
+        world, x=x, y=y, logger=LOGGER, stairs_provider=get_active_stairs
+    )
     initial_z = _get_person_pose_z(x, y, smooth=True)
     person.set_world_pose(
         position=np.array([float(x), float(y), float(initial_z)], dtype=float),
@@ -4719,6 +4732,20 @@ def main() -> None:
     topdown_camera = add_topdown_camera(stage)
     scene_left_camera = add_scene_left_camera(stage)
 
+    # Reference baseline: snapshot the environment with NO person present, so every
+    # run has an empty-scene record to diff sensor/physics readings against. Logged
+    # immediately before the patient actor is spawned.
+    log_scene_baseline(
+        LOGGER,
+        terrain=_ACTIVE_STAIRS.name,
+        step_count=int(_ACTIVE_STAIRS.step_count),
+        step_height_m=float(_ACTIVE_STAIRS.step_height_m),
+        step_depth_m=float(_ACTIVE_STAIRS.step_depth_m),
+        top_height_m=float(_ACTIVE_STAIRS.top_height_m),
+        robot_start_x_m=float(args.go2_x),
+        stair_waypoint_test=bool(args.stair_waypoint_test),
+    )
+
     log_event(LOGGER, logging.INFO, "person_spawn_start", "Spawning person target")
     if args.stair_waypoint_test:
         # Isolated stair-climb test: no person-follow. Park the person far OFF the forward
@@ -5022,9 +5049,11 @@ def main() -> None:
     _person_positions_over_time = []
     destination_reached_time = None
     destination_reached_sim_sec = None
-    # Stair waypoint test: sim-time the robot first reached the target waypoint (None
-    # until reached); a brief hold past it confirms it stayed up rather than tumbling back.
+    # Stair waypoint test: sim-time the robot first reached the target waypoint UPRIGHT
+    # (None until reached); a 2 s hold past it confirms a clean climb, not a tumble/wedge.
     waypoint_reached_sim_sec = None
+    # Latches the one-time "reached the planar target but COLLIDED" honesty warning.
+    _wp_quality_warned = False
     motion_start_time = None
     motion_elapsed_sim_sec = 0.0
     # Domain-randomization push schedule (first push after one interval of motion).
@@ -5394,9 +5423,9 @@ def main() -> None:
                 if scene_motion_allowed:
                     update_person_patrol(person, dt)
                 else:
-                    # Lock human in idle animation and at spawn position before YOLO/controller starts
-                    if hasattr(person, "_update_animation_state"):
-                        person._update_animation_state(walking=False)
+                    # Hold the patient at spawn before YOLO/controller starts. The
+                    # position is unchanged each frame, so the procedural gait reads
+                    # ~zero speed and settles into its idle pose automatically.
                     person.set_world_pose(
                         position=np.array([
                             args.person_x,
@@ -5426,26 +5455,50 @@ def main() -> None:
                         self_test_vx=float(args.self_test_vx),
                     )
                     break
-                # Stair waypoint test: SUCCESS exit once the robot reaches the target waypoint
-                # (the top landing) and stays there briefly -- the isolated climb worked. A
-                # failed attempt still ends via the fall watchdog / DEMO_SIM_TIMEOUT below.
+                # Stair waypoint test: SUCCESS exit once the robot reaches the target
+                # waypoint (the top landing) UPRIGHT and holds a clean stance there for
+                # 2 s -- the isolated climb actually worked. Reaching the planar target by
+                # COLLIDING with the stairs (nose-diving into the risers, dragging low,
+                # never tripping the 60-deg fall watchdog) does NOT pass: it must stand at
+                # a healthy height above the step AND be upright, SUSTAINED. A failed
+                # attempt still ends via the fall watchdog / DEMO_SIM_TIMEOUT below.
                 if args.stair_waypoint_test:
                     _wp_dist = None
+                    _wp_climb_ok = False
+                    _wp_h = None
+                    _wp_tilt_deg = None
                     try:
                         _wp_pose, _ = go2.get_world_pose()
+                        _wp_x = float(_wp_pose[0])
+                        _wp_y = float(_wp_pose[1])
+                        _wp_z = float(_wp_pose[2])
                         _wp_dist = math.hypot(
-                            float(args.stair_waypoint_x) - float(_wp_pose[0]),
-                            float(args.stair_waypoint_y) - float(_wp_pose[1]),
+                            float(args.stair_waypoint_x) - _wp_x,
+                            float(args.stair_waypoint_y) - _wp_y,
+                        )
+                        # Height above the step directly below (same signal the fall
+                        # watchdog uses) + body tilt from the last logged pose.
+                        _wp_h = _wp_z - float(get_terrain_height(_wp_x, _wp_y))
+                        if _robot_positions_over_time:
+                            _wp_roll, _wp_pitch, _ = _robot_positions_over_time[-1]["rpy"]
+                            _wp_tilt_deg = max(
+                                abs(math.degrees(_wp_roll)), abs(math.degrees(_wp_pitch))
+                            )
+                        _wp_climb_ok = (
+                            _wp_h >= STAIR_WAYPOINT_MIN_STAND_M
+                            and (_wp_tilt_deg is None or _wp_tilt_deg <= STAIR_WAYPOINT_MAX_TILT_DEG)
                         )
                     except Exception:
                         _wp_dist = None
-                    if _wp_dist is not None and _wp_dist <= 0.15:
+                    if _wp_dist is not None and _wp_dist <= 0.15 and _wp_climb_ok:
                         if waypoint_reached_sim_sec is None:
                             waypoint_reached_sim_sec = motion_elapsed_sim_sec
                             log_event(
                                 LOGGER, logging.INFO, "stair_waypoint_reached",
-                                "Robot reached the stair waypoint; holding to confirm it stayed up",
+                                "Robot reached the stair waypoint UPRIGHT; holding to confirm a clean climb",
                                 waypoint=[float(args.stair_waypoint_x), float(args.stair_waypoint_y)],
+                                height_above_step_m=round(float(_wp_h), 3) if _wp_h is not None else None,
+                                tilt_deg=round(float(_wp_tilt_deg), 1) if _wp_tilt_deg is not None else None,
                                 motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
                             )
                         elif (motion_elapsed_sim_sec - waypoint_reached_sim_sec) >= 2.0:
@@ -5453,14 +5506,34 @@ def main() -> None:
                             evaluation_exit_reason = "robot_reached_stair_waypoint"
                             log_event(
                                 LOGGER, logging.INFO, "evaluation_exit",
-                                "Robot reached the stair waypoint (isolated climb test passed)",
+                                "Robot reached the stair waypoint UPRIGHT and held 2 s (clean climb test PASSED)",
                                 reason=evaluation_exit_reason,
                                 waypoint=[float(args.stair_waypoint_x), float(args.stair_waypoint_y)],
+                                height_above_step_m=round(float(_wp_h), 3) if _wp_h is not None else None,
+                                tilt_deg=round(float(_wp_tilt_deg), 1) if _wp_tilt_deg is not None else None,
                                 motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
                             )
                             break
                     else:
-                        # Left the target tolerance (e.g. slid back) -- re-arm the hold timer.
+                        # Not at the target yet, OR there but in a COLLIDED/collapsed pose
+                        # (wedged into the steps, dragging low / tilted). Re-arm the hold
+                        # timer; success requires reaching the target CLEANLY and holding.
+                        if (
+                            _wp_dist is not None and _wp_dist <= 0.15
+                            and not _wp_climb_ok and not _wp_quality_warned
+                        ):
+                            _wp_quality_warned = True
+                            log_event(
+                                LOGGER, logging.WARNING, "stair_waypoint_collision",
+                                "Robot reached the planar stair waypoint but COLLIDED with the stairs "
+                                "(low/tilted, not a clean upright climb) -- NOT counted as success",
+                                waypoint=[float(args.stair_waypoint_x), float(args.stair_waypoint_y)],
+                                height_above_step_m=round(float(_wp_h), 3) if _wp_h is not None else None,
+                                min_stand_m=STAIR_WAYPOINT_MIN_STAND_M,
+                                tilt_deg=round(float(_wp_tilt_deg), 1) if _wp_tilt_deg is not None else None,
+                                max_tilt_deg=STAIR_WAYPOINT_MAX_TILT_DEG,
+                                motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
+                            )
                         waypoint_reached_sim_sec = None
                 # Bench terrain: self-exit when this terrain's drive duration elapses so
                 # the warm loop can advance to the next terrain.
@@ -5652,12 +5725,23 @@ def main() -> None:
                             else:
                                 evaluation_done = True
                                 evaluation_exit_reason = "robot_fell"
+                                # Distinguish a genuine FLIP/topple (tilt past the fall
+                                # threshold) from an upright COLLAPSE/wedge (height dropped
+                                # but the body never tipped). The latter is what "did not
+                                # fall on screen but collided with the stairs" looks like.
+                                _flipped = (
+                                    abs(lroll) > ROBOT_FALL_TILT_RAD
+                                    or abs(lpitch) > ROBOT_FALL_TILT_RAD
+                                )
+                                _fall_type = "flipped" if _flipped else "collapsed_low"
                                 log_event(
                                     LOGGER,
                                     logging.WARNING,
                                     "evaluation_exit",
-                                    "Robot fell (flipped or collapsed); stopping run early",
+                                    "Robot flipped over; stopping run early" if _flipped else
+                                    "Robot collapsed/wedged low (upright, did not flip); stopping run early",
                                     reason=evaluation_exit_reason,
+                                    fall_type=_fall_type,
                                     robot_height_m=round(float(robot_height_now), 3),
                                     roll_rad=round(float(lroll), 3),
                                     pitch_rad=round(float(lpitch), 3),

@@ -16,7 +16,7 @@ from typing import Optional, Tuple
 from . import _repo
 from . import env_bootstrap as envb
 
-# Runtime I/O contract constants (from assets/policies/parkour/config.json and
+# Runtime I/O contract constants (from sim/models/locomotion/parkour/config.json and
 # parkour_locomotion_policy). Kept here as defaults; preflight asserts they still
 # match the live policy module so they cannot silently drift.
 N_PROPRIO = 53

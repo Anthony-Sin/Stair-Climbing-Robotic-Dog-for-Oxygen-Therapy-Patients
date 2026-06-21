@@ -14,7 +14,7 @@ param(
     [int]$CmdPort = 52001,
     [int]$FramePort = 52002,
     [string]$FollowBackend = "pid",
-    [string]$TrtEngine = "/models/yolo11n-pose-fp16.trt",
+    [string]$TrtEngine = "/models/yolo/yolo11n-pose-fp16.trt",
     [double]$SimFrameTimeoutExitSec = 30.0,
     [switch]$VisionPreview,
     [switch]$NoModelPreflight,
@@ -62,8 +62,8 @@ param(
     [switch]$SelfTestNoPolicy,
     [switch]$SelfTestHeadingHold,
     [switch]$SelfTestStairs,
-    # Dual-policy handoff CLIMB backend: 'parkour' (default), 'blind_rl', or 'ik'.
-    [string]$HandoffClimbBackend = "parkour",
+    # Dual-policy handoff CLIMB backend: 'blind_rl' (default), 'parkour', or 'ik'.
+    [string]$HandoffClimbBackend = "blind_rl",
     # Isolated stair-climb test (Docker-free): drive straight up the stairs and exit at
     # the target waypoint. Pair with -HandoffClimbBackend blind_rl to test the blind RL climb.
     [switch]$StairWaypointTest,
@@ -287,7 +287,7 @@ Set-Content -LiteralPath $SummaryLog -Encoding UTF8 -Value @(
     "  If isaac_wait is complete, Isaac emitted world_ready and scene loading finished.",
     "  Docker starts automatically after Isaac is ready; pass --pause-after-isaac to restore the manual gate.",
     "  Isaac now holds autonomous person/distractor motion until the controller sends a nonzero command.",
-    "  Docker will not command the robot until both TensorRT engine files exist in models/.",
+    "  Docker will not command the robot until both TensorRT engine files exist under sim/models/.",
     "  OpenCV preview video is saved even when GUI preview is disabled.",
     "  If build fails, docker_run.log will not exist because the controller never started.",
     "  Existing Docker images are reused automatically.",
@@ -398,7 +398,7 @@ function Resolve-HostRuntimePath {
         return Join-Path $RepoRoot $matches[1]
     }
     if ($normalized -match '^\\models\\(.+)$') {
-        return Join-Path (Join-Path $RepoRoot "models") $matches[1]
+        return Join-Path (Join-Path $RepoRoot "sim\models") $matches[1]
     }
     if ([System.IO.Path]::IsPathRooted($normalized)) {
         return $normalized
@@ -433,14 +433,14 @@ function Test-ModelPreflight {
 
     if ($missing.Count -eq 0) {
         Write-Stage "models" "ready" "Required TensorRT engine files are present" @{
-            model_path = (Join-Path $RepoRoot "models")
+            model_path = (Join-Path $RepoRoot "sim\models")
         }
         return $true
     }
 
     Write-Stage "models" "failed" "Required TensorRT engine files are missing; Docker controller would exit before sending robot commands" @{
         missing_models = ($missing -join " | ")
-        model_path = (Join-Path $RepoRoot "models")
+        model_path = (Join-Path $RepoRoot "sim\models")
         command = "Build the engines from readme.md Part 8, then rerun .\run_sim.bat"
     }
     Write-Host ""
@@ -450,7 +450,7 @@ function Test-ModelPreflight {
     }
     Write-Host ""
     Write-Host "Build these TensorRT engines on this GPU using readme.md Part 8, then rerun .\run_sim.bat."
-    Write-Host "Rebuilding Docker alone will not create files in the mounted models folder."
+    Write-Host "Rebuilding Docker alone will not create files in the mounted sim/models folder."
     return $false
 }
 
@@ -1516,7 +1516,7 @@ if ($NoDockerRun) {
         "-v",
         "${WslRepoRoot}:/workspace",
         "-v",
-        "${WslRepoRoot}/models:/models",
+        "${WslRepoRoot}/sim/models:/models",
         "-v",
         "${WslRunLogDir}:/workspace/run_logs",
         "-e",

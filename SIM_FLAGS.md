@@ -34,8 +34,12 @@ rolling results into `perf_tracker` plus a `benchmark_summary`. No vision/Docker
 | Output | Location |
 | :--- | :--- |
 | Per-terrain run folders (videos/reports/debug) | `log/run_bench_<stamp>/runs/<stamp>_<terrain_id>/` |
-| Benchmark summary (PASS/FAIL + articulation) | `log/run_bench_<stamp>/benchmark_summary.{md,csv,json}` |
-| Performance table (one row per terrain, `terrain_id` column) | `perf_tracker/data/performance_table.csv` |
+| Benchmark summary, one row per terrain (PASS/FAIL + articulation) | `log/run_bench_<stamp>/benchmark_summary.{md,csv,json}` |
+| Per-terrain metrics archived (`terrain_id` column) | `perf_tracker/data/archive.jsonl` |
+
+> Bench runs are archived in full but kept OFF `performance_table.csv` (the lean
+> stair-climb leaderboard) — a ramp's large `max_x_m` is not comparable to a
+> climb. The per-terrain table is `benchmark_summary.{md,csv,json}` above.
 
 Terrain catalogue + drive commands live in `sim/isaac/terrain_bench/terrain_registry.py`
 (edit `BATTERY` to add/tune terrains). Per-episode wiring is behind `isaac_env.py --bench`;

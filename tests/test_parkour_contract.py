@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.join(REPO, "sim", "isaac"))
 sys.path.insert(0, os.path.join(REPO, "sim", "bot"))
 sys.path.insert(0, os.path.join(REPO, "core"))
 
-ASSETS = os.path.join(REPO, "sim", "isaac", "assets", "policies", "parkour")
+ASSETS = os.path.join(REPO, "sim", "models", "locomotion", "parkour")
 BASE = os.path.join(ASSETS, "base_jit.pt")
 VISION = os.path.join(ASSETS, "vision_weight.pt")
 

@@ -15,7 +15,7 @@ class YoloStairsInference:
     """
     def __init__(
         self,
-        model_path: str = "yolov8x-worldv2.pt",
+        model_path: str = "sim/models/yolo/yolov8x-worldv2.pt",
         confidence: float = 0.20,
         verbose: bool = False,
         consistency_frames: int = 5,

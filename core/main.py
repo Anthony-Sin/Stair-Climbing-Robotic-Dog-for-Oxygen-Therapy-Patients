@@ -86,8 +86,8 @@ def _build_robot_controller(args):
 
     from robot_controller import RobotController
     low_level = getattr(args, "low_level_locomotion", False)
-    base_model = getattr(args, "parkour_base_jit", "sim/isaac/assets/policies/parkour/base_jit.pt")
-    vision_model = getattr(args, "parkour_vision_weight", "sim/isaac/assets/policies/parkour/vision_weight.pt")
+    base_model = getattr(args, "parkour_base_jit", "sim/models/locomotion/parkour/base_jit.pt")
+    vision_model = getattr(args, "parkour_vision_weight", "sim/models/locomotion/parkour/vision_weight.pt")
     ctrl = RobotController(
         network_interface=args.network_interface,
         low_level_locomotion=low_level,
@@ -885,11 +885,20 @@ def main():
             camera_offset_y_m=args.camera_offset_y_m,
         )
 
+    # Recordings opt-in: the live preview WINDOW is a display of the camera stream,
+    # so it stays off unless the operator opts in with SHOW_RECORDINGS. Capturing
+    # mp4s/jpgs to disk is independent (preview_save_dir / preview_video_path) and
+    # unaffected. Mirrors sim_logging_utils.recordings_visible() (separate Docker
+    # module tree means we cannot import it here -- keep the contract in sync).
+    _show_recordings = os.environ.get("SHOW_RECORDINGS", "").strip().lower() in ("1", "true", "yes", "on")
     preview_worker = _AsyncPreviewWorker(
-        enabled=not bool(args.headless),
+        enabled=(not bool(args.headless)) and _show_recordings,
         show_rotation_debug=bool(args.rotation_debug),
     )
     preview_worker.start()
+    if (not bool(args.headless)) and not _show_recordings:
+        print("[preview] live window off (set SHOW_RECORDINGS=1 to show); recordings still captured to disk",
+              flush=True)
     preview_output_enabled = bool(args.preview_save_dir or args.preview_video_path)
     preview_save_images    = bool(args.preview_save_images and args.preview_save_dir)
     preview_video_path     = args.preview_video_path

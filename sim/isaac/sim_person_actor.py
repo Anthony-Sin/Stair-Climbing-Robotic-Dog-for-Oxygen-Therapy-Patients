@@ -3,7 +3,7 @@ import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import omni
@@ -80,7 +80,10 @@ _BIPED_SETUP_USD_CANDIDATES = [
 # copy remote USD locally and reference the local copy). Bump the version whenever
 # the modify logic in _resolve_character_with_clips changes so stale caches
 # regenerate; delete the file to force a one-off refresh.
-_BIPED_MODIFIED_CACHE_VERSION = "v1"
+# v2: snap the asset's metersPerUnit to EXACTLY 1.0 (it ships as 0.9999999776, a
+# float32 round-trip of 1.0) so add_reference_to_stage stops logging the "Mismatched
+# units found on drag and drop" toast against the 1.0 m/unit Go2/stairs stage.
+_BIPED_MODIFIED_CACHE_VERSION = "v2"
 
 
 @dataclass
@@ -95,9 +98,10 @@ class SimPersonTarget:
     animation_setup_attempted: bool = False
     animation_attempt_count: int = 0
     animation_ready: bool = False
-    _walk_clip_path: str = ""
-    _idle_clip_path: str = ""
-    _anim_clip_state: str = ""
+    # Procedural limb-driven gait controller (biped_anim.BipedAnimationController).
+    # Drives the rig's real hip/knee/ankle/shoulder/elbow/spine joints per frame;
+    # replaces the old baked walk/idle SkelAnimation clip playback + switching.
+    anim_controller: Any = None
     _skel_root_path: str = ""
     last_collider_warning_time: float = 0.0
     suppressed_collider_warnings: int = 0
@@ -159,7 +163,29 @@ class SimPersonTarget:
             roll_rad=float(roll_rad),
             pitch_rad=float(pitch_rad),
         )
-        self._update_animation_state(walking=effective_walking)
+
+        # Drive the procedural limb-driven gait from the patient's real (x, y).
+        # The controller classifies terrain (flat vs stair), advances the gait
+        # phase from actual travel and applies the limb pose to the rig. The
+        # xform roll/pitch/bob above are the waypoint system's own visual cues and
+        # are left untouched; the skeleton adds the real arm/leg motion on top.
+        if self.anim_controller is not None:
+            try:
+                self.anim_controller.update(
+                    float(position[0]),
+                    float(position[1]),
+                    moving_hint=effective_walking,
+                )
+            except Exception as exc:
+                if self.logger is not None and not getattr(self, "_anim_update_err_logged", False):
+                    self._anim_update_err_logged = True
+                    log_event(
+                        self.logger,
+                        logging.WARNING,
+                        "person_anim_update_failed",
+                        "Procedural gait update failed",
+                        error=str(exc),
+                    )
 
         collider_center = np.array(
             [
@@ -193,6 +219,13 @@ class SimPersonTarget:
         self.last_position = position.copy()
 
     def ensure_animation_ready(self, world: Any, *, force_retry: bool = False) -> None:
+        """Start the animation timeline so the bound procedural gait evaluates.
+
+        The procedural ``UsdSkel.Animation`` is created and bound at spawn time (in
+        ``spawn_sim_person`` -> ``biped_anim`` rig setup), so all this needs to do
+        is get the timeline playing and pump a few frames so UsdSkel imaging picks
+        up the binding and begins sampling the per-frame joint rotations.
+        """
         if self.animation_ready:
             return
         if self.animation_setup_attempted and not force_retry:
@@ -201,34 +234,11 @@ class SimPersonTarget:
         self.animation_attempt_count += 1
 
         _start_timeline_and_pump(world, logger=self.logger, attempt=self.animation_attempt_count)
-        self._walk_clip_path = _walk_clip_cache or ""
-        self._idle_clip_path = _idle_clip_cache or ""
 
-        if not self._walk_clip_path or not self._idle_clip_path:
+        if self.anim_controller is None:
             raise RuntimeError(
-                "Animated person setup failed: walk or idle animation clip path is empty."
+                "Animated person setup failed: procedural gait controller was not built."
             )
-
-        # Re-apply the walk binding after timeline pump so Fabric picks it up
-        # in case the pre-Fabric binding was snapshotted before the USD loaded.
-        # Fabric locks onto whatever clip is bound at the first render pass, so we
-        # bind the looped walk cycle (always animating) rather than idle; runtime
-        # walk<->idle re-targets do not reliably re-register through Fabric.
-        if self._skel_root_path and self._walk_clip_path:
-            try:
-                from pxr import UsdSkel
-                stage = omni.usd.get_context().get_stage()
-                skel_root_prim = stage.GetPrimAtPath(self._skel_root_path)
-                if skel_root_prim and skel_root_prim.IsValid():
-                    binding_api = UsdSkel.BindingAPI.Apply(skel_root_prim)
-                    binding_api.GetAnimationSourceRel().SetTargets([Sdf.Path(self._walk_clip_path)])
-                    try:
-                        import omni.kit.app as _omni_kit_app
-                        _omni_kit_app.get_app().update()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
 
         self.animation_ready = True
         if self.logger is not None:
@@ -236,84 +246,10 @@ class SimPersonTarget:
                 self.logger,
                 logging.INFO,
                 "person_animation_ready",
-                "Person animation ready via UsdSkel.BindingAPI + Biped_Setup SkelAnimation.",
+                "Person animation ready via procedural limb-driven gait (biped_anim).",
                 skel_root_path=self._skel_root_path,
-                walk_anim=self._walk_clip_path,
-                idle_anim=self._idle_clip_path,
                 attempt=int(self.animation_attempt_count),
             )
-
-    def _update_animation_state(self, *, walking: bool) -> None:
-        """Switch the active SkelAnimation by re-targeting the animationSource relationship."""
-        if not self.animation_ready or not self._skel_root_path:
-            return
-
-        target = "walk" if walking else "idle"
-        if target == self._anim_clip_state:
-            return
-
-        # Use walk or idle SkelAnimation prim path inside Biped_Setup
-        anim_prim_path = self._walk_clip_path if walking else self._idle_clip_path
-        if not anim_prim_path:
-            return
-
-        try:
-            from pxr import UsdSkel
-            stage = omni.usd.get_context().get_stage()
-            skel_root_prim = stage.GetPrimAtPath(self._skel_root_path)
-            if not skel_root_prim or not skel_root_prim.IsValid():
-                return
-
-            # Verify the animation prim exists before trying to bind it
-            anim_prim = stage.GetPrimAtPath(anim_prim_path)
-            if not anim_prim or not anim_prim.IsValid():
-                if self.logger is not None and not getattr(self, "_anim_prim_missing_logged", False):
-                    self._anim_prim_missing_logged = True
-                    log_event(
-                        self.logger,
-                        logging.WARNING,
-                        "person_anim_prim_missing",
-                        "Animation prim not found on stage; skipping clip switch",
-                        target=target,
-                        anim_prim_path=anim_prim_path,
-                        skel_root_path=self._skel_root_path,
-                    )
-                return
-
-            # Re-bind the animationSource on the SkelRoot to the new SkelAnimation prim
-            binding_api = UsdSkel.BindingAPI.Apply(skel_root_prim)
-            binding_api.GetAnimationSourceRel().SetTargets([Sdf.Path(anim_prim_path)])
-            self._anim_clip_state = target
-
-            # Pump the app once so Fabric picks up the animationSource change.
-            # This only fires on walk<->idle transitions (not every frame).
-            try:
-                import omni.kit.app as _omni_kit_app
-                _omni_kit_app.get_app().update()
-            except Exception:
-                pass
-
-            if self.logger is not None:
-                log_event(
-                    self.logger,
-                    logging.INFO,
-                    "person_clip_switched",
-                    "Person SkelAnimation clip switched",
-                    target=target,
-                    anim_prim_path=anim_prim_path,
-                )
-        except Exception as exc:
-            if self.logger is not None and not getattr(self, "_clip_switch_err_logged", False):
-                self._clip_switch_err_logged = True
-                log_event(
-                    self.logger,
-                    logging.WARNING,
-                    "person_clip_switch_failed",
-                    "Failed to switch animation state",
-                    target=target,
-                    anim_prim_path=anim_prim_path,
-                    error=str(exc),
-                )
 
 
 def _load_biped_setup(stage: Any, assets_root: str, logger: Optional[logging.Logger]) -> Tuple[str, str]:
@@ -822,9 +758,22 @@ def _resolve_character_with_clips(
     # or yaw the actor root. Do not touch pelvis/hips/body joints; the walk clip
     # owns those.
     try:
-        from pxr import Usd, UsdSkel
+        from pxr import Usd, UsdSkel, UsdGeom
         local_stage = Usd.Stage.Open(local_usd_path)
         modified = False
+
+        # 0. Normalise stage units to EXACTLY 1.0 m/unit. The source asset authors
+        # metersPerUnit = 0.9999999776 (a float32 round-trip of 1.0), which does not
+        # exactly equal the 1.0 m/unit Go2/stairs stage, so add_reference_to_stage logs
+        # the "Mismatched units found on drag and drop" toast and inserts a ~1.0000000224
+        # scale on SimWalker. The geometry is already in metres (root /biped_demo_meters),
+        # so snapping the metadata to exactly 1.0 removes the toast with no size change.
+        try:
+            if abs(float(UsdGeom.GetStageMetersPerUnit(local_stage)) - 1.0) > 1e-9:
+                UsdGeom.SetStageMetersPerUnit(local_stage, 1.0)
+                modified = True
+        except Exception:
+            pass
 
         # 1. Remove animationGraph
         skel_root_prim = local_stage.GetPrimAtPath("/biped_demo_meters")
@@ -1014,11 +963,25 @@ def _start_timeline_and_pump(world: Any, *, logger: Optional[logging.Logger], at
         omni.kit.app.get_app().update()
 
 
-def spawn_sim_person(world: Any, x: float, y: float, logger: Optional[logging.Logger]) -> "SimPersonTarget":
-    """Spawn the animated person character and immediately bind the walk SkelAnimation.
+def spawn_sim_person(
+    world: Any,
+    x: float,
+    y: float,
+    logger: Optional[logging.Logger],
+    *,
+    stairs_provider: Optional[Callable[[], object]] = None,
+) -> "SimPersonTarget":
+    """Spawn the patient character with a procedural limb-driven gait.
 
-    The UsdSkel.BindingAPI is applied BEFORE any world.step() / Fabric sync so
-    the animation source is visible to the GPU renderer from the very first frame.
+    The procedural ``UsdSkel.Animation`` is created and bound to the SkelRoot
+    BEFORE any world.step() / Fabric sync (Fabric snapshots the scene graph on the
+    first render pass), so the animation source is visible to the renderer from the
+    very first frame. The per-frame joint rotations are then written by
+    ``biped_anim.BipedAnimationController`` from ``SimPersonTarget.set_world_pose``.
+
+    ``stairs_provider`` is a zero-arg callable returning the active ``StairSpec`` so
+    the terrain classifier can tell flat ground from the staircase; if omitted it
+    falls back to ``sim_go2_locomotion.get_active_stairs``.
     """
     global _char_usd_cache, _char_name_cache, _walk_clip_cache, _idle_clip_cache
 
@@ -1041,38 +1004,36 @@ def spawn_sim_person(world: Any, x: float, y: float, logger: Optional[logging.Lo
         PERSON_VISUAL_FORWARD_YAW_OFFSET_RAD,
     )
 
-    # ---- Apply walk SkelAnimation binding BEFORE any world.step() / Fabric sync ----
-    # Fabric snapshots the scene graph on the first render pass; if we wait until
-    # ensure_animation_ready(), Fabric has already been synced and won't see the
-    # newly-added animationSource relationship.
+    # ---- Build the procedural gait + bind it BEFORE any world.step()/Fabric sync ----
     stage = omni.usd.get_context().get_stage()
-    walk_anim = _walk_clip_cache
-    idle_anim = _idle_clip_cache
 
-    if not walk_anim or not idle_anim:
-        raise RuntimeError("Animated person setup failed: resolved walk or idle animation clip path is empty.")
+    skel_root = _find_first_skel_root(stage, PERSON_VISUAL_PRIM)
+    if skel_root is None:
+        raise RuntimeError("Animated person setup failed: SkelRoot not found under SimWalker visual prim.")
+    skel_root_path = str(skel_root.GetPath())
+    _skel_root_path_cache["path"] = skel_root_path
+
+    if stairs_provider is None:
+        try:
+            from sim_go2_locomotion import get_active_stairs as _get_active_stairs
+            stairs_provider = _get_active_stairs
+        except Exception:
+            stairs_provider = None
 
     try:
-        from pxr import UsdSkel
-        skel_root = _find_first_skel_root(stage, PERSON_VISUAL_PRIM)
-        if skel_root is not None:
-            # Clear animationGraph targets locally as a redundant precaution
-            if skel_root.HasRelationship("animationGraph"):
-                skel_root.GetRelationship("animationGraph").ClearTargets(True)
-
-            binding_api = UsdSkel.BindingAPI.Apply(skel_root)
-            binding_api.GetAnimationSourceRel().SetTargets([Sdf.Path(walk_anim)])
-            skel_root_path = str(skel_root.GetPath())
-            print(f"[person_actor] Pre-Fabric walk binding: {skel_root_path} -> {walk_anim}")
-            # Store the SkelRoot path in module-level cache so ensure_animation_ready can use it
-            _skel_root_path_cache["path"] = skel_root_path
-        else:
-            raise RuntimeError("Animated person setup failed: SkelRoot not found under SimWalker visual prim.")
+        from biped_anim import build_biped_animation_controller
+        anim_controller = build_biped_animation_controller(
+            stage, skel_root_path, stairs_provider, logger=logger
+        )
     except Exception as e:
         if logger is not None:
-            log_event(logger, logging.ERROR, "person_skel_binding_prefabric_failed",
-                      "Pre-Fabric SkelAnimation binding failed", error=str(e))
-        raise RuntimeError(f"Animated person setup failed: Pre-Fabric SkelAnimation binding failed: {e}") from e
+            log_event(logger, logging.ERROR, "person_procedural_gait_failed",
+                      "Procedural gait rig build failed", error=str(e))
+        raise RuntimeError(f"Animated person setup failed: procedural gait rig build failed: {e}") from e
+
+    if anim_controller is None:
+        raise RuntimeError("Animated person setup failed: procedural gait rig could not be initialized.")
+    anim_controller.reset((x, y))
     # ------------------------------------------------------------------------------------
 
     collider_height_m = 1.70
@@ -1106,10 +1067,8 @@ def spawn_sim_person(world: Any, x: float, y: float, logger: Optional[logging.Lo
         collider_height_m=collider_height_m,
         logger=logger,
         last_position=np.array([x, y, 0.0], dtype=float),
-        _skel_root_path=_skel_root_path_cache.get("path", ""),
-        _walk_clip_path=walk_anim or "",
-        _idle_clip_path=idle_anim or "",
-        _anim_clip_state="walk",
+        _skel_root_path=skel_root_path,
+        anim_controller=anim_controller,
     )
 
     if logger is not None:
@@ -1121,7 +1080,7 @@ def spawn_sim_person(world: Any, x: float, y: float, logger: Optional[logging.Lo
             visual_prim_path=PERSON_VISUAL_PRIM,
             collider_prim_path=PERSON_COLLIDER_PRIM,
             character_asset=character_usd,
-            walk_anim=walk_anim or "<none>",
-            idle_anim=idle_anim or "<none>",
+            skel_root_path=skel_root_path,
+            animation="procedural_limb_driven_gait",
         )
     return target

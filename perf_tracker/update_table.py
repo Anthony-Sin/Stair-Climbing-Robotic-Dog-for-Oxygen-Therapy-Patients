@@ -2,14 +2,23 @@
 """
 update_table.py
 
-Extract performance metrics from a single run_sim_* folder and upsert a row
-into two persistent files in perf_tracker/data/:
+Extract performance metrics from a single run_sim_* folder, archive the run,
+and refresh a lean leaderboard. Three files live in perf_tracker/data/:
 
-  perf_tracker/data/performance_table.csv   -- sorted data table (best max_x_m first)
-  perf_tracker/data/performance_table.jsonl -- one JSON object per run, for programmatic use
+  archive.jsonl            -- full history: every run ever ingested (source of truth).
+  performance_table.csv    -- lean leaderboard: top actionable runs + all successes,
+  performance_table.jsonl     best max_x_m first. This is what charts + humans read.
+  last_run.json            -- the previous run's row, so the next run can print a
+                              current-vs-prior delta without re-running anything.
+
+"Actionable" = a real follow+climb attempt worth comparing (see classify_run).
+Open-loop self-tests, terrain-bench battery runs, and aborted boots are archived
+but kept off the leaderboard so it does not fill with noise.
 
 Usage (called by run_sim.ps1 via WSL):
     python3 perf_tracker/update_table.py <run_folder_path> [--git-branch <branch>]
+    python3 perf_tracker/update_table.py --rebuild        # re-derive table from archive
+    python3 perf_tracker/update_table.py --keep 40 ...    # widen the leaderboard
 
 Data sources inside each run folder:
   logs/status.jsonl                            -- launcher timeline + docker command (all controller args)
@@ -31,6 +40,14 @@ from typing import Any, Dict, List, Optional, Tuple
 _SCRIPT_DIR = Path(__file__).resolve().parent
 DATA_DIR = _SCRIPT_DIR / "data"
 
+# Canonical data files (see module docstring). Other tools (e.g. the terrain
+# bench) should ingest through record_run()/rebuild_table() rather than touching
+# these directly.
+ARCHIVE_JSONL = DATA_DIR / "archive.jsonl"
+TABLE_CSV = DATA_DIR / "performance_table.csv"
+TABLE_JSONL = DATA_DIR / "performance_table.jsonl"
+LAST_RUN_JSON = DATA_DIR / "last_run.json"
+
 sys.path.insert(0, str(_SCRIPT_DIR))
 
 
@@ -41,6 +58,7 @@ sys.path.insert(0, str(_SCRIPT_DIR))
 COLUMNS = [
     # --- Identity ---
     "run_id",
+    "run_category",         # real | self_test | bench | incomplete  (see classify_run)
     "terrain_id",           # terrain_bench terrain key (empty for normal run_sim runs)
     "timestamp",
     "git_branch",
@@ -183,6 +201,73 @@ def _get_git_info() -> Tuple[str, str]:
         return raw.strip(), ""
     except Exception:
         return "", ""
+
+
+# ---------------------------------------------------------------------------
+# Run classification -- "actionable" vs archive-only noise
+#
+# The table accumulates every run ever launched, but most rows do not help
+# anyone tune the climb controller: aborted boots, open-loop self-tests, and
+# terrain-bench battery runs all land here too. We tag each run with a single
+# category so the leaderboard can keep only the runs worth comparing while the
+# archive keeps the full history.
+# ---------------------------------------------------------------------------
+
+CATEGORY_REAL = "real"            # genuine follow+climb attempt with a usable outcome
+CATEGORY_SELF_TEST = "self_test"  # open-loop walk/heading self-test, no patient follow
+CATEGORY_BENCH = "bench"          # terrain_bench battery run (separate harness)
+CATEGORY_INCOMPLETE = "incomplete"  # crashed/aborted/killed before a usable outcome
+
+# A run must log at least this many physics samples to be judged a real attempt.
+# Below this the dog barely moved before the run died, so the row is noise.
+MIN_REAL_FALL_DIAG_STEPS = 50
+
+# Outcomes that mean "no usable physics verdict was recorded".
+_INCOMPLETE_OUTCOMES = {"", "none", "unknown", "not_recorded", "docker_failed"}
+
+# Substrings that mark a run as a clear success (kept in the table regardless of rank).
+_SUCCESS_MARKERS = (
+    "completed",
+    "reached_top",
+    "top_landing",
+    "patient_destination",
+    "climb_visible",
+)
+
+
+def classify_run(row: Dict[str, Any]) -> str:
+    """Return one of the CATEGORY_* constants for a run row.
+
+    Robust to string-valued fields (rows reloaded from CSV are all strings).
+    Only CATEGORY_REAL rows are "actionable" -- see is_actionable().
+    """
+    if str(row.get("terrain_id") or "").strip():
+        return CATEGORY_BENCH
+
+    outcome = str(row.get("outcome") or "").strip().lower()
+    exit_reason = str(row.get("exit_reason") or "").strip().lower()
+    if "self_test" in outcome or "self_test" in exit_reason:
+        return CATEGORY_SELF_TEST
+
+    if outcome in _INCOMPLETE_OUTCOMES:
+        return CATEGORY_INCOMPLETE
+
+    steps = _safe_int(row.get("fall_diag_steps"), 0) or 0
+    if steps < MIN_REAL_FALL_DIAG_STEPS:
+        return CATEGORY_INCOMPLETE
+
+    return CATEGORY_REAL
+
+
+def is_actionable(row: Dict[str, Any]) -> bool:
+    """True if this run belongs on the leaderboard (a real, evaluable attempt)."""
+    return classify_run(row) == CATEGORY_REAL
+
+
+def is_success(row: Dict[str, Any]) -> bool:
+    """True if the robot/patient clearly succeeded (climbed / reached the top)."""
+    blob = (str(row.get("outcome") or "") + " " + str(row.get("exit_reason") or "")).lower()
+    return any(marker in blob for marker in _SUCCESS_MARKERS)
 
 
 def _extract_trace(run_folder: Path) -> Dict[str, Any]:
@@ -503,6 +588,8 @@ def extract_metrics(run_folder: Path, git_branch: Optional[str] = None) -> Dict[
     if row.get("outcome") is None:
         row["outcome"] = "unknown"
 
+    row["run_category"] = classify_run(row)
+
     return row
 
 
@@ -520,44 +607,234 @@ def _sort_key(r: Dict) -> tuple:
     return (-x, ts)
 
 
-def upsert_csv(table_path: Path, row: Dict[str, Any]) -> None:
-    existing: List[Dict] = []
-    if table_path.exists():
-        with open(table_path, "r", newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for r in reader:
-                if r.get("run_id") != row["run_id"]:
-                    existing.append(r)
+# Default number of actionable runs kept on the leaderboard. The archive keeps
+# every run regardless; this only bounds the human-readable table + charts.
+DEFAULT_TABLE_KEEP = 25
 
-    new_row = {col: ("" if row.get(col) is None else str(row[col])) for col in COLUMNS}
-    existing.append(new_row)
-    existing.sort(key=_sort_key)
 
-    with open(table_path, "w", newline="", encoding="utf-8") as f:
+def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    if not path.exists():
+        return rows
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return rows
+
+
+def _write_jsonl(path: Path, rows: List[Dict[str, Any]]) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, default=str) + "\n")
+
+
+def _write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
+    with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=COLUMNS, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(existing)
+        for r in rows:
+            writer.writerow(
+                {col: ("" if r.get(col) is None else str(r.get(col))) for col in COLUMNS}
+            )
 
 
-def upsert_jsonl(jsonl_path: Path, row: Dict[str, Any]) -> None:
-    lines: List[str] = []
-    if jsonl_path.exists():
-        with open(jsonl_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                    if entry.get("run_id") != row["run_id"]:
-                        lines.append(line)
-                except json.JSONDecodeError:
-                    lines.append(line)
+def upsert_archive(archive_path: Path, row: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Replace any prior row for this run_id and append the new one. Full history."""
+    rows = [r for r in _load_jsonl(archive_path) if r.get("run_id") != row.get("run_id")]
+    rows.append(row)
+    _write_jsonl(archive_path, rows)
+    return rows
 
-    lines.append(json.dumps(row, default=str))
-    with open(jsonl_path, "w", encoding="utf-8") as f:
-        for line in lines:
-            f.write(line + "\n")
+
+def select_table_rows(archive_rows: List[Dict[str, Any]], keep: int) -> List[Dict[str, Any]]:
+    """Derive the lean leaderboard from the full archive.
+
+    Keeps the top `keep` actionable runs by max_x_m, plus EVERY clear success
+    regardless of rank (we never want to drop a run that actually climbed).
+    Categories are recomputed here so reclassification rules always win over any
+    stale `run_category` stored on an old row.
+    """
+    actionable = [r for r in archive_rows if classify_run(r) == CATEGORY_REAL]
+    actionable.sort(key=_sort_key)  # best first
+
+    kept = list(actionable[: max(0, keep)])
+    kept_ids = {r.get("run_id") for r in kept}
+    for r in actionable:
+        if r.get("run_id") not in kept_ids and is_success(r):
+            kept.append(r)
+            kept_ids.add(r.get("run_id"))
+
+    kept.sort(key=_sort_key)
+    for r in kept:
+        r["run_category"] = classify_run(r)
+    return kept
+
+
+def _migrate_archive(archive_jsonl: Path, legacy_table_jsonl: Path) -> None:
+    """One-time: seed archive.jsonl from the pre-existing (un-pruned) table jsonl."""
+    if archive_jsonl.exists():
+        return
+    if legacy_table_jsonl.exists():
+        rows = _load_jsonl(legacy_table_jsonl)
+        _write_jsonl(archive_jsonl, rows)
+        print(f"[perf_table] Migrated {len(rows)} existing runs -> archive.jsonl", flush=True)
+    else:
+        _write_jsonl(archive_jsonl, [])
+
+
+def _load_last_run(path: Path) -> Optional[Dict[str, Any]]:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _write_last_run(path: Path, row: Dict[str, Any]) -> None:
+    path.write_text(json.dumps(row, default=str, indent=2), encoding="utf-8")
+
+
+def _prior_run(
+    last_run_path: Path, archive_rows: List[Dict[str, Any]], current_run_id: str
+) -> Optional[Dict[str, Any]]:
+    """The run to compare the current one against.
+
+    Normally last_run.json (the immediately-preceding invocation). Falls back to
+    the most-recent archived run when last_run.json is missing or points at the
+    current run (e.g. a re-extract of the same folder).
+    """
+    lr = _load_last_run(last_run_path)
+    if lr and lr.get("run_id") and lr.get("run_id") != current_run_id:
+        return lr
+    candidates = [r for r in archive_rows if r.get("run_id") != current_run_id]
+    candidates.sort(key=lambda r: str(r.get("timestamp") or ""), reverse=True)
+    return candidates[0] if candidates else None
+
+
+# ---------------------------------------------------------------------------
+# Console summary -- the at-a-glance verdict for this run
+# ---------------------------------------------------------------------------
+
+def _fnum(v: Any) -> Optional[float]:
+    try:
+        return float(v) if v not in (None, "", "None") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _fmt(v: Any, unit: str = "", nd: int = 2) -> str:
+    n = _fnum(v)
+    return f"{n:.{nd}f}{unit}" if n is not None else "--"
+
+
+def _delta(cur: Any, prev: Any, unit: str = "", nd: int = 2) -> str:
+    c, p = _fnum(cur), _fnum(prev)
+    if c is None or p is None:
+        return ""
+    return f"  ({c - p:+.{nd}f}{unit} vs prior)"
+
+
+def _truthy(v: Any) -> bool:
+    return str(v).strip().lower() in ("true", "1", "yes")
+
+
+def _category_counts(rows: List[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for r in rows:
+        cat = classify_run(r)
+        counts[cat] = counts.get(cat, 0) + 1
+    return counts
+
+
+def format_summary(
+    row: Dict[str, Any], prior: Optional[Dict[str, Any]], table_rows: List[Dict[str, Any]]
+) -> str:
+    bar = "=" * 64
+    cat = row.get("run_category") or classify_run(row)
+    L = [
+        bar,
+        f" RUN  {row.get('run_id')}   [{cat}]",
+        "-" * 64,
+        f"  outcome        {row.get('outcome')}",
+        f"  max forward    {_fmt(row.get('max_x_m'), ' m')}"
+        f"{_delta(row.get('max_x_m'), prior.get('max_x_m') if prior else None, ' m')}",
+        f"  reached stairs {'yes' if _truthy(row.get('stair_climb_reached')) else 'no'}",
+        f"  worst pitch    {_fmt(row.get('max_abs_pitch_deg'), ' deg', 1)}",
+        f"  worst roll     {_fmt(row.get('max_abs_roll_deg'), ' deg', 1)}",
+        f"  fall_diag      {row.get('fall_diag_steps')} samples",
+        f"  git            {row.get('git_commit_sha')}  {row.get('git_branch')}",
+        "-" * 64,
+    ]
+
+    if is_actionable(row):
+        ranked_ids = [r.get("run_id") for r in table_rows]
+        if row.get("run_id") in ranked_ids:
+            rank = ranked_ids.index(row.get("run_id")) + 1
+            best = _fmt(table_rows[0].get("max_x_m"), " m") if table_rows else "--"
+            L.append(f"  leaderboard    #{rank} of {len(table_rows)}   (best: {best})")
+        else:
+            L.append("  leaderboard    kept (actionable)")
+    else:
+        L.append(f"  leaderboard    archived only ({cat} -- not a tuning run)")
+
+    if prior:
+        L.append(
+            f"  prior run      {prior.get('run_id')}  "
+            f"max {_fmt(prior.get('max_x_m'), ' m')}  outcome {prior.get('outcome')}"
+        )
+    else:
+        L.append("  prior run      (none recorded yet)")
+
+    L.append(bar)
+    return "\n".join(L)
+
+
+def _generate_charts(table_jsonl: Path) -> None:
+    try:
+        from charts import generate_all
+        generate_all(table_jsonl, DATA_DIR / "charts")
+    except Exception as exc:
+        print(f"[perf_table] Charts skipped: {exc}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Public ingest API -- the only entry points other tools should use
+# ---------------------------------------------------------------------------
+
+def rebuild_table(
+    *, keep: int = DEFAULT_TABLE_KEEP, charts: bool = True
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Re-derive the lean leaderboard (csv+jsonl, +charts) from the archive.
+
+    Returns (archive_rows, table_rows). Does not ingest anything new.
+    """
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    archive_rows = _load_jsonl(ARCHIVE_JSONL)
+    table_rows = select_table_rows(archive_rows, keep)
+    _write_csv(TABLE_CSV, table_rows)
+    _write_jsonl(TABLE_JSONL, table_rows)
+    if charts:
+        _generate_charts(TABLE_JSONL)
+    return archive_rows, table_rows
+
+
+def record_run(
+    row: Dict[str, Any], *, keep: int = DEFAULT_TABLE_KEEP, charts: bool = True
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Archive one run and refresh the lean leaderboard. The single public ingest
+    point shared by the CLI and the terrain bench. Returns (archive_rows, table_rows).
+    """
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _migrate_archive(ARCHIVE_JSONL, TABLE_JSONL)
+    upsert_archive(ARCHIVE_JSONL, row)
+    return rebuild_table(keep=keep, charts=charts)
 
 
 # ---------------------------------------------------------------------------
@@ -565,46 +842,66 @@ def upsert_jsonl(jsonl_path: Path, row: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Extract run metrics and update performance table.")
-    parser.add_argument("run_folder", help="Path to the run_sim_* folder")
+    parser = argparse.ArgumentParser(
+        description="Extract run metrics, archive the run, and refresh the lean leaderboard."
+    )
+    parser.add_argument("run_folder", nargs="?", default=None, help="Path to the run_sim_* folder")
     parser.add_argument("--git-branch", default=None, help="Git branch name (passed from launcher)")
+    parser.add_argument(
+        "--keep", type=int, default=DEFAULT_TABLE_KEEP,
+        help=f"Actionable runs to keep on the leaderboard (default {DEFAULT_TABLE_KEEP}); "
+             "successes are always kept. Archive retains every run.",
+    )
+    parser.add_argument(
+        "--rebuild", action="store_true",
+        help="Re-derive the leaderboard + charts from archive.jsonl without ingesting a new run.",
+    )
     args = parser.parse_args()
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _migrate_archive(ARCHIVE_JSONL, TABLE_JSONL)
+
+    if args.rebuild:
+        archive_rows, table_rows = rebuild_table(keep=args.keep, charts=True)
+        counts = _category_counts(archive_rows)
+        print(
+            f"[perf_table] Rebuilt from {len(archive_rows)} archived runs "
+            f"(real={counts.get(CATEGORY_REAL, 0)} self_test={counts.get(CATEGORY_SELF_TEST, 0)} "
+            f"bench={counts.get(CATEGORY_BENCH, 0)} incomplete={counts.get(CATEGORY_INCOMPLETE, 0)})"
+            f" -> leaderboard keeps {len(table_rows)}",
+            flush=True,
+        )
+        return
+
+    if not args.run_folder:
+        parser.error("run_folder is required unless --rebuild is given")
 
     run_folder = Path(args.run_folder).resolve()
     if not run_folder.is_dir():
         print(f"[perf_table] ERROR: run folder not found: {run_folder}", file=sys.stderr)
         sys.exit(1)
 
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    table_csv = DATA_DIR / "performance_table.csv"
-    table_jsonl = DATA_DIR / "performance_table.jsonl"
+    # Snapshot the prior run BEFORE we ingest the current one.
+    prior = _prior_run(LAST_RUN_JSON, _load_jsonl(ARCHIVE_JSONL), current_run_id=run_folder.name)
 
     print(f"[perf_table] Extracting: {run_folder.name}", flush=True)
     row = extract_metrics(run_folder, git_branch=args.git_branch)
 
+    archive_rows, table_rows = record_run(row, keep=args.keep)
+    _write_last_run(LAST_RUN_JSON, row)
+
+    print(format_summary(row, prior, table_rows), flush=True)
+
+    counts = _category_counts(archive_rows)
     print(
-        f"[perf_table] outcome={str(row['outcome']):40s} "
-        f"max_x={row['max_x_m']}m  "
-        f"stair_climb={row['stair_climb_reached']}  "
-        f"steps={row['fall_diag_steps']}  "
-        f"sha={row['git_commit_sha']}  "
-        f"branch={row['git_branch']}",
+        f"[perf_table] archive {len(archive_rows)} runs "
+        f"(real={counts.get(CATEGORY_REAL, 0)} self_test={counts.get(CATEGORY_SELF_TEST, 0)} "
+        f"bench={counts.get(CATEGORY_BENCH, 0)} incomplete={counts.get(CATEGORY_INCOMPLETE, 0)})"
+        f"  |  leaderboard keeps {len(table_rows)}",
         flush=True,
     )
-
-    upsert_csv(table_csv, row)
-    upsert_jsonl(table_jsonl, row)
-
-    print(f"[perf_table] -> {table_csv}", flush=True)
-    print(f"[perf_table] -> {table_jsonl}", flush=True)
-
-    try:
-        from charts import generate_all
-        generate_all(table_jsonl, DATA_DIR / "charts")
-    except Exception as exc:
-        print(f"[perf_table] Charts skipped: {exc}", flush=True)
-
-    print(f"[perf_table] data dir: {DATA_DIR}", flush=True)
+    print(f"[perf_table] table   -> {TABLE_CSV}", flush=True)
+    print(f"[perf_table] archive -> {ARCHIVE_JSONL}", flush=True)
 
 
 if __name__ == "__main__":

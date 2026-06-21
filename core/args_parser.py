@@ -68,7 +68,7 @@ def parse_args():
     # -----------------------------------------------------------------------
     # Inference
     # -----------------------------------------------------------------------
-    parser.add_argument('--trt-engine', type=str, default='models/yolo11n-pose-fp16.trt',
+    parser.add_argument('--trt-engine', type=str, default='sim/models/yolo/yolo11n-pose-fp16.trt',
                         help='TensorRT engine path for pose detection')
     parser.add_argument('--debug', action='store_true', help='Enable DEBUG messages')
  
@@ -378,7 +378,7 @@ def parse_args():
                         help='Scale factor for follow bearing injected in hybrid mode on stairs')
     parser.add_argument('--hold-ramp-sec', type=float, default=0.25,
                         help='Ramp time in seconds to blend policy action to stance pose during soft hold')
-    parser.add_argument('--stairs-model', type=str, default='yolov8x-worldv2.pt',
+    parser.add_argument('--stairs-model', type=str, default='sim/models/yolo/yolov8x-worldv2.pt',
                         help='Path to YOLO-World model for stairs detection')
     parser.add_argument('--parkour-yaw-deadband-deg', type=float, default=2.0,
                         help='Deadband (deg) on the parkour heading (delta_yaw) command: bearing '
@@ -475,11 +475,11 @@ def parse_args():
         help='Run direct low-level joint PD control and perceptive parkour locomotion policy'
     )
     low_level_group.add_argument(
-        '--parkour-base-jit', type=str, default='sim/isaac/assets/policies/parkour/base_jit.pt',
+        '--parkour-base-jit', type=str, default='sim/models/locomotion/parkour/base_jit.pt',
         help='Path to the JIT compiled Extreme-Parkour base policy weights'
     )
     low_level_group.add_argument(
-        '--parkour-vision-weight', type=str, default='sim/isaac/assets/policies/parkour/vision_weight.pt',
+        '--parkour-vision-weight', type=str, default='sim/models/locomotion/parkour/vision_weight.pt',
         help='Path to the Extreme-Parkour recurrent vision depth encoder checkpoint'
     )
  

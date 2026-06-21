@@ -1,16 +1,17 @@
-"""Orchestrate the stair-climb retrain end-to-end on the pod.
+"""Orchestrate the blind-RL stair retrain end-to-end on the pod.
 
 Stages (each can be skipped; ``--dry-run`` prints the commands without running them):
 
-  preflight -> patch config + URDF -> RL base (scandots) -> depth distill (--use_camera)
-            -> save_jit -> copy traced weights into sim/isaac/assets/policies/parkour/
-            -> contract test
+  preflight -> patch (register stairs+payload task) -> rsl_rl train -> play.py JIT export
+            -> deploy policy.pt into sim/models/locomotion/go2_robot_lab_policy.pt
+            -> tests/test_rl_contract.py guard
 
-This is a thin, transparent wrapper around the training repo's own scripts
-(``legged_gym/scripts/{train,save_jit}.py``): it logs every command it runs, so the
-exact training invocation is always visible and tunable from ``.env`` / flags. The
-repo-native ``--use_camera`` distillation is used (it matches the deployed contract);
-the parent package's distillation scaffold remains as a fallback.
+This is a thin, transparent wrapper around robot_lab's own scripts
+(``scripts/reinforcement_learning/rsl_rl/{train,play}.py``): it logs every command it
+runs, so the exact training invocation is always visible and tunable from ``.env`` /
+flags. The policy is BLIND (proprioceptive), so there is no depth stage -- robot_lab's
+``play.py`` auto-exports the actor to ``exported/policy.pt`` and we deploy that single
+TorchScript file (45-D obs -> 12 actions, ``action = model(obs)``).
 
     python fine_tuning/rl/train_rl.py --runpod --runpod-autostop
     python fine_tuning/rl/train_rl.py --dry-run        # print the plan, run nothing
@@ -19,6 +20,7 @@ the parent package's distillation scaffold remains as a fallback.
 from __future__ import annotations
 
 import argparse
+import glob
 import logging
 import os
 import shutil
@@ -32,78 +34,89 @@ if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from fine_tuning import _repo, env_bootstrap as envb  # noqa: E402
-from fine_tuning.rl import config_patch, urdf_payload, preflight_rl  # noqa: E402
+from fine_tuning.rl import STAIR_TASK_ID, config_patch, preflight_rl  # noqa: E402
 
 LOGGER = logging.getLogger("fine_tuning.rl.train")
 
-TRAIN_SCRIPT = os.path.join("legged_gym", "scripts", "train.py")
-SAVE_JIT_SCRIPT = os.path.join("legged_gym", "scripts", "save_jit.py")
-DEPLOY_FILES = ("base_jit.pt", "vision_weight.pt", "config.json")
+TRAIN_SCRIPT = os.path.join("scripts", "reinforcement_learning", "rsl_rl", "train.py")
+PLAY_SCRIPT = os.path.join("scripts", "reinforcement_learning", "rsl_rl", "play.py")
+# robot_lab/play.py exports here, relative to the resumed run dir.
+EXPORTED_JIT = os.path.join("exported", "policy.pt")
+EXPORTED_ONNX = os.path.join("exported", "policy.onnx")
+
+
+def _launch_prefix(args) -> List[str]:
+    """How to invoke an IsaacLab python script.
+
+    IsaacLab apps must run under the Isaac Sim python. Either point ``--python`` /
+    ``FT_RL_PYTHON`` at it, or pass ``--isaaclab-sh /path/to/isaaclab.sh`` to use the
+    ``isaaclab.sh -p`` launcher. Defaults to this interpreter (correct only if you
+    launched train_rl.py with the Isaac python already active).
+    """
+    if args.isaaclab_sh:
+        return ["bash", str(args.isaaclab_sh), "-p"]
+    return [args.python or sys.executable]
 
 
 def _run(cmd: List[str], *, cwd: Optional[Path], dry: bool) -> None:
     """Log + run a subprocess (or just log it under --dry-run). Raises on failure."""
-    printable = " ".join(cmd)
-    LOGGER.info("$ %s%s", printable, f"   (cwd={cwd})" if cwd else "")
+    LOGGER.info("$ %s%s", " ".join(cmd), f"   (cwd={cwd})" if cwd else "")
     if dry:
         return
     subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True)
 
 
-def base_cmd(args) -> List[str]:
-    cmd = [sys.executable, TRAIN_SCRIPT, "--exptid", args.exptid, "--device", args.device]
-    if args.headless:
-        cmd.append("--headless")
-    cmd += ["--num_envs", str(args.num_envs), "--max_iterations", str(args.max_iters)]
+def train_cmd(args) -> List[str]:
+    cmd = _launch_prefix(args) + [
+        TRAIN_SCRIPT, "--task", args.task, "--headless",
+        "--num_envs", str(args.num_envs), "--max_iterations", str(args.max_iters),
+        "--seed", str(args.seed), "--experiment_name", args.exptid,
+    ]
+    if args.run_name:
+        cmd += ["--run_name", args.run_name]
+    if envb.get_bool("FT_WANDB", False):
+        cmd += ["--logger", "wandb", "--log_project_name", envb.get_str("WANDB_PROJECT", "blind-rl-stair")]
     cmd += args.train_extra
     return cmd
 
 
-def distill_cmd(args) -> List[str]:
-    cmd = [sys.executable, TRAIN_SCRIPT, "--exptid", args.distill_exptid, "--device", args.device,
-           "--resume", "--resumeid", args.exptid, "--use_camera", "--delay"]
-    if args.headless:
-        cmd.append("--headless")
-    cmd += ["--max_iterations", str(args.distill_iters)]
-    cmd += args.train_extra
-    return cmd
+def export_cmd(args) -> List[str]:
+    # play.py resumes the latest run for the experiment and auto-exports policy.pt/onnx
+    # before stepping the sim; a tiny env count keeps the export quick.
+    return _launch_prefix(args) + [
+        PLAY_SCRIPT, "--task", args.task, "--headless",
+        "--num_envs", "16", "--experiment_name", args.exptid,
+    ]
 
 
-def save_jit_cmd(args) -> List[str]:
-    return [sys.executable, SAVE_JIT_SCRIPT, "--exptid", args.exptid]
-
-
-def find_traced_dir(repo: Path, override: Optional[str]) -> Optional[Path]:
-    """Locate the traced/ dir holding base_jit.pt (save_jit's output)."""
+def find_exported_jit(repo: Path, exptid: str, override: Optional[str]) -> Optional[Path]:
+    """Locate the newest exported/policy.pt under logs/rsl_rl/<exptid>/."""
     if override:
         p = Path(override)
-        return p if (p / "base_jit.pt").exists() else None
-    candidates = sorted(repo.glob("**/traced"), key=lambda d: d.stat().st_mtime, reverse=True)
-    for d in candidates:
-        if (d / "base_jit.pt").exists():
-            return d
-    return None
+        return p if p.exists() else None
+    pattern = str(repo / "logs" / "rsl_rl" / exptid / "*" / EXPORTED_JIT)
+    hits = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
+    return Path(hits[0]) if hits else None
 
 
-def deploy_weights(traced: Path, *, dry: bool) -> None:
-    """Back up the current weights, then copy the freshly trained ones into the sim."""
-    dest = Path(_repo.PARKOUR_ASSETS)
-    backup = dest / ("_backup_" + time.strftime("%Y%m%d_%H%M%S"))
-    LOGGER.info("Deploying trained weights %s -> %s (backup: %s)", traced, dest, backup)
+def deploy_weights(jit_path: Path, *, dry: bool) -> None:
+    """Back up the current blind-RL policy, then drop the freshly trained one in."""
+    dest = Path(_repo.BLIND_RL_POLICY)
+    backup_dir = dest.parent / ("_backup_" + time.strftime("%Y%m%d_%H%M%S"))
+    LOGGER.info("Deploying %s -> %s (backup: %s)", jit_path, dest, backup_dir)
     if dry:
         return
-    backup.mkdir(parents=True, exist_ok=True)
-    for name in DEPLOY_FILES:
-        cur = dest / name
-        if cur.exists():
-            shutil.copy2(cur, backup / name)
-    for name in DEPLOY_FILES:
-        src = traced / name
-        if not src.exists():
-            LOGGER.warning("traced/%s missing -- not deployed (check save_jit output).", name)
-            continue
-        shutil.copy2(src, dest / name)
-        LOGGER.info("  deployed %s", name)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        shutil.copy2(dest, backup_dir / dest.name)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(jit_path, dest)
+    LOGGER.info("  deployed %s", dest)
+    # Keep the ONNX next to it (handy for a real LowCmd controller), if play exported one.
+    onnx_src = jit_path.parent / "policy.onnx"
+    if onnx_src.exists():
+        shutil.copy2(onnx_src, dest.with_suffix(".onnx"))
+        LOGGER.info("  deployed %s", dest.with_suffix(".onnx"))
 
 
 def maybe_login_runpod(args) -> None:
@@ -125,27 +138,29 @@ def main(argv: Optional[list] = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     envb.load_env()
 
-    ap = argparse.ArgumentParser(description="Retrain Extreme-Parkour as a stair-climb specialist.")
-    ap.add_argument("--repo", default=None, help="Training repo dir (default: FT_RL_REPO_DIR / ~).")
-    ap.add_argument("--exptid", default=envb.get_str("FT_RL_EXPTID", "o2stair-base"))
-    ap.add_argument("--distill-exptid", default=envb.get_str("FT_RL_DISTILL_EXPTID", "o2stair-cam"))
-    ap.add_argument("--device", default=envb.get_str("FT_RL_DEVICE", "cuda:0"))
+    ap = argparse.ArgumentParser(description="Retrain the blind rl_sar Go2 policy as an O2 stair climber.")
+    ap.add_argument("--repo", default=None, help="robot_lab checkout (default: FT_RL_REPO_DIR / ~/robot_lab).")
+    ap.add_argument("--task", default=envb.get_str("FT_RL_TASK", STAIR_TASK_ID))
+    ap.add_argument("--exptid", default=envb.get_str("FT_RL_EXPTID", "o2stair"),
+                    help="rsl_rl --experiment_name (the logs/rsl_rl/<exptid>/ folder).")
+    ap.add_argument("--run-name", default=envb.get_str("FT_RL_RUN_NAME"))
     ap.add_argument("--num-envs", type=int, default=envb.get_int("FT_RL_NUM_ENVS", 4096))
-    ap.add_argument("--max-iters", type=int, default=envb.get_int("FT_RL_MAX_ITERS", 12000))
-    ap.add_argument("--distill-iters", type=int, default=envb.get_int("FT_RL_DISTILL_ITERS", 6000))
-    ap.add_argument("--lin-vel-x-max", type=float, default=envb.get_float("FT_RL_LINVELX_MAX", 0.35))
-    ap.add_argument("--headless", action="store_true", default=True)
-    ap.add_argument("--no-headless", dest="headless", action="store_false")
+    ap.add_argument("--max-iters", type=int, default=envb.get_int("FT_RL_MAX_ITERS", 20000))
+    ap.add_argument("--seed", type=int, default=envb.get_int("FT_RL_SEED", 1))
+    ap.add_argument("--lin-vel-x-max", type=float, default=envb.get_float("FT_RL_LINVELX_MAX", 0.5))
+    ap.add_argument("--step-height-max", type=float, default=envb.get_float("FT_RL_STEP_H_MAX", 0.18))
+    ap.add_argument("--orientation-reward", type=float, default=envb.get_float("FT_RL_ORIENT_REWARD", -2.5))
+    ap.add_argument("--python", default=envb.get_str("FT_RL_PYTHON"),
+                    help="Python interpreter with Isaac Sim (default: this one).")
+    ap.add_argument("--isaaclab-sh", default=envb.get_str("FT_RL_ISAACLAB_SH"),
+                    help="Path to isaaclab.sh; if set, scripts run via 'isaaclab.sh -p'.")
     ap.add_argument("--train-extra", nargs=argparse.REMAINDER, default=[],
-                    help="Extra args passed verbatim to the repo's train.py (after --train-extra).")
-    ap.add_argument("--traced-dir", default=envb.get_str("FT_RL_TRACED_DIR"),
-                    help="Override the traced/ dir to deploy from.")
-    ap.add_argument("--parent-link", default=envb.get_str("FT_RL_PARENT_LINK"),
-                    help="Trunk link name in go2.urdf (default: auto-detect).")
+                    help="Extra args passed verbatim to robot_lab's train.py (after --train-extra).")
+    ap.add_argument("--exported-jit", default=envb.get_str("FT_RL_EXPORTED_JIT"),
+                    help="Override the exported policy.pt path to deploy from.")
     ap.add_argument("--skip-preflight", action="store_true")
-    ap.add_argument("--skip-base", action="store_true")
-    ap.add_argument("--skip-distill", action="store_true")
-    ap.add_argument("--skip-save", action="store_true")
+    ap.add_argument("--skip-train", action="store_true")
+    ap.add_argument("--skip-export", action="store_true")
     ap.add_argument("--skip-deploy", action="store_true")
     ap.add_argument("--dry-run", action="store_true", help="Print every step; run nothing.")
     ap.add_argument("--runpod", action="store_true", help="Validate RunPod creds (autostop support).")
@@ -167,36 +182,36 @@ def main(argv: Optional[list] = None) -> int:
     maybe_login_runpod(args)
     autostop_ok = True
     try:
-        # 1) patch config + write payload URDF (idempotent)
-        params = config_patch.StairPatchParams(lin_vel_x_max=args.lin_vel_x_max)
+        # 1) patch: write the stairs+payload cfg module + register the task (idempotent)
+        params = config_patch.StairPatchParams(
+            lin_vel_x_max=args.lin_vel_x_max,
+            step_height_max=args.step_height_max,
+            orientation_reward=args.orientation_reward,
+        )
         if dry:
-            LOGGER.info("[patch] would patch %s and write go2_o2.urdf in %s",
-                        config_patch.GO2_CONFIG_RELPATH, repo)
+            LOGGER.info("[patch] would write %s.py + register %s in %s",
+                        config_patch.STAIRS_CFG_MODULE, args.task, config_patch.go2_config_pkg(repo))
         else:
-            cfg_path = config_patch.apply_to_repo(repo, params)
-            LOGGER.info("[patch] config patched: %s", cfg_path)
-            urdf_out = urdf_payload.write_o2_urdf(repo, parent_link=args.parent_link)
-            LOGGER.info("[patch] payload URDF: %s", urdf_out)
+            cfg_path, init_path = config_patch.apply_to_repo(repo, params)
+            LOGGER.info("[patch] wrote %s; registered %s in %s", cfg_path, args.task, init_path)
 
-        # 2) RL base (scandots)
-        if not args.skip_base:
-            _run(base_cmd(args), cwd=repo, dry=dry)
-        # 3) depth distillation (repo-native --use_camera)
-        if not args.skip_distill:
-            _run(distill_cmd(args), cwd=repo, dry=dry)
-        # 4) export TorchScript
-        if not args.skip_save:
-            _run(save_jit_cmd(args), cwd=repo, dry=dry)
+        # 2) RL base training (blind proprio -- no depth stage)
+        if not args.skip_train:
+            _run(train_cmd(args), cwd=repo, dry=dry)
 
-        # 5) deploy trained weights into the sim
+        # 3) export the trained actor to TorchScript via play.py (auto-export)
+        if not args.skip_export:
+            _run(export_cmd(args), cwd=repo, dry=dry)
+
+        # 4) deploy the exported policy.pt into the sim + contract guard
         if not args.skip_deploy:
-            traced = find_traced_dir(repo, args.traced_dir)
-            if traced is None and not dry:
-                LOGGER.error("No traced/ dir with base_jit.pt under %s -- nothing to deploy.", repo)
+            jit = find_exported_jit(repo, args.exptid, args.exported_jit)
+            if jit is None and not dry:
+                LOGGER.error("No exported %s under logs/rsl_rl/%s/ -- did export run?",
+                             EXPORTED_JIT, args.exptid)
                 return 1
-            deploy_weights(traced or (repo / "traced"), dry=dry)
-            # 6) contract guard (only meaningful once real weights are in place)
-            test = Path(_repo.REPO_ROOT) / "tests" / "test_parkour_contract.py"
+            deploy_weights(jit or (repo / "logs" / "rsl_rl" / args.exptid / "latest" / EXPORTED_JIT), dry=dry)
+            test = Path(_repo.REPO_ROOT) / "tests" / "test_rl_contract.py"
             if test.exists():
                 _run([sys.executable, str(test)], cwd=Path(_repo.REPO_ROOT), dry=dry)
 

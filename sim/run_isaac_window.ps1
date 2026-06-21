@@ -45,9 +45,9 @@ param(
     [string]$WarmCommandFile = "",
     [int]$WarmMaxRuns = 10,
     [switch]$Bench,
-    # Dual-policy handoff CLIMB backend: 'parkour' (depth/vision RL, default), 'blind_rl'
-    # (proprioceptive rl_sar RL net), or 'ik' (deterministic ClosedLoopStairClimber).
-    [string]$HandoffClimbBackend = "parkour",
+    # Dual-policy handoff CLIMB backend: 'blind_rl' (proprioceptive rl_sar RL net, default),
+    # 'parkour' (depth/vision RL), or 'ik' (deterministic ClosedLoopStairClimber).
+    [string]$HandoffClimbBackend = "blind_rl",
     # Isolated stair-climb test: drive straight forward up the stairs (no Docker/person-follow)
     # and exit when the robot reaches (StairWaypointX, StairWaypointY) = the top landing.
     [switch]$StairWaypointTest,

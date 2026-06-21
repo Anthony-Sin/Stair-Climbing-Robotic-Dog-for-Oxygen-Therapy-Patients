@@ -36,9 +36,10 @@ class PayloadNumbers:
     def added_mass_range(self, margin_kg: float = 1.25) -> Tuple[float, float]:
         """A DR band that ALWAYS carries at least the tank, plus headroom.
 
-        legged_gym's ``added_mass_range`` is sampled uniformly and added to the base
-        link every reset. Centring it on the real payload (rather than [0, 3] around
-        nothing) means every episode trains *with* the load.
+        robot_lab's IsaacLab ``randomize_rigid_body_mass`` base event samples a uniform
+        value from ``mass_distribution_params`` and ADDS it to the trunk link at startup
+        (``operation="add"``). Centring this band on the real payload (rather than the
+        stock (-1, 3) around nothing) means every episode trains *with* the load.
         """
         lo = max(0.0, self.mass_kg - margin_kg * 0.5)
         hi = self.mass_kg + margin_kg

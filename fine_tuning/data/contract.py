@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-# --- fixed shapes (mirror assets/policies/parkour/config.json) ----------------
+# --- fixed shapes (mirror sim/models/locomotion/parkour/config.json) ----------------
 DEPTH_RAW_HW = (60, 106)   # native camera (config "original" [W106,H60] -> [H,W])
 DEPTH_HW = (58, 87)        # what the encoder consumes
 N_PROPRIO = 53

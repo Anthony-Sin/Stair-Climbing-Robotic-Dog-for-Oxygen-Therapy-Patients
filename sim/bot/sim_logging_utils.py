@@ -21,8 +21,29 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
+def _derive_run_id(log_dir: Path) -> Optional[str]:
+    """Best-effort run identifier from a run folder path.
+
+    Logs land under <log>/run_sim_<stamp>/debug/, so the run_sim_* (or warm_*)
+    ancestor names the run. Returns None for ad-hoc log dirs.
+    """
+    for part in [log_dir, *log_dir.parents]:
+        name = part.name
+        if name.startswith("run_sim_") or name.startswith("warm"):
+            return name
+    return None
+
+
 class _SimJsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
+        labels: Dict[str, Any] = {
+            "component": getattr(record, "sim_component", record.name),
+        }
+        run_id = getattr(record, "sim_run_id", None)
+        if run_id:
+            # Stamp every line with the run it belongs to so current-run output can
+            # never be confused with a prior run's, even if files are concatenated.
+            labels["run_id"] = run_id
         payload: Dict[str, Any] = {
             "@timestamp": datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
             "level": record.levelname,
@@ -31,9 +52,7 @@ class _SimJsonFormatter(logging.Formatter):
             "event": {
                 "action": getattr(record, "sim_event", record.getMessage()),
             },
-            "labels": {
-                "component": getattr(record, "sim_component", record.name),
-            },
+            "labels": labels,
             "process": {
                 "pid": record.process,
                 "name": record.processName,
@@ -65,12 +84,20 @@ def configure_sim_logger(
     log_dir: Optional[str] = None,
     reset: bool = True,
     console: bool = True,
+    run_id: Optional[str] = None,
 ) -> logging.Logger:
-    """Create a per-run JSONL logger for simulation-only processes."""
+    """Create a per-run JSONL logger for simulation-only processes.
+
+    `reset=True` (the default) opens the file in write mode, so each run starts
+    from an empty file -- prior-run lines are never appended to. The resolved
+    run_id is stamped onto every line as an extra separation guarantee.
+    """
     configured_log_dir = log_dir or os.environ.get("SIM_LOG_DIR")
     resolved_log_dir = Path(configured_log_dir).expanduser() if configured_log_dir else _repo_root() / "log"
     resolved_log_dir.mkdir(parents=True, exist_ok=True)
     log_path = resolved_log_dir / f"{component}.jsonl"
+
+    resolved_run_id = run_id or os.environ.get("SIM_RUN_ID") or _derive_run_id(resolved_log_dir)
 
     logger = logging.getLogger(f"sim.{component}")
     logger.setLevel(logging.DEBUG)
@@ -93,6 +120,7 @@ def configure_sim_logger(
         logger.addHandler(console_handler)
 
     logger.sim_log_path = str(log_path)  # type: ignore[attr-defined]
+    logger.sim_run_id = resolved_run_id  # type: ignore[attr-defined]
     return logger
 
 
@@ -107,18 +135,68 @@ def log_event(
         return
     exc_info = fields.pop("exc_info", None)
     component = logger.name.split(".", 1)[-1]
-    logger.log(
-        level,
-        message,
-        extra={
-            "sim_component": component,
-            "sim_event": event,
-            "sim_fields": fields,
-        },
-        exc_info=exc_info,
-    )
+    extra: Dict[str, Any] = {
+        "sim_component": component,
+        "sim_event": event,
+        "sim_fields": fields,
+    }
+    run_id = getattr(logger, "sim_run_id", None)
+    if run_id:
+        extra["sim_run_id"] = run_id
+    logger.log(level, message, extra=extra, exc_info=exc_info)
     for handler in logger.handlers:
         try:
             handler.flush()
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Recording visibility
+#
+# Recordings (mp4s) are ALWAYS captured to the run folder for later review. They
+# are only *surfaced* -- live preview window, console call-outs -- when the
+# operator opts in via SHOW_RECORDINGS. This keeps headless/batch runs quiet
+# without ever losing the footage on disk.
+# ---------------------------------------------------------------------------
+
+def recordings_visible() -> bool:
+    """True when recordings should be displayed/surfaced (SHOW_RECORDINGS truthy).
+
+    Canonical host-side gate. The controller (core/main.py) runs in a separate
+    Docker module tree and cannot import this module, so it mirrors the same
+    SHOW_RECORDINGS check inline -- keep the two in sync if the contract changes.
+    """
+    return os.environ.get("SHOW_RECORDINGS", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+# ---------------------------------------------------------------------------
+# Scene baseline
+#
+# A reference snapshot of the environment with NO person/character present,
+# logged once per run BEFORE the patient actor is spawned. Every run then has an
+# empty-scene reference to diff sensor/physics readings against.
+# ---------------------------------------------------------------------------
+
+def log_scene_baseline(
+    logger: Optional[logging.Logger],
+    *,
+    terrain: Optional[str] = None,
+    **scene: Any,
+) -> None:
+    """Log the empty-scene reference baseline (person absent).
+
+    Call immediately BEFORE spawning the person. `person_present` is forced
+    False so the baseline is unambiguous regardless of what the caller passes.
+    """
+    fields = dict(scene)
+    fields["person_present"] = False
+    if terrain is not None:
+        fields["terrain"] = terrain
+    log_event(
+        logger,
+        logging.INFO,
+        "scene_baseline",
+        "scene baseline captured (no person in scene)",
+        **fields,
+    )

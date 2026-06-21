@@ -3,11 +3,13 @@
 
 Run host-side (the launcher calls it via WSL ``python3``), AFTER the warm Kit has
 produced one run folder per terrain. For each terrain it reuses
-``perf_tracker.update_table.extract_metrics`` (so every standard metric + the new
-``terrain_id`` column lands in the same performance table the dev already inspects),
-then computes a few bench-only fields (PASS/FAIL, distance ratio, traversal time,
-body-height stability) and writes ``benchmark_summary.{md,csv,json}`` into the batch
-folder.
+``perf_tracker.update_table.extract_metrics`` and ingests the row via
+``update_table.record_run`` (so it is archived in ``perf_tracker/data/archive.jsonl``
+with a ``terrain_id`` column). Bench rows are categorised ``bench`` and stay OFF the
+stair-climb leaderboard ``performance_table.csv`` -- a ramp's large ``max_x_m`` is not
+comparable to a climb. The per-terrain results table is ``benchmark_summary.{md,csv,json}``
+(written into the batch folder), alongside bench-only fields (PASS/FAIL, distance ratio,
+traversal time, body-height stability).
 
 Usage:
     python3 bench_metrics.py <batch_dir> [--git-branch <branch>]
@@ -33,7 +35,7 @@ sys.path.insert(0, str(_THIS_DIR))      # terrain_registry
 sys.path.insert(0, str(_PERF_DIR))      # update_table, charts
 
 from terrain_registry import get_battery, START_X_M  # noqa: E402
-import update_table as ut  # noqa: E402  (extract_metrics / upsert_csv / upsert_jsonl / DATA_DIR)
+import update_table as ut  # noqa: E402  (extract_metrics / record_run / rebuild_table)
 
 
 def _safe_float(v: Any) -> Optional[float]:
@@ -96,10 +98,6 @@ def aggregate(batch_dir: Path, git_branch: Optional[str]) -> Dict[str, Any]:
     branch = git_branch or manifest.get("git_branch")
     by_id = {t.terrain_id: t for t in get_battery()}
 
-    ut.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    table_csv = ut.DATA_DIR / "performance_table.csv"
-    table_jsonl = ut.DATA_DIR / "performance_table.jsonl"
-
     summaries: List[Dict[str, Any]] = []
     for entry in manifest.get("terrains", []):
         terrain_id = entry.get("terrain_id")
@@ -111,9 +109,12 @@ def aggregate(batch_dir: Path, git_branch: Optional[str]) -> Dict[str, Any]:
 
         row = ut.extract_metrics(run_dir, git_branch=branch)
         row["terrain_id"] = terrain_id
-        # One perf-table row per terrain (keyed by run_id = run-folder name).
-        ut.upsert_csv(table_csv, row)
-        ut.upsert_jsonl(table_jsonl, row)
+        # terrain_id is set AFTER extract_metrics, so re-classify the row: a bench
+        # run is archived (full history) but kept OFF the stair-climb leaderboard,
+        # where a ramp's large max_x would otherwise outrank every real climb. The
+        # per-terrain results live in benchmark_summary.{md,csv,json} below.
+        row["run_category"] = ut.classify_run(row)
+        ut.record_run(row, charts=False)  # archive + refresh table; charts drawn once at the end
 
         max_x = _safe_float(row.get("max_x_m"))
         target = _target_end_x(spec, row)
@@ -162,14 +163,10 @@ def aggregate(batch_dir: Path, git_branch: Optional[str]) -> Dict[str, Any]:
 
     _write_summary(batch_dir, result)
 
-    # Regenerate perf_tracker charts from the updated table (best-effort, like update_table).
-    try:
-        from charts import generate_all
-        generate_all(table_jsonl, ut.DATA_DIR / "charts")
-    except Exception as exc:
-        print(f"[bench] charts skipped: {exc}", flush=True)
+    # Draw the perf_tracker charts once, from the refreshed leaderboard.
+    ut.rebuild_table(charts=True)
 
-    print(f"[bench] perf table -> {table_csv}", flush=True)
+    print(f"[bench] archive    -> {ut.ARCHIVE_JSONL}", flush=True)
     print(f"[bench] summary    -> {batch_dir / 'benchmark_summary.md'}", flush=True)
     return result
 

@@ -155,6 +155,14 @@ Do NOT include directory trees, tech stack summaries, style guides, obvious best
 **LESSON:** Park the person OFF the forward lane (`--person-x -8 --person-y 8`, no `--person-move`). The default spawn `(-3.5, 0)` sits ~1 m ahead of the robot in its path, so an open-loop forward drive collides with it and corrupts the run.
 **WHY:** Without a follow controller nothing steers around the person; constant `vx` walks straight into it.
 
+**TRIGGER:** Changing how runs are persisted in `perf_tracker/update_table.py`.
+**LESSON:** Ingest only through the public API (`update_table.record_run` / `rebuild_table`); `sim/isaac/terrain_bench/bench_metrics.py` imports `update_table` and breaks if you remove/rename its persistence functions. Bench rows are categorised `bench` and live in `archive.jsonl` only — they are kept OFF the lean `performance_table.csv` leaderboard (a ramp's `max_x_m` is not comparable to a climb).
+**WHY:** `bench_metrics` reuses `update_table` internals across the host process; one-sided changes silently break the terrain-bench aggregation.
+
+**TRIGGER:** A run is missing from `performance_table.csv` even though it ran.
+**LESSON:** The CSV is the LEAN leaderboard (top actionable runs + all successes). Full history is `archive.jsonl`. `unknown`/`not_recorded`/self-test/bench/instant-fall runs are archived but excluded by design (see `classify_run`). Use `python perf_tracker/update_table.py --rebuild` to re-derive the table from the archive.
+**WHY:** The leaderboard is intentionally filtered to actionable runs; the archive is the source of truth.
+
 ---
 
 ## 9. Testing & Verification
