@@ -7,32 +7,39 @@ Robot Coordinate System:
 - Rotation: Counter-clockwise(+) / Clockwise(-) rotation
 
 Sim mode:
-    python src/main.py --sim --follow --follow-backend mppi
+    python sim/main.py --sim --follow --follow-backend mppi
     (isaac_env.py must already be running in a separate terminal)
 """
 
 import cv2
 import numpy as np
 import os
-import queue
 import shutil
-import threading
-from yolo_pose_inference import YoloPoseInference
-from yolo_stairs_inference import YoloStairsInference
-from trt_inference import TRTInference
+from core.vision.yolo_pose_inference import YoloPoseInference
+from core.vision.yolo_stairs_inference import YoloStairsInference
+from core.vision.trt_inference import TRTInference
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
-from single_person_tracker import SinglePersonTracker
-from person_follower import PersonFollower, PersonFollowingConfig
-from depth_processor import DepthProcessor
-from pid_controller import SlewRateLimiter
-from args_parser import parse_args
-from visualization import (
-    RotationDebugWindow, draw_frame_overlays
+from typing import Any, Dict, List, Optional, Set
+from core.vision.single_person_tracker import SinglePersonTracker
+from core.control.person_follower import PersonFollower, PersonFollowingConfig
+from core.vision.depth_processor import DepthProcessor
+from core.control.pid_controller import SlewRateLimiter
+from core.args_parser import parse_args
+from core.hud.visualization import draw_frame_overlays
+from core.telemetry.structured_logging import build_ecs_extra, get_ecs_logger, setup_ecs_file_logging
+from core.telemetry.vision_target_export import VisionTargetExporter
+from core.telemetry.debug_trace_logger import DebugTraceLogger
+from core.control.stair_policy import (
+    _apply_stair_command_policy,
+    _apply_front_obstacle_gate,
+    _depth_from_bbox_excluding_person,
 )
-from structured_logging import build_ecs_extra, get_ecs_logger, setup_ecs_file_logging
-from vision_target_export import VisionTargetExporter
-from debug_trace_logger import DebugTraceLogger
+from core.control.follow_shaping import (
+    _apply_follow_standoff_policy,
+    _apply_no_reverse_follow_policy,
+    _update_carrot_heading,
+)
+from core.hud.preview_recorder import _AsyncPreviewWorker
 
 
 def _parse_enabled_log_components(raw_value: str) -> Set[str]:
@@ -84,6 +91,18 @@ def _build_robot_controller(args):
         ctrl.initialize()
         return ctrl
 
+    if getattr(args, "ros2", False):
+        # Native ROS 2 path for the real Go2 EDU: a pure publisher that hands the
+        # follow command to the low-level control node (which runs the policy and
+        # writes /lowcmd). No joints, no unitree_sdk2 in this process. Imported
+        # lazily so host/sim runs never need rclpy.
+        from real.control.real_robot_controller import RealRobotController
+        print("[main] ROS2 mode: using RealRobotController (native rclpy transport)")
+        ctrl = RealRobotController(args)
+        if not ctrl.initialize():
+            return None
+        return ctrl
+
     from robot_controller import RobotController
     low_level = getattr(args, "low_level_locomotion", False)
     base_model = getattr(args, "parkour_base_jit", "sim/models/locomotion/parkour/base_jit.pt")
@@ -106,604 +125,14 @@ def _build_robot_controller(args):
 # elsewhere only as logged evaluation references, never as control inputs.
 
 
-def _depth_from_bbox(depth_img: np.ndarray, bbox: Optional[List[float]]) -> Optional[float]:
-    if bbox is None:
-        return None
-    try:
-        depth_m = DepthProcessor.foreground_depth_bimodal(
-            depth_img,
-            tuple(int(round(v)) for v in bbox[:4]),
-            return_histogram=False,
-        )
-        return None if depth_m is None else float(depth_m)
-    except Exception:
-        return None
-
-
-def _depth_from_bbox_excluding_person(
-    depth_img: np.ndarray,
-    stairs_bbox: Optional[List[float]],
-    person_bbox: Optional[List[float]] = None,
-) -> Optional[float]:
-    """Measure stair depth from the depth image, masking out the person's bbox.
-
-    Uses the 25th-percentile of valid (non-zero) pixels in the stair region
-    after zeroing any overlap with the person bbox.  Falls back to the standard
-    bimodal method when too few pixels remain after masking.
-    """
-    if stairs_bbox is None:
-        return None
-    try:
-        h, w = depth_img.shape[:2]
-        x1, y1, x2, y2 = [int(round(v)) for v in stairs_bbox[:4]]
-        x1 = max(0, x1); y1 = max(0, y1); x2 = min(w, x2); y2 = min(h, y2)
-        if x2 <= x1 or y2 <= y1:
-            return None
-
-        region = np.array(depth_img[y1:y2, x1:x2], dtype=np.float32)
-
-        if person_bbox is not None:
-            px1, py1, px2, py2 = [int(round(v)) for v in person_bbox[:4]]
-            rel_x1 = max(0, px1 - x1);  rel_y1 = max(0, py1 - y1)
-            rel_x2 = min(x2 - x1, px2 - x1); rel_y2 = min(y2 - y1, py2 - y1)
-            if rel_x2 > rel_x1 and rel_y2 > rel_y1:
-                region[rel_y1:rel_y2, rel_x1:rel_x2] = 0.0
-
-        valid = region[region > 0.0]
-        if len(valid) < 10:
-            # Too few non-person pixels remain to read the stair edge. When a person
-            # is in frame, do NOT fall back to the person-inclusive bbox depth -- that
-            # returns the near person as the "stair" depth, which trips stairs_near and
-            # engages the climb forward-floor on flat ground (the dog then drives
-            # into/past the person). Report unknown; the main loop keeps the last
-            # sensor-confirmed stair depth. With no person present, the bbox depth is
-            # still a valid stair estimate.
-            if person_bbox is not None:
-                return None
-            return _depth_from_bbox(depth_img, stairs_bbox)
-
-        depth_mm = float(np.percentile(valid, 25))
-        return (depth_mm * 0.001) if depth_mm > 0 else None
-    except Exception:
-        return None
-
-
-def _apply_stair_command_policy(
-    args,
-    trans_x_cmd: float,
-    rotation_cmd: float,
-    debug_info: Dict[str, Any],
-) -> Tuple[float, float]:
-    if not bool(debug_info.get("stairs_detected", False)):
-        debug_info["stairs_action_active"] = False
-        return float(trans_x_cmd), float(rotation_cmd)
-
-    # Gate: stair behavior requires the person to be actively detected -- EXCEPT for a
-    # BRIEF loss while the staircase is already latched. On a brief loss we still hold the
-    # forward floor (below) so the climb keeps advancing instead of stranding the policy
-    # at vx=0 mid-step, but we suppress centering/recovery yaw: applying yaw amplification
-    # without a fresh detection over-rotates the body and falls (the original gate intent).
-    # In parkour mode steering is via delta_yaw (the predicted bearing), not this wz, so the
-    # robot still aims at the last-known person while the floor keeps it climbing.
-    if not bool(debug_info.get("person_detected", False)):
-        lost_age = debug_info.get("lost_age_sec")
-        lost_grace = debug_info.get("lost_search_timeout_sec")
-        brief_loss = (
-            lost_age is not None
-            and lost_grace is not None
-            and float(lost_age) <= float(lost_grace)
-        )
-        # Bounded stair finish-to-footing: stop early if we have reached flat ground/top or pitch levels off
-        stair_demo = debug_info.get("stair_demo")
-        if brief_loss and stair_demo and isinstance(stair_demo, dict):
-            phase = stair_demo.get("phase")
-            robot_data = stair_demo.get("robot", {})
-            pitch_deg = robot_data.get("pitch_deg", 0.0)
-            if phase in ("top_landing", "flat_follow") or abs(pitch_deg) <= 5.0:
-                brief_loss = False
-                debug_info["stair_finish_completed"] = True
-        if not brief_loss:
-            debug_info["stairs_action_active"] = False
-            debug_info["stairs_gated_no_person"] = True
-            return float(trans_x_cmd), float(rotation_cmd)
-        debug_info["stairs_gated_no_person"] = False
-        debug_info["stairs_brief_loss_floor"] = True
-        rotation_cmd = 0.0
-
-    stair_depth_m = debug_info.get("stairs_depth_m")
-
-    # Approach slowdown: as soon as the YOLO model identifies stairs ahead, ease off the
-    # throttle so the dog decelerates INTO the staircase instead of charging the base at
-    # full follow speed. This runs during the approach -- before a confirmed depth or the
-    # near threshold below engage the full climb policy. trans_x_cmd is the fresh follower
-    # output each frame, so scaling it here does not compound across frames.
-    approach_scale = float(args.stair_approach_speed_scale)
-    approach_x = float(trans_x_cmd)
-    if approach_x > 0.0 and approach_scale < 1.0:
-        approach_x = approach_x * approach_scale
-    approach_slowed = approach_x < float(trans_x_cmd)
-
-    # Require at least one sensor-confirmed (non-latched-only) depth reading before
-    # engaging the full near climb policy.  This prevents reaction to distant YOLO
-    # detections where depth could not be measured -- but still slow the approach.
-    if stair_depth_m is None and not bool(debug_info.get("stairs_depth_ever_confirmed", False)):
-        debug_info["stairs_action_active"] = False
-        debug_info["stairs_gated_no_depth"] = True
-        debug_info["stairs_approach_active"] = bool(approach_slowed)
-        debug_info["stairs_approach_speed_mps"] = float(approach_x)
-        return float(approach_x), float(rotation_cmd)
-
-    stairs_near = stair_depth_m is None or float(stair_depth_m) <= float(args.stair_near_distance)
-    debug_info["stairs_near"] = bool(stairs_near)
-    if not stairs_near:
-        debug_info["stairs_action_active"] = False
-        debug_info["stairs_approach_active"] = bool(approach_slowed)
-        debug_info["stairs_approach_speed_mps"] = float(approach_x)
-        return float(approach_x), float(rotation_cmd)
-
-    original_x = float(trans_x_cmd)
-    original_wz = float(rotation_cmd)
-
-    # Calculate the bounded stair floor before either safety branch so telemetry remains valid
-    # when the collision block forces the command to zero.
-    max_forward = max(0.0, float(args.trans_x_max) * float(args.stair_speed_scale))
-    forward_floor = max(0.0, float(args.stair_forward_floor))
-    if max_forward > 0.0:
-        forward_floor = min(forward_floor, max_forward)
-
-    # Hard collision floor on stairs: if the smoothed gap drops below the collision floor,
-    # zero the drive (no stance-lock -- a blend at speed on the slope nose-dives) so the
-    # dog never climbs into the patient.
-    _gap_ctrl = debug_info.get("standoff_gap_ctrl_m")
-    _climb_block = (
-        _gap_ctrl is not None and float(_gap_ctrl) > 1e-3
-        and float(_gap_ctrl) < float(args.stair_climb_collision_floor)
-    )
-    if _climb_block:
-        trans_x_cmd = 0.0
-        debug_info["stair_follow_collision_block"] = True
-    else:
-        debug_info["stair_follow_collision_block"] = False
-        # Forward floor while climbing: the person-follow PID collapses vx to ~0 once
-        # the dog reaches its standoff at the stair base, which strands the (blind) RL
-        # policy with no drive to step up. Hold a minimum forward command and cap it at
-        # the stair speed limit so the climb keeps advancing instead of parking.
-        trans_x_cmd = max(float(trans_x_cmd), forward_floor)
-        if max_forward > 0.0 and trans_x_cmd > max_forward:
-            trans_x_cmd = max_forward
-
-    # Tame yaw on the stairs. The follower's bbox edge/size penalty amplifies the
-    # centering error; on a step that becomes a +/-max yaw saw that twists the body
-    # and breaks the climb. Apply a small centering deadband, the (sub-unity) stair
-    # centering scale, and a lower stair-specific yaw cap.
-    rotation_error_deg = debug_info.get("rotation_error_deg")
-    yaw_deadband = max(0.0, float(args.stair_yaw_deadband_deg))
-    if rotation_error_deg is not None and abs(float(rotation_error_deg)) <= yaw_deadband:
-        rotation_cmd = 0.0
-        debug_info["stairs_yaw_deadband_active"] = True
-    else:
-        rotation_cmd = float(rotation_cmd) * float(args.stair_centering_scale)
-        debug_info["stairs_yaw_deadband_active"] = False
-    stair_rot_max = max(0.0, float(args.stair_rot_max))
-    if stair_rot_max > 0.0:
-        rotation_cmd = float(np.clip(rotation_cmd, -stair_rot_max, stair_rot_max))
-
-    debug_info["stairs_action_active"] = True
-    debug_info["stairs_approach_active"] = False
-    debug_info["stairs_forward_floor_mps"] = float(forward_floor)
-    debug_info["stairs_speed_limit_mps"] = float(trans_x_cmd)
-    debug_info["stairs_trans_x_before"] = original_x
-    debug_info["stairs_rotation_before"] = original_wz
-    return float(trans_x_cmd), float(rotation_cmd)
-
-
-def _apply_front_obstacle_gate(
-    args,
-    trans_x_cmd: float,
-    depth_img: np.ndarray,
-    debug_info: Dict[str, Any],
-) -> float:
-    # On the stairs the stair policy owns the forward command, and the staircase
-    # itself reads as a near "obstacle" in the central ROI -- gating here would
-    # zero the climb's forward floor. Let the stair policy govern instead. The
-    # stair_climbing_latch extends this bypass through a stairs-DETECTION dropout while
-    # the dog is still physically climbing (otherwise the next riser is read as a
-    # blocking wall and the climb command is zeroed -> the dog wedges on the step;
-    # run_sim_20260619_134034). The latch is collision-gated upstream.
-    if bool(debug_info.get("stairs_action_active", False)) or bool(debug_info.get("stair_climbing_latch", False)):
-        debug_info["front_obstacle_gate_active"] = False
-        debug_info["front_obstacle_skipped_on_stairs"] = True
-        return float(trans_x_cmd)
-
-    if not bool(args.obstacle_stop_enabled) or trans_x_cmd <= 0.0:
-        debug_info["front_obstacle_gate_active"] = False
-        return float(trans_x_cmd)
-
-    nearest_m, roi_info = DepthProcessor.central_roi_nearest_depth(
-        depth_img,
-        width_ratio=args.obstacle_roi_width_ratio,
-        height_ratio=args.obstacle_roi_height_ratio,
-    )
-    debug_info["front_obstacle_depth_m"] = nearest_m
-    debug_info["front_obstacle_roi"] = roi_info.get("roi")
-    debug_info["front_obstacle_valid_pixels"] = roi_info.get("valid_pixels", 0)
-    if nearest_m is None:
-        debug_info["front_obstacle_gate_active"] = False
-        return float(trans_x_cmd)
-
-    target_depth = debug_info.get("depth_distance_m")
-    if target_depth is not None:
-        try:
-            if float(nearest_m) >= (float(target_depth) - float(args.obstacle_target_clearance)):
-                debug_info["front_obstacle_gate_active"] = False
-                debug_info["front_obstacle_reason"] = "not_closer_than_target"
-                return float(trans_x_cmd)
-        except Exception:
-            pass
-
-    if nearest_m > args.obstacle_slow_distance:
-        debug_info["front_obstacle_gate_active"] = False
-        return float(trans_x_cmd)
-
-    original_cmd = float(trans_x_cmd)
-    if nearest_m <= args.obstacle_stop_distance:
-        trans_x_cmd = 0.0
-        scale = 0.0
-    else:
-        span = max(1e-3, float(args.obstacle_slow_distance) - float(args.obstacle_stop_distance))
-        scale = max(0.0, min(1.0, (float(nearest_m) - float(args.obstacle_stop_distance)) / span))
-        trans_x_cmd = float(trans_x_cmd) * scale
-
-    debug_info["front_obstacle_gate_active"] = True
-    debug_info["front_obstacle_scale"] = float(scale)
-    debug_info["front_obstacle_trans_x_before"] = original_cmd
-    return float(trans_x_cmd)
-
-
-def _apply_no_reverse_follow_policy(
-    args,
-    trans_x_cmd: float,
-    debug_info: Dict[str, Any],
-    *,
-    source: str,
-) -> float:
-    if trans_x_cmd >= 0.0:
-        debug_info.setdefault("reverse_follow_suppressed", False)
-        return float(trans_x_cmd)
-
-    debug_info["reverse_follow_suppressed"] = True
-    debug_info["reverse_follow_source"] = source
-    debug_info["reverse_follow_cmd_before_suppression"] = float(trans_x_cmd)
-    debug_info["reverse_follow_reason"] = (
-        "hold_position_track_target_until_forward_gap_opens"
-    )
-    return 0.0
-
-
-def _apply_follow_standoff_policy(
-    args,
-    trans_x_cmd: float,
-    gap_m: Optional[float],
-    leader_speed_mps: float,
-    is_walking: bool,
-    debug_info: Dict[str, Any],
-    state: Dict[str, Any],
-) -> float:
-    # 0. Gap smoothing (CRITICAL). This MUST run before the stair early-return: the stair
-    # collision floor consumes standoff_gap_ctrl_m. The old ordering returned first and silently
-    # disabled that safety gate for the whole climb.
-    # depth_distance_m is bimodal-noisy: single-frame jumps of
-    #    ~0.4<->1.0<->2.0<->0.0 m are routine even at rest. We threshold the gap for BOTH the
-    #    too-close stance-lock (downstream) AND the catch-up command (below), so a single spurious
-    #    reading would either freeze the creep (-> gap opens -> catch-up -> a ~2 m/s run that
-    #    overshoots to within ~0.5 m of the patient) or fire a phantom catch-up directly. Median-
-    #    filter the last few VALID readings (0 / None = "no lock", not a distance) and make every
-    #    go/hold/catch-up decision on the smoothed value. Until the filter has >=3 samples we do
-    #    NOT make the aggressive (freeze / catch-up) calls -- the startup depth transient is exactly
-    #    when the noise is worst and the robot is settling from the drop.
-    gap_hist = state.setdefault("gap_hist", [])
-    if gap_m is not None and float(gap_m) > 1e-3:
-        gap_hist.append(float(gap_m))
-        if len(gap_hist) > 5:
-            del gap_hist[0]
-    gap_ctrl = float(np.median(gap_hist)) if len(gap_hist) >= 3 else None
-    debug_info["standoff_gap_raw_m"] = None if gap_m is None else float(gap_m)
-    debug_info["standoff_gap_ctrl_m"] = gap_ctrl
-
-    # 1. Standoff calculation (speed adaptive). Use the follower's live target distance rather
-    # than the flat-ground CLI default. The main loop deliberately switches that live target to
-    # --stair-target-distance as soon as stairs are seen; continuing to use args.target_distance
-    # here kept the hold boundary at the short flat-ground gap and let the dog catch the patient
-    # before the first riser.
-    base_standoff = float(debug_info.get("target_distance", args.target_distance))
-    # leader_speed_mps is depth-derived and spikes to
-    #    absurd values when the gap reading jumps (observed up to ~40 m/s on lock flicker), so clamp
-    #    it to a sane walking range before it widens the standoff -- otherwise a single bad frame
-    #    pins the standoff at its cap and jolts the go/hold decision.
-    leader_speed_clamped = float(np.clip(float(leader_speed_mps), 0.0, 1.0))
-    standoff = base_standoff + args.follow_standoff_speed_gain * leader_speed_clamped
-    standoff = min(1.5, standoff)
-
-    lower_bound = standoff + args.follow_standoff_band_in
-    upper_bound = standoff + args.follow_standoff_band_out
-    debug_info["standoff_target_m"] = float(standoff)
-    debug_info["standoff_lower_bound_m"] = float(lower_bound)
-    debug_info["standoff_upper_bound_m"] = float(upper_bound)
-
-    # On stairs, bypass only the go/hold/pace shaping to avoid stalls. Keep the smoothed gap and
-    # the correct stair standoff telemetry available to the collision and hold gates.
-    if bool(debug_info.get("stairs_action_active", False)):
-        debug_info["follow_standoff_gate_active"] = False
-        debug_info["follow_standoff_skipped_on_stairs"] = True
-        return float(trans_x_cmd)
-
-    if gap_m is None:
-        debug_info["follow_standoff_gate_active"] = False
-        return float(trans_x_cmd)
-
-    # Settle grace: for the first follow_settle_grace_sec of following, do NOT let the too-close
-    # stance-lock fire (flag consumed in the main loop). Startup depth/detection reads a sustained
-    # close gap that the median can't reject; freezing then opens the gap and forces a catch-up run.
-    _now = time.perf_counter()
-    if "first_ctrl_ts" not in state:
-        state["first_ctrl_ts"] = _now
-    warmup_active = (_now - state["first_ctrl_ts"]) < float(getattr(args, "follow_settle_grace_sec", 2.0))
-    debug_info["standoff_warmup_active"] = bool(warmup_active)
-
-    # 2. Hysteretic Go/Hold decision bounds -- on the SMOOTHED gap. Until the filter is warm
-    #    (gap_ctrl is None) leave go_state on its current (hysteretic) value rather than reacting to
-    #    a raw startup spike.
-    if gap_ctrl is not None:
-        if gap_ctrl < lower_bound:
-            state["go_state"] = False
-        elif gap_ctrl > upper_bound:
-            state["go_state"] = True
-
-    # 3. Gait gate override: hold when a stopped patient is at/near standoff, but
-    #    never suppress approach when the gap is well past the GO threshold. (is_walking is noisy in
-    #    sim, but with the lean-on-creep gate a spurious hold here only toggles creep<->creep -- the
-    #    actual stance-lock is the too-close gap decision in the main loop, not go_state.)
-    if args.follow_gait_gate and not is_walking and gap_ctrl is not None and gap_ctrl <= upper_bound:
-        state["go_state"] = False
-        debug_info["follow_gait_gate_triggered"] = True
-    else:
-        debug_info["follow_gait_gate_triggered"] = False
-    debug_info["follow_gait_gate_far_override"] = bool(gap_ctrl is not None and gap_ctrl > upper_bound)
-        
-    original_cmd = float(trans_x_cmd)
-    
-    # Force hold state override
-    if not state["go_state"]:
-        trans_x_cmd = 0.0
-        
-    # 4. Pacing on vx -- LEAN ON THE FLOOR-CREEP (do NOT command catch-up bursts in normal follow).
-    #    Verified from the fall-diag logs: with vx=0 and no stance-lock the frozen policy still
-    #    FLOOR-CREEPS forward at ~0.5 m/s, which already matches the ~0.5 m/s patient. But ANY
-    #    commanded forward advance gets over-run by the policy into a ~1.2 m/s "run" that overshoots
-    #    the person, loses the lock at close range, and falls. So:
-    #      * catch-up (go_state True, gap > follow_pace_distance): the leader has genuinely walked
-    #        far ahead -- command at least the floor to close the gap. The brief run happens in open
-    #        space (no overlap risk) and the stop-ramp bleeds it as the gap closes back in.
-    #      * follow (go_state True, gap <= follow_pace_distance): command ZERO and let the intrinsic
-    #        creep hold the gap (heading still steers toward the person). No burst -> no run.
-    #      * hold (go_state False): command zero. Whether this becomes a stance-lock is decided
-    #        downstream by the GAP (too-close), NOT here -- see hold gating in the main loop.
-    pace_cap_active = False
-    pace_hold_active = False
-
-    state["last_time"] = time.perf_counter()
-    state["pace_timer"] = 0.0
-
-    trot_kp = float(getattr(args, "follow_trot_speed_kp", 0.0))
-    if trot_kp > 0.0 and state["go_state"] and gap_ctrl is not None:
-        # Dynamic pace-matching follow (creepless walker, e.g. PGTT). PGTT does NOT
-        # self-creep on a zero command, so the old lean-on-creep STOPPED the dog whenever
-        # the person was within pace-distance (stop/start cycling, run_20260620_172239).
-        # A pure proportional trot fixed the stopping but, being P-only, trailed the
-        # MOVING person by a steady-state lag (~1.2-1.5 m at target 0.45 m). So FEED
-        # FORWARD the leader's measured speed -> the dog matches the person's pace and the
-        # proportional term then only has to close to the standoff, so the gap settles at
-        # ~standoff instead of far behind. Eases to 0 when the person stops and the gap is
-        # closed; clamped to the speed limit. Parkour keeps the creep via --follow-trot-speed-kp 0.
-        trot = float(leader_speed_clamped) + trot_kp * (float(gap_ctrl) - float(standoff))
-        trans_x_cmd = float(np.clip(trot, 0.0, float(args.trans_x_max)))
-        state["pace_state"] = "trot"
-        pace_cap_active = True
-    elif state["go_state"] and gap_ctrl is not None and gap_ctrl > args.follow_pace_distance:
-        # Catch-up (parkour creep mode, trot_kp=0): leader GENUINELY far ahead -> command
-        # the floor so the policy actually moves; the intrinsic ~0.5 m/s creep holds otherwise.
-        state["pace_state"] = "advance"
-        trans_x_cmd = max(float(trans_x_cmd), float(args.follow_pace_floor_speed))
-        pace_cap_active = True
-    else:
-        # Creep mode (trot_kp=0, e.g. parkour) / too-close / hold: lean on the policy's
-        # intrinsic creep; never command forward. trans_x_cmd is already zero in the hold case.
-        state["pace_state"] = "creep"
-        trans_x_cmd = 0.0
-        
-    # Populate debug info
-    debug_info["fused_gap_m"] = float(gap_m)
-    debug_info["follow_standoff_gate_active"] = not state["go_state"]
-    debug_info["pace_state"] = state["pace_state"]
-    debug_info["pace_cap_active"] = pace_cap_active
-    debug_info["pace_hold_active"] = pace_hold_active
-    debug_info["follow_standoff_trans_x_before"] = original_cmd
-
-    return float(trans_x_cmd)
-
-
-def _update_carrot_heading(
-    args,
-    trail: List[List[float]],
-    gap_m: float,
-    bearing_rad: float,
-    leader_speed_mps: float,
-    standoff_m: float,
-    ego_dx: float,
-    ego_dyaw: float,
-) -> Optional[float]:
-    """Body-frame breadcrumb follower (Method 1, opt-in via --carrot-follow).
-
-    Maintains ``trail`` -- a FIFO of the person's position in the robot's CURRENT body frame
-    (x forward, y left), newest last -- and returns the heading (rad, policy yaw convention where
-    +left, matching ``-radians(rotation_error_deg)``) to the trail point one ``standoff`` BEHIND the
-    newest sample. Steering at that point makes the robot follow the person's PATH rather than
-    pointing straight at them, so it does not cut the inside of a turn toward them. Returns None to
-    fall back to the direct bearing when the leader is too slow or the trail is shorter than the
-    standoff (a stationary person yields a degenerate trail).
-
-    Registration caveats (documented, opt-in v1): the robot's body yaw rate is NOT observable
-    controller-side (the frozen policy self-steers and ignores the wz command), so pass
-    ``ego_dyaw=0.0`` unless a real estimate exists; and the policy over-runs the forward command, so
-    ``ego_dx`` (built from the commanded speed) under-estimates true travel. The trail is kept short
-    (arc-length capped) and the heading is slew-limited downstream, which bounds these errors.
-    """
-    # 1. Re-register stored points into the current body frame (undo this frame's ego-motion).
-    if trail:
-        c = float(np.cos(-ego_dyaw))
-        s = float(np.sin(-ego_dyaw))
-        for p in trail:
-            x = p[0] - ego_dx
-            y = p[1]
-            p[0] = c * x - s * y
-            p[1] = s * x + c * y
-    # 2. Append the current detection.
-    trail.append([float(gap_m) * float(np.cos(bearing_rad)),
-                  float(gap_m) * float(np.sin(bearing_rad))])
-    # 3. Cap the trail by arc length (drop the oldest beyond carrot_trail_len_m).
-    max_len = max(0.1, float(args.carrot_trail_len_m))
-    acc = 0.0
-    cut = 0
-    for i in range(len(trail) - 1, 0, -1):
-        acc += float(np.hypot(trail[i][0] - trail[i - 1][0], trail[i][1] - trail[i - 1][1]))
-        if acc > max_len:
-            cut = i
-            break
-    if cut > 0:
-        del trail[:cut]
-    # 4. Quality gate: need an actual path to follow.
-    if leader_speed_mps < float(args.carrot_min_leader_speed) or len(trail) < 2:
-        return None
-    # 5. Walk back one standoff along the trail and interpolate the carrot point.
-    cfg_standoff = float(args.carrot_standoff_m)
-    target = cfg_standoff if cfg_standoff > 0.0 else float(standoff_m)
-    if target <= 0.0:
-        return None
-    acc = 0.0
-    for i in range(len(trail) - 1, 0, -1):
-        seg = float(np.hypot(trail[i][0] - trail[i - 1][0], trail[i][1] - trail[i - 1][1]))
-        if acc + seg >= target:
-            t = (target - acc) / seg if seg > 1e-6 else 0.0
-            cx = trail[i][0] + t * (trail[i - 1][0] - trail[i][0])
-            cy = trail[i][1] + t * (trail[i - 1][1] - trail[i][1])
-            return float(np.arctan2(cy, cx))
-        acc += seg
-    return None  # trail shorter than the standoff -> fall back to the direct bearing
-
-
-class _AsyncPreviewWorker:
-    """Runs OpenCV preview rendering in a dedicated thread."""
-
-    def __init__(self, enabled: bool, show_rotation_debug: bool):
-        self._enabled = bool(enabled)
-        self._show_rotation_debug = bool(show_rotation_debug)
-        self._frame_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=1)
-        self._event_queue: "queue.Queue[str]" = queue.Queue()
-        self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._rotation_debug = RotationDebugWindow() if self._show_rotation_debug else None
-        self._dropped_frames = 0
-        self._window_name = "TensorRT Detections"
-
-    @property
-    def dropped_frames(self) -> int:
-        return int(self._dropped_frames)
-
-    def start(self) -> None:
-        if not self._enabled or self._thread is not None:
-            return
-        self._thread = threading.Thread(target=self._run, name="preview-worker", daemon=True)
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop_event.set()
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-            self._thread = None
-
-    def submit(self, frame, rotation_error_deg, rotation_cmd,
-               rotation_tolerance, edge_penalty) -> None:
-        if not self._enabled:
-            return
-        payload: Dict[str, Any] = {
-            "frame": frame,
-            "rotation_error_deg": float(rotation_error_deg),
-            "rotation_cmd": float(rotation_cmd),
-            "rotation_tolerance": float(rotation_tolerance),
-            "edge_penalty": float(edge_penalty),
-        }
-        try:
-            self._frame_queue.put_nowait(payload)
-            return
-        except queue.Full:
-            pass
-        try:
-            _ = self._frame_queue.get_nowait()
-            self._dropped_frames += 1
-        except queue.Empty:
-            pass
-        try:
-            self._frame_queue.put_nowait(payload)
-        except queue.Full:
-            self._dropped_frames += 1
-
-    def poll_events(self) -> List[str]:
-        events: List[str] = []
-        while True:
-            try:
-                events.append(self._event_queue.get_nowait())
-            except queue.Empty:
-                break
-        return events
-
-    def _run(self) -> None:
-        while not self._stop_event.is_set():
-            payload: Optional[Dict[str, Any]] = None
-            try:
-                payload = self._frame_queue.get(timeout=0.03)
-            except queue.Empty:
-                payload = None
-            try:
-                if payload is not None:
-                    cv2.imshow(self._window_name, payload["frame"])
-                    if self._rotation_debug is not None:
-                        self._rotation_debug.render(
-                            payload["rotation_error_deg"],
-                            payload["rotation_cmd"],
-                            payload["rotation_tolerance"],
-                            payload["edge_penalty"],
-                        )
-                key = cv2.waitKey(1) & 0xFF
-            except Exception:
-                self._event_queue.put("preview_error")
-                self._stop_event.set()
-                break
-            if key == ord('q'):
-                self._event_queue.put("quit")
-            elif key == ord('p'):
-                self._event_queue.put("toggle_preparation")
-        try:
-            cv2.destroyWindow(self._window_name)
-        except Exception:
-            pass
-        if self._rotation_debug is not None:
-            try:
-                cv2.destroyWindow(self._rotation_debug.window_name)
-            except Exception:
-                pass
-
-
 def main():
+    """Controller entry point and per-frame loop.
+
+    Wires up the camera, detectors, tracker, follower and logging, then runs the
+    capture -> detect -> track -> follow -> command-dispatch pipeline each frame
+    (delegating policy shaping to core.control.* and rendering to core.hud.*)
+    until Isaac stops sending frames or the run time limit is reached.
+    """
     args = parse_args()
 
     debug_trace = DebugTraceLogger(
@@ -791,9 +220,6 @@ def main():
             cable={"follow": {"camera_intrinsics": camera_intrinsics}},
         ),
     )
-    frame_width   = float(camera_intrinsics.get('width', 0))
-    frame_center_x = frame_width / 2.0 if frame_width > 0 else 0.0
-
     person_following_config = PersonFollowingConfig(
         trans_x_kp=args.kp,
         trans_x_ki=args.ki,
@@ -822,21 +248,12 @@ def main():
         edge_penalty_k=args.edge_penalty_k,
         size_penalty_k=args.size_penalty_k,
         large_bbox_threshold=args.large_bbox_thresh,
-        follow_standoff_speed_gain=args.follow_standoff_speed_gain,
-        follow_standoff_band_in=args.follow_standoff_band_in,
-        follow_standoff_band_out=args.follow_standoff_band_out,
-        follow_gait_gate=args.follow_gait_gate,
         follow_gait_history_len=args.follow_gait_history_len,
         follow_gait_walk_threshold=args.follow_gait_walk_threshold,
-        follow_pace_distance=args.follow_pace_distance,
-        follow_pace_speed=args.follow_pace_speed,
-        follow_pace_advance_time=args.follow_pace_advance_time,
-        follow_pace_settle_time=args.follow_pace_settle_time,
     )
     person_follower = PersonFollower(person_following_config, yolo)
 
     preparation_mode     = False
-    last_depth_error_m   = 0.0
     last_rotation_error_deg = 0.0
     motion_lock_streak   = 0
     motion_lock_frames   = max(1, int(args.motion_lock_frames))
@@ -851,10 +268,6 @@ def main():
     last_valid_target_track_id: Optional[int] = None
     last_valid_target_debug: Optional[Dict[str, Any]] = None
     last_snapshot_log_ts     = 0.0
-    last_target_gate_signature: Optional[Tuple[Any, ...]] = None
-    last_target_gate_log_ts  = 0.0
-    last_payload_warning_signature: Optional[Tuple[Optional[int], str]] = None
-    last_payload_warning_ts  = 0.0
     lost_timeout_alerted = False
 
     # ------------------------------------------------------------------
@@ -1105,7 +518,7 @@ def main():
             yolo_stairs.update_frame(img)
 
             preprocess_start_ts = time.perf_counter()
-            input_tensor_np, r, pad_top, pad_left = yolo.preprocess(img)
+            input_tensor_np, letterbox_scale, pad_top, pad_left = yolo.preprocess(img)
             stage_ms["preprocess"] = (time.perf_counter() - preprocess_start_ts) * 1000.0
 
             infer_start_ts = time.perf_counter()
@@ -1141,11 +554,11 @@ def main():
             for det in trt_dets:
                 det_scaled = det.copy()
                 bbox = np.array(det['bbox'], dtype=np.float32).reshape(2, 2)
-                bbox = yolo.scale_coords_pad(bbox, r, pad_left, pad_top, img.shape[:2])
+                bbox = yolo.scale_coords_pad(bbox, letterbox_scale, pad_left, pad_top, img.shape[:2])
                 det_scaled['bbox'] = bbox.flatten()
                 if det_scaled.get('keypoints') is not None:
                     kpts = np.array(det_scaled['keypoints'], dtype=np.float32)
-                    kpts = yolo.scale_coords_pad(kpts, r, pad_left, pad_top, img.shape[:2])
+                    kpts = yolo.scale_coords_pad(kpts, letterbox_scale, pad_left, pad_top, img.shape[:2])
                     det_scaled['keypoints'] = kpts
                 trt_dets_scaled.append(det_scaled)
 
@@ -1274,11 +687,6 @@ def main():
             debug_info["pose_infer_done_mono"] = pose_infer_done_ts
             debug_info["stairs_result_ts_unix"] = stairs_result.get("ts_unix")
             debug_info["stairs_result_ts_mono"] = stairs_result.get("ts_monotonic")
-            depth_m = debug_info.get('depth_distance_m')
-            if depth_m is not None:
-                last_depth_error_m = float(depth_m) - float(
-                    person_follower.config.target_distance
-                )
             rot_err = debug_info.get('rotation_error_deg')
             if rot_err is not None:
                 last_rotation_error_deg = float(rot_err)

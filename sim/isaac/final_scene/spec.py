@@ -187,8 +187,6 @@ class FinalSceneSpec:
     patient_spawn_xy: Vec2 = (-2.1, -1.2)
     # The Hospital floor mesh can visually sit a little above the physics floor.
     # Keep the patient root clear of that surface in final_scene only.
-    patient_floor_clearance_m: float = 0.08
-
     # ---- realistic staircase ----
     stair: StairVisualSpec = field(default_factory=StairVisualSpec)
     staircase_prim_path: str = "/World/FinalScene/StaircaseVisual"
@@ -212,7 +210,6 @@ class FinalSceneSpec:
     def validate(self) -> "FinalSceneSpec":
         s = self.stair
         assert s.step_height_m > 0.0 and s.step_depth_m > 0.0 and s.step_count > 0
-        assert self.patient_floor_clearance_m >= 0.0
         assert self.verification_camera_focal_length_mm > 0.0
         keys = set()
         roles = set()

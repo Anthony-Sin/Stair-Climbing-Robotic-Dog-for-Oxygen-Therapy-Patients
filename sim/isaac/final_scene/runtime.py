@@ -74,7 +74,7 @@ def stair_half_width(spec: FinalSceneSpec = SPEC) -> float:
 
 
 def person_pose_z(base_z: float, spec: FinalSceneSpec = SPEC) -> float:
-    return float(base_z) + float(spec.patient_floor_clearance_m)
+    return float(base_z)
 
 
 def patient_spawn_log_fields(x: float, y: float, z: float, spec: FinalSceneSpec = SPEC) -> dict:
@@ -82,7 +82,6 @@ def patient_spawn_log_fields(x: float, y: float, z: float, spec: FinalSceneSpec 
         "person_x": float(x),
         "person_y": float(y),
         "person_z": float(z),
-        "floor_clearance_m": float(spec.patient_floor_clearance_m),
     }
 
 

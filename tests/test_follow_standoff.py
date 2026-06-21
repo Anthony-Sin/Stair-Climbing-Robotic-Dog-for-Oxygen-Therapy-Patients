@@ -5,21 +5,21 @@ import sys
 import os
 from unittest.mock import MagicMock
 
-# Add core path
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core"))
+# Repo root on sys.path for `core.*` imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Mock hardware dependencies for offline unit testing
+# Mock hardware dependencies for offline unit testing (keyed by their new module paths)
 sys.modules['tensorrt'] = MagicMock()
-sys.modules['trt_inference'] = MagicMock()
-sys.modules['yolo_pose_inference'] = MagicMock()
-sys.modules['yolo_stairs_inference'] = MagicMock()
+sys.modules['core.vision.trt_inference'] = MagicMock()
+sys.modules['core.vision.yolo_pose_inference'] = MagicMock()
+sys.modules['core.vision.yolo_stairs_inference'] = MagicMock()
 sys.modules['yolox'] = MagicMock()
 sys.modules['yolox.tracker'] = MagicMock()
 sys.modules['yolox.tracker.byte_tracker'] = MagicMock()
 sys.modules['ecs_logging'] = MagicMock()
 
-from gait_estimator import GaitEstimator
-from main import _apply_follow_standoff_policy
+from core.control.gait_estimator import GaitEstimator
+from core.main import _apply_follow_standoff_policy
 
 class MockArgs:
     def __init__(self):
@@ -287,7 +287,7 @@ class TestFollowStandoff(unittest.TestCase):
         self.assertTrue(debug_info["follow_standoff_gate_active"])
 
     def test_stair_collision_block_has_complete_telemetry(self):
-        from main import _apply_stair_command_policy
+        from core.main import _apply_stair_command_policy
 
         args = MockArgs()
         args.stair_near_distance = 0.6
@@ -370,7 +370,7 @@ class TestFollowStandoff(unittest.TestCase):
         }
         
         # Call stair policy
-        from main import _apply_stair_command_policy
+        from core.main import _apply_stair_command_policy
         tx, rot = _apply_stair_command_policy(args, 0.0, 0.25, debug_info_stairs)
         
         # Stair policy suggests moving forward at the floor speed (0.35) due to brief loss

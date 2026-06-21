@@ -16,7 +16,7 @@ try:
 except ImportError:
     SportClient = None
 
-from structured_logging import build_ecs_extra
+from core.telemetry.structured_logging import build_ecs_extra
 
 LOGGER = logging.getLogger("cable.vision.robot_controller")
 

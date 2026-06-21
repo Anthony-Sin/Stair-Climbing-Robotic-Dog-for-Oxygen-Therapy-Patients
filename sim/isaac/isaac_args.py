@@ -71,6 +71,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "room to establish cruise-speed following before the stairs.")
     parser.add_argument("--person-move", action="store_true",
                         help="Make the person walk a simple patrol path")
+    parser.add_argument("--patient-physics", action="store_true", default=True,
+                        help="(Default ON) The patient is a dynamic MJCF physics humanoid. "
+                             "The legacy kinematic capsule patient has been removed, so this is "
+                             "now the only patient mode; the flag is kept for launcher compatibility.")
     parser.add_argument("--frame-host", type=str, default='0.0.0.0',
                         help="Destination IP for camera frame UDP (WSL2 IP if running vision in WSL)")
     parser.add_argument("--log-dir", type=str, default=str(REPO_ROOT / "log"),

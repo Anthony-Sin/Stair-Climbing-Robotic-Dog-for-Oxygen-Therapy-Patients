@@ -41,6 +41,7 @@ param(
     [switch]$WithO2Payload,
     [switch]$Headless,
     [switch]$FastRender,
+    [switch]$PatientPhysics,
     [switch]$WarmIsaac,
     [string]$WarmCommandFile = "",
     [int]$WarmMaxRuns = 10,
@@ -94,7 +95,8 @@ Write-ConsoleLog "  Isaac JSONL events:  $(Join-Path $DebugDir 'isaac_env.jsonl'
 Write-ConsoleLog "  Isaac Sim dir:       $IsaacSimDir"
 Write-ConsoleLog "  Frame target:        ${FrameHost}:${FramePort}"
 Write-ConsoleLog "  Command receiver:    0.0.0.0:${CmdPort}"
-Write-ConsoleLog "  Locomotion policy:   parkour (depth/vision)"
+Write-ConsoleLog "  Locomotion policy:   $LocomotionPolicy (base walk/stand)"
+Write-ConsoleLog "  Climb handoff:       $HandoffClimbBackend (stair-climb backend)"
 Write-ConsoleLog "  Parkour heading:     $ParkourHeadingMode"
 Write-ConsoleLog "  Parkour person mask: $(-not $NoParkourPersonMask)"
 Write-ConsoleLog "  Parkour mask fill:   $ParkourMaskFill"
@@ -222,7 +224,13 @@ if ($WithO2Payload) {
     Write-ConsoleLog "  O2 payload:          ON (oxygen tank + mounting rails attached to the Go2)"
 }
 
-$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" $personArgs --go2-x $Go2X --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera $rawArg $locomotionArgs $validationCamArg $selfTestArg $warmArg $benchArg $handoffArg $waypointArg $o2Arg > `"$RawLog`" 2>&1`""
+$patientPhysicsArg = ""
+if ($PatientPhysics) {
+    $patientPhysicsArg = "--patient-physics"
+    Write-ConsoleLog "  Patient physics:     ON (dynamic biped articulation enabled)"
+}
+
+$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" $personArgs --go2-x $Go2X --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera $rawArg $locomotionArgs $validationCamArg $selfTestArg $warmArg $benchArg $handoffArg $waypointArg $o2Arg $patientPhysicsArg > `"$RawLog`" 2>&1`""
 
 # Start the process with direct OS redirection to prevent pipeline blocking
 $process = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs -PassThru -NoNewWindow

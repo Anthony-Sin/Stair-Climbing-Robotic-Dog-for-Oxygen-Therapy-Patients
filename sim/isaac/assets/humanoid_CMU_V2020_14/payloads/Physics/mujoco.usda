@@ -1,0 +1,1850 @@
+#usda 1.0
+(
+    customLayerData = {
+        string creator = "MuJoCo USD Converter v0.2.0"
+    }
+    defaultPrim = "humanoid_CMU"
+    doc = """Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\tmptfjsv4ks\\humanoid_CMU.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\mjcf_import_humanoid_CMU_V2020_jfzn6jw5\\usdex_humanoid_CMU_V2020\\humanoid_CMU.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\mjcf_import_humanoid_CMU_V2020_jfzn6jw5\\temp_humanoid_CMU_V2020\\humanoid_CMU_V2020.usd
+
+
+Generated from Composed Stage of root layer C:\\Users\\antho\\Downloads\\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\\sim\\isaac\\assets\\humanoid_CMU_V2020_14\\payloads\\base.usd
+"""
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    subLayers = [
+        @./physics.usda@
+    ]
+    upAxis = "Z"
+)
+
+over "humanoid_CMU"
+{
+    over "Geometry"
+    {
+        over "root"
+        {
+            over "root_geom" (
+                prepend apiSchemas = ["MjcCollisionAPI"]
+            )
+            {
+                uniform int mjc:condim = 1
+                uniform int mjc:group = 2
+                uniform double[] mjc:solimp = [0.99, 0.99, 0.003, 0.5, 2]
+                uniform double[] mjc:solref = [0.015, 1]
+            }
+
+            over "root" (
+                prepend apiSchemas = ["MjcSiteAPI"]
+            )
+            {
+            }
+
+            over "lhipjoint"
+            {
+                over "lhipjoint" (
+                    prepend apiSchemas = ["MjcCollisionAPI"]
+                )
+                {
+                    uniform int mjc:condim = 1
+                    uniform int mjc:group = 2
+                    uniform double[] mjc:solimp = [0.99, 0.99, 0.003, 0.5, 2]
+                    uniform double[] mjc:solref = [0.015, 1]
+                }
+
+                over "lfemur"
+                {
+                    over "lfemur_upper" (
+                        prepend apiSchemas = ["MjcCollisionAPI"]
+                    )
+                    {
+                        uniform int mjc:condim = 1
+                        uniform int mjc:group = 2
+                        uniform double[] mjc:solimp = [0.99, 0.99, 0.003, 0.5, 2]
+                        uniform double[] mjc:solref = [0.015, 1]
+                    }
+
+                    over "lfemur" (
+                        prepend apiSchemas = ["MjcCollisionAPI"]
+                    )
+                    {
+                        uniform int mjc:condim = 1
+                        uniform int mjc:group = 2
+                        uniform double[] mjc:solimp = [0.99, 0.99, 0.003, 0.5, 2]
+                        uniform double[] mjc:solref = [0.015, 1]
+                    }
+
+                    over "ltibia"
+                    {
+                        over "ltibia" (
+                            prepend apiSchemas = ["MjcCollisionAPI"]
+                        )
+                        {
+                            uniform int mjc:condim = 1
+                            uniform int mjc:group = 2
+                            uniform double[] mjc:solimp = [0.99, 0.99, 0.003, 0.5, 2]
+                            uniform double[] mjc:solref = [0.015, 1]
+                        }
+
+                        over "lfoot"
+                        {
+                            over "lfoot" (
+                                prepend apiSchemas = ["MjcCollisionAPI"]
+                            )
+                            {
+                                uniform int mjc:group = 2
+                                uniform int mjc:priority = 1
+                                uniform double[] mjc:solimp = [0.98, 0.98, 0.001, 0.5, 2]
+                                uniform double[] mjc:solref = [0.015, 1]
+                            }
+
+                            over "lfoot_ch" (
+                                prepend apiSchemas = ["MjcCollisionAPI"]
+                            )
+                            {
+                                uniform int mjc:group = 2
+                                uniform int mjc:priority = 1
+                                uniform double[] mjc:solimp = [0.98, 0.98, 0.001, 0.5, 2]
+                                uniform double[] mjc:solref = [0.015, 1]
+                            }
+
+                            over "lfoot_touch" (
+                                prepend apiSchemas = ["MjcSiteAPI"]
+                            )
+                            {
+                                uniform int mjc:group = 4
+                            }
+
+                            over "ltoes"
+                            {
+                                over "ltoes0" (
+                                    prepend apiSchemas = ["MjcCollisionAPI"]
+                                )
+                                {
+                                    uniform int mjc:group = 2
+                                    uniform int mjc:priority = 1
+                                    uniform double[] mjc:solimp = [0.98, 0.98, 0.001, 0.5, 2]
+                                    uniform double[] mjc:solref = [0.015, 1]
+                                }
+
+                                over "ltoes1" (
+                                    prepend apiSchemas = ["MjcCollisionAPI"]
+                                )
+                                {
+                                    uniform int mjc:group = 2
+                                    uniform int mjc:priority = 1
+                                    uniform double[] mjc:solimp = [0.98, 0.98, 0.001, 0.5, 2]
+                                    uniform double[] mjc:solref = [0.015, 1]
+                                }
+
+                                over "ltoes2" (
+                                    prepend apiSchemas = ["MjcCollisionAPI"]
+                                )
+                                {
+                                    uniform int mjc:group = 2
+                                    uniform int mjc:priority = 1
+                                    uniform double[] mjc:solimp = [0.98, 0.98, 0.001, 0.5, 2]
+                                    uniform double[] mjc:solref = [0.015, 1]
+                                }
+
+                                over "ltoes_touch" (
+                                    prepend apiSchemas = ["MjcSiteAPI"]
+                                )
+                                {
+                                    uniform int mjc:group = 4
+                                }
+
+                                over "ltoesrx" (
+                                    delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                    prepend apiSchemas = ["MjcJointAPI"]
+                                )
+                                {
+                                    uniform double mjc:armature = 0.01
+                                    uniform double mjc:damping = 1
+                                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                    uniform double mjc:stiffness = 1
+                                }
+                            }
+
+                            over "lfootrz" (
+                                delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                prepend apiSchemas = ["MjcJointAPI"]
+                            )
+                            {
+                                uniform double mjc:armature = 0.01
+                                uniform double mjc:damping = 2
+                                uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                uniform double mjc:stiffness = 10
+                            }
+
+                            over "lfootrx" (
+                                delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                prepend apiSchemas = ["MjcJointAPI"]
+                            )
+                            {
+                                uniform double mjc:armature = 0.01
+                                uniform double mjc:damping = 2
+                                uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                uniform double mjc:stiffness = 10
+                            }
+                        }
+
+                        over "ltibiarx" (
+                            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                            prepend apiSchemas = ["MjcJointAPI"]
+                        )
+                        {
+                            uniform double mjc:armature = 0.01
+                            uniform double mjc:damping = 1
+                            uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                            uniform double mjc:stiffness = 1
+                        }
+                    }
+
+                    over "lfemurrz" (
+                        delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                        prepend apiSchemas = ["MjcJointAPI"]
+                    )
+                    {
+                        uniform double mjc:armature = 0.01
+                        uniform double mjc:damping = 2
+                        uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                        uniform double mjc:stiffness = 10
+                    }
+
+                    over "lfemurry" (
+                        delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                        prepend apiSchemas = ["MjcJointAPI"]
+                    )
+                    {
+                        uniform double mjc:armature = 0.01
+                        uniform double mjc:damping = 2
+                        uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                        uniform double mjc:stiffness = 10
+                    }
+
+                    over "lfemurrx" (
+                        delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                        prepend apiSchemas = ["MjcJointAPI"]
+                    )
+                    {
+                        uniform double mjc:armature = 0.01
+                        uniform double mjc:damping = 2
+                        uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                        uniform double mjc:stiffness = 10
+                    }
+                }
+
+                over "PhysicsFixedJoint"
+                {
+                }
+            }
+
+            over "rhipjoint"
+            {
+                over "rhipjoint" (
+                    prepend apiSchemas = ["MjcCollisionAPI"]
+                )
+                {
+                    uniform int mjc:condim = 1
+                    uniform int mjc:group = 2
+                    uniform double[] mjc:solimp = [0.99, 0.99, 0.003, 0.5, 2]
+                    uniform double[] mjc:solref = [0.015, 1]
+                }
+
+                over "rfemur"
+                {
+                    over "rfemur_upper" (
+                        prepend apiSchemas = ["MjcCollisionAPI"]
+                    )
+                    {
+                        uniform int mjc:condim = 1
+                        uniform int mjc:group = 2
+                        uniform double[] mjc:solimp = [0.99, 0.99, 0.003, 0.5, 2]
+                        uniform double[] mjc:solref = [0.015, 1]
+                    }
+
+                    over "rfemur" (
+                        prepend apiSchemas = ["MjcCollisionAPI"]
+                    )
+                    {
+                        uniform int mjc:condim = 1
+                        uniform int mjc:group = 2
+                        uniform double[] mjc:solimp = [0.99, 0.99, 0.003, 0.5, 2]
+                        uniform double[] mjc:solref = [0.015, 1]
+                    }
+
+                    over "rtibia"
+                    {
+                        over "rtibia" (
+                            prepend apiSchemas = ["MjcCollisionAPI"]
+                        )
+                        {
+                            uniform int mjc:condim = 1
+                            uniform int mjc:group = 2
+                            uniform double[] mjc:solimp = [0.99, 0.99, 0.003, 0.5, 2]
+                            uniform double[] mjc:solref = [0.015, 1]
+                        }
+
+                        over "rfoot"
+                        {
+                            over "rfoot" (
+                                prepend apiSchemas = ["MjcCollisionAPI"]
+                            )
+                            {
+                                uniform int mjc:group = 2
+                                uniform int mjc:priority = 1
+                                uniform double[] mjc:solimp = [0.98, 0.98, 0.001, 0.5, 2]
+                                uniform double[] mjc:solref = [0.015, 1]
+                            }
+
+                            over "rfoot_ch" (
+                                prepend apiSchemas = ["MjcCollisionAPI"]
+                            )
+                            {
+                                uniform int mjc:group = 2
+                                uniform int mjc:priority = 1
+                                uniform double[] mjc:solimp = [0.98, 0.98, 0.001, 0.5, 2]
+                                uniform double[] mjc:solref = [0.015, 1]
+                            }
+
+                            over "rfoot_touch" (
+                                prepend apiSchemas = ["MjcSiteAPI"]
+                            )
+                            {
+                                uniform int mjc:group = 4
+                            }
+
+                            over "rtoes"
+                            {
+                                over "rtoes0" (
+                                    prepend apiSchemas = ["MjcCollisionAPI"]
+                                )
+                                {
+                                    uniform int mjc:group = 2
+                                    uniform int mjc:priority = 1
+                                    uniform double[] mjc:solimp = [0.98, 0.98, 0.001, 0.5, 2]
+                                    uniform double[] mjc:solref = [0.015, 1]
+                                }
+
+                                over "rtoes1" (
+                                    prepend apiSchemas = ["MjcCollisionAPI"]
+                                )
+                                {
+                                    uniform int mjc:group = 2
+                                    uniform int mjc:priority = 1
+                                    uniform double[] mjc:solimp = [0.98, 0.98, 0.001, 0.5, 2]
+                                    uniform double[] mjc:solref = [0.015, 1]
+                                }
+
+                                over "rtoes2" (
+                                    prepend apiSchemas = ["MjcCollisionAPI"]
+                                )
+                                {
+                                    uniform int mjc:group = 2
+                                    uniform int mjc:priority = 1
+                                    uniform double[] mjc:solimp = [0.98, 0.98, 0.001, 0.5, 2]
+                                    uniform double[] mjc:solref = [0.015, 1]
+                                }
+
+                                over "rtoes_touch" (
+                                    prepend apiSchemas = ["MjcSiteAPI"]
+                                )
+                                {
+                                    uniform int mjc:group = 4
+                                }
+
+                                over "rtoesrx" (
+                                    delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                    prepend apiSchemas = ["MjcJointAPI"]
+                                )
+                                {
+                                    uniform double mjc:armature = 0.01
+                                    uniform double mjc:damping = 1
+                                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                    uniform double mjc:stiffness = 1
+                                }
+                            }
+
+                            over "rfootrz" (
+                                delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                prepend apiSchemas = ["MjcJointAPI"]
+                            )
+                            {
+                                uniform double mjc:armature = 0.01
+                                uniform double mjc:damping = 2
+                                uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                uniform double mjc:stiffness = 10
+                            }
+
+                            over "rfootrx" (
+                                delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                prepend apiSchemas = ["MjcJointAPI"]
+                            )
+                            {
+                                uniform double mjc:armature = 0.01
+                                uniform double mjc:damping = 2
+                                uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                uniform double mjc:stiffness = 10
+                            }
+                        }
+
+                        over "rtibiarx" (
+                            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                            prepend apiSchemas = ["MjcJointAPI"]
+                        )
+                        {
+                            uniform double mjc:armature = 0.01
+                            uniform double mjc:damping = 1
+                            uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                            uniform double mjc:stiffness = 1
+                        }
+                    }
+
+                    over "rfemurrz" (
+                        delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                        prepend apiSchemas = ["MjcJointAPI"]
+                    )
+                    {
+                        uniform double mjc:armature = 0.01
+                        uniform double mjc:damping = 2
+                        uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                        uniform double mjc:stiffness = 10
+                    }
+
+                    over "rfemurry" (
+                        delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                        prepend apiSchemas = ["MjcJointAPI"]
+                    )
+                    {
+                        uniform double mjc:armature = 0.01
+                        uniform double mjc:damping = 2
+                        uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                        uniform double mjc:stiffness = 10
+                    }
+
+                    over "rfemurrx" (
+                        delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                        prepend apiSchemas = ["MjcJointAPI"]
+                    )
+                    {
+                        uniform double mjc:armature = 0.01
+                        uniform double mjc:damping = 2
+                        uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                        uniform double mjc:stiffness = 10
+                    }
+                }
+
+                over "PhysicsFixedJoint"
+                {
+                }
+            }
+
+            over "lowerback"
+            {
+                over "lowerback" (
+                    prepend apiSchemas = ["MjcCollisionAPI"]
+                )
+                {
+                    uniform int mjc:condim = 1
+                    uniform int mjc:group = 2
+                    uniform double[] mjc:solimp = [0.99, 0.99, 0.003, 0.5, 2]
+                    uniform double[] mjc:solref = [0.015, 1]
+                }
+
+                over "upperback"
+                {
+                    over "upperback" (
+                        prepend apiSchemas = ["MjcCollisionAPI"]
+                    )
+                    {
+                        uniform int mjc:condim = 1
+                        uniform int mjc:group = 2
+                        uniform double[] mjc:solimp = [0.99, 0.99, 0.003, 0.5, 2]
+                        uniform double[] mjc:solref = [0.015, 1]
+                    }
+
+                    over "thorax"
+                    {
+                        over "thorax" (
+                            prepend apiSchemas = ["MjcCollisionAPI"]
+                        )
+                        {
+                            uniform int mjc:condim = 1
+                            uniform int mjc:group = 2
+                            uniform double[] mjc:solimp = [0.99, 0.99, 0.003, 0.5, 2]
+                            uniform double[] mjc:solref = [0.015, 1]
+                        }
+
+                        over "lowerneck"
+                        {
+                            over "lowerneck" (
+                                prepend apiSchemas = ["MjcCollisionAPI"]
+                            )
+                            {
+                                uniform int mjc:condim = 1
+                                uniform int mjc:group = 2
+                                uniform double[] mjc:solimp = [0.99, 0.99, 0.003, 0.5, 2]
+                                uniform double[] mjc:solref = [0.015, 1]
+                            }
+
+                            over "upperneck"
+                            {
+                                over "upperneck" (
+                                    prepend apiSchemas = ["MjcCollisionAPI"]
+                                )
+                                {
+                                    uniform int mjc:condim = 1
+                                    uniform int mjc:group = 2
+                                    uniform double[] mjc:solimp = [0.99, 0.99, 0.003, 0.5, 2]
+                                    uniform double[] mjc:solref = [0.015, 1]
+                                }
+
+                                over "head"
+                                {
+                                    over "head" (
+                                        prepend apiSchemas = ["MjcCollisionAPI"]
+                                    )
+                                    {
+                                        uniform int mjc:condim = 1
+                                        uniform int mjc:group = 2
+                                        uniform double[] mjc:solimp = [0.99, 0.99, 0.003, 0.5, 2]
+                                        uniform double[] mjc:solref = [0.015, 1]
+                                    }
+
+                                    over "headrz" (
+                                        delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                        prepend apiSchemas = ["MjcJointAPI"]
+                                    )
+                                    {
+                                        uniform double mjc:armature = 0.01
+                                        uniform double mjc:damping = 4
+                                        uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                        uniform double mjc:stiffness = 50
+                                    }
+
+                                    over "headry" (
+                                        delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                        prepend apiSchemas = ["MjcJointAPI"]
+                                    )
+                                    {
+                                        uniform double mjc:armature = 0.01
+                                        uniform double mjc:damping = 4
+                                        uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                        uniform double mjc:stiffness = 50
+                                    }
+
+                                    over "headrx" (
+                                        delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                        prepend apiSchemas = ["MjcJointAPI"]
+                                    )
+                                    {
+                                        uniform double mjc:armature = 0.01
+                                        uniform double mjc:damping = 4
+                                        uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                        uniform double mjc:stiffness = 50
+                                    }
+                                }
+
+                                over "upperneckrz" (
+                                    delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                    prepend apiSchemas = ["MjcJointAPI"]
+                                )
+                                {
+                                    uniform double mjc:armature = 0.01
+                                    uniform double mjc:damping = 4
+                                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                    uniform double mjc:stiffness = 50
+                                }
+
+                                over "upperneckry" (
+                                    delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                    prepend apiSchemas = ["MjcJointAPI"]
+                                )
+                                {
+                                    uniform double mjc:armature = 0.01
+                                    uniform double mjc:damping = 4
+                                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                    uniform double mjc:stiffness = 50
+                                }
+
+                                over "upperneckrx" (
+                                    delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                    prepend apiSchemas = ["MjcJointAPI"]
+                                )
+                                {
+                                    uniform double mjc:armature = 0.01
+                                    uniform double mjc:damping = 4
+                                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                    uniform double mjc:stiffness = 50
+                                }
+                            }
+
+                            over "lowerneckrz" (
+                                delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                prepend apiSchemas = ["MjcJointAPI"]
+                            )
+                            {
+                                uniform double mjc:armature = 0.01
+                                uniform double mjc:damping = 4
+                                uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                uniform double mjc:stiffness = 50
+                            }
+
+                            over "lowerneckry" (
+                                delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                prepend apiSchemas = ["MjcJointAPI"]
+                            )
+                            {
+                                uniform double mjc:armature = 0.01
+                                uniform double mjc:damping = 4
+                                uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                uniform double mjc:stiffness = 50
+                            }
+
+                            over "lowerneckrx" (
+                                delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                prepend apiSchemas = ["MjcJointAPI"]
+                            )
+                            {
+                                uniform double mjc:armature = 0.01
+                                uniform double mjc:damping = 4
+                                uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                uniform double mjc:stiffness = 50
+                            }
+                        }
+
+                        over "lclavicle"
+                        {
+                            over "lclavicle" (
+                                prepend apiSchemas = ["MjcCollisionAPI"]
+                            )
+                            {
+                                uniform int mjc:condim = 1
+                                uniform int mjc:group = 2
+                                uniform double[] mjc:solimp = [0.99, 0.99, 0.003, 0.5, 2]
+                                uniform double[] mjc:solref = [0.015, 1]
+                            }
+
+                            over "lhumerus"
+                            {
+                                over "lhumerus" (
+                                    prepend apiSchemas = ["MjcCollisionAPI"]
+                                )
+                                {
+                                    uniform int mjc:condim = 1
+                                    uniform int mjc:group = 2
+                                    uniform double[] mjc:solimp = [0.99, 0.99, 0.003, 0.5, 2]
+                                    uniform double[] mjc:solref = [0.015, 1]
+                                }
+
+                                over "lhumerus_ft" (
+                                    prepend apiSchemas = ["MjcSiteAPI"]
+                                )
+                                {
+                                    uniform int mjc:group = 4
+                                }
+
+                                over "lradius"
+                                {
+                                    over "lradius" (
+                                        prepend apiSchemas = ["MjcCollisionAPI"]
+                                    )
+                                    {
+                                        uniform int mjc:condim = 1
+                                        uniform int mjc:group = 2
+                                        uniform double[] mjc:solimp = [0.99, 0.99, 0.003, 0.5, 2]
+                                        uniform double[] mjc:solref = [0.015, 1]
+                                    }
+
+                                    over "lwrist" (
+                                        prepend apiSchemas = ["MjcSiteAPI"]
+                                    )
+                                    {
+                                    }
+
+                                    over "lwrist_1"
+                                    {
+                                        over "lwrist" (
+                                            prepend apiSchemas = ["MjcCollisionAPI"]
+                                        )
+                                        {
+                                            uniform int mjc:condim = 1
+                                            uniform int mjc:group = 2
+                                            uniform double[] mjc:solimp = [0.99, 0.99, 0.003, 0.5, 2]
+                                            uniform double[] mjc:solref = [0.015, 1]
+                                        }
+
+                                        over "lhand"
+                                        {
+                                            over "lfingers"
+                                            {
+                                                over "lfinger0" (
+                                                    prepend apiSchemas = ["MjcCollisionAPI"]
+                                                )
+                                                {
+                                                    uniform int mjc:group = 2
+                                                    uniform int mjc:priority = 1
+                                                    uniform double[] mjc:solimp = [0.98, 0.98, 0.001, 0.5, 2]
+                                                    uniform double[] mjc:solref = [0.015, 1]
+                                                }
+
+                                                over "lfinger1" (
+                                                    prepend apiSchemas = ["MjcCollisionAPI"]
+                                                )
+                                                {
+                                                    uniform int mjc:group = 2
+                                                    uniform int mjc:priority = 1
+                                                    uniform double[] mjc:solimp = [0.98, 0.98, 0.001, 0.5, 2]
+                                                    uniform double[] mjc:solref = [0.015, 1]
+                                                }
+
+                                                over "lfinger2" (
+                                                    prepend apiSchemas = ["MjcCollisionAPI"]
+                                                )
+                                                {
+                                                    uniform int mjc:group = 2
+                                                    uniform int mjc:priority = 1
+                                                    uniform double[] mjc:solimp = [0.98, 0.98, 0.001, 0.5, 2]
+                                                    uniform double[] mjc:solref = [0.015, 1]
+                                                }
+
+                                                over "lfinger3" (
+                                                    prepend apiSchemas = ["MjcCollisionAPI"]
+                                                )
+                                                {
+                                                    uniform int mjc:group = 2
+                                                    uniform int mjc:priority = 1
+                                                    uniform double[] mjc:solimp = [0.98, 0.98, 0.001, 0.5, 2]
+                                                    uniform double[] mjc:solref = [0.015, 1]
+                                                }
+
+                                                over "lfingers_touch" (
+                                                    prepend apiSchemas = ["MjcSiteAPI"]
+                                                )
+                                                {
+                                                    uniform int mjc:group = 4
+                                                }
+
+                                                over "lfingersrx" (
+                                                    delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                                    prepend apiSchemas = ["MjcJointAPI"]
+                                                )
+                                                {
+                                                    uniform double mjc:armature = 0.01
+                                                    uniform double mjc:damping = 1
+                                                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                                    uniform double mjc:stiffness = 1
+                                                }
+                                            }
+
+                                            over "lthumb"
+                                            {
+                                                over "lthumb" (
+                                                    prepend apiSchemas = ["MjcCollisionAPI"]
+                                                )
+                                                {
+                                                    uniform int mjc:group = 2
+                                                    uniform int mjc:priority = 1
+                                                    uniform double[] mjc:solimp = [0.98, 0.98, 0.001, 0.5, 2]
+                                                    uniform double[] mjc:solref = [0.015, 1]
+                                                }
+
+                                                over "lthumb_touch" (
+                                                    prepend apiSchemas = ["MjcSiteAPI"]
+                                                )
+                                                {
+                                                    uniform int mjc:group = 4
+                                                }
+
+                                                over "lthumbrz" (
+                                                    delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                                    prepend apiSchemas = ["MjcJointAPI"]
+                                                )
+                                                {
+                                                    uniform double mjc:armature = 0.01
+                                                    uniform double mjc:damping = 1
+                                                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                                    uniform double mjc:stiffness = 1
+                                                }
+
+                                                over "lthumbrx" (
+                                                    delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                                    prepend apiSchemas = ["MjcJointAPI"]
+                                                )
+                                                {
+                                                    uniform double mjc:armature = 0.01
+                                                    uniform double mjc:damping = 1
+                                                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                                    uniform double mjc:stiffness = 1
+                                                }
+                                            }
+
+                                            over "lhandrz" (
+                                                delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                                prepend apiSchemas = ["MjcJointAPI"]
+                                            )
+                                            {
+                                                uniform double mjc:armature = 0.01
+                                                uniform double mjc:damping = 1
+                                                uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                                uniform double mjc:stiffness = 1
+                                            }
+
+                                            over "lhandrx" (
+                                                delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                                prepend apiSchemas = ["MjcJointAPI"]
+                                            )
+                                            {
+                                                uniform double mjc:armature = 0.01
+                                                uniform double mjc:damping = 1
+                                                uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                                uniform double mjc:stiffness = 1
+                                            }
+                                        }
+
+                                        over "lwristry" (
+                                            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                            prepend apiSchemas = ["MjcJointAPI"]
+                                        )
+                                        {
+                                            uniform double mjc:armature = 0.01
+                                            uniform double mjc:damping = 1
+                                            uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                            uniform double mjc:stiffness = 1
+                                        }
+                                    }
+
+                                    over "lradiusrx" (
+                                        delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                        prepend apiSchemas = ["MjcJointAPI"]
+                                    )
+                                    {
+                                        uniform double mjc:armature = 0.01
+                                        uniform double mjc:damping = 1
+                                        uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                        uniform double mjc:stiffness = 1
+                                    }
+                                }
+
+                                over "lhumerusrz" (
+                                    delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                    prepend apiSchemas = ["MjcJointAPI"]
+                                )
+                                {
+                                    uniform double mjc:armature = 0.01
+                                    uniform double mjc:damping = 2
+                                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                    uniform double mjc:stiffness = 10
+                                }
+
+                                over "lhumerusry" (
+                                    delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                    prepend apiSchemas = ["MjcJointAPI"]
+                                )
+                                {
+                                    uniform double mjc:armature = 0.01
+                                    uniform double mjc:damping = 2
+                                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                    uniform double mjc:stiffness = 10
+                                }
+
+                                over "lhumerusrx" (
+                                    delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                    prepend apiSchemas = ["MjcJointAPI"]
+                                )
+                                {
+                                    uniform double mjc:armature = 0.01
+                                    uniform double mjc:damping = 2
+                                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                    uniform double mjc:stiffness = 10
+                                }
+                            }
+
+                            over "lclaviclerz" (
+                                delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                prepend apiSchemas = ["MjcJointAPI"]
+                            )
+                            {
+                                uniform double mjc:armature = 0.01
+                                uniform double mjc:damping = 5
+                                uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                uniform double mjc:stiffness = 200
+                            }
+
+                            over "lclaviclery" (
+                                delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                prepend apiSchemas = ["MjcJointAPI"]
+                            )
+                            {
+                                uniform double mjc:armature = 0.01
+                                uniform double mjc:damping = 5
+                                uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                uniform double mjc:stiffness = 200
+                            }
+                        }
+
+                        over "rclavicle"
+                        {
+                            over "rclavicle" (
+                                prepend apiSchemas = ["MjcCollisionAPI"]
+                            )
+                            {
+                                uniform int mjc:condim = 1
+                                uniform int mjc:group = 2
+                                uniform double[] mjc:solimp = [0.99, 0.99, 0.003, 0.5, 2]
+                                uniform double[] mjc:solref = [0.015, 1]
+                            }
+
+                            over "rhumerus"
+                            {
+                                over "rhumerus" (
+                                    prepend apiSchemas = ["MjcCollisionAPI"]
+                                )
+                                {
+                                    uniform int mjc:condim = 1
+                                    uniform int mjc:group = 2
+                                    uniform double[] mjc:solimp = [0.99, 0.99, 0.003, 0.5, 2]
+                                    uniform double[] mjc:solref = [0.015, 1]
+                                }
+
+                                over "rhumerus_ft" (
+                                    prepend apiSchemas = ["MjcSiteAPI"]
+                                )
+                                {
+                                    uniform int mjc:group = 4
+                                }
+
+                                over "rradius"
+                                {
+                                    over "rradius" (
+                                        prepend apiSchemas = ["MjcCollisionAPI"]
+                                    )
+                                    {
+                                        uniform int mjc:condim = 1
+                                        uniform int mjc:group = 2
+                                        uniform double[] mjc:solimp = [0.99, 0.99, 0.003, 0.5, 2]
+                                        uniform double[] mjc:solref = [0.015, 1]
+                                    }
+
+                                    over "rwrist"
+                                    {
+                                        over "rwrist" (
+                                            prepend apiSchemas = ["MjcCollisionAPI"]
+                                        )
+                                        {
+                                            uniform int mjc:condim = 1
+                                            uniform int mjc:group = 2
+                                            uniform double[] mjc:solimp = [0.99, 0.99, 0.003, 0.5, 2]
+                                            uniform double[] mjc:solref = [0.015, 1]
+                                        }
+
+                                        over "rhand"
+                                        {
+                                            over "rfingers"
+                                            {
+                                                over "rfinger0" (
+                                                    prepend apiSchemas = ["MjcCollisionAPI"]
+                                                )
+                                                {
+                                                    uniform int mjc:group = 2
+                                                    uniform int mjc:priority = 1
+                                                    uniform double[] mjc:solimp = [0.98, 0.98, 0.001, 0.5, 2]
+                                                    uniform double[] mjc:solref = [0.015, 1]
+                                                }
+
+                                                over "rfinger1" (
+                                                    prepend apiSchemas = ["MjcCollisionAPI"]
+                                                )
+                                                {
+                                                    uniform int mjc:group = 2
+                                                    uniform int mjc:priority = 1
+                                                    uniform double[] mjc:solimp = [0.98, 0.98, 0.001, 0.5, 2]
+                                                    uniform double[] mjc:solref = [0.015, 1]
+                                                }
+
+                                                over "rfinger2" (
+                                                    prepend apiSchemas = ["MjcCollisionAPI"]
+                                                )
+                                                {
+                                                    uniform int mjc:group = 2
+                                                    uniform int mjc:priority = 1
+                                                    uniform double[] mjc:solimp = [0.98, 0.98, 0.001, 0.5, 2]
+                                                    uniform double[] mjc:solref = [0.015, 1]
+                                                }
+
+                                                over "rfinger3" (
+                                                    prepend apiSchemas = ["MjcCollisionAPI"]
+                                                )
+                                                {
+                                                    uniform int mjc:group = 2
+                                                    uniform int mjc:priority = 1
+                                                    uniform double[] mjc:solimp = [0.98, 0.98, 0.001, 0.5, 2]
+                                                    uniform double[] mjc:solref = [0.015, 1]
+                                                }
+
+                                                over "rfingers_touch" (
+                                                    prepend apiSchemas = ["MjcSiteAPI"]
+                                                )
+                                                {
+                                                    uniform int mjc:group = 4
+                                                }
+
+                                                over "rfingersrx" (
+                                                    delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                                    prepend apiSchemas = ["MjcJointAPI"]
+                                                )
+                                                {
+                                                    uniform double mjc:armature = 0.01
+                                                    uniform double mjc:damping = 1
+                                                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                                    uniform double mjc:stiffness = 1
+                                                }
+                                            }
+
+                                            over "rthumb"
+                                            {
+                                                over "rthumb" (
+                                                    prepend apiSchemas = ["MjcCollisionAPI"]
+                                                )
+                                                {
+                                                    uniform int mjc:group = 2
+                                                    uniform int mjc:priority = 1
+                                                    uniform double[] mjc:solimp = [0.98, 0.98, 0.001, 0.5, 2]
+                                                    uniform double[] mjc:solref = [0.015, 1]
+                                                }
+
+                                                over "rthumb_touch" (
+                                                    prepend apiSchemas = ["MjcSiteAPI"]
+                                                )
+                                                {
+                                                    uniform int mjc:group = 4
+                                                }
+
+                                                over "rthumbrz" (
+                                                    delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                                    prepend apiSchemas = ["MjcJointAPI"]
+                                                )
+                                                {
+                                                    uniform double mjc:armature = 0.01
+                                                    uniform double mjc:damping = 1
+                                                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                                    uniform double mjc:stiffness = 1
+                                                }
+
+                                                over "rthumbrx" (
+                                                    delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                                    prepend apiSchemas = ["MjcJointAPI"]
+                                                )
+                                                {
+                                                    uniform double mjc:armature = 0.01
+                                                    uniform double mjc:damping = 1
+                                                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                                    uniform double mjc:stiffness = 1
+                                                }
+                                            }
+
+                                            over "rhandrz" (
+                                                delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                                prepend apiSchemas = ["MjcJointAPI"]
+                                            )
+                                            {
+                                                uniform double mjc:armature = 0.01
+                                                uniform double mjc:damping = 1
+                                                uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                                uniform double mjc:stiffness = 1
+                                            }
+
+                                            over "rhandrx" (
+                                                delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                                prepend apiSchemas = ["MjcJointAPI"]
+                                            )
+                                            {
+                                                uniform double mjc:armature = 0.01
+                                                uniform double mjc:damping = 1
+                                                uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                                uniform double mjc:stiffness = 1
+                                            }
+                                        }
+
+                                        over "rwristry" (
+                                            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                            prepend apiSchemas = ["MjcJointAPI"]
+                                        )
+                                        {
+                                            uniform double mjc:armature = 0.01
+                                            uniform double mjc:damping = 1
+                                            uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                            uniform double mjc:stiffness = 1
+                                        }
+                                    }
+
+                                    over "rradiusrx" (
+                                        delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                        prepend apiSchemas = ["MjcJointAPI"]
+                                    )
+                                    {
+                                        uniform double mjc:armature = 0.01
+                                        uniform double mjc:damping = 1
+                                        uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                        uniform double mjc:stiffness = 1
+                                    }
+                                }
+
+                                over "rhumerusrz" (
+                                    delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                    prepend apiSchemas = ["MjcJointAPI"]
+                                )
+                                {
+                                    uniform double mjc:armature = 0.01
+                                    uniform double mjc:damping = 2
+                                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                    uniform double mjc:stiffness = 10
+                                }
+
+                                over "rhumerusry" (
+                                    delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                    prepend apiSchemas = ["MjcJointAPI"]
+                                )
+                                {
+                                    uniform double mjc:armature = 0.01
+                                    uniform double mjc:damping = 2
+                                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                    uniform double mjc:stiffness = 10
+                                }
+
+                                over "rhumerusrx" (
+                                    delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                    prepend apiSchemas = ["MjcJointAPI"]
+                                )
+                                {
+                                    uniform double mjc:armature = 0.01
+                                    uniform double mjc:damping = 2
+                                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                    uniform double mjc:stiffness = 10
+                                }
+                            }
+
+                            over "rclaviclerz" (
+                                delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                prepend apiSchemas = ["MjcJointAPI"]
+                            )
+                            {
+                                uniform double mjc:armature = 0.01
+                                uniform double mjc:damping = 5
+                                uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                uniform double mjc:stiffness = 200
+                            }
+
+                            over "rclaviclery" (
+                                delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                                prepend apiSchemas = ["MjcJointAPI"]
+                            )
+                            {
+                                uniform double mjc:armature = 0.01
+                                uniform double mjc:damping = 5
+                                uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                uniform double mjc:stiffness = 200
+                            }
+                        }
+
+                        over "thoraxrz" (
+                            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                            prepend apiSchemas = ["MjcJointAPI"]
+                        )
+                        {
+                            uniform double mjc:armature = 0.01
+                            uniform double mjc:damping = 5
+                            uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                            uniform double mjc:stiffness = 200
+                        }
+
+                        over "thoraxry" (
+                            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                            prepend apiSchemas = ["MjcJointAPI"]
+                        )
+                        {
+                            uniform double mjc:armature = 0.01
+                            uniform double mjc:damping = 5
+                            uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                            uniform double mjc:stiffness = 200
+                        }
+
+                        over "thoraxrx" (
+                            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                            prepend apiSchemas = ["MjcJointAPI"]
+                        )
+                        {
+                            uniform double mjc:armature = 0.01
+                            uniform double mjc:damping = 2
+                            uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                            uniform double mjc:stiffness = 10
+                        }
+                    }
+
+                    over "upperbackrz" (
+                        delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                        prepend apiSchemas = ["MjcJointAPI"]
+                    )
+                    {
+                        uniform double mjc:armature = 0.01
+                        uniform double mjc:damping = 5
+                        uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                        uniform double mjc:stiffness = 200
+                    }
+
+                    over "upperbackry" (
+                        delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                        prepend apiSchemas = ["MjcJointAPI"]
+                    )
+                    {
+                        uniform double mjc:armature = 0.01
+                        uniform double mjc:damping = 5
+                        uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                        uniform double mjc:stiffness = 200
+                    }
+
+                    over "upperbackrx" (
+                        delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                        prepend apiSchemas = ["MjcJointAPI"]
+                    )
+                    {
+                        uniform double mjc:armature = 0.01
+                        uniform double mjc:damping = 2
+                        uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                        uniform double mjc:stiffness = 10
+                    }
+                }
+
+                over "lowerbackrz" (
+                    delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                    prepend apiSchemas = ["MjcJointAPI"]
+                )
+                {
+                    uniform double mjc:armature = 0.01
+                    uniform double mjc:damping = 5
+                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                    uniform double mjc:stiffness = 200
+                }
+
+                over "lowerbackry" (
+                    delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                    prepend apiSchemas = ["MjcJointAPI"]
+                )
+                {
+                    uniform double mjc:armature = 0.01
+                    uniform double mjc:damping = 5
+                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                    uniform double mjc:stiffness = 200
+                }
+
+                over "lowerbackrx" (
+                    delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                    prepend apiSchemas = ["MjcJointAPI"]
+                )
+                {
+                    uniform double mjc:armature = 0.01
+                    uniform double mjc:damping = 2
+                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                    uniform double mjc:stiffness = 10
+                }
+            }
+        }
+    }
+
+    over "Physics"
+    {
+        over "PhysicsMaterial" (
+            prepend apiSchemas = ["MjcMaterialAPI"]
+        )
+        {
+        }
+
+        over "PhysicsMaterial_1" (
+            prepend apiSchemas = ["MjcMaterialAPI"]
+        )
+        {
+        }
+
+        def MjcActuator "headrx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck/upperneck/head/headrx>
+        }
+
+        def MjcActuator "headry"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck/upperneck/head/headry>
+        }
+
+        def MjcActuator "headrz"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck/upperneck/head/headrz>
+        }
+
+        def MjcActuator "lclaviclery"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lclaviclery>
+        }
+
+        def MjcActuator "lclaviclerz"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lclaviclerz>
+        }
+
+        def MjcActuator "lfemurrx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [120, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lhipjoint/lfemur/lfemurrx>
+        }
+
+        def MjcActuator "lfemurry"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [40, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lhipjoint/lfemur/lfemurry>
+        }
+
+        def MjcActuator "lfemurrz"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [40, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lhipjoint/lfemur/lfemurrz>
+        }
+
+        def MjcActuator "lfingersrx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lradius/lwrist_1/lhand/lfingers/lfingersrx>
+        }
+
+        def MjcActuator "lfootrx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lhipjoint/lfemur/ltibia/lfoot/lfootrx>
+        }
+
+        def MjcActuator "lfootrz"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lhipjoint/lfemur/ltibia/lfoot/lfootrz>
+        }
+
+        def MjcActuator "lhandrx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lradius/lwrist_1/lhand/lhandrx>
+        }
+
+        def MjcActuator "lhandrz"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lradius/lwrist_1/lhand/lhandrz>
+        }
+
+        def MjcActuator "lhumerusrx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [40, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lhumerusrx>
+        }
+
+        def MjcActuator "lhumerusry"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [40, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lhumerusry>
+        }
+
+        def MjcActuator "lhumerusrz"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [40, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lhumerusrz>
+        }
+
+        def MjcActuator "lowerbackrx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [40, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/lowerbackrx>
+        }
+
+        def MjcActuator "lowerbackry"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [40, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/lowerbackry>
+        }
+
+        def MjcActuator "lowerbackrz"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [40, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/lowerbackrz>
+        }
+
+        def MjcActuator "lowerneckrx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck/lowerneckrx>
+        }
+
+        def MjcActuator "lowerneckry"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck/lowerneckry>
+        }
+
+        def MjcActuator "lowerneckrz"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck/lowerneckrz>
+        }
+
+        def MjcActuator "lradiusrx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [40, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lradius/lradiusrx>
+        }
+
+        def MjcActuator "lthumbrx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lradius/lwrist_1/lhand/lthumb/lthumbrx>
+        }
+
+        def MjcActuator "lthumbrz"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lradius/lwrist_1/lhand/lthumb/lthumbrz>
+        }
+
+        def MjcActuator "ltibiarx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [80, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lhipjoint/lfemur/ltibia/ltibiarx>
+        }
+
+        def MjcActuator "ltoesrx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lhipjoint/lfemur/ltibia/lfoot/ltoes/ltoesrx>
+        }
+
+        def MjcActuator "lwristry"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lradius/lwrist_1/lwristry>
+        }
+
+        def MjcActuator "rclaviclery"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rclaviclery>
+        }
+
+        def MjcActuator "rclaviclerz"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rclaviclerz>
+        }
+
+        def MjcActuator "rfemurrx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [120, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/rhipjoint/rfemur/rfemurrx>
+        }
+
+        def MjcActuator "rfemurry"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [40, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/rhipjoint/rfemur/rfemurry>
+        }
+
+        def MjcActuator "rfemurrz"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [40, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/rhipjoint/rfemur/rfemurrz>
+        }
+
+        def MjcActuator "rfingersrx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rradius/rwrist/rhand/rfingers/rfingersrx>
+        }
+
+        def MjcActuator "rfootrx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/rhipjoint/rfemur/rtibia/rfoot/rfootrx>
+        }
+
+        def MjcActuator "rfootrz"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/rhipjoint/rfemur/rtibia/rfoot/rfootrz>
+        }
+
+        def MjcActuator "rhandrx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rradius/rwrist/rhand/rhandrx>
+        }
+
+        def MjcActuator "rhandrz"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rradius/rwrist/rhand/rhandrz>
+        }
+
+        def MjcActuator "rhumerusrx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [40, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rhumerusrx>
+        }
+
+        def MjcActuator "rhumerusry"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [40, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rhumerusry>
+        }
+
+        def MjcActuator "rhumerusrz"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [40, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rhumerusrz>
+        }
+
+        def MjcActuator "rradiusrx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [40, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rradius/rradiusrx>
+        }
+
+        def MjcActuator "rthumbrx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rradius/rwrist/rhand/rthumb/rthumbrx>
+        }
+
+        def MjcActuator "rthumbrz"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rradius/rwrist/rhand/rthumb/rthumbrz>
+        }
+
+        def MjcActuator "rtibiarx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [80, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/rhipjoint/rfemur/rtibia/rtibiarx>
+        }
+
+        def MjcActuator "rtoesrx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/rhipjoint/rfemur/rtibia/rfoot/rtoes/rtoesrx>
+        }
+
+        def MjcActuator "rwristry"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rradius/rwrist/rwristry>
+        }
+
+        def MjcActuator "thoraxrx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [40, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/thoraxrx>
+        }
+
+        def MjcActuator "thoraxry"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [40, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/thoraxry>
+        }
+
+        def MjcActuator "thoraxrz"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [40, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/thoraxrz>
+        }
+
+        def MjcActuator "upperbackrx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [40, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/upperbackrx>
+        }
+
+        def MjcActuator "upperbackry"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [40, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/upperbackry>
+        }
+
+        def MjcActuator "upperbackrz"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [40, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/upperbackrz>
+        }
+
+        def MjcActuator "upperneckrx"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck/upperneck/upperneckrx>
+        }
+
+        def MjcActuator "upperneckry"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck/upperneck/upperneckry>
+        }
+
+        def MjcActuator "upperneckrz"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [20, 0, 0, 0, 0, 0]
+            custom rel mjc:target
+            prepend rel mjc:target = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck/upperneck/upperneckrz>
+        }
+    }
+
+    over "Materials"
+    {
+        over "self"
+        {
+        }
+    }
+}
+
+over "PhysicsScene" (
+    prepend apiSchemas = ["MjcSceneAPI"]
+)
+{
+    uniform token mjc:compiler:angle = "radian"
+    uniform bool mjc:flag:multiccd = 0
+}
+

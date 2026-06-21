@@ -21,8 +21,9 @@ import numpy as np
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "sim", "isaac"))
+sys.path.insert(0, REPO)  # go2_locomotion package lives at the repo root
 
-from locomotion.pgtt_stair_handoff import (  # noqa: E402
+from go2_locomotion.pgtt_stair_handoff import (  # noqa: E402
     StallDetector, DepthStairDetector, HandoffController, HandoffConfig, GO2_LEG_CLEARANCE_M,
 )
 

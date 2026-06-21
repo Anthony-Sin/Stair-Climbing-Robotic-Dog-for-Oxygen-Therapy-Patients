@@ -77,6 +77,7 @@ param(
     [double]$SimLatencyJitterMs = 0.0,
     [switch]$Headless,
     [switch]$FastRender,
+    [switch]$PatientPhysics,
     [switch]$WarmIsaac,
     [switch]$WarmShutdown,
     [int]$WarmMaxRuns = 10
@@ -1285,6 +1286,9 @@ if ($NoIsaac) {
     }
     if ($FinalScene) {
         $isaacArgs += "-FinalScene"
+    }
+    if ($PatientPhysics) {
+        $isaacArgs += "-PatientPhysics"
     }
     if ($SelfTestWalk) {
         $isaacArgs += "-SelfTestWalk"

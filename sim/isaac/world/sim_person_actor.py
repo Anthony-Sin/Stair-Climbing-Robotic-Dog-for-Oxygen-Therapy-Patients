@@ -25,7 +25,7 @@ except ModuleNotFoundError:
     from isaacsim.core.utils.prims import create_prim, is_prim_path_valid
     from isaacsim.core.utils.stage import add_reference_to_stage
     import isaacsim.storage.native as nucleus_utils
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, PhysxSchema
 from sim_logging_utils import log_event
 
 # UsdSkel animation-channel surgery and the walk-cadence constant were split
@@ -113,12 +113,19 @@ class SimPersonTarget:
     # Drives the rig's real hip/knee/ankle/shoulder/elbow/spine joints per frame;
     # replaces the old baked walk/idle SkelAnimation clip playback + switching.
     anim_controller: Any = None
+    # Discrete terrain-height fn (x, y) -> tread-top Z, used by the gait to place
+    # each foot ON the actual step instead of floating at a fixed depth below the
+    # ramp-following body. Optional; without it the gait uses its heuristic.
+    ground_height_fn: Optional[Callable[[float, float], float]] = None
     _skel_root_path: str = ""
     last_collider_warning_time: float = 0.0
     suppressed_collider_warnings: int = 0
     _last_moving_time: float = 0.0
+    patient_physics: bool = False
+    last_time: Optional[float] = None
+    patient_art: Any = None
 
-    def set_world_pose(
+    def drive_patient(
         self,
         position: np.ndarray,
         orientation: Optional[np.ndarray] = None,
@@ -126,67 +133,60 @@ class SimPersonTarget:
         roll_rad: float = 0.0,
         pitch_rad: float = 0.0,
         bob_z: float = 0.0,
+        current_time: Optional[float] = None,
     ) -> None:
-        """Place the visual + collider at ``position``.
+        """Advance the procedural gait and write its joint targets to the MJCF body.
 
-        ``roll_rad``/``pitch_rad`` and ``bob_z`` are VISUAL-ONLY climbing cues
-        (forward lean + per-footfall bob). They are applied to the rendered
-        mannequin only; the caller's ``position`` is what the collider tracks and
-        what the caller records as ground truth, so these never distort the GT.
+        Physics-only: this NEVER writes the patient root pose. The dynamic humanoid's
+        world motion is produced entirely by PhysX (pelvis velocity targets + joint PD
+        drives). ``position`` is the pelvis pose the caller already read from the
+        physical articulation; it is used only to estimate travel (the gait's moving
+        hint) and to ground-reference the feet. ``orientation``/``roll_rad``/
+        ``pitch_rad``/``bob_z`` are accepted for call-site stability and ignored.
         """
         position = np.asarray(position, dtype=float)
         if position.shape[0] < 3:
             position = np.array([float(position[0]), float(position[1]), 0.0], dtype=float)
 
-        if orientation is not None and len(orientation) >= 4:
-            qw, qx, qy, qz = orientation
-            self.yaw_rad = 2.0 * math.atan2(float(qz), float(qw))
-
         if self.last_position is not None:
             delta = position[:2] - self.last_position[:2]
             distance = float(np.linalg.norm(delta))
-            if distance > 1e-4:
-                if orientation is None or len(orientation) < 4:
-                    self.yaw_rad = math.atan2(float(delta[1]), float(delta[0]))
-                self.walk_phase += distance * 10.0
         else:
             distance = 0.0
-
         walking = distance > 5e-5
 
-        # Idle debounce: switch to walk instantly on motion, but only fall back to
-        # idle after PERSON_IDLE_DEBOUNCE_SEC of stillness so brief stops don't
-        # flip the clip back and forth (see PERSON_IDLE_DEBOUNCE_SEC note).
-        now = time.monotonic()
+        # Idle debounce on the SIMULATION clock (never wall-clock): switch to walk
+        # instantly on motion, but only fall back to idle after PERSON_IDLE_DEBOUNCE_SEC
+        # of stillness so brief stops don't flip the gait state back and forth.
+        now = float(current_time) if current_time is not None else (
+            self.last_time if self.last_time is not None else 0.0
+        )
         if walking:
             self._last_moving_time = now
             effective_walking = True
         else:
             effective_walking = (now - self._last_moving_time) < PERSON_IDLE_DEBOUNCE_SEC
 
-        _set_xform_pose(
-            self.visual_prim_path,
-            np.array(
-                [float(position[0]), float(position[1]), float(position[2]) + float(bob_z)],
-                dtype=float,
-            ),
-            self.yaw_rad + PERSON_VISUAL_FORWARD_YAW_OFFSET_RAD,
-            roll_rad=float(roll_rad),
-            pitch_rad=float(pitch_rad),
-        )
+        px, py_pos, pz = float(position[0]), float(position[1]), float(position[2])
 
-        # Drive the procedural limb-driven gait from the patient's real (x, y).
-        # The controller classifies terrain (flat vs stair), advances the gait
-        # phase from actual travel and applies the limb pose to the rig. The
-        # xform roll/pitch/bob above are the waypoint system's own visual cues and
-        # are left untouched; the skeleton adds the real arm/leg motion on top.
+        # Drive the procedural limb gait from the patient's real (x, y). The controller
+        # classifies terrain (flat vs stair), advances the gait phase from actual travel
+        # and emits a JointPose; we then write that pose onto the MJCF joint drives so
+        # PhysX moves the real limbs (and, through contact, plants the feet).
         if self.anim_controller is not None:
             try:
                 self.anim_controller.update(
-                    float(position[0]),
-                    float(position[1]),
+                    px,
+                    py_pos,
                     moving_hint=effective_walking,
+                    body_z=pz,
+                    ground_height_fn=self.ground_height_fn,
+                    current_time=current_time,
                 )
+                if self.patient_art is not None:
+                    pose = self.anim_controller._last_pose
+                    if pose is not None:
+                        self._write_joint_targets_from_pose(pose)
             except Exception as exc:
                 if self.logger is not None and not getattr(self, "_anim_update_err_logged", False):
                     self._anim_update_err_logged = True
@@ -198,36 +198,114 @@ class SimPersonTarget:
                         error=str(exc),
                     )
 
-        collider_center = np.array(
-            [
-                float(position[0]),
-                float(position[1]),
-                float(position[2]) + (self.collider_height_m * 0.5),
-            ],
-            dtype=float,
-        )
-        try:
-            collider_path = str(self.collider.prim.GetPath())
-            _set_xform_pose(collider_path, collider_center, self.yaw_rad)
-        except Exception as exc:
-            if self.logger is not None:
-                now = time.monotonic()
-                if now - self.last_collider_warning_time >= 5.0:
-                    fields: Dict[str, Any] = {"error": str(exc)}
-                    if self.suppressed_collider_warnings:
-                        fields["suppressed_count"] = int(self.suppressed_collider_warnings)
-                    log_event(
-                        self.logger,
-                        logging.WARNING,
-                        "person_collider_pose_failed",
-                        "Person collider pose update failed",
-                        **fields,
-                    )
-                    self.last_collider_warning_time = now
-                    self.suppressed_collider_warnings = 0
-                else:
-                    self.suppressed_collider_warnings += 1
         self.last_position = position.copy()
+        if current_time is not None:
+            self.last_time = float(current_time)
+
+    def _write_joint_targets_from_pose(self, pose: Any) -> None:
+        """Map a gait ``JointPose`` onto the CMU humanoid's joint position targets.
+
+        Joints not listed here are left at 0 (neutral) so their PD drives hold the
+        rest pose. Sign conventions match the CMU V2020 joint axes.
+        """
+        art = self.patient_art
+        targets = np.zeros(art.num_dof)
+        dof_map = {name: idx for idx, name in enumerate(art.dof_names)}
+
+        def _set(name: str, value: float) -> None:
+            idx = dof_map.get(name)
+            if idx is not None:
+                targets[idx] = float(value)
+
+        # hip / knee / ankle / toe
+        _set("lfemurrz:0", -pose.hip_l)
+        _set("rfemurrz:0", -pose.hip_r)
+        _set("ltibiarx", pose.knee_l)
+        _set("rtibiarx", pose.knee_r)
+        _set("lfootrz:0", -pose.ankle_l)
+        _set("rfootrz:0", -pose.ankle_r)
+        _set("ltoesrx", -pose.toe_l)
+        _set("rtoesrx", -pose.toe_r)
+        # arm + spine swing coupling
+        _set("lhumerusrz:0", pose.shoulder_l)
+        _set("rhumerusrz:0", pose.shoulder_r)
+        _set("lradiusrx", pose.elbow_l)
+        _set("rradiusrx", pose.elbow_r)
+        _set("lowerbackrz:0", pose.spine_pitch)
+
+        self._set_joint_position_targets(targets)
+
+    def _set_joint_position_targets(self, targets: np.ndarray) -> None:
+        if self.patient_art is None:
+            return
+        
+        # Try direct method set_joint_position_targets if available
+        for method_name in ("set_joint_position_targets", "set_joint_positions_to_apply"):
+            method = getattr(self.patient_art, method_name, None)
+            if callable(method):
+                try:
+                    method(targets)
+                    return
+                except Exception:
+                    pass
+                    
+        # Try controller method set_joint_position_targets
+        try:
+            controller = self.patient_art.get_articulation_controller()
+            if controller is not None:
+                controller.set_joint_position_targets(targets)
+                return
+        except Exception:
+            pass
+            
+        # Try apply_action
+        try:
+            try:
+                from omni.isaac.core.utils.types import ArticulationAction
+            except ModuleNotFoundError:
+                from isaacsim.core.utils.types import ArticulationAction
+            self.patient_art.apply_action(ArticulationAction(joint_positions=targets))
+            return
+        except Exception:
+            pass
+            
+        # Fallback to _articulation_view
+        try:
+            view = getattr(self.patient_art, "_articulation_view", None)
+            if view is not None:
+                view.set_joint_position_targets(targets)
+                return
+        except Exception:
+            pass
+
+    def set_gait_phase(self, val: float) -> None:
+        if self.anim_controller is not None:
+            try:
+                self.anim_controller.set_gait_phase(val)
+            except Exception:
+                pass
+
+    def initialize_physics_gains(self) -> None:
+        if not self.patient_physics or self.patient_art is None:
+            return
+        import numpy as np
+        art = self.patient_art
+        kps = np.zeros(art.num_dof)
+        kds = np.zeros(art.num_dof)
+        for idx, name in enumerate(art.dof_names):
+            if "femur" in name or "tibia" in name:
+                kps[idx] = 400.0
+                kds[idx] = 40.0
+            elif "foot" in name:
+                kps[idx] = 200.0
+                kds[idx] = 20.0
+            elif "toes" in name:
+                kps[idx] = 80.0
+                kds[idx] = 10.0
+            else:
+                kps[idx] = 100.0
+                kds[idx] = 10.0
+        art._articulation_view.set_gains(kps=kps, kds=kds)
 
     def ensure_animation_ready(self, world: Any, *, force_retry: bool = False) -> None:
         """Start the animation timeline so the bound procedural gait evaluates.
@@ -244,7 +322,7 @@ class SimPersonTarget:
         self.animation_setup_attempted = True
         self.animation_attempt_count += 1
 
-        _start_timeline_and_pump(world, logger=self.logger, attempt=self.animation_attempt_count)
+        _start_timeline_and_pump(world, logger=self.logger, attempt=self.animation_attempt_count, person=self)
 
         if self.anim_controller is None:
             raise RuntimeError(
@@ -402,8 +480,163 @@ def _find_first_skel_root(stage: Any, parent_path: str) -> Optional[Any]:
     return None
 
 
-# (standalone USD clip probing removed — Isaac People characters embed animations
-#  inside Biped_Setup.usd, not as separate clip files)
+def create_link(stage, path, mass, col_type=None, col_size=None, col_offset=None):
+    prim = stage.DefinePrim(path, "Xform")
+    UsdPhysics.RigidBodyAPI.Apply(prim)
+    mass_api = UsdPhysics.MassAPI.Apply(prim)
+    mass_api.CreateMassAttr().Set(float(mass))
+    
+    if col_type == "capsule":
+        r, h = col_size
+        cap = UsdGeom.Capsule.Define(stage, f"{path}/collider")
+        cap.CreateRadiusAttr().Set(float(r))
+        cap.CreateHeightAttr().Set(float(h))
+        cap.CreateAxisAttr().Set("Z")
+        UsdPhysics.CollisionAPI.Apply(cap.GetPrim())
+        if col_offset is not None:
+            cap.AddTranslateOp().Set(col_offset)
+    elif col_type == "sphere":
+        r = col_size
+        sph = UsdGeom.Sphere.Define(stage, f"{path}/collider")
+        sph.CreateRadiusAttr().Set(float(r))
+        UsdPhysics.CollisionAPI.Apply(sph.GetPrim())
+        if col_offset is not None:
+            sph.AddTranslateOp().Set(col_offset)
+    elif col_type == "box":
+        size = col_size
+        box = UsdGeom.Cube.Define(stage, f"{path}/collider")
+        box.CreateSizeAttr().Set(1.0)
+        box.AddScaleOp().Set(Gf.Vec3d(float(size[0]), float(size[1]), float(size[2])))
+        UsdPhysics.CollisionAPI.Apply(box.GetPrim())
+        if col_offset is not None:
+            box.AddTranslateOp().Set(col_offset)
+            
+    return prim
+
+def create_revolute_joint(stage, path, parent_path, child_path, parent_pos, child_pos, axis="Y"):
+    joint = UsdPhysics.RevoluteJoint.Define(stage, Sdf.Path(path))
+    joint.CreateBody0Rel().SetTargets([Sdf.Path(parent_path)])
+    joint.CreateBody1Rel().SetTargets([Sdf.Path(child_path)])
+    joint.CreateLocalPos0Attr().Set(Gf.Vec3f(parent_pos[0], parent_pos[1], parent_pos[2]))
+    joint.CreateLocalPos1Attr().Set(Gf.Vec3f(child_pos[0], child_pos[1], child_pos[2]))
+    joint.CreateAxisAttr().Set(axis)
+    
+    # Enable joint drive
+    drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), "angular")
+    drive.CreateStiffnessAttr().Set(600.0)
+    drive.CreateDampingAttr().Set(40.0)
+    drive.CreateMaxForceAttr().Set(1500.0)
+    drive.CreateTargetPositionAttr().Set(0.0)
+    return joint
+
+def build_patient_physics(stage, x, y, start_z=0.8742):
+    import urllib.request
+    import os
+    
+    # Path to assets folder
+    assets_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
+    os.makedirs(assets_dir, exist_ok=True)
+    xml_path = os.path.join(assets_dir, "humanoid_CMU_V2020.xml").replace("\\", "/")
+    
+    if not os.path.exists(xml_path):
+        url = "https://raw.githubusercontent.com/google-deepmind/dm_control/main/dm_control/locomotion/walkers/assets/humanoid_CMU_V2020.xml"
+        try:
+            urllib.request.urlretrieve(url, xml_path)
+        except Exception as e:
+            raise RuntimeError(f"Failed to download humanoid_CMU_V2020.xml from {url}: {e}")
+            
+    # Import MJCF
+    try:
+        import isaacsim.asset.importer.mjcf as mjcf_importer
+    except ModuleNotFoundError:
+        import omni.importer.mjcf as mjcf_importer
+        
+    importer = mjcf_importer.MJCFImporter()
+    config = mjcf_importer.MJCFImporterConfig()
+    config.mjcf_path = xml_path
+    config.fix_base = False
+    config.allow_self_collision = False
+    # Density override (~1062 kg/m^3) targets ~75 kg total body mass: the CMU XML
+    # geoms carry no explicit mass, so the importer derives each link's mass from
+    # its geom volume * this density. MuJoCo's default 1000 kg/m^3 gives ~70.6 kg.
+    config.link_density = 1062.0
+    
+    usd_path = importer.import_mjcf(config)
+    
+    root_path = "/World/PersonPhysics"
+    if stage.GetPrimAtPath(root_path).IsValid():
+        stage.RemovePrim(Sdf.Path(root_path))
+        
+    add_reference_to_stage(usd_path=usd_path, prim_path=root_path)
+    
+    prim = stage.GetPrimAtPath(root_path)
+    scale = 1.70 / 1.78
+    xform = UsdGeom.Xformable(prim)
+    
+    # Scale, rotate upright, and position
+    scale_op = None
+    rotate_op = None
+    translate_op = None
+    for op in xform.GetOrderedXformOps():
+        if op.GetOpType() == UsdGeom.XformOp.TypeScale:
+            scale_op = op
+        elif op.GetOpType() == UsdGeom.XformOp.TypeRotateX:
+            rotate_op = op
+        elif op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+            translate_op = op
+            
+    if scale_op is None:
+        scale_op = xform.AddScaleOp()
+    scale_op.Set(Gf.Vec3d(scale, scale, scale))
+    
+    if rotate_op is None:
+        rotate_op = xform.AddRotateXOp()
+    rotate_op.Set(90.0)
+    
+    if translate_op is None:
+        translate_op = xform.AddTranslateOp()
+    translate_op.Set(Gf.Vec3d(float(x), float(y), float(start_z)))
+    
+    # Apply a PhysX material to all contact bodies
+    material_path = f"{root_path}/ContactMaterial"
+    if not stage.GetPrimAtPath(material_path).IsValid():
+        material_prim = stage.DefinePrim(material_path, "Material")
+        physx_material = UsdPhysics.MaterialAPI.Apply(material_prim)
+        physx_material.CreateStaticFrictionAttr().Set(1.0)
+        physx_material.CreateDynamicFrictionAttr().Set(0.9)
+        physx_material.CreateRestitutionAttr().Set(0.0)
+    else:
+        material_prim = stage.GetPrimAtPath(material_path)
+        
+    for child in Usd.PrimRange(prim):
+        if child.HasAPI(UsdPhysics.CollisionAPI) or child.IsA(UsdGeom.Capsule) or child.IsA(UsdGeom.Sphere) or child.IsA(UsdGeom.Mesh):
+            try:
+                collision_api = UsdPhysics.CollisionAPI.Apply(child)
+                collision_api.GetPhysicsMaterialRel().SetTargets([Sdf.Path(material_path)])
+            except Exception:
+                try:
+                    child.CreateRelationship("physics:material").SetTargets([Sdf.Path(material_path)])
+                except Exception:
+                    pass
+        if child.IsA(UsdPhysics.Joint) or "Joint" in child.GetTypeName():
+            try:
+                drive_api = UsdPhysics.DriveAPI.Get(child, "angular")
+                if not drive_api.IsValid():
+                    drive_api = UsdPhysics.DriveAPI.Apply(child, "angular")
+                drive_api.CreateTypeAttr().Set("force")
+                drive_api.CreateTargetPositionAttr().Set(0.0)
+            except Exception:
+                pass
+                    
+    pelvis_prim = stage.GetPrimAtPath(f"{root_path}/Geometry/root")
+    return pelvis_prim
+
+def _drive_joint(stage, joint_path, angle_rad):
+    joint_prim = stage.GetPrimAtPath(joint_path)
+    if joint_prim.IsValid():
+        drive_api = UsdPhysics.DriveAPI.Get(joint_prim, "angular")
+        if drive_api.IsValid():
+            drive_api.GetTargetPositionAttr().Set(math.degrees(float(angle_rad)))
 
 
 def _resolve_character_with_clips(
@@ -720,7 +953,7 @@ _skel_root_path_cache: Dict[str, str] = {}  # {"path": skel_root_prim_path}
 _idle_clip_cache: Optional[str] = None
 
 
-def _start_timeline_and_pump(world: Any, *, logger: Optional[logging.Logger], attempt: int) -> None:
+def _start_timeline_and_pump(world: Any, *, logger: Optional[logging.Logger], attempt: int, person: Optional["SimPersonTarget"] = None) -> None:
     """Start the animation timeline and pump frames so UsdSkel evaluates the binding."""
     try:
         import omni.timeline
@@ -733,6 +966,14 @@ def _start_timeline_and_pump(world: Any, *, logger: Optional[logging.Logger], at
 
     import omni.kit.app
     for _ in range(20):
+        if person is not None:
+            try:
+                person.set_world_pose(
+                    person.last_position if person.last_position is not None else np.array([0.0, 0.0, 0.0]),
+                    current_time=0.0
+                )
+            except Exception:
+                pass
         try:
             world.step(render=False)
         except Exception:
@@ -747,6 +988,8 @@ def spawn_sim_person(
     logger: Optional[logging.Logger],
     *,
     stairs_provider: Optional[Callable[[], object]] = None,
+    ground_height_fn: Optional[Callable[[float, float], float]] = None,
+    patient_physics: bool = False,
 ) -> "SimPersonTarget":
     """Spawn the patient character with a procedural limb-driven gait.
 
@@ -810,33 +1053,81 @@ def spawn_sim_person(
 
     if anim_controller is None:
         raise RuntimeError("Animated person setup failed: procedural gait rig could not be initialized.")
-    anim_controller.reset((x, y))
+    anim_controller.reset((x, y), 0.0)
+    if patient_physics:
+        try:
+            from biped_anim.types import AnimStyle
+            flat_gait = anim_controller._gaits.get(AnimStyle.FLAT_WALK)
+            if flat_gait is not None:
+                flat_gait.params.stride_base_m = 1.22
+                flat_gait.params.stride_speed_gain_m = 0.20
+        except Exception as e:
+            if logger is not None:
+                log_event(logger, logging.WARNING, "person_stride_override_failed",
+                          "Failed to override patient stride parameters", error=str(e))
     # ------------------------------------------------------------------------------------
 
     collider_height_m = 1.70
 
-    class KinematicColliderWrapper:
-        def __init__(self, prim: Any) -> None:
-            self.prim = prim
+    patient_art = None
+    if patient_physics:
+        # Spawn the dynamic physical humanoid (Z offset computes feet 5 cm above floor)
+        pelvis_prim = build_patient_physics(world.stage, x, y, start_z=0.8742)
+        try:
+            from omni.isaac.core.articulations import Articulation
+        except ModuleNotFoundError:
+            from isaacsim.core.prims import SingleArticulation as Articulation
+        
+        patient_art = Articulation(
+            prim_path="/World/PersonPhysics",
+            name="patient_physics"
+        )
+        world.scene.add(patient_art)
+        
+        # Apply PhysxArticulationAPI to articulation root to support setting self collisions property
+        try:
+            from pxr import PhysxSchema
+            root_prim = stage.GetPrimAtPath("/World/PersonPhysics/Geometry/root")
+            if root_prim.IsValid():
+                PhysxSchema.PhysxArticulationAPI.Apply(root_prim)
+        except Exception:
+            pass
+            
+        # Disable self collisions on the returned prim
+        try:
+            patient_art.set_enabled_self_collisions(False)
+        except Exception as e:
+            if logger is not None:
+                log_event(logger, logging.WARNING, "person_self_collisions_failed",
+                          "Failed to disable self collisions via Articulation API", error=str(e))
+        
+        # Make visual mannequin mesh invisible
+        UsdGeom.Imageable(stage.GetPrimAtPath(PERSON_VISUAL_PRIM)).MakeInvisible()
+        
+        collider = None
+    else:
+        create_prim(
+            prim_path=PERSON_COLLIDER_PRIM,
+            prim_type="Capsule",
+            position=np.array([x, y, collider_height_m * 0.5], dtype=float),
+            attributes={
+                "radius": 0.24,
+                "height": collider_height_m - 2 * 0.24,
+                "axis": "Z",
+            },
+        )
+        collider_prim = world.stage.GetPrimAtPath(PERSON_COLLIDER_PRIM)
 
-    create_prim(
-        prim_path=PERSON_COLLIDER_PRIM,
-        prim_type="Capsule",
-        position=np.array([x, y, collider_height_m * 0.5], dtype=float),
-        attributes={
-            "radius": 0.24,
-            "height": collider_height_m - 2 * 0.24,
-            "axis": "Z",
-        },
-    )
-    collider_prim = world.stage.GetPrimAtPath(PERSON_COLLIDER_PRIM)
+        UsdPhysics.CollisionAPI.Apply(collider_prim)
+        rb_api = UsdPhysics.RigidBodyAPI.Apply(collider_prim)
+        rb_api.CreateKinematicEnabledAttr(True)
+        UsdGeom.Imageable(collider_prim).MakeInvisible()
 
-    UsdPhysics.CollisionAPI.Apply(collider_prim)
-    rb_api = UsdPhysics.RigidBodyAPI.Apply(collider_prim)
-    rb_api.CreateKinematicEnabledAttr(True)
-    UsdGeom.Imageable(collider_prim).MakeInvisible()
+        class KinematicColliderWrapper:
+            def __init__(self, prim: Any) -> None:
+                self.prim = prim
 
-    collider = KinematicColliderWrapper(collider_prim)
+        collider = KinematicColliderWrapper(collider_prim)
 
     target = SimPersonTarget(
         visual_prim_path=PERSON_VISUAL_PRIM,
@@ -846,6 +1137,9 @@ def spawn_sim_person(
         last_position=np.array([x, y, 0.0], dtype=float),
         _skel_root_path=skel_root_path,
         anim_controller=anim_controller,
+        ground_height_fn=ground_height_fn,
+        patient_physics=patient_physics,
+        patient_art=patient_art,
     )
 
     if logger is not None:
@@ -853,11 +1147,12 @@ def spawn_sim_person(
             logger,
             logging.INFO,
             "person_spawned",
-            "Spawned animated person visual with kinematic physics collider.",
+            "Spawned animated person visual with physics collider.",
             visual_prim_path=PERSON_VISUAL_PRIM,
             collider_prim_path=PERSON_COLLIDER_PRIM,
             character_asset=character_usd,
             skel_root_path=skel_root_path,
             animation="procedural_limb_driven_gait",
+            patient_physics=bool(patient_physics),
         )
     return target

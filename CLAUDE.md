@@ -163,6 +163,34 @@ Do NOT include directory trees, tech stack summaries, style guides, obvious best
 **LESSON:** The CSV is the LEAN leaderboard (top actionable runs + all successes). Full history is `archive.jsonl`. `unknown`/`not_recorded`/self-test/bench/instant-fall runs are archived but excluded by design (see `classify_run`). Use `python perf_tracker/update_table.py --rebuild` to re-derive the table from the archive.
 **WHY:** The leaderboard is intentionally filtered to actionable runs; the archive is the source of truth.
 
+**TRIGGER:** Adding a subpackage under `core/` (the Docker controller) whose name matches one under `sim/isaac/` (e.g. `perception`).
+**LESSON:** `sim/isaac/isaac_env.py` puts `core/` on the Isaac process `sys.path` AHEAD of `sim/isaac/`, so a same-named `core/` subpackage shadows the sim one and breaks Isaac's bare `from perception ... import` (Isaac dies before `world_ready`). Give core subpackages distinct names (core uses `vision`, NOT `perception`) and import core internals fully-qualified (`from core.<pkg>.<mod> import ...`).
+**WHY:** Both `core/` and `sim/isaac/` are on the Isaac `sys.path`; a bare same-named subpackage import resolves to whichever dir is first (`core/`), so Isaac can no longer find its own submodule.
+
+**TRIGGER:** Validating a `core/` change quickly via `run_sim.bat --headless`.
+**LESSON:** Pass `--max-run-time-sec 90` (+ set `NO_PAUSE=1`) to cap the run (~3 min vs ~10), and judge PASS/FAIL from `log/run_sim_*/logs/launcher.log` (Isaac `world_ready` + controller started + no `Traceback` in `debug/docker_run.log`), NOT the exit code. A capped run exits non-zero (container killed) and `summary` reports `failed`/`sim_gate` because the stair demo never completes — neither is a regression. Logs live under `log/`, not `run_logs/`.
+**WHY:** The launcher's timeout-kill returns non-zero and the completion gate can't be reached in a capped run, so the exit code/summary alone gives false failures.
+
+**TRIGGER:** Touching the patient gait phase clock (`biped_anim/locomotion_controller.py`), the patient VISUAL body Z (`_person_visual_z` / `_PERSON_VISUAL_Z_TAU` in `update_person_patrol`), or the ground fn passed to the gait (`spawn_sim_person(ground_height_fn=get_terrain_height)`).
+**LESSON:** The patient legs use FOOT-PLANTING IK (`biped_anim/foot_planting.py`). Two coupled invariants make the feet sit on the steps without skating: (1) the gait phase advances by distance-travelled/stride (never wall-clock) so the planted stance foot is world-fixed; (2) the VISUAL root rides the *smoothed DISCRETE tread* (`get_terrain_height`, eased by `_PERSON_VISUAL_Z_TAU`), NOT the smooth nosing ramp — the ramp sits above the treads and a foot cannot reach below the root, so a ramp-following body leaves the feet FLOATING. GT/recorded Z still uses the smooth ramp (`pz`); keep them decoupled. The gait ground-references each foot to `get_terrain_height` under it, so the body z and that fn must agree (both discrete).
+**WHY:** Float = body above the treads (feet can't reach down past the root). Skate = phase not distance-synced. Both are kinematic; break either and the symptom returns.
+
+**TRIGGER:** A limb animates the wrong way (mirrored/backward) after the foot-planting IK change.
+**LESSON:** The IK outputs the SAME anatomical `JointPose` angles (hip forward +, knee bend +) the old open-loop gait used, so the fix is still a one-line sign flip in `rig._CHANNEL_SIGNS` (`hip`/`knee`/`ankle`), NOT an IK-math change. Leg proportions are auto-measured from standing-pose FK (`rig._measure_leg_geometry`); if geometry can't be measured the gait silently falls back to the old open-loop swing (`biped_rig_ready` log `leg_mode`).
+**WHY:** Structure (planting, lift, stepping) is geometry-correct; only the rig's handedness (sign) is unknowable without a visual run.
+
+**TRIGGER:** Importing the locomotion policies / handoff for sim OR real.
+**LESSON:** They live in the repo-root `go2_locomotion/` package (moved out of `sim/isaac/locomotion/`), imported as `from go2_locomotion.X import ...` by BOTH the sim (`isaac_env.py`, with `REPO_ROOT` appended to `sys.path`) and the real ROS2 port. There are NO compat shims in the old location. A distinct top-level name (not `locomotion`) avoids the `core/` vs `sim/isaac/` shadowing trap.
+**WHY:** The real port must import the shared control code without a `sim/isaac` sys.path hack; one copy means the sim is the regression test for the real robot's policies.
+
+**TRIGGER:** Working on the real Go2 EDU deployment (`real/`), assuming it is empty/stale.
+**LESSON:** `real/` is the native-ROS2 port (Foxy): `real/ros2/` nodes (thin rclpy shells), `real/control/` (pure, host-tested: lowstate adapter, dual_policy_runner, lowcmd_builder+CRC, watchdog), `real/perception`, `real/logging`, `real/verification`. `unitree_sdk2` is confined to `real/ros2/sport_startup_node` (Motion-Switcher release) — everything else is pure ROS2 `/lowstate`->`/lowcmd`. The OLD `real/bot/` sdk2py-DDS controller is superseded; `ros2_ws/` Nav2 sidecar is **Humble**, this stack is **Foxy**.
+**WHY:** A lot already existed and the transport differs (native ROS2, not raw DDS); re-deriving it wastes time and risks regressions.
+
+**TRIGGER:** Reasoning about the `blind_rl` climb backend as if it climbs stairs.
+**LESSON:** `blind_rl` is the rl_sar `go2_robot_lab` policy (`sim/models/locomotion/go2_robot_lab_policy.pt`) — a GENERAL blind proprioceptive WALKER, NOT a stair-trained net. The follow + detect + handoff are solved; the ascent is genuinely unproven/best-effort. Do not represent it as a proven climber; a real blind-parkour net (DreamWaQ++-class) is unavailable.
+**WHY:** Overstating the climb capability misleads HIL planning; the dog reliably reaches the stairs but reliable climbing needs a policy that does not yet exist.
+
 ---
 
 ## 9. Testing & Verification

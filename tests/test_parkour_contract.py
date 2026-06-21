@@ -25,7 +25,9 @@ import numpy as np
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "sim", "isaac"))
 sys.path.insert(0, os.path.join(REPO, "sim", "bot"))
-sys.path.insert(0, os.path.join(REPO, "core"))
+# Repo root for `core.*` imports. core/ itself is intentionally NOT added so its
+# `perception` subpackage cannot shadow sim/isaac's `perception` package.
+sys.path.insert(0, REPO)
 
 ASSETS = os.path.join(REPO, "sim", "models", "locomotion", "parkour")
 BASE = os.path.join(ASSETS, "base_jit.pt")
@@ -66,7 +68,7 @@ class StubGo2:
 def _fake_policy():
     """A ParkourLocomotionPolicy with __init__ bypassed (no model needed) so the
     pure-Python leg_command_summary() swing/stance logic can be tested offline."""
-    from locomotion.parkour_locomotion_policy import ParkourLocomotionPolicy, PARKOUR_DEFAULT_POS
+    from go2_locomotion.parkour_locomotion_policy import ParkourLocomotionPolicy, PARKOUR_DEFAULT_POS
     pol = object.__new__(ParkourLocomotionPolicy)
     pol._last_target_policy = PARKOUR_DEFAULT_POS.copy()
     pol.prev_action = np.zeros(12, dtype=np.float32)
@@ -74,7 +76,7 @@ def _fake_policy():
 
 
 def _test_weight_free():
-    from locomotion.parkour_locomotion_policy import (
+    from go2_locomotion.parkour_locomotion_policy import (
         ParkourLocomotionPolicy, ParkourPolicyConfig, PARKOUR_DEFAULT_POS, PARKOUR_JOINT_ORDER,
         max_body_tilt_rad,
     )
@@ -169,7 +171,7 @@ def _test_person_mask():
 def _test_heading_slew():
     """The parkour heading (delta_yaw) command is slew-limited so a bbox jump cannot snap
     the bearing and jolt the gait at a terrain transition (the smoothing primitive)."""
-    from pid_controller import SlewRateLimiter
+    from core.control.pid_controller import SlewRateLimiter
 
     lim = SlewRateLimiter(3.0)            # 3 rad/s
     lim.reset(0.0)
@@ -184,7 +186,7 @@ def _test_heading_slew():
 
 def _run_pipeline(cfg, label, *, delta_yaw=None):
     """Step the loaded policy and assert finite torques within the per-leg limits."""
-    from locomotion.parkour_locomotion_policy import ParkourLocomotionPolicy
+    from go2_locomotion.parkour_locomotion_policy import ParkourLocomotionPolicy
     policy = ParkourLocomotionPolicy(cfg, ISAAC_DOF_NAMES, logger=logging.getLogger("parkour_test"))
     go2 = StubGo2(ISAAC_DOF_NAMES)
     policy.reset()
@@ -211,7 +213,7 @@ def _test_soft_hold():
     """Verify that when hold=True is passed, self.hold_strength ramps up and blends the action_np to 0.0,
     and when hold=False is passed, it ramps down to 0.0.
     """
-    from locomotion.parkour_locomotion_policy import ParkourLocomotionPolicy, ParkourPolicyConfig
+    from go2_locomotion.parkour_locomotion_policy import ParkourLocomotionPolicy, ParkourPolicyConfig
     cfg = ParkourPolicyConfig(
         base_model_path=BASE, vision_model_path=VISION,
         hold_ramp_sec=0.25,  # 0.25 seconds to ramp
@@ -292,7 +294,7 @@ def main():
         print(f"SKIP: parkour weights not found under {ASSETS} (weight-free checks passed)")
         return 0
 
-    from locomotion.parkour_locomotion_policy import ParkourPolicyConfig
+    from go2_locomotion.parkour_locomotion_policy import ParkourPolicyConfig
 
     # Clean ("perfect env") pipeline, plus the delta_yaw heading-command path.
     _run_pipeline(

@@ -37,6 +37,7 @@ import numpy as np
 import omni
 from pxr import Gf, Sdf, Usd, UsdSkel, Vt
 
+from .foot_planting import LegGeometry
 from .types import JointPose
 
 
@@ -49,6 +50,7 @@ _CHANNEL_SIGNS: Dict[str, float] = {
     "shoulder": +1.0,
     "elbow": +1.0,
     "spine": +1.0,
+    "toe": +1.0,
 }
 
 # anatomical JointPose field -> (rig joint leaf name, channel group for sign lookup)
@@ -59,6 +61,8 @@ _JOINT_TARGETS: List[Tuple[str, str, str]] = [
     ("knee_r", "R_LoLeg", "knee"),
     ("ankle_l", "L_Ankle", "ankle"),
     ("ankle_r", "R_Ankle", "ankle"),
+    ("toe_l", "L_Ball", "toe"),
+    ("toe_r", "R_Ball", "toe"),
     ("shoulder_l", "L_UpArm", "shoulder"),
     ("shoulder_r", "R_UpArm", "shoulder"),
     ("elbow_l", "L_LoArm", "elbow"),
@@ -172,6 +176,8 @@ class BipedRig:
         self._targets: List[Tuple[int, str, float, np.ndarray, np.ndarray]] = []
         self._rotations_attr = None
         self._anim_path = ""
+        # Measured leg proportions (standing-pose FK); drives the foot-planting IK.
+        self.leg_geometry: Optional[LegGeometry] = None
 
         self._build()
 
@@ -289,6 +295,13 @@ class BipedRig:
             raise RuntimeError("BipedRig: degenerate hip span; cannot derive axis")
         lateral_world = lateral_world / nrm
 
+        # Measure leg proportions from the standing pose (averaged L/R) so the
+        # foot-planting IK is calibrated to this exact mannequin. Frame-independent
+        # scalar distances: hip->knee (thigh), knee->ankle (shin), hip->ankle (the
+        # natural planted reach). Left None if any joint is missing -> the gait
+        # falls back to the open-loop swing.
+        self.leg_geometry = self._measure_leg_geometry(leaf_to_idx, world_pos)
+
         # Per driven joint: express lateral_world in the joint's STANDING local
         # frame. axis_local = R_world_standing^{-1} @ lateral = R_world_standing.T @ lateral.
         missing: List[str] = []
@@ -336,7 +349,43 @@ class BipedRig:
                 driven_joints=[t[1] for t in self._targets],
                 base_pose=("standing_idle_clip" if used_standing else "rest_transforms_FALLBACK"),
                 lateral_axis=[round(float(v), 4) for v in lateral_world],
+                leg_geometry=(
+                    {
+                        "thigh_m": round(self.leg_geometry.thigh_m, 4),
+                        "shin_m": round(self.leg_geometry.shin_m, 4),
+                        "reach_m": round(self.leg_geometry.reach_m, 4),
+                    }
+                    if self.leg_geometry is not None
+                    else None
+                ),
+                leg_mode=("foot_planting_ik" if self.leg_geometry is not None else "open_loop_fallback"),
             )
+
+    @staticmethod
+    def _measure_leg_geometry(leaf_to_idx, world_pos) -> Optional[LegGeometry]:
+        """Average L/R thigh, shin and standing hip->ankle reach from standing FK."""
+
+        def seg(a_leaf: str, b_leaf: str) -> Optional[float]:
+            ia = leaf_to_idx.get(a_leaf)
+            ib = leaf_to_idx.get(b_leaf)
+            if ia is None or ib is None or world_pos[ia] is None or world_pos[ib] is None:
+                return None
+            return float(np.linalg.norm(world_pos[ia] - world_pos[ib]))
+
+        def avg(a: Optional[float], b: Optional[float]) -> Optional[float]:
+            vals = [v for v in (a, b) if v is not None and v > 1e-4]
+            return sum(vals) / len(vals) if vals else None
+
+        thigh = avg(seg("L_UpLeg", "L_LoLeg"), seg("R_UpLeg", "R_LoLeg"))
+        shin = avg(seg("L_LoLeg", "L_Ankle"), seg("R_LoLeg", "R_Ankle"))
+        reach = avg(seg("L_UpLeg", "L_Ankle"), seg("R_UpLeg", "R_Ankle"))
+        if thigh is None or shin is None or reach is None:
+            return None
+        # Never let the standing reach hit full extension (locks the knee at the IK
+        # singularity); leave a sliver of bend so the leg can both flex and extend.
+        reach = min(reach, (thigh + shin) * 0.985)
+        geom = LegGeometry(thigh_m=thigh, shin_m=shin, reach_m=reach)
+        return geom if geom.valid else None
 
     def _create_and_bind_animation(self, skel_root_prim) -> None:
         anim_path = f"{self._skel_root_path}/{_PROCEDURAL_ANIM_NAME}"

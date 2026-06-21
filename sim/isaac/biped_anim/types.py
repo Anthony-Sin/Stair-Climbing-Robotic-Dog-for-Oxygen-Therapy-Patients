@@ -52,6 +52,8 @@ class JointPose:
     shoulder_r: float = 0.0
     elbow_l: float = 0.0
     elbow_r: float = 0.0
+    toe_l: float = 0.0
+    toe_r: float = 0.0
     spine_pitch: float = 0.0
 
     @classmethod

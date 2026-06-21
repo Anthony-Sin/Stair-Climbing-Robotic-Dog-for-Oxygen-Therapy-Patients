@@ -51,6 +51,10 @@ class LocomotionController:
     def phase(self) -> float:
         return self._phase
 
+    @phase.setter
+    def phase(self, value: float) -> None:
+        self._phase = float(value) % 1.0
+
     @property
     def speed(self) -> float:
         return self._speed

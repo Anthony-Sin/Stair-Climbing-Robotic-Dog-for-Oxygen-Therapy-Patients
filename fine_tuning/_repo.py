@@ -33,8 +33,8 @@ BLIND_RL_POLICY = os.path.join(LOCOMOTION_MODELS, "go2_robot_lab_policy.pt")
 
 
 def ensure_sim_on_path() -> None:
-    """Put ``sim/isaac`` (and ``core``) on sys.path so the vendored modules import."""
-    for p in (SIM_ISAAC, os.path.join(REPO_ROOT, "core")):
+    """Put the repo root (for ``go2_locomotion``), ``sim/isaac`` and ``core`` on sys.path."""
+    for p in (SIM_ISAAC, REPO_ROOT, os.path.join(REPO_ROOT, "core")):
         if p not in sys.path:
             sys.path.insert(0, p)
 
@@ -47,7 +47,7 @@ def load_backbone_classes():
     on a headless training box.
     """
     ensure_sim_on_path()
-    from locomotion.parkour_depth_backbone import (  # noqa: E402  (path-shim import)
+    from go2_locomotion.parkour_depth_backbone import (  # noqa: E402  (path-shim import)
         DepthOnlyFCBackbone58x87,
         RecurrentDepthBackbone,
     )
@@ -65,7 +65,7 @@ def load_runtime_contract() -> dict:
     """
     ensure_sim_on_path()
     try:
-        from locomotion import parkour_locomotion_policy as plp  # noqa: E402  (path-shim import)
+        from go2_locomotion import parkour_locomotion_policy as plp  # noqa: E402  (path-shim import)
     except Exception as exc:  # pragma: no cover - environment dependent
         return {"error": f"{type(exc).__name__}: {exc}"}
     return {
@@ -92,7 +92,7 @@ def load_blind_rl_contract() -> dict:
     """
     ensure_sim_on_path()
     try:
-        from locomotion import rl_locomotion_policy as rlp  # noqa: E402  (path-shim import)
+        from go2_locomotion import rl_locomotion_policy as rlp  # noqa: E402  (path-shim import)
     except Exception as exc:  # pragma: no cover - environment dependent
         return {"error": f"{type(exc).__name__}: {exc}"}
     cfg = rlp.RLLocomotionPolicyConfig
@@ -117,7 +117,7 @@ def preprocess_depth_fn():
     scripted-gait helpers; the synthetic smoke path does not need it.
     """
     ensure_sim_on_path()
-    from locomotion.parkour_locomotion_policy import ParkourLocomotionPolicy  # noqa: E402
+    from go2_locomotion.parkour_locomotion_policy import ParkourLocomotionPolicy  # noqa: E402
 
     return ParkourLocomotionPolicy.preprocess_depth
 

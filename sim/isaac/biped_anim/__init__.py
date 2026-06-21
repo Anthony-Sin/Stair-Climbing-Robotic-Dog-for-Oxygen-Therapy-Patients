@@ -69,4 +69,19 @@ def build_biped_animation_controller(
     if not rig.ready:
         return None
     classifier = TerrainClassifier(stairs_provider)
-    return BipedAnimationController(rig, classifier=classifier, logger=logger)
+
+    # Build the walking gaits with the rig's measured leg proportions so they drive
+    # FOOT-PLANTING IK (planted stance, no skate). If the geometry could not be
+    # measured, leave gaits as None so the controller uses its open-loop defaults.
+    geom = rig.leg_geometry
+    gaits = None
+    if geom is not None:
+        gaits = {
+            AnimStyle.IDLE: Idle(),
+            AnimStyle.FLAT_WALK: FlatWalk(leg_geom=geom),
+            AnimStyle.STAIR_CLIMB: StairClimb(leg_geom=geom),
+        }
+
+    return BipedAnimationController(
+        rig, classifier=classifier, gaits=gaits, logger=logger
+    )

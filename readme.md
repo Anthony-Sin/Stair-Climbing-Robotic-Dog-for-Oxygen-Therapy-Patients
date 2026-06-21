@@ -10,7 +10,7 @@ The system is designed to run in two environments:
 
 ## 🚀 Key Features
 
-* **Person Tracking & Re-Identification (ReID)**: Integrates YOLOv11/YOLOv8-pose detection with a TensorRT-optimized Re-Identification network to lock onto and robustly track the designated patient.
+* **Person Tracking**: Integrates YOLOv11/YOLOv8-pose detection with a single-target ByteTrack-based tracker to lock onto and robustly follow the designated patient.
 * **Intelligent Person Following**: A custom PID-based tracking controller featuring safety braking zones, low-pass command filtering, and dynamic centering.
 * **Stair Climb & Locomotion Policy**: Leverages a learned Parkour Locomotion Policy (walk/jump gaits) to dynamically adapt to flat ground and climb stairs.
 * **Perception-Driven Control**: Active depth camera processing with target person bounding-box masking (`terrain-inpaint`) to prevent the robot from misreading the patient's close-range body as high terrain (eliminates surging).
@@ -32,7 +32,7 @@ graph TD
 
     subgraph Controller [Controller Container: NVIDIA Jetson / Docker]
         B -->|RGB-D Frames| C[YOLO Pose & Stair Inference]
-        C -->|Bounding Boxes / Keypoints| D[Re-Identification & Tracking]
+        C -->|Bounding Boxes / Keypoints| D[Person Tracking]
         D -->|Target Coordinate / Distance / Bearing| E[PID Follow Controller]
         E -->|Locomotion Commands| F[Speed Governor & Obstacle Gating]
         F -->|Final Command Packets| H
@@ -47,7 +47,6 @@ graph TD
   * [`main.py`](file:///c:/Users/antho/Downloads/Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients/core/main.py): Main runtime loop of the controller.
   * [`person_follower.py`](file:///c:/Users/antho/Downloads/Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients/core/person_follower.py): PID-based tracking control logic.
   * [`depth_processor.py`](file:///c:/Users/antho/Downloads/Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients/core/depth_processor.py): Depth image filtering and patient body masking.
-  * [`reid_manager.py`](file:///c:/Users/antho/Downloads/Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients/core/reid_manager.py): Target person identification and ReID engine.
   * [`lidar_fusion.py`](file:///c:/Users/antho/Downloads/Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients/core/lidar_fusion.py): Merges camera detections and LiDAR distance metrics.
   * [`visualization.py`](file:///c:/Users/antho/Downloads/Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients/core/visualization.py): Visualizes system outputs (Bird's Eye View panel, tracking info, LiDAR points).
 * **[`sim/`](file:///c:/Users/antho/Downloads/Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients/sim)**: Contains Isaac Sim scripts, scene definitions, and launcher files.

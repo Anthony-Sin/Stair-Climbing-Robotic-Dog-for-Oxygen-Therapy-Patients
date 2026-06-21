@@ -22,8 +22,10 @@ for _sub in ("core", os.path.join("sim", "isaac")):
     _p = os.path.join(_REPO, _sub)
     if _p not in sys.path:
         sys.path.insert(0, _p)
+if _REPO not in sys.path:  # go2_locomotion package lives at the repo root
+    sys.path.insert(0, _REPO)
 
-from locomotion import rl_locomotion_policy as rlp
+from go2_locomotion import rl_locomotion_policy as rlp
 
 
 # Nucleus Go2 reports its DOFs joint-type-major (all hips, then thighs, then

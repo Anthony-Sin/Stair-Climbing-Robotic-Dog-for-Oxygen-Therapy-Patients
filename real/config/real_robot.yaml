@@ -1,0 +1,38 @@
+# ROS 2 parameters for the real Go2 EDU control stack (Foxy).
+# Loaded by the launch via `--ros-args --params-file`. Node-name keys must match the
+# node names (super().__init__("<name>")). Paths are repo-relative; the robot copies
+# the weights under real/models/ and points these there.
+
+sport_startup:
+  ros__parameters:
+    network_interface: eth0      # the wired iface unitree_ros2 / the SDK talk on
+    release_on_start: true
+    sdk_timeout_sec: 10.0
+
+low_level_control:
+  ros__parameters:
+    lowstate_topic: /lowstate
+    lowcmd_topic: /lowcmd
+    sport_state_topic: /go2/sport_state
+    heightscan_topic: /go2/heightscan
+    stair_topic: /go2/stair_detection
+    control_hz: 50.0
+    require_sport_released: true
+    climb_backend: blind_rl
+    # Weights: copy to real/models/ on the robot and repoint these.
+    pgtt_policy_path: sim/models/pgtt/pgtt_go2_level17.npz
+    rl_policy_path: sim/models/locomotion/go2_robot_lab_policy.pt
+    walk_kp: 40.0                # PGTT position drive (verified contract)
+    walk_kd: 0.5
+    climb_kp: 20.0               # blind_rl motor-PD (verified contract)
+    climb_kd: 0.5
+    record_telemetry: false      # set true (+ telemetry_dir) to log a perf_tracker run
+    telemetry_dir: ""
+
+lidar_heightscan:
+  ros__parameters:
+    # Only used in heightscan_mode: lidar. SKU selects the extrinsic (Mid-360 vs XT16).
+    lidar_topic: /livox/lidar    # Mid-360 driver; Hesai XT16 -> /hesai/pandar
+    lidar_sku: mid360            # or "xt16"
+    heightscan_mode: flat        # "flat" (bring-up, safe) or "lidar" (HIL-validated)
+    heightscan_scale: 1.0        # 1.5 was real-robot-only in sim notes

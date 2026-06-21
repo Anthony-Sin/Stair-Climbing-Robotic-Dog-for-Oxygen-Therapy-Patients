@@ -13,12 +13,14 @@ import sys
 import numpy as np
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for _sub in ("core", os.path.join("sim", "isaac")):
-    _p = os.path.join(_REPO, _sub)
+# Repo root enables `core.*` imports; sim/isaac enables the omni-free perception
+# modules. core/ itself is intentionally NOT on sys.path (core uses fully-qualified
+# `core.vision` imports), so bare `perception` always resolves to sim/isaac's.
+for _p in (os.path.join(_REPO, "sim", "isaac"), _REPO):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import lidar_fusion as lf
+from core.vision import lidar_fusion as lf
 from perception.sim_lidar_xt16 import Xt16Config, cast_scan, profile_from_scan
 
 
