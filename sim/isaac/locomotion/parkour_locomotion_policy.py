@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
-from go2_locomotion_utils import (
+from locomotion.go2_locomotion_utils import (
     PARKOUR_DEFAULT_POSE,
     add_sensor_noise,
     apply_joint_efforts,
@@ -27,9 +27,9 @@ from go2_locomotion_utils import (
     read_joint_limits,
     safe_joint_vector,
 )
-from parkour_depth_backbone import DepthOnlyFCBackbone58x87, RecurrentDepthBackbone
-from scripted_stair_gait import ScriptedStairGait
-from closed_loop_stair_climber import ClosedLoopStairClimber
+from locomotion.parkour_depth_backbone import DepthOnlyFCBackbone58x87, RecurrentDepthBackbone
+from locomotion.scripted_stair_gait import ScriptedStairGait
+from locomotion.closed_loop_stair_climber import ClosedLoopStairClimber
 
 # Policy joint order: leg-major FR, FL, RR, RL; each leg hip, thigh, calf
 PARKOUR_JOINT_ORDER: Tuple[Tuple[str, str], ...] = (

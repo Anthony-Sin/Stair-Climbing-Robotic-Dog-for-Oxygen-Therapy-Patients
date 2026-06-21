@@ -22,7 +22,7 @@ go2_locomotion_utils.PARKOUR_DEFAULT_POSE: calf -1.5 default; MORE-negative calf
 import math
 import numpy as np
 
-from go2_locomotion_utils import PARKOUR_DEFAULT_POSE
+from locomotion.go2_locomotion_utils import PARKOUR_DEFAULT_POSE
 
 _LEGS = ("fr", "fl", "rr", "rl")
 _JOINTS = ("hip", "thigh", "calf")

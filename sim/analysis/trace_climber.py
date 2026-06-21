@@ -10,7 +10,8 @@ import sys
 
 
 def main():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # this file lives at sim/analysis/, so repo root is three levels up
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     rd = sys.argv[1] if len(sys.argv) > 1 else open(
         os.path.join(root, "log", "latest_run.txt"), encoding="utf-8-sig").read().strip()
     rows = []

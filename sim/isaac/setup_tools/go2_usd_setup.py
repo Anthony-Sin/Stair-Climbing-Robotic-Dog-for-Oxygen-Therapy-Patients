@@ -7,16 +7,16 @@ import subprocess
 import sys
 import urllib.request
 
-ASSETS_DIR   = pathlib.Path(__file__).parent / "assets"
+ASSETS_DIR   = pathlib.Path(__file__).parent.parent / "assets"  # sim/isaac/assets (this file is at sim/isaac/setup_tools/)
 GO2_USD      = ASSETS_DIR / "go2.usd"
 GO2_URDF_URL = (
     "https://raw.githubusercontent.com/unitreerobotics/unitree_ros/master"
     "/robots/go2_description/urdf/go2_description.urdf"
 )
 LOCAL_URDF_CANDIDATES = [
-    pathlib.Path(__file__).parent.parent
+    pathlib.Path(__file__).parent.parent.parent
     / "ros2_ws/src/robots/description/go2_description/urdf/go2.urdf",
-    pathlib.Path(__file__).parent / "assets" / "go2.urdf",
+    pathlib.Path(__file__).parent.parent / "assets" / "go2.urdf",
 ]
 
 
@@ -122,25 +122,6 @@ def convert_urdf_to_usd(urdf_path: pathlib.Path) -> None:
     simulation_app.close()
 
 
-def try_nucleus(nucleus_path: str = "/Isaac/Robots/Unitree/Go2/go2.usd") -> bool:
-    """Check if the Go2 USD exists on the connected Nucleus server."""
-    try:
-        try:
-            import omni.isaac.core.utils.nucleus as nucleus_utils
-        except ModuleNotFoundError:
-            import isaacsim.storage.native as nucleus_utils
-        root = nucleus_utils.get_assets_root_path()
-        if root is None:
-            return False
-        full = root + nucleus_path
-        nucleus_utils.is_file(full)  # raises if not found
-        print(f"[download_go2] Found Go2 on Nucleus: {full}")
-        print("[download_go2] isaac_env.py will use Nucleus automatically — no local USD needed.")
-        return True
-    except Exception:
-        return False
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--urdf-only", action="store_true",
@@ -150,9 +131,6 @@ def main() -> None:
     ensure_assets_dir()
 
     if not pargs.urdf_only:
-        # if try_nucleus():
-        #     return
-
         if GO2_USD.exists():
             print(f"[download_go2] Local USD already exists: {GO2_USD}")
             return

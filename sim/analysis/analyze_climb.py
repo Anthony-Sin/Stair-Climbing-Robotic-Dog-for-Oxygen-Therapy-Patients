@@ -28,7 +28,8 @@ NOSE_DOWN_MIN_DEG = -22.0 # a single nose-dive this deep into a riser == a colli
 
 
 def latest_run_dir():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # this file lives at sim/analysis/, so repo root is three levels up
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     ptr = os.path.join(root, "log", "latest_run.txt")
     if os.path.exists(ptr):
         with open(ptr, encoding="utf-8-sig") as f:

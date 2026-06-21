@@ -30,7 +30,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from go2_locomotion_utils import (
+from locomotion.go2_locomotion_utils import (
     PGTT_DEFAULT_POSE,
     apply_joint_efforts,
     classify_dof,
@@ -40,14 +40,14 @@ from go2_locomotion_utils import (
     read_joint_limits,
     safe_joint_vector,
 )
-from pgtt_heightmap import (
+from locomotion.pgtt_heightmap import (
     PGTT_DIST_X,
     PGTT_DIST_Y,
     PGTT_N_COLS,
     PGTT_N_ROWS,
     build_heightscan,
 )
-from pgtt_policy_net import load_pgtt_policy
+from locomotion.pgtt_policy_net import load_pgtt_policy
 
 try:
     from sim_logging_utils import log_event

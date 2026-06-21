@@ -10,7 +10,7 @@ sim/models/
     yolo11n-pose-fp16.trt   # YOLO11 pose TensorRT engine (person detection; --trt-engine)
     yolov8x-worldv2.pt      # YOLO-World open-vocab stair detector (--stairs-model)
   reid/
-    osnet_ain_x1_0.trt      # OSNet re-id TensorRT engine (built by sim/isaac/build_reid_engine.py)
+    osnet_ain_x1_0.trt      # OSNet re-id TensorRT engine (built by sim/isaac/setup_tools/build_reid_engine.py)
   pgtt/
     pgtt_go2_level*.npz     # PGTT phase-guided heightmap policy checkpoints (--pgtt-weights-dir / --pgtt-level)
   clip/

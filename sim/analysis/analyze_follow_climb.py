@@ -9,7 +9,7 @@ Usage:  python analyze_follow_climb.py [run_dir]
 """
 import sys, os, json, glob, math
 
-SIM = os.path.dirname(os.path.abspath(__file__))
+SIM = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # sim/ (this file is at sim/analysis/)
 REPO = os.path.dirname(SIM)
 
 

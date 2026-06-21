@@ -1,0 +1,209 @@
+"""Simulated Hesai XT16 LiDAR for the Isaac Go2 environment.
+
+This casts *real* rays against the scene's collision geometry in the XT16 scan
+pattern (16 channels, -15 deg .. +15 deg vertical, 360 deg horizontal) and turns
+the returns into OpenCV images so the demo preview can show what the robot's
+actual LiDAR would see -- a bird's-eye-view (BEV) scatter and an unrolled range
+image.
+
+Unlike the synthetic ``_get_analytical_terrain_height`` probe in
+``sim_go2_locomotion.py`` (which just reads hard-coded stair geometry), this
+module knows nothing about the scene: it only fires rays through an injected
+``raycast_fn`` and plots whatever comes back. The raycast itself is injected so
+this file stays free of ``omni`` imports and is testable on its own.
+
+Frames:
+  * world frame  -- (x, y, z), z up, used for the raycast origin/direction.
+  * sensor frame -- x forward (robot heading), y left, z up; used for plotting.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from typing import Callable, Optional, Tuple
+
+import numpy as np
+
+# XT16 hardware geometry (Hesai XT16 datasheet / ros2_ws hesai_xt16 config):
+#   16 channels, vertical FOV -15 deg .. +15 deg (2 deg spacing), 360 deg azimuth.
+XT16_CHANNELS = 16
+XT16_VERT_MIN_DEG = -15.0
+XT16_VERT_MAX_DEG = 15.0
+# Datasheet range is 0.05 m .. 120 m; capped here for the indoor stair scene so
+# the BEV/range image colour scales stay useful.
+XT16_MAX_RANGE_M = 50.0
+XT16_MIN_RANGE_M = 0.05
+
+# raycast_fn(origin_xyz, direction_xyz, max_dist_m) -> hit distance in metres,
+# or None when the ray hits nothing. The direction is expected unit-length.
+RaycastFn = Callable[
+    [Tuple[float, float, float], Tuple[float, float, float], float], Optional[float]
+]
+
+
+@dataclass
+class Xt16Config:
+    channels: int = XT16_CHANNELS
+    vert_min_deg: float = XT16_VERT_MIN_DEG
+    vert_max_deg: float = XT16_VERT_MAX_DEG
+    azimuth_step_deg: float = 3.0
+    max_range_m: float = XT16_MAX_RANGE_M
+    min_range_m: float = XT16_MIN_RANGE_M
+    # Sensor mount in the robot base frame (the XT16 sits on the dog's back).
+    mount_x_m: float = 0.0
+    mount_y_m: float = 0.0
+    mount_z_m: float = 0.10
+    # Optional sensor realism (default 0 => exact ray hits, identical to before).
+    # range_noise_m: 1-sigma Gaussian range error per return (real XT16 ~0.02 m).
+    # dropout_prob: per-ray probability of a missing return (no echo).
+    range_noise_m: float = 0.0
+    dropout_prob: float = 0.0
+
+    @property
+    def n_azimuth(self) -> int:
+        return max(1, int(round(360.0 / max(1e-3, self.azimuth_step_deg))))
+
+    def vertical_angles_deg(self) -> np.ndarray:
+        return np.linspace(self.vert_min_deg, self.vert_max_deg, self.channels)
+
+    def azimuth_angles_deg(self) -> np.ndarray:
+        return np.arange(self.n_azimuth) * (360.0 / self.n_azimuth)
+
+
+@dataclass
+class Xt16Scan:
+    config: Xt16Config
+    ranges: np.ndarray          # (channels, n_azimuth) metres, NaN where no return
+    points_sensor: np.ndarray   # (N, 3) hits in sensor frame (x fwd, y left, z up)
+    origin_world: Tuple[float, float, float]
+    yaw_rad: float
+    n_rays: int
+    n_hits: int
+
+    @property
+    def hit_ratio(self) -> float:
+        return (self.n_hits / self.n_rays) if self.n_rays else 0.0
+
+    @property
+    def min_range_m(self) -> Optional[float]:
+        if self.n_hits == 0:
+            return None
+        return float(np.nanmin(self.ranges))
+
+
+# Dedicated RNG for optional XT16 sensor-noise injection; keeps the global
+# np.random stream untouched. Only drawn from when range_noise_m/dropout_prob > 0.
+_NOISE_RNG = np.random.default_rng()
+
+
+def cast_scan(
+    config: Xt16Config,
+    origin_world: Tuple[float, float, float],
+    yaw_rad: float,
+    raycast_fn: RaycastFn,
+) -> Xt16Scan:
+    """Fire the full XT16 ray pattern from the sensor mount and collect returns."""
+    ox, oy, oz = origin_world
+    cy, sy = math.cos(yaw_rad), math.sin(yaw_rad)
+    # Mount offset expressed in the robot base frame, rotated into world.
+    sx = ox + cy * config.mount_x_m - sy * config.mount_y_m
+    syw = oy + sy * config.mount_x_m + cy * config.mount_y_m
+    sz = oz + config.mount_z_m
+    origin = (sx, syw, sz)
+
+    vert = np.radians(config.vertical_angles_deg())
+    az = np.radians(config.azimuth_angles_deg())
+    n_ch, n_az = config.channels, config.n_azimuth
+
+    ranges = np.full((n_ch, n_az), np.nan, dtype=np.float32)
+    pts = []
+    n_rays = 0
+    n_hits = 0
+    max_r = float(config.max_range_m)
+    min_r = float(config.min_range_m)
+    range_noise_m = float(config.range_noise_m)
+    dropout_prob = float(config.dropout_prob)
+
+    for ci in range(n_ch):
+        elev = float(vert[ci])
+        cos_e = math.cos(elev)
+        sin_e = math.sin(elev)
+        for ai in range(n_az):
+            sa = float(az[ai])              # azimuth relative to robot heading
+            world_az = yaw_rad + sa
+            dx = math.cos(world_az) * cos_e
+            dy = math.sin(world_az) * cos_e
+            dz = sin_e
+            n_rays += 1
+            dist = raycast_fn(origin, (dx, dy, dz), max_r)
+            if dist is None or dist < min_r or dist > max_r:
+                continue
+            # Optional XT16 sensor realism (default off => exact ray hits): random
+            # no-return dropouts + Gaussian range noise, so the downstream profile
+            # + person_follower fusion are exercised against noisy ranges rather
+            # than perfect geometry.
+            if dropout_prob > 0.0 and float(_NOISE_RNG.random()) < dropout_prob:
+                continue
+            if range_noise_m > 0.0:
+                dist = float(dist) + float(_NOISE_RNG.normal(0.0, range_noise_m))
+                if dist < min_r or dist > max_r:
+                    continue
+            ranges[ci, ai] = dist
+            n_hits += 1
+            pts.append(
+                (
+                    math.cos(sa) * cos_e * dist,   # x forward
+                    math.sin(sa) * cos_e * dist,   # y left
+                    sin_e * dist,                  # z up
+                )
+            )
+
+    points = np.asarray(pts, dtype=np.float32) if pts else np.zeros((0, 3), np.float32)
+    return Xt16Scan(config, ranges, points, origin, float(yaw_rad), n_rays, n_hits)
+
+
+# ---------------------------------------------------------------------------
+# OpenCV preview rendering now lives in ``lidar_preview`` (this module stays the
+# pure sensor model). Re-exported so existing callers keep importing the render
+# helpers from ``sim_lidar_xt16`` unchanged.
+# ---------------------------------------------------------------------------
+from perception.lidar_preview import (  # noqa: E402,F401  (re-export for back-compat)
+    render_bev,
+    render_range_image,
+    render_preview,
+)
+
+
+def profile_from_scan(scan: Xt16Scan, view_range_m: float) -> dict:
+    """Compact horizontal polar profile of a scan for the vision controller.
+
+    Collapses the (channels, n_azimuth) range grid to the nearest return per
+    azimuth column (uint16 millimetres, 0 == no return), zlib+base64 encoded so it
+    fits the UDP frame packet. ``core.lidar_fusion.decode_lidar_profile`` reverses
+    it; keep the two in sync. omni-free so it stays unit-testable on its own.
+    """
+    import base64
+    import zlib
+
+    ranges = np.asarray(scan.ranges, dtype=np.float32)  # (channels, n_azimuth)
+    if ranges.size:
+        # Nearest return per azimuth column; NaN (no return) -> +inf so it loses
+        # the min, then mapped back to 0.
+        finite = np.where(np.isnan(ranges), np.inf, ranges)
+        nearest = finite.min(axis=0)
+        nearest = np.where(np.isfinite(nearest), nearest, 0.0)
+    else:
+        nearest = np.zeros((0,), dtype=np.float32)
+    nearest_mm = np.clip(nearest * 1000.0, 0, 65535).astype(np.uint16)
+    blob = base64.b64encode(zlib.compress(nearest_mm.tobytes(), level=6)).decode("ascii")
+    return {
+        "enc": "u16mm+zlib",
+        "n_azimuth": int(scan.config.n_azimuth),
+        "azimuth_step_deg": float(scan.config.azimuth_step_deg),
+        "view_range_m": float(view_range_m),
+        "min_range_m": (None if scan.min_range_m is None else round(float(scan.min_range_m), 3)),
+        "hit_count": int(scan.n_hits),
+        "ray_count": int(scan.n_rays),
+        "ranges_mm": blob,
+    }

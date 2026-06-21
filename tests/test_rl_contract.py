@@ -23,7 +23,7 @@ for _sub in ("core", os.path.join("sim", "isaac")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import rl_locomotion_policy as rlp
+from locomotion import rl_locomotion_policy as rlp
 
 
 # Nucleus Go2 reports its DOFs joint-type-major (all hips, then thighs, then

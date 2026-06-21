@@ -47,7 +47,7 @@ def load_backbone_classes():
     on a headless training box.
     """
     ensure_sim_on_path()
-    from parkour_depth_backbone import (  # noqa: E402  (path-shim import)
+    from locomotion.parkour_depth_backbone import (  # noqa: E402  (path-shim import)
         DepthOnlyFCBackbone58x87,
         RecurrentDepthBackbone,
     )
@@ -65,7 +65,7 @@ def load_runtime_contract() -> dict:
     """
     ensure_sim_on_path()
     try:
-        import parkour_locomotion_policy as plp  # noqa: E402  (path-shim import)
+        from locomotion import parkour_locomotion_policy as plp  # noqa: E402  (path-shim import)
     except Exception as exc:  # pragma: no cover - environment dependent
         return {"error": f"{type(exc).__name__}: {exc}"}
     return {
@@ -92,7 +92,7 @@ def load_blind_rl_contract() -> dict:
     """
     ensure_sim_on_path()
     try:
-        import rl_locomotion_policy as rlp  # noqa: E402  (path-shim import)
+        from locomotion import rl_locomotion_policy as rlp  # noqa: E402  (path-shim import)
     except Exception as exc:  # pragma: no cover - environment dependent
         return {"error": f"{type(exc).__name__}: {exc}"}
     cfg = rlp.RLLocomotionPolicyConfig
@@ -117,7 +117,7 @@ def preprocess_depth_fn():
     scripted-gait helpers; the synthetic smoke path does not need it.
     """
     ensure_sim_on_path()
-    from parkour_locomotion_policy import ParkourLocomotionPolicy  # noqa: E402
+    from locomotion.parkour_locomotion_policy import ParkourLocomotionPolicy  # noqa: E402
 
     return ParkourLocomotionPolicy.preprocess_depth
 

@@ -19,7 +19,7 @@ for _sub in ("core", os.path.join("sim", "isaac")):
         sys.path.insert(0, _p)
 
 import lidar_fusion as lf
-from sim_lidar_xt16 import Xt16Config, cast_scan, profile_from_scan
+from perception.sim_lidar_xt16 import Xt16Config, cast_scan, profile_from_scan
 
 
 def _fake_world(person_range=2.0, wall_range=5.0):

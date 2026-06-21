@@ -1,3 +1,12 @@
+"""Staircase geometry and passive Go2 body/stair telemetry.
+
+Despite the module name, this is NOT a locomotion controller. It owns two things:
+  1. The load-bearing ``StairSpec`` geometry (presets + ``configure_stairs`` +
+     ``get_active_stairs``) -- the single source of truth every stair consumer
+     reads so the spawned scene and ground-truth telemetry stay in sync.
+  2. The decorative "stair_demo" HUD telemetry, rebuilt each step from the
+     robot's measured body pose. It is observation only and drives no physics.
+"""
 import logging
 import math
 import time

@@ -35,7 +35,7 @@ from typing import Optional
 
 import numpy as np
 
-from go2_locomotion_utils import (
+from locomotion.go2_locomotion_utils import (
     GO2_THIGH_LEN_M,
     GO2_CALF_LEN_M,
     PARKOUR_DEFAULT_POSE,

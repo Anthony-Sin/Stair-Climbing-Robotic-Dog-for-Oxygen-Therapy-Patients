@@ -34,7 +34,7 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
-from closed_loop_stair_climber import ClosedLoopStairClimber
+from locomotion.closed_loop_stair_climber import ClosedLoopStairClimber
 
 try:
     from sim_logging_utils import log_event
