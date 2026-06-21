@@ -215,12 +215,15 @@ parser.add_argument("--handoff-min-room", type=float, default=0.40,
                     help="Do not engage the climber if the riser is closer than this ahead of the base "
                          "(m): the front feet are jammed, leaving no room (causes a backward shove/flip).")
 parser.add_argument("--handoff-climb-backend", type=str, default="parkour",
-                    choices=("parkour", "ik"),
+                    choices=("parkour", "blind_rl", "ik"),
                     help="Climb backend for the PGTT dual-policy handoff: 'parkour' (default) HOT-SWAPS "
                          "the active policy to the Extreme-Parkour depth/vision RL net -- PGTT walks, "
                          "the trained vision policy climbs the stairs, then PGTT resumes (the drive "
-                         "gains swap position<->torque on each transition). 'ik' uses the deterministic "
-                         "ClosedLoopStairClimber instead (gated by --handoff-climb-attempt; flips in PhysX).")
+                         "gains swap position<->torque on each transition). 'blind_rl' HOT-SWAPS to the "
+                         "proprioceptive (blind) rl_sar Go2 RL net instead (no depth; --rl-* knobs) -- "
+                         "PGTT walks, the blind RL net climbs, then PGTT resumes. 'ik' uses the "
+                         "deterministic ClosedLoopStairClimber instead (gated by --handoff-climb-attempt; "
+                         "flips in PhysX).")
 parser.add_argument("--handoff-climb-keep-governor", dest="handoff_climb_keep_governor",
                     action="store_true",
                     help="Keep the speed governor ON for the parkour climb backend. DEFAULT OFF: the "
@@ -232,6 +235,42 @@ parser.add_argument("--handoff-climb-vx", type=float, default=0.22,
                     help="Forward command (m/s) floor during the parkour climb, applied EVEN when the "
                          "person is visible -- so the controller's 0.55 m collision-floor / standoff "
                          "does not park the dog mid-climb. The parkour net self-paces above this.")
+# ---- Blind (proprioceptive) RL climb backend (--handoff-climb-backend blind_rl) ----
+# The rl_sar Go2 "robot_lab" policy reused as the dual-policy handoff CLIMB net: PGTT
+# walks, this blind RL net hot-swaps in to climb the stairs (no depth). These knobs ARE
+# the rl_sar deployment contract (policy/go2/robot_lab/config.yaml) -- see rl_locomotion_policy.
+parser.add_argument("--rl-policy-path", type=str,
+                    default=str(REPO_ROOT / "sim" / "isaac" / "assets" / "policies" / "go2_robot_lab_policy.pt"),
+                    help="Local TorchScript/ONNX Go2 policy path (rl_sar go2 robot_lab) for the blind_rl climb backend")
+parser.add_argument("--rl-policy-format", type=str, default="auto",
+                    choices=("auto", "torchscript", "torch", "pt", "jit", "onnx"),
+                    help="Policy loader format for --rl-policy-path")
+parser.add_argument("--rl-control-hz", type=float, default=50.0,
+                    help="Trained blind RL policy control rate in Hz")
+parser.add_argument("--rl-control-mode", type=str, default="torque",
+                    choices=("torque", "position"),
+                    help="Blind RL actuation. 'torque' applies the rl_sar explicit PD law "
+                         "tau=kp*(target-q)-kd*qd clipped to the torque limit (faithful to training; "
+                         "required for the handoff which zeroes the engine PD); 'position' uses the "
+                         "PhysX implicit position drive.")
+parser.add_argument("--rl-kp", type=float, default=20.0,
+                    help="Blind RL joint position gain (Nm/rad) (rl_sar go2 config.yaml rl_kp)")
+parser.add_argument("--rl-kd", type=float, default=0.5,
+                    help="Blind RL joint velocity gain (Nm/(rad/s)) (rl_sar go2 config.yaml rl_kd)")
+parser.add_argument("--rl-torque-limit", type=float, default=23.5,
+                    help="Blind RL per-joint torque saturation (Nm) the policy was trained with")
+parser.add_argument("--rl-torque-rate", type=float, default=0.0,
+                    help="Blind RL actuator torque slew-rate limit in Nm per control step (0 = unlimited).")
+parser.add_argument("--rl-obs-noise", dest="rl_obs_noise", action="store_true", default=False,
+                    help="Inject Gaussian IMU/encoder noise into the blind RL observation (default off).")
+parser.add_argument("--rl-obs-latency-steps", type=int, default=0,
+                    help="Make the blind RL policy act on the observation from N control steps ago (0 = none).")
+parser.add_argument("--rl-joint-limit-clamp", dest="rl_joint_limit_clamp", action="store_true", default=False,
+                    help="Saturate blind RL joint-position targets to the articulation's reported joint limits.")
+parser.add_argument("--rl-backlash-rad", type=float, default=0.0,
+                    help="Blind RL actuator backlash/deadband half-width (rad) on the PD position error (0 = off).")
+parser.add_argument("--rl-torque-derate", type=float, default=1.0,
+                    help="Multiplier on commanded blind RL joint torque to model thermal/voltage sag (1.0 = no effect).")
 parser.add_argument("--parkour-base-model", type=str,
                     default=str(REPO_ROOT / "sim" / "isaac" / "assets" / "policies" / "parkour" / "base_jit.pt"),
                     help="Extreme-Parkour base_jit.pt (TorchScript actor+estimator) for the parkour locomotion policy")
@@ -490,6 +529,22 @@ parser.add_argument("--self-test-stairs", action="store_true",
                          "and holds heading up the +X staircase on the delta_yaw/command channel "
                          "parkour steers on. Answers 'can the bare vision policy climb when pointed at "
                          "the stairs', with NO controller/person/handoff/governor in the loop.")
+# Isolated stair WAYPOINT test (ported from the blind-rl-stair-test harness): a
+# Docker-free, person-follow-free probe that drives the robot straight forward (like
+# --self-test-walk, heading-hold ON) up to and over the staircase and EXITS when it
+# reaches the target waypoint (the top landing). The PGTT walker carries it to the
+# riser; the dual-policy handoff then climbs with --handoff-climb-backend (parkour,
+# blind_rl, or ik) -- so this is the isolated rig to test the blind RL climb backend.
+parser.add_argument("--stair-waypoint-test", action="store_true", default=False,
+                    help="Isolated stair-climb test: drive the robot straight forward (no Docker / "
+                         "person-follow) up the staircase and exit when it reaches "
+                         "(--stair-waypoint-x/y). The person is parked off-lane so it never blocks the "
+                         "path. Pair with --handoff-climb-backend blind_rl to test the blind RL climb.")
+parser.add_argument("--stair-waypoint-x", type=float, default=6.2,
+                    help="Target X (m) for the stair waypoint test (~0.4 m past the demo_gentle landing "
+                         "top; adjust per --stair-preset).")
+parser.add_argument("--stair-waypoint-y", type=float, default=0.0,
+                    help="Target Y (m) for the stair waypoint test (0 = staircase centreline).")
 parser.add_argument("--front-cam-out", type=str, default="",
                     help="Debug: save the robot's FRONT (D435) camera RGB to this PNG after "
                          "--front-cam-after steps (with the robot frozen at spawn), then exit. "
@@ -3772,6 +3827,49 @@ def _create_parkour_policy(go2):
     return policy
 
 
+def _create_rl_locomotion_policy(go2):
+    """Construct the blind (proprioceptive) rl_sar Go2 RL policy.
+
+    Used ONLY as the CLIMB backend for the PGTT dual-policy handoff
+    (--handoff-climb-backend blind_rl): PGTT walks, this blind RL net hot-swaps in
+    to climb the stairs (no depth/vision), then PGTT resumes. Lazy-imports the torch
+    runner so the module top level stays torch-free. The 45-D proprio obs / 12-D
+    joint-residual action / explicit-PD (kp20/kd0.5) contract is owned by the policy.
+    """
+    from rl_locomotion_policy import RLLocomotionPolicy, RLLocomotionPolicyConfig
+
+    dof_names = get_dof_names(go2)
+    policy_path = Path(args.rl_policy_path)
+    if not policy_path.is_absolute():
+        policy_path = (REPO_ROOT / policy_path).resolve()
+    config = RLLocomotionPolicyConfig(
+        policy_path=str(policy_path),
+        policy_format=args.rl_policy_format,
+        control_hz=float(args.rl_control_hz),
+        control_mode=str(args.rl_control_mode),
+        # Domain-randomization PD-gain perturbation around the nominal kp=20/kd=0.5.
+        kp=float(args.rl_kp) * float(_DR.get("kp_mult", 1.0)),
+        kd=float(args.rl_kd) * float(_DR.get("kd_mult", 1.0)),
+        torque_limit=float(args.rl_torque_limit),
+        torque_rate_limit_nm=float(args.rl_torque_rate),
+        obs_noise_enabled=bool(args.rl_obs_noise),
+        obs_latency_steps=int(args.rl_obs_latency_steps),
+        joint_limit_clamp=bool(args.rl_joint_limit_clamp),
+        backlash_rad=float(args.rl_backlash_rad),
+        torque_derate=float(args.rl_torque_derate),
+    )
+    policy = RLLocomotionPolicy(config, dof_names, logger=LOGGER)
+    log_event(
+        LOGGER, logging.INFO, "rl_locomotion_policy_loaded",
+        "Loaded blind (proprioceptive) rl_sar Go2 RL policy as the handoff climb backend",
+        policy_path=str(policy_path), policy_format=str(args.rl_policy_format),
+        control_hz=float(args.rl_control_hz), control_mode=str(args.rl_control_mode),
+        dof_count=len(dof_names), observation_size=int(config.num_observations),
+        kp=round(float(config.kp), 3), kd=round(float(config.kd), 3),
+    )
+    return policy
+
+
 def _build_pgtt_handoff(rl_policy):
     """Construct the dual-policy stair handoff for the PGTT walker (Task 2).
 
@@ -3956,6 +4054,55 @@ def _step_go2_locomotion(
                                     person_detected, dt)
             _go2_locomotion_state.handoff = _ho.get("telemetry")
             _climbing_now = bool(_ho.get("climb"))
+            # --- Blind-RL-backend HOT-SWAP: the proprioceptive rl_sar RL net climbs ---
+            # Same dual-policy contract as the parkour backend (the FSM sets use_parkour for
+            # both policy backends), but the blind net takes NO depth and a simpler step():
+            # cmd=(vx,vy,wz) only. PGTT walks, this climbs, then PGTT resumes.
+            if (_climbing_now and bool(_ho.get("use_parkour")) and _PGTT_CLIMB_POLICY is not None
+                    and str(getattr(args, "handoff_climb_backend", "parkour")) == "blind_rl"):
+                if not _HANDOFF_CLIMBING:
+                    # Entering the climb: switch the PhysX drive to TORQUE mode (zero the engine
+                    # PD) so the blind policy's own explicit-PD efforts are not double-driven.
+                    _set_go2_drive_gains(go2, 0.0, 0.0, 40.0, reason="handoff_climb_blind_rl_torque")
+                    try:
+                        _PGTT_CLIMB_POLICY.reset()
+                    except Exception:
+                        pass
+                    log_event(LOGGER, logging.INFO, "handoff_policy_swap",
+                              "Hot-swapped PGTT -> blind (proprioceptive) RL policy for the climb")
+                    _HANDOFF_CLIMBING = True
+                # Forward floor during the climb (same rationale as the parkour backend) so the
+                # controller's collision-floor / standoff does not park the dog mid-climb.
+                _cvx = max(float(vx), float(getattr(args, "handoff_climb_vx", 0.22)))
+                # Steer the blind climb with a yaw-RATE (wz). The blind net has no depth
+                # self-steer, so the INCOMING wz -- the main loop's heading-hold up the
+                # staircase in the waypoint test, or the person-follow steering otherwise --
+                # IS the correct command, so pass it THROUGH by default. Only override it when
+                # a live person bearing is available (bias toward the patient), or hold the
+                # last bearing-rate (decaying) if a person we WERE following drops out briefly.
+                # NEVER force wz=0 with no person: that severed the heading-hold and let the
+                # climb slowly yaw/crab off the stair edge until it rolled (run ..022123:
+                # yaw 0.7->34 deg, y 0.04->0.63 m, rolled to -27 deg and fell).
+                _bwz = float(wz)
+                if bool(getattr(args, "handoff_climb_heading_hold", True)):
+                    if person_detected:
+                        _bscale = float(getattr(args, "stair_follow_bearing_scale", 0.9))
+                        _brmax = float(getattr(args, "stair_rot_max", 0.6))
+                        _bwz = float(np.clip(float(yaw_err) * _bscale, -_brmax, _brmax))
+                        _PGTT_CLIMB_POLICY._last_climb_wz = _bwz
+                    elif getattr(_PGTT_CLIMB_POLICY, "_last_climb_wz", None) is not None:
+                        # Person lost mid-follow: hold the last bearing-rate, decaying to straight.
+                        _held = float(_PGTT_CLIMB_POLICY._last_climb_wz)
+                        _bwz = _held
+                        _PGTT_CLIMB_POLICY._last_climb_wz = _held * 0.92
+                    # else: no person ever (e.g. the waypoint test) -> keep the incoming
+                    # heading-hold wz untouched.
+                telemetry = _PGTT_CLIMB_POLICY.step(go2, (_cvx, vy, _bwz), dt)
+                _go2_locomotion_state.leg_summary = _PGTT_CLIMB_POLICY.leg_command_summary()
+                _go2_locomotion_state.policy_name = _PGTT_CLIMB_POLICY.policy_path.name
+                record_go2_telemetry(go2, _go2_locomotion_state, base_link_name=BASE_LINK_NAME,
+                                     logger=LOGGER, vx=_cvx, vy=vy, wz=_bwz)
+                return
             # --- Parkour-backend HOT-SWAP: the Extreme-Parkour vision RL net climbs ---
             if _climbing_now and bool(_ho.get("use_parkour")) and _PGTT_CLIMB_POLICY is not None:
                 if not _HANDOFF_CLIMBING:
@@ -4573,7 +4720,18 @@ def main() -> None:
     scene_left_camera = add_scene_left_camera(stage)
 
     log_event(LOGGER, logging.INFO, "person_spawn_start", "Spawning person target")
-    person = spawn_person(world, x=args.person_x, y=args.person_y)
+    if args.stair_waypoint_test:
+        # Isolated stair-climb test: no person-follow. Park the person far OFF the forward
+        # lane so the open-loop forward drive does not walk into it (the default spawn sits
+        # in the path). Kept ALIVE (not None) so the rest of the pipeline -- animation,
+        # FramePublisher, telemetry, recording -- works unchanged; it is simply ignored.
+        _wp_person_x, _wp_person_y = -8.0, 8.0
+        person = spawn_person(world, x=_wp_person_x, y=_wp_person_y)
+        log_event(LOGGER, logging.INFO, "person_spawn_offlane",
+                  "Stair waypoint test: person parked off-lane (no follow)",
+                  person_x=_wp_person_x, person_y=_wp_person_y)
+    else:
+        person = spawn_person(world, x=args.person_x, y=args.person_y)
     update_final_scene_recording_cameras(stage)
 
     distractor_prim = None
@@ -4658,7 +4816,8 @@ def main() -> None:
         # Parkour-backend handoff: instantiate the Extreme-Parkour vision RL net as the
         # CLIMB policy alongside the PGTT walker (depth fed each tick; hot-swapped in at the
         # stairs, then PGTT resumes). The IK backend needs no second policy.
-        if str(getattr(_PGTT_HANDOFF.cfg, "climb_backend", "parkour")) == "parkour":
+        _climb_backend = str(getattr(_PGTT_HANDOFF.cfg, "climb_backend", "parkour"))
+        if _climb_backend == "parkour":
             try:
                 _PGTT_CLIMB_POLICY = _create_parkour_policy(go2)
                 _PGTT_CLIMB_POLICY.reset()
@@ -4674,6 +4833,21 @@ def main() -> None:
                 _PGTT_CLIMB_POLICY = None
                 log_event(LOGGER, logging.WARNING, "pgtt_handoff_climb_policy_failed",
                           "Could not load the parkour climb policy; handoff climb disabled",
+                          error=str(_cpx))
+        elif _climb_backend == "blind_rl":
+            # Blind (proprioceptive) rl_sar RL net as the CLIMB backend: instantiated
+            # ALONGSIDE the PGTT walker and hot-swapped in at the stairs (no depth fed),
+            # then PGTT resumes. Same gain-swap (position<->torque) as the parkour backend.
+            try:
+                _PGTT_CLIMB_POLICY = _create_rl_locomotion_policy(go2)
+                _PGTT_CLIMB_POLICY.reset()
+                log_event(LOGGER, logging.INFO, "pgtt_handoff_climb_policy_ready",
+                          "Blind (proprioceptive) RL policy armed as the PGTT handoff climb backend",
+                          policy=str(_PGTT_CLIMB_POLICY.policy_path.name))
+            except Exception as _cpx:
+                _PGTT_CLIMB_POLICY = None
+                log_event(LOGGER, logging.WARNING, "pgtt_handoff_climb_policy_failed",
+                          "Could not load the blind RL climb policy; handoff climb disabled",
                           error=str(_cpx))
 
     if verification_camera is not None and args.verification_image and args.exit_after_verification:
@@ -4848,6 +5022,9 @@ def main() -> None:
     _person_positions_over_time = []
     destination_reached_time = None
     destination_reached_sim_sec = None
+    # Stair waypoint test: sim-time the robot first reached the target waypoint (None
+    # until reached); a brief hold past it confirms it stayed up rather than tumbling back.
+    waypoint_reached_sim_sec = None
     motion_start_time = None
     motion_elapsed_sim_sec = 0.0
     # Domain-randomization push schedule (first push after one interval of motion).
@@ -4967,27 +5144,36 @@ def main() -> None:
             # Self-test: bypass the Docker/vision controller entirely and drive a
             # constant forward command straight into the locomotion policy. Lets us
             # verify flat-ground walking and balance in isolation (headless, no UDP).
-            if args.self_test_walk:
+            if args.self_test_walk or args.stair_waypoint_test:
                 vx, vy, wz = float(args.self_test_vx), 0.0, 0.0
                 yaw_err = 0.0
                 stairs_detected = False
                 stairs_action_active = False
                 person_bbox = None
                 command_fresh = True
+                person_detected = False
                 # We are explicitly commanding motion with no UDP controller, so the
                 # stale-command read above forced hold=True -- clear it, else the
                 # locomotion policy is told to stand still and never walks.
                 hold = False
                 # Optional heading-hold: command wz to keep the robot facing +X (yaw->0),
                 # standing in for the person-follow steering loop so the open-loop climb
-                # test goes straight up the stairs instead of crabbing off-axis.
-                if getattr(args, "self_test_heading_hold", False):
+                # test goes straight up the stairs instead of crabbing off-axis. ALWAYS on
+                # for the waypoint test (it must drive straight up to the target).
+                if getattr(args, "self_test_heading_hold", False) or args.stair_waypoint_test:
                     try:
-                        _q = np.asarray(go2.get_world_pose()[1], dtype=float).reshape(-1)[:4]
+                        _pp, _q = go2.get_world_pose()
+                        _q = np.asarray(_q, dtype=float).reshape(-1)[:4]
                         _w, _xq, _yq, _zq = (float(v) for v in _q)
                         _yaw = math.atan2(2.0 * (_w * _zq + _xq * _yq),
                                           1.0 - 2.0 * (_yq * _yq + _zq * _zq))
-                        wz = float(np.clip(-2.0 * _yaw, -0.8, 0.8))
+                        # Steer to face +X AND (waypoint test) re-center to the y=0 staircase
+                        # centreline. A yaw-ONLY hold cannot catch a lateral drift, so a small
+                        # sideways slip crabs the dog off the stair edge and it rolls (run ..022123:
+                        # y 0.04->0.63 m while yaw grew, rolled to -27 deg). The lateral term pulls
+                        # it back toward centre, matching the parkour stair self-test steering.
+                        _ylat = float(_pp[1]) if args.stair_waypoint_test else 0.0
+                        wz = float(np.clip(-(2.0 * _yaw + 1.0 * _ylat), -0.8, 0.8))
                     except Exception:
                         wz = 0.0
                 # Parkour STAIR self-test: the faithful isolated "can the bare vision policy climb
@@ -5109,8 +5295,10 @@ def main() -> None:
                                     _depth_hw = _masked
                             rl_policy.submit_depth(_depth_hw)
                             # Feed the same masked depth to the parkour climb backend so it
-                            # has a fresh encode ready the moment the handoff swaps it in.
-                            if _PGTT_CLIMB_POLICY is not None:
+                            # has a fresh encode ready the moment the handoff swaps it in. The
+                            # blind_rl climb backend takes NO depth (no submit_depth), so skip
+                            # it -- the handoff stair detector still uses _LATEST_PARKOUR_DEPTH.
+                            if _PGTT_CLIMB_POLICY is not None and hasattr(_PGTT_CLIMB_POLICY, "submit_depth"):
                                 _PGTT_CLIMB_POLICY.submit_depth(_depth_hw)
                     except Exception as _pk_dexc:
                         log_event(LOGGER, logging.WARNING, "parkour_depth_read_failed",
@@ -5238,6 +5426,42 @@ def main() -> None:
                         self_test_vx=float(args.self_test_vx),
                     )
                     break
+                # Stair waypoint test: SUCCESS exit once the robot reaches the target waypoint
+                # (the top landing) and stays there briefly -- the isolated climb worked. A
+                # failed attempt still ends via the fall watchdog / DEMO_SIM_TIMEOUT below.
+                if args.stair_waypoint_test:
+                    _wp_dist = None
+                    try:
+                        _wp_pose, _ = go2.get_world_pose()
+                        _wp_dist = math.hypot(
+                            float(args.stair_waypoint_x) - float(_wp_pose[0]),
+                            float(args.stair_waypoint_y) - float(_wp_pose[1]),
+                        )
+                    except Exception:
+                        _wp_dist = None
+                    if _wp_dist is not None and _wp_dist <= 0.15:
+                        if waypoint_reached_sim_sec is None:
+                            waypoint_reached_sim_sec = motion_elapsed_sim_sec
+                            log_event(
+                                LOGGER, logging.INFO, "stair_waypoint_reached",
+                                "Robot reached the stair waypoint; holding to confirm it stayed up",
+                                waypoint=[float(args.stair_waypoint_x), float(args.stair_waypoint_y)],
+                                motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
+                            )
+                        elif (motion_elapsed_sim_sec - waypoint_reached_sim_sec) >= 2.0:
+                            evaluation_done = True
+                            evaluation_exit_reason = "robot_reached_stair_waypoint"
+                            log_event(
+                                LOGGER, logging.INFO, "evaluation_exit",
+                                "Robot reached the stair waypoint (isolated climb test passed)",
+                                reason=evaluation_exit_reason,
+                                waypoint=[float(args.stair_waypoint_x), float(args.stair_waypoint_y)],
+                                motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
+                            )
+                            break
+                    else:
+                        # Left the target tolerance (e.g. slid back) -- re-arm the hold timer.
+                        waypoint_reached_sim_sec = None
                 # Bench terrain: self-exit when this terrain's drive duration elapses so
                 # the warm loop can advance to the next terrain.
                 if (

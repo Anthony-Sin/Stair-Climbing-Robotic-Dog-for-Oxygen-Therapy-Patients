@@ -113,10 +113,11 @@ class HandoffConfig:
     climb_attempt: bool = False
     # Climb backend: "parkour" hot-swaps the active policy to the Extreme-Parkour depth/
     # vision RL net (the trained perceptive climber -- PGTT walks, parkour climbs, then
-    # back); "ik" uses the deterministic ClosedLoopStairClimber (flips in PhysX). For the
-    # parkour backend the FSM only DECIDES (state == climb); isaac_env runs the policy +
-    # swaps the drive gains. The parkour backend always attempts (climb_attempt is the IK
-    # safety gate only).
+    # back); "blind_rl" hot-swaps to the proprioceptive (blind) rl_sar Go2 RL net instead
+    # (same gain-swap + continuous-climb contract, no depth); "ik" uses the deterministic
+    # ClosedLoopStairClimber (flips in PhysX). For the policy backends (parkour, blind_rl)
+    # the FSM only DECIDES (state == climb); isaac_env runs the policy + swaps the drive
+    # gains. The policy backends always attempt (climb_attempt is the IK safety gate only).
     climb_backend: str = "parkour"
     # When the climb IS attempted, engage WITH ROOM: only when the first riser is between
     # climb_min_room_m and climb_engage_standoff_m ahead of the base (front feet not jammed).
@@ -455,10 +456,10 @@ class HandoffController:
             if trigger:
                 reason = "approach_room" if approach_engage else "wedge_stall"
                 backend = str(self.cfg.climb_backend)
-                # The parkour vision backend always attempts (the user's goal); the IK
-                # backend is gated by climb_attempt (it flips in PhysX) -- off => decision
-                # logged but the dog stays upright at the riser via the stair-commit.
-                do_climb = (backend == "parkour") or bool(self.cfg.climb_attempt)
+                # The policy backends (parkour vision / blind RL) always attempt (the user's
+                # goal); the IK backend is gated by climb_attempt (it flips in PhysX) -- off
+                # => decision logged but the dog stays upright at the riser via the stair-commit.
+                do_climb = (backend in ("parkour", "blind_rl")) or bool(self.cfg.climb_attempt)
                 if not do_climb:
                     self._cooldown_until = float(now) + float(self.cfg.re_eval_cooldown_sec)
                     log_event(
@@ -471,7 +472,7 @@ class HandoffController:
                     self._climb_start_z = float(base_z)
                     self._climb_t0 = float(now)
                     self._climb_elapsed = 0.0
-                    if backend != "parkour":
+                    if backend not in ("parkour", "blind_rl"):
                         self.climber.reset()
                         # Anti-jolt: seed the IK climber's slew limiter from the CURRENT
                         # joint pose so its first target ramps from where PGTT left the legs.
@@ -496,10 +497,11 @@ class HandoffController:
         use_parkour = False
         if self.state == "climb":
             climb = True
-            if str(self.cfg.climb_backend) == "parkour":
-                # The parkour vision policy is run by isaac_env (it owns the torque-mode
-                # drive swap + depth); the FSM here only owns the done/abort/timeout
-                # transition. No IK targets.
+            if str(self.cfg.climb_backend) in ("parkour", "blind_rl"):
+                # The policy backend (parkour vision OR blind RL) is run by isaac_env (it owns
+                # the torque-mode drive swap + depth submit); the FSM here only owns the
+                # done/abort/timeout transition. No IK targets. (use_parkour == "use the
+                # hot-swap policy path in isaac_env", which then branches on the backend.)
                 use_parkour = True
                 targets = None
             else:
@@ -523,7 +525,7 @@ class HandoffController:
             # Parkour is a CONTINUOUS multi-step climber -- do not hand back after one riser
             # (that re-swaps the drive gains every step and thrashes it). Climb until the
             # timeout or an abort. The IK backend hands back per step ("one stair at a time").
-            done = (str(self.cfg.climb_backend) != "parkour") and (gained >= float(self.cfg.climb_riser_height_m))
+            done = (str(self.cfg.climb_backend) not in ("parkour", "blind_rl")) and (gained >= float(self.cfg.climb_riser_height_m))
             timeout = elapsed >= float(self.cfg.climb_max_sec)
             abort = tilt >= float(self.cfg.climb_abort_tilt_rad)
             if done or timeout or abort:

@@ -62,6 +62,13 @@ param(
     [switch]$SelfTestNoPolicy,
     [switch]$SelfTestHeadingHold,
     [switch]$SelfTestStairs,
+    # Dual-policy handoff CLIMB backend: 'parkour' (default), 'blind_rl', or 'ik'.
+    [string]$HandoffClimbBackend = "parkour",
+    # Isolated stair-climb test (Docker-free): drive straight up the stairs and exit at
+    # the target waypoint. Pair with -HandoffClimbBackend blind_rl to test the blind RL climb.
+    [switch]$StairWaypointTest,
+    [double]$StairWaypointX = 6.2,
+    [double]$StairWaypointY = 0.0,
     [switch]$NoParkourPersonMask,
     [switch]$WithO2Payload,
     [switch]$NoParkourWalkMode,
@@ -89,6 +96,14 @@ if ($SelfTestWalk) {
     $NoDockerRun = $true
     $NoModelPreflight = $true
     Write-Host "Self-test mode: driving the policy directly (vx=$SelfTestVx, ${SelfTestSec}s, no-policy=$SelfTestNoPolicy); Docker controller disabled."
+}
+if ($StairWaypointTest) {
+    # The isolated stair waypoint test also drives the robot straight up the stairs with
+    # no vision/Docker controller (PGTT walks, the handoff climb backend climbs), so skip
+    # Docker + the TensorRT preflight. Isaac auto-exits when the robot reaches the waypoint.
+    $NoDockerRun = $true
+    $NoModelPreflight = $true
+    Write-Host "Stair waypoint test: PGTT walks up + '$HandoffClimbBackend' climbs to ($StairWaypointX, $StairWaypointY); Docker controller disabled."
 }
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $Stamp = Get-Date -Format "yyyyMMdd_HHmmss_fff"
@@ -1279,6 +1294,14 @@ if ($NoIsaac) {
         if ($SelfTestHeadingHold) { $isaacArgs += "-SelfTestHeadingHold" }
         if ($SelfTestStairs) { $isaacArgs += "-SelfTestStairs" }
     }
+    # Dual-policy handoff climb backend (parkour | blind_rl | ik) -- always passed through.
+    $isaacArgs += "-HandoffClimbBackend"; $isaacArgs += $HandoffClimbBackend
+    # Isolated stair waypoint test (Docker-free straight drive up the stairs).
+    if ($StairWaypointTest) {
+        $isaacArgs += "-StairWaypointTest"
+        $isaacArgs += "-StairWaypointX"; $isaacArgs += [string]$StairWaypointX
+        $isaacArgs += "-StairWaypointY"; $isaacArgs += [string]$StairWaypointY
+    }
 
     # Warm mode: reuse a live warm Isaac if present (skip the ~120s boot); otherwise
     # add the warm flags and clear stale sentinels so the new Kit ignores old commands.
@@ -1369,8 +1392,10 @@ if ($NoDockerRun) {
         $checkInterval = 1
         # Self-test kill-timeout (wall seconds, after world_ready). Windowed (non-headless) RTX
         # rendering is several x slower than headless, so scale with the sim-time budget instead of
-        # a flat +60 (which is fine headless but can cut a windowed run off mid-climb).
-        $timeout = if ($SelfTestWalk) { [int]($SelfTestSec * 8) + 60 } else { 300 }
+        # a flat +60 (which is fine headless but can cut a windowed run off mid-climb). The stair
+        # waypoint test walks ~6.5 m up to the stairs THEN climbs (internal cap 120 sim-sec), which
+        # at windowed render speed easily exceeds 300 s wall, so give it a generous budget.
+        $timeout = if ($SelfTestWalk) { [int]($SelfTestSec * 8) + 60 } elseif ($StairWaypointTest) { 1200 } else { 300 }
         while (-not $proc.HasExited -and $totalWait -lt $timeout) {
             Start-Sleep -Seconds $checkInterval
             $totalWait += $checkInterval

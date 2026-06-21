@@ -36,12 +36,23 @@ param(
     [switch]$FinalScene,
     [switch]$NoParkourWalkMode,
     [switch]$NoSpeedGovernor,
+    # Attach the oxygen-concentrator payload (mounting rails + O2 tank) on the Go2's back.
+    # run_sim.ps1 forwards -WithO2Payload here; without this param it errored the launch.
+    [switch]$WithO2Payload,
     [switch]$Headless,
     [switch]$FastRender,
     [switch]$WarmIsaac,
     [string]$WarmCommandFile = "",
     [int]$WarmMaxRuns = 10,
-    [switch]$Bench
+    [switch]$Bench,
+    # Dual-policy handoff CLIMB backend: 'parkour' (depth/vision RL, default), 'blind_rl'
+    # (proprioceptive rl_sar RL net), or 'ik' (deterministic ClosedLoopStairClimber).
+    [string]$HandoffClimbBackend = "parkour",
+    # Isolated stair-climb test: drive straight forward up the stairs (no Docker/person-follow)
+    # and exit when the robot reaches (StairWaypointX, StairWaypointY) = the top landing.
+    [switch]$StairWaypointTest,
+    [double]$StairWaypointX = 6.2,
+    [double]$StairWaypointY = 0.0
 )
 
 $ErrorActionPreference = "Stop"
@@ -180,15 +191,38 @@ if ($WarmIsaac) {
 $benchArg = ""
 $personArgs = "--person-move"
 if ($Bench) { $benchArg = "--bench" }
-if ($Bench -or $SelfTestWalk) {
-    # Open-loop constant-forward drive (bench OR self-test) would collide with the
-    # default person spawn (-3.5,0) sitting in the forward lane, so park the person
-    # static and well off-lane. See the CLAUDE.md incident ledger entry.
+if ($Bench -or $SelfTestWalk -or $StairWaypointTest) {
+    # Open-loop constant-forward drive (bench / self-test / waypoint-test) would collide
+    # with the default person spawn (-3.5,0) sitting in the forward lane, so park the
+    # person static and well off-lane. See the CLAUDE.md incident ledger entry. (The
+    # waypoint test ALSO parks the person off-lane inside isaac_env, but drop --person-move
+    # here so it never patrols into the lane.)
     $personArgs = "--person-x -8.0 --person-y 8.0"
-    Write-ConsoleLog "  Person parked off-lane (open-loop bench/self-test drive)"
+    Write-ConsoleLog "  Person parked off-lane (open-loop bench/self-test/waypoint drive)"
 }
 
-$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" $personArgs --go2-x $Go2X --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera $rawArg $locomotionArgs $validationCamArg $selfTestArg $warmArg $benchArg > `"$RawLog`" 2>&1`""
+# Dual-policy handoff CLIMB backend (parkour | blind_rl | ik). Always pass it so the
+# selected backend (e.g. the blind RL climb net) is in effect.
+$handoffArg = "--handoff-climb-backend $HandoffClimbBackend"
+
+# Isolated stair WAYPOINT test: Docker-free straight drive up the stairs, exit at the
+# target waypoint. Pair with -HandoffClimbBackend blind_rl to test the blind RL climb.
+$waypointArg = ""
+if ($StairWaypointTest) {
+    $waypointArg = "--stair-waypoint-test --stair-waypoint-x $StairWaypointX --stair-waypoint-y $StairWaypointY"
+    if ($Headless) { $waypointArg += " --headless" }
+    Write-ConsoleLog "  Stair waypoint test: target=($StairWaypointX, $StairWaypointY), climb backend=$HandoffClimbBackend (no controller)"
+}
+
+# Oxygen-concentrator payload (mounting rails + O2 tank) on the Go2's back. isaac_env
+# attaches it in load_go2() and runs the O2PayloadMonitor (mass/CoM, tank-detach watchdog).
+$o2Arg = ""
+if ($WithO2Payload) {
+    $o2Arg = "--with-o2-payload"
+    Write-ConsoleLog "  O2 payload:          ON (oxygen tank + mounting rails attached to the Go2)"
+}
+
+$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" $personArgs --go2-x $Go2X --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera $rawArg $locomotionArgs $validationCamArg $selfTestArg $warmArg $benchArg $handoffArg $waypointArg $o2Arg > `"$RawLog`" 2>&1`""
 
 # Start the process with direct OS redirection to prevent pipeline blocking
 $process = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs -PassThru -NoNewWindow
