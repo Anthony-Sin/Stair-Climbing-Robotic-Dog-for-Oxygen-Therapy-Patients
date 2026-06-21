@@ -53,6 +53,10 @@ class Go2LocomotionState:
     # replacing the removed procedural-gait swing bookkeeping.
     leg_summary: Dict[str, Any] = field(default_factory=dict)
     policy_name: str = ""
+    # Dual-policy stair-handoff telemetry (pgtt_stair_handoff.HandoffController.
+    # telemetry()), surfaced into fall_diag so the WALK<->CLIMB switch is verifiable
+    # from the authoritative motion log. None when the handoff is inactive/disabled.
+    handoff: Any = None
     stair_demo_climb_logged: bool = False
     stair_demo_complete_logged: bool = False
     stair_crawl_logged: bool = False

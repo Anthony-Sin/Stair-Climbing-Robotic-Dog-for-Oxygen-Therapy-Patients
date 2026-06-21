@@ -249,6 +249,21 @@ def parse_args():
                              'speed then settles to zero, so the time-AVERAGE can sit below the floor '
                              'and track a slow-walking patient without creeping into them. The burst '
                              'speed is max(this, --follow-pace-speed).')
+    parser.add_argument('--follow-trot-speed-kp', type=float, default=0.8,
+                        help='Proportional TROT gain (1/s) for a creepless walker such as PGTT. When '
+                             '>0, in the normal follow zone (go-state and standoff < gap <= pace-'
+                             'distance) the forward command becomes kp*(gap - standoff), clipped to '
+                             '--trans-x-max and easing to zero AT the standoff, instead of zero. PGTT '
+                             'does NOT self-creep on a zero command, so the old lean-on-creep '
+                             'behaviour STOPPED the dog whenever the person was within pace-distance '
+                             '(the stop/start cycling in run_20260620_172239: gap 1.7 m, cmd 0, body '
+                             '0.04 m/s). Set 0 to restore the creep for the parkour policy (which '
+                             'over-runs forward commands).')
+    parser.add_argument('--follow-loss-glide-sec', type=float, default=4.0,
+                        help='On a brief person-tracking loss on flat ground with a clear path ahead, '
+                             'glide straight (holding the last heading) for up to this long before '
+                             'stopping, so a momentary loss does not freeze the dog. Configurable '
+                             'recovery window (was a hardcoded 4 s).')
     parser.add_argument('--follow-pace-advance-time', type=float, default=2.0,
                         help='Duration (seconds) of the advance phase during pacing')
     parser.add_argument('--follow-pace-settle-time', type=float, default=1.5,

@@ -494,15 +494,30 @@ def _apply_follow_standoff_policy(
     state["last_time"] = time.perf_counter()
     state["pace_timer"] = 0.0
 
-    if state["go_state"] and gap_ctrl is not None and gap_ctrl > args.follow_pace_distance:
-        # Catch-up: leader GENUINELY far ahead (on the smoothed gap, not a single noisy spike) ->
-        # command the floor so the policy actually moves.
+    trot_kp = float(getattr(args, "follow_trot_speed_kp", 0.0))
+    if trot_kp > 0.0 and state["go_state"] and gap_ctrl is not None:
+        # Dynamic pace-matching follow (creepless walker, e.g. PGTT). PGTT does NOT
+        # self-creep on a zero command, so the old lean-on-creep STOPPED the dog whenever
+        # the person was within pace-distance (stop/start cycling, run_20260620_172239).
+        # A pure proportional trot fixed the stopping but, being P-only, trailed the
+        # MOVING person by a steady-state lag (~1.2-1.5 m at target 0.45 m). So FEED
+        # FORWARD the leader's measured speed -> the dog matches the person's pace and the
+        # proportional term then only has to close to the standoff, so the gap settles at
+        # ~standoff instead of far behind. Eases to 0 when the person stops and the gap is
+        # closed; clamped to the speed limit. Parkour keeps the creep via --follow-trot-speed-kp 0.
+        trot = float(leader_speed_clamped) + trot_kp * (float(gap_ctrl) - float(standoff))
+        trans_x_cmd = float(np.clip(trot, 0.0, float(args.trans_x_max)))
+        state["pace_state"] = "trot"
+        pace_cap_active = True
+    elif state["go_state"] and gap_ctrl is not None and gap_ctrl > args.follow_pace_distance:
+        # Catch-up (parkour creep mode, trot_kp=0): leader GENUINELY far ahead -> command
+        # the floor so the policy actually moves; the intrinsic ~0.5 m/s creep holds otherwise.
         state["pace_state"] = "advance"
         trans_x_cmd = max(float(trans_x_cmd), float(args.follow_pace_floor_speed))
         pace_cap_active = True
     else:
-        # Normal following (or hold): lean on the ~0.5 m/s creep; never command forward, which
-        # would over-run into a run. trans_x_cmd is already zero in the hold case (go_state gate).
+        # Creep mode (trot_kp=0, e.g. parkour) / too-close / hold: lean on the policy's
+        # intrinsic creep; never command forward. trans_x_cmd is already zero in the hold case.
         state["pace_state"] = "creep"
         trans_x_cmd = 0.0
         
@@ -1652,7 +1667,8 @@ def main():
                 not bool(debug_info.get("person_detected", False))
                 and not _stairs_now
                 and not _stair_approach_commit
-                and _glide_lost_age is not None and float(_glide_lost_age) <= 4.0
+                and _glide_lost_age is not None
+                and float(_glide_lost_age) <= float(getattr(args, "follow_loss_glide_sec", 4.0))
                 and _front_near_m is not None and float(_front_near_m) > 0.9
             )
             debug_info["flat_loss_glide_eligible"] = bool(_flat_loss_glide)

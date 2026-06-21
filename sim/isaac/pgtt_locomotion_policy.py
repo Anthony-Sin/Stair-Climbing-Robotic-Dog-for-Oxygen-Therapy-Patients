@@ -401,6 +401,34 @@ class PgttLocomotionPolicy:
         """
         return
 
+    # -- external-target apply (dual-policy stair handoff) -----------------
+    def current_act_positions(self, articulation: Any) -> np.ndarray:
+        """Current joint positions in ACT order (FR/FL/RR/RL x hip/thigh/calf).
+
+        Used by the stair handoff to seed the climber's slew limiter from the live
+        pose so the WALK->CLIMB transition does not snap the legs.
+        """
+        q = safe_joint_vector(articulation, ("get_joint_positions",), self.n)
+        return q[self.act_to_isaac].astype(np.float32)
+
+    def apply_external_act_targets(self, articulation: Any, targets_act: Any) -> None:
+        """Drive 12 externally-computed joint targets (ACT order) as PD position targets.
+
+        Lets the dual-policy stair climber borrow PGTT's name-based joint map and the
+        engine PD (Kp/Kd already set on the articulation by isaac_env) during a
+        handoff, WITHOUT the walker running inference. Position drive only -- the
+        closed-loop climber assumes position PD. ``_last_target_act`` is updated so
+        leg_command_summary()/the HUD reflect what the climber commanded.
+        """
+        t = np.asarray(targets_act, dtype=np.float32).reshape(-1)
+        target_isaac = self.default_isaac.copy()
+        for k, isaac_idx in enumerate(self.act_to_isaac):
+            if k < t.shape[0]:
+                target_isaac[isaac_idx] = t[k]
+        self.last_targets_isaac = target_isaac
+        self._last_target_act = t
+        self._set_position_targets(articulation, target_isaac)
+
     def leg_command_summary(self) -> Dict[str, Any]:
         target = np.asarray(self._last_target_act, dtype=np.float32)
         action = np.asarray(self.prev_action, dtype=np.float32)

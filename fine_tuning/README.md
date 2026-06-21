@@ -10,9 +10,11 @@ front, trains end-to-end on synthetic data (smoke test), and writes checkpoints 
 exact format the runtime already loads. The sim→training **data emitter is built
 separately** and plugs into the documented contract in [`data/README.md`](data/README.md).
 
-> Scope: **Phase-2 depth distillation only** (adapt the depth encoder). The frozen
-> actor/estimator (`base_jit.pt`) and the upstream RL/PPO base-policy training (Isaac
-> Gym) are out of scope.
+> Scope: this top-level package is **Phase-2 depth distillation** (adapt the depth
+> encoder against a frozen teacher). The **RL base-policy retrain** — needed to change
+> locomotion itself (walk slower, balance the O2 tank, climb stairs without falling) —
+> lives in **[`rl/`](rl/README.md)** and produces the new teacher this stage distils
+> from. See `rl/` for the stair-climb retrain pipeline + RunPod runbook.
 
 ## How it works
 

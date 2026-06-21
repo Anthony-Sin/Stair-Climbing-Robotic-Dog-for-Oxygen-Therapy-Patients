@@ -97,12 +97,14 @@ def configure_sim_logger(
 
 
 def log_event(
-    logger: logging.Logger,
+    logger: Optional[logging.Logger],
     level: int,
     event: str,
     message: str,
     **fields: Any,
 ) -> None:
+    if logger is None:
+        return
     exc_info = fields.pop("exc_info", None)
     component = logger.name.split(".", 1)[-1]
     logger.log(

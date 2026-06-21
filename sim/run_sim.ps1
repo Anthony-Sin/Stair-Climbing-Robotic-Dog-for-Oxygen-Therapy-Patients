@@ -50,12 +50,18 @@ param(
     # Optional approach square-up. The recorded top-landing configuration kept this OFF and let
     # the person bearing own the approach; pass --stair-square-up only for an explicit A/B run.
     [switch]$NoStairSquareUp,
+    # Override the active stair preset's per-step RISE (m). 0 = keep the preset value
+    # (run_sim forces the 'commercial' preset = 0.150 m). E.g. -StairStepHeight 0.075
+    # halves the commercial riser without defining a new preset. Total height, landing,
+    # and terrain snapping all derive from this (StairSpec.top_height_m is computed).
+    [double]$StairStepHeight = 0,
     [switch]$Sim2RealValidationCam,
     [switch]$SelfTestWalk,
     [double]$SelfTestVx = 0.5,
     [double]$SelfTestSec = 15.0,
     [switch]$SelfTestNoPolicy,
     [switch]$SelfTestHeadingHold,
+    [switch]$SelfTestStairs,
     [switch]$NoParkourPersonMask,
     [switch]$WithO2Payload,
     [switch]$NoParkourWalkMode,
@@ -880,6 +886,30 @@ function Stop-IsaacProcess {
 
     $stopped = $false
 
+    # Graceful first: drop a stop sentinel so isaac_env breaks its render loop and runs
+    # its finally block, which RELEASES the video writers. The mp4 moov atom is only
+    # written by VideoWriter.release(); a bare taskkill /F skips the finally and leaves
+    # scene_view/topdown.mp4 unplayable ("moov atom not found"). Wait briefly for the
+    # clean exit, then fall through to the force-kill below as a fallback.
+    try {
+        if ($RunLogDir -and (Test-Path -LiteralPath $RunLogDir)) {
+            $sentinelPath = Join-Path $RunLogDir "STOP_ISAAC"
+            [System.IO.File]::WriteAllText($sentinelPath, "stop")
+            $graceWaited = 0.0
+            while ($Process -and -not $Process.HasExited -and $graceWaited -lt 12.0) {
+                Start-Sleep -Milliseconds 400
+                $graceWaited += 0.4
+            }
+            if ($Process -and $Process.HasExited) {
+                Write-Stage "isaac" "cleanup" "Isaac exited gracefully; recordings finalized" @{
+                    waited_sec = [math]::Round($graceWaited, 1)
+                    reason = $Reason
+                }
+                $stopped = $true
+            }
+        }
+    } catch {}
+
     try {
         if ($Process -and -not $Process.HasExited) {
             $pidText = [string][int]$Process.Id
@@ -1229,6 +1259,9 @@ if ($NoIsaac) {
     if ($NoSpeedGovernor) {
         $isaacArgs += "-NoSpeedGovernor"
     }
+    if ($StairStepHeight -gt 0) {
+        $isaacArgs += "-StairStepHeight"; $isaacArgs += [string]$StairStepHeight
+    }
     if ($Headless) {
         $isaacArgs += "-Headless"
     }
@@ -1244,6 +1277,7 @@ if ($NoIsaac) {
         $isaacArgs += "-SelfTestSec"; $isaacArgs += [string]$SelfTestSec
         if ($SelfTestNoPolicy) { $isaacArgs += "-SelfTestNoPolicy" }
         if ($SelfTestHeadingHold) { $isaacArgs += "-SelfTestHeadingHold" }
+        if ($SelfTestStairs) { $isaacArgs += "-SelfTestStairs" }
     }
 
     # Warm mode: reuse a live warm Isaac if present (skip the ~120s boot); otherwise
@@ -1333,7 +1367,10 @@ if ($NoDockerRun) {
         Write-Host "Waiting for Isaac Sim process (PID $($proc.Id)) to complete..."
         $totalWait = 0
         $checkInterval = 1
-        $timeout = if ($SelfTestWalk) { [int]$SelfTestSec + 60 } else { 300 }
+        # Self-test kill-timeout (wall seconds, after world_ready). Windowed (non-headless) RTX
+        # rendering is several x slower than headless, so scale with the sim-time budget instead of
+        # a flat +60 (which is fine headless but can cut a windowed run off mid-climb).
+        $timeout = if ($SelfTestWalk) { [int]($SelfTestSec * 8) + 60 } else { 300 }
         while (-not $proc.HasExited -and $totalWait -lt $timeout) {
             Start-Sleep -Seconds $checkInterval
             $totalWait += $checkInterval

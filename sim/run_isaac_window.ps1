@@ -19,6 +19,7 @@ param(
     [double]$SelfTestSec = 15.0,
     [switch]$SelfTestNoPolicy,
     [switch]$SelfTestHeadingHold,
+    [switch]$SelfTestStairs,
     [switch]$NoParkourPersonMask,
     # 'terrain' (restored): the near-fill triggers the policy's climb charge; 'far' killed
     # the climb. run_sim.ps1 passes this explicitly anyway. See [[project_parkour_stair_base_fall_mask]].
@@ -29,6 +30,9 @@ param(
     # 'demo_gentle' 0.08 m step is OOD-shallow -- the policy reads it as a near-flat ramp,
     # under-reacts, and face-plants at the first riser (confirmed across runs ..190725..200400).
     [string]$StairPreset = "residential",
+    # Optional per-step RISE override (m); 0 keeps the preset value. Plumbed to
+    # isaac_env --stair-step-height so a run can shorten the risers without a new preset.
+    [double]$StairStepHeight = 0,
     [switch]$FinalScene,
     [switch]$NoParkourWalkMode,
     [switch]$NoSpeedGovernor,
@@ -118,6 +122,8 @@ if ($NoParkourPersonMask) { $locomotionArgs += " --no-parkour-person-mask" }
 $locomotionArgs += " --parkour-mask-fill $ParkourMaskFill"
 # Staircase geometry preset (default residential = realistic + in-distribution for the policy).
 $locomotionArgs += " --stair-preset $StairPreset"
+# Optional per-step rise override (0 = keep the preset). Lets a run halve/shorten the risers.
+if ($StairStepHeight -gt 0) { $locomotionArgs += " --stair-step-height $StairStepHeight" }
 if ($FinalScene) { $locomotionArgs += " --final-scene" }
 # Walk mode and speed governor are ON by default in isaac_env.py; pass disable flags for A/B.
 if ($NoParkourWalkMode) { $locomotionArgs += " --no-parkour-walk-mode" }
@@ -149,10 +155,14 @@ if ($Sim2RealValidationCam) {
 # to confirm the robot stands on the position-hold drives alone.
 $selfTestArg = ""
 if ($SelfTestWalk) {
-    $selfTestArg = "--self-test-walk --self-test-vx $SelfTestVx --self-test-sec $SelfTestSec --headless"
+    $selfTestArg = "--self-test-walk --self-test-vx $SelfTestVx --self-test-sec $SelfTestSec"
+    # Gate --headless on the switch (like the normal path at line ~128) so dropping -Headless
+    # opens the RTX viewport to WATCH the self-test live, instead of always forcing headless.
+    if ($Headless) { $selfTestArg += " --headless" }
     if ($SelfTestNoPolicy) { $selfTestArg += " --self-test-no-policy" }
     if ($SelfTestHeadingHold) { $selfTestArg += " --self-test-heading-hold" }
-    Write-ConsoleLog "  Self-test:           vx=$SelfTestVx, ${SelfTestSec}s, no-policy=$SelfTestNoPolicy (headless, no controller)"
+    if ($SelfTestStairs) { $selfTestArg += " --self-test-stairs" }
+    Write-ConsoleLog "  Self-test:           vx=$SelfTestVx, ${SelfTestSec}s, no-policy=$SelfTestNoPolicy, headless=$Headless (no controller)"
 }
 
 # Warm-iteration mode: keep this Kit process alive and rebuild the scene per episode
