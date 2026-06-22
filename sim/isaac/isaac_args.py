@@ -71,10 +71,17 @@ def build_parser() -> argparse.ArgumentParser:
                              "room to establish cruise-speed following before the stairs.")
     parser.add_argument("--person-move", action="store_true",
                         help="Make the person walk a simple patrol path")
-    parser.add_argument("--patient-physics", action="store_true", default=True,
-                        help="(Default ON) The patient is a dynamic MJCF physics humanoid. "
-                             "The legacy kinematic capsule patient has been removed, so this is "
-                             "now the only patient mode; the flag is kept for launcher compatibility.")
+    parser.add_argument("--patient-physics", action="store_true", default=False,
+                        help="DEPRECATED / no-op. The dynamic MJCF physics patient was removed "
+                             "(its negative-mass hand bodies NaN'd PhysX and crashed the sim). The "
+                             "patient is now a kinematic UsdSkel character posed by the procedural "
+                             "gait. Flag kept only for launcher compatibility; it no longer builds a "
+                             "physics body.")
+    parser.add_argument("--patient-character-usd", type=str, default="",
+                        help="Path/URL to a custom patient character USD (e.g. a localized elderly "
+                             "oxygen-patient asset rigged to the NVIDIA biped skeleton). Empty = the "
+                             "default Biped_Setup mannequin. The asset is localized under "
+                             "sim/isaac/assets/characters/ and posed by the procedural gait.")
     parser.add_argument("--frame-host", type=str, default='0.0.0.0',
                         help="Destination IP for camera frame UDP (WSL2 IP if running vision in WSL)")
     parser.add_argument("--log-dir", type=str, default=str(REPO_ROOT / "log"),
@@ -176,10 +183,18 @@ def build_parser() -> argparse.ArgumentParser:
                              "the controller's stairs_action_active gate (required by default).")
     parser.add_argument("--handoff-climb-riser", type=float, default=0.15,
                         help="'One stair climbed' == body rose this much (m) -> hand back to PGTT.")
-    parser.add_argument("--handoff-climb-max-sec", type=float, default=20.0,
-                        help="Max CONTINUOUS climb before handing back to PGTT (s). The parkour net climbs "
-                             "continuously for this long (a short value cycles/thrashes the gain-swap); the "
-                             "IK backend hands back per riser instead.")
+    parser.add_argument("--handoff-climb-max-sec", type=float, default=90.0,
+                        help="ABSOLUTE hard cap (s) on a continuous climb -- a runaway backstop only. The "
+                             "real 'give up' signal is the vertical-progress watchdog (--handoff-climb-stall-sec): "
+                             "a short fixed cap cuts off a slow-but-progressing multi-step climb before the top. "
+                             "Keep it large so a genuine climb reaches the crest, then the top-egress hands back.")
+    parser.add_argument("--handoff-climb-stall-sec", type=float, default=8.0,
+                        help="Vertical-progress watchdog: hand the climb back to PGTT if the body stops "
+                             "gaining height for this long (s) -- genuinely wedged. A still-rising climb keeps "
+                             "going. Not counted during the top egress (the landing is flat by design).")
+    parser.add_argument("--handoff-climb-progress-min", type=float, default=0.05,
+                        help="Vertical progress (m, < one riser) the body must gain to reset the stall "
+                             "watchdog. Below this for --handoff-climb-stall-sec -> hand back.")
     parser.add_argument("--no-handoff-climb-heading-hold", dest="handoff_climb_heading_hold",
                         action="store_false",
                         help="Disable the 'go straight up' heading-hold fed to the parkour net during the "
@@ -229,6 +244,39 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Forward command (m/s) floor during the parkour climb, applied EVEN when the "
                              "person is visible -- so the controller's 0.55 m collision-floor / standoff "
                              "does not park the dog mid-climb. The parkour net self-paces above this.")
+    # ---- Top-of-stairs egress -> PGTT handback (replaces the arbitrary climb timeout) ----
+    # When the dog crests the staircase (no more risers ahead, debounced), STAY in the climb
+    # policy and walk a short distance forward to pull the rear feet off the last riser, THEN
+    # hand back to PGTT (so PGTT does not resume straddling the top step). The forward push is
+    # gated on the patient gap so the dog never drives into the person on the landing.
+    # DEFAULT ON: this is the intended top-of-stairs behaviour; the flag only DISABLES it
+    # (falling back to the old arbitrary --handoff-climb-max-sec timeout as the climb exit).
+    parser.add_argument("--no-handoff-top-egress", dest="handoff_top_egress",
+                        action="store_false",
+                        help="Disable the top-of-stairs egress: the climb exits on the --handoff-climb-max-sec "
+                             "timeout / tilt-abort instead of 'crest detected -> walk off the last step -> "
+                             "hand back'. Default ON (egress enabled).")
+    parser.set_defaults(handoff_top_egress=True)
+    parser.add_argument("--handoff-top-clear-debounce", type=float, default=0.6,
+                        help="Sustained 'no stairs ahead' time (s) -- both the depth detector AND the "
+                             "ground-truth terrain reading clear -- before declaring the crest. Debounces a "
+                             "transient flat profile BETWEEN risers mid-climb so it does not trip early.")
+    parser.add_argument("--handoff-top-egress-distance", type=float, default=0.50,
+                        help="Forward travel (m) past the crest, under the climb policy, to pull the rear "
+                             "feet off the last riser before handing back to PGTT. ~= tread depth + foot offset.")
+    parser.add_argument("--handoff-top-egress-max-sec", type=float, default=4.0,
+                        help="Hard cap (s) on the post-crest egress push (backstop if the travel target is "
+                             "never reached, e.g. the patient lingers at the crest).")
+    parser.add_argument("--handoff-top-egress-vx", type=float, default=0.22,
+                        help="Forward floor (m/s) emitted during egress -- but ONLY when the patient is at "
+                             "least --handoff-top-egress-standoff away; otherwise the floor is 0 (hold).")
+    parser.add_argument("--handoff-top-egress-standoff", type=float, default=0.60,
+                        help="Only push forward in egress if the patient is >= this far ahead (m). Closer "
+                             "than this, the dog HOLDS in place (climb policy stands) so it never collides.")
+    parser.add_argument("--handoff-top-egress-goal-stop", type=float, default=0.12,
+                        help="Stop the egress forward push once within this (m) of an explicit forward GOAL "
+                             "(the stair-waypoint target) so the dog settles AT the waypoint and does not "
+                             "walk off the top landing. No effect in the follow case (goal = patient).")
     # ---- Blind (proprioceptive) RL climb backend (--handoff-climb-backend blind_rl) ----
     # The rl_sar Go2 "robot_lab" policy reused as the dual-policy handoff CLIMB net: PGTT
     # walks, this blind RL net hot-swaps in to climb the stairs (no depth). These knobs ARE
@@ -402,6 +450,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Force-disable handrail volumes (overrides the preset)")
     parser.add_argument("--spawn-settle-steps", type=int, default=50,
                         help="Zero-command policy/hold steps after spawn before world_ready")
+    parser.add_argument("--spawn-stability-max-tilt-deg", type=float, default=8.0,
+                        help="If the spawn settle leaves the body tilted beyond this (deg), re-assert a "
+                             "clean upright stance and re-settle. Catches a REUSED warm Kit spawning the "
+                             "robot unstable so it rolls over on flat ground (run ..134922).")
+    parser.add_argument("--spawn-stability-retries", type=int, default=2,
+                        help="Max re-freeze+re-settle attempts to get a stable upright spawn before "
+                             "giving up (warm-Kit degradation guard). 0 disables the guard.")
     # Sim-to-real realism overrides (parkour locomotion policy). All off / nominal by
     # default (the "perfect env"); the --sim2real-validation-cam preset turns the whole
     # suite on, and each flag below still overrides the preset. The parkour PD gains
@@ -534,11 +589,33 @@ def build_parser() -> argparse.ArgumentParser:
                              "person-follow) up the staircase and exit when it reaches "
                              "(--stair-waypoint-x/y). The person is parked off-lane so it never blocks the "
                              "path. Pair with --handoff-climb-backend blind_rl to test the blind RL climb.")
-    parser.add_argument("--stair-waypoint-x", type=float, default=6.2,
-                        help="Target X (m) for the stair waypoint test (~0.4 m past the demo_gentle landing "
-                             "top; adjust per --stair-preset).")
+    parser.add_argument("--stair-waypoint-x", type=float, default=6.77,
+                        help="Target X (m) for the stair waypoint test. Default 6.77 = CENTRE of the "
+                             "commercial top landing (end_x 6.27 + landing_depth 1.0 / 2), so the dog "
+                             "stops with ~0.5 m of margin before the far landing edge (7.27). The "
+                             "commercial footprint is fixed across riser heights, so this holds for the "
+                             "whole run_stair_sweep.ps1 sweep; adjust for a different --stair-preset.")
     parser.add_argument("--stair-waypoint-y", type=float, default=0.0,
                         help="Target Y (m) for the stair waypoint test (0 = staircase centreline).")
+    parser.add_argument("--max-episode-wall-sec", type=float, default=600.0,
+                        help="HARD wall-clock cap (s) on one episode, checked every loop step OUTSIDE the "
+                             "scene-motion gate so it cannot freeze. The existing DEMO_SIM_TIMEOUT counts "
+                             "sim-MOTION seconds and lives under `if scene_motion_allowed`, so a wedged climb "
+                             "that stops accumulating motion time runs unbounded (run ..113133: 0.178 m cold "
+                             "spun ~20 min, motion frozen at 78 s). This bounds EVERY episode in every mode "
+                             "(warm/cold/direct). 0 disables. Set ~300 for a strict 5-min cap.")
+    parser.add_argument("--stair-waypoint-approach-kp", type=float, default=2.0,
+                        help="P-gain decelerating the waypoint-test forward command as it nears the "
+                             "waypoint (vx = clip(kp*dist_to_waypoint, 0, --self-test-vx)). Inside "
+                             "--stair-waypoint-reach-radius it switches to a full STAND. Higher = brake later.")
+    parser.add_argument("--stair-waypoint-reach-radius", type=float, default=0.25,
+                        help="Within this distance (m) of the waypoint the dog STANDS (vx=wz=0, hold) and "
+                             "the run latches 'reached'. PGTT keeps a small forward drift on a zero "
+                             "command, so a tight window could never be held -- this stops it ON the landing.")
+    parser.add_argument("--stair-waypoint-hold-sec", type=float, default=1.0,
+                        help="After the first UPRIGHT arrival at the waypoint, confirm the climb by "
+                             "staying upright (not by staying in the window) for this long (s), then PASS "
+                             "and exit. Short enough that a residual drift exits before the landing edge.")
     parser.add_argument("--front-cam-out", type=str, default="",
                         help="Debug: save the robot's FRONT (D435) camera RGB to this PNG after "
                              "--front-cam-after steps (with the robot frozen at spawn), then exit. "

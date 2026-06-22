@@ -236,6 +236,36 @@ def _apply_front_obstacle_gate(
         debug_info["front_obstacle_gate_active"] = False
         return float(trans_x_cmd)
 
+    # Riser-shape test: a stair riser produces a depth profile where values INCREASE
+    # from top row to bottom row (near riser face at top → ground level at bottom).
+    # This is the opposite of a flat wall (uniform depth). Suppress the gate when the
+    # ROI pattern looks like a riser so 1-frame latch gaps don't zero the climb command.
+    try:
+        roi = roi_info.get("roi")
+        if roi is not None:
+            ry1, ry2, rx1, rx2 = int(roi[0]), int(roi[1]), int(roi[2]), int(roi[3])
+            _roi_crop = depth_img[ry1:ry2, rx1:rx2]
+            if _roi_crop.size > 0:
+                # Use mm values directly (depth image is in mm); row-wise minimum depth.
+                _row_min = np.array(
+                    [_roi_crop[r, _roi_crop[r] > 0].min() if np.any(_roi_crop[r] > 0) else 0
+                     for r in range(_roi_crop.shape[0])],
+                    dtype=np.float32,
+                )
+                _valid = _row_min[_row_min > 0]
+                if len(_valid) >= 4:
+                    # Gradient in mm/row: positive = depth increases toward the bottom
+                    # (riser face above, open space below). Threshold ~20 mm/row ≈ a
+                    # visible depth gradient across a 0.15 m riser.
+                    _grad = float(np.mean(np.diff(_valid)))
+                    debug_info["front_obstacle_depth_gradient"] = round(_grad, 1)
+                    if _grad > 20.0:
+                        debug_info["front_obstacle_gate_active"] = False
+                        debug_info["front_obstacle_riser_pattern"] = True
+                        return float(trans_x_cmd)
+    except Exception:
+        pass
+
     target_depth = debug_info.get("depth_distance_m")
     if target_depth is not None:
         try:

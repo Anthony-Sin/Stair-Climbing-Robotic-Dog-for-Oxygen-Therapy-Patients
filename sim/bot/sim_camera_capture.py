@@ -3,6 +3,7 @@ import json
 import queue
 import random
 import socket
+import struct
 import threading
 import time
 from collections import deque
@@ -134,6 +135,12 @@ class SimCameraCapture:
         self._stop_event  = threading.Event()
         self._seq_received = 0
         self._seq_dropped  = 0
+        # Chunk-reassembly buffer: {seq: {"count": N, "parts": {idx: bytes}}}. The
+        # sender (isaac_env.FramePublisher) splits each frame into sub-MTU UDP chunks
+        # so they survive Docker Desktop's UDP forwarding; we reassemble by seq. Only a
+        # few in-flight seqs are kept so a lost chunk can't grow the buffer unbounded.
+        self._chunk_buf: Dict[int, Dict] = {}
+        self._CHUNK_MAGIC = b"FCHK"
         self._last_frame_meta: Dict = {
             "success":    False,
             "wait_ms":    0.0,
@@ -175,14 +182,40 @@ class SimCameraCapture:
             self._flush_delay_buf()
             try:
                 data, _ = sock.recvfrom(131072)
-                if self.verbose:
-                    print(f"[SimCameraCapture] Received {len(data)} bytes", flush=True)
             except socket.timeout:
                 continue
             except Exception as exc:
                 if self.verbose:
                     print(f"[SimCameraCapture] Receive error: {exc}")
                 continue
+
+            # Reassemble chunked frames (header: magic[4] seq[uint32] idx[uint16]
+            # count[uint16]). A datagram WITHOUT the magic is a legacy single-payload
+            # frame and is parsed directly (backward compatible).
+            if len(data) >= 12 and data[:4] == self._CHUNK_MAGIC:
+                try:
+                    _, cseq, cidx, ccount = struct.unpack("!4sIHH", data[:12])
+                    chunk = data[12:]
+                    entry = self._chunk_buf.get(cseq)
+                    if entry is None:
+                        entry = {"count": ccount, "parts": {}}
+                        self._chunk_buf[cseq] = entry
+                        # bound memory: keep only the newest few in-flight seqs
+                        if len(self._chunk_buf) > 8:
+                            for old in sorted(self._chunk_buf.keys())[:-8]:
+                                self._chunk_buf.pop(old, None)
+                    entry["parts"][cidx] = chunk
+                    if len(entry["parts"]) < entry["count"]:
+                        continue  # still waiting for more chunks of this frame
+                    data = b"".join(entry["parts"][i] for i in range(entry["count"]))
+                    self._chunk_buf.pop(cseq, None)
+                except Exception as exc:
+                    if self.verbose:
+                        print(f"[SimCameraCapture] Chunk reassembly error: {exc}", flush=True)
+                    continue
+
+            if self.verbose:
+                print(f"[SimCameraCapture] Received frame {len(data)} bytes", flush=True)
 
             try:
                 meta = json.loads(data.decode("utf-8"))

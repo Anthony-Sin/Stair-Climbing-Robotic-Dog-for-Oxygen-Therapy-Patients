@@ -78,6 +78,20 @@ class _SimConsoleFormatter(logging.Formatter):
         return f"{timestamp} {record.levelname:<7} [{component}] {record.getMessage()}"
 
 
+# High-rate per-step diagnostic events that belong in the JSONL stream (for log-based
+# verification) but FLOOD the terminal -- fall_diag alone prints ~every 15 steps. Drop these
+# from the CONSOLE handler only; the file handler still records every one.
+_CONSOLE_SUPPRESSED_EVENTS = {"fall_diag"}
+
+
+class _ConsoleEventFilter(logging.Filter):
+    """Console-only filter: drop the high-rate diagnostic events in _CONSOLE_SUPPRESSED_EVENTS
+    so they do not spam the terminal. They are still written to the per-run JSONL file."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return getattr(record, "sim_event", None) not in _CONSOLE_SUPPRESSED_EVENTS
+
+
 def configure_sim_logger(
     component: str,
     *,
@@ -117,6 +131,9 @@ def configure_sim_logger(
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(logging.INFO)
         console_handler.setFormatter(_SimConsoleFormatter())
+        # Keep the per-step fall_diag (and other high-rate diagnostics) OUT of the terminal --
+        # they still go to the JSONL file handler above for log-based verification.
+        console_handler.addFilter(_ConsoleEventFilter())
         logger.addHandler(console_handler)
 
     logger.sim_log_path = str(log_path)  # type: ignore[attr-defined]

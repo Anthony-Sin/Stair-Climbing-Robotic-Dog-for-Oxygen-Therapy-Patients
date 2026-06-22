@@ -7,13 +7,16 @@ class GaitEstimator:
     Estimates human gait features (walking state, ground point, and metric speed)
     using YOLOv11 body keypoints (ankles, knees, hips) and depth/motion cues.
     """
-    def __init__(self, history_len: int = 30, walk_threshold: float = 0.5):
+    def __init__(self, history_len: int = 30, walk_threshold: float = 0.5,
+                 walk_speed_prior: float = 0.35):
         self.history_len = history_len
         self.walk_threshold = walk_threshold
-        
+        self.walk_speed_prior = walk_speed_prior
+
         # Short rolling history: list of dictionaries
         self.history = []
         self.leader_speed_mps = 0.0
+        self._was_walking = False
         
     def update(
         self,
@@ -102,9 +105,9 @@ class GaitEstimator:
                 
                 curr_speed = math.sqrt(v_forward_ground**2 + v_lateral_ground**2)
 
-        # Smooth estimated ground speed with EMA
+        # Smooth estimated ground speed with EMA (α=0.30 halves the 200 ms lag vs the old 0.15)
         if len(self.history) > 0:
-            alpha = 0.15
+            alpha = 0.30
             self.leader_speed_mps = max(0.0, alpha * curr_speed + (1.0 - alpha) * self.leader_speed_mps)
         else:
             self.leader_speed_mps = max(0.0, curr_speed)
@@ -179,5 +182,12 @@ class GaitEstimator:
             
             confidence = ankle_weight * (0.5 * score_ankle_sep + 0.5 * score_ankle_lift) + speed_weight * score_speed
             is_walking = confidence >= self.walk_threshold
-            
+
+        # Walk-onset prior: prime the speed estimate on the first walking frame so
+        # downstream standoff controllers react immediately instead of waiting for
+        # the EMA to ramp up from zero over ~3 frames.
+        if is_walking and not self._was_walking:
+            self.leader_speed_mps = max(self.leader_speed_mps, self.walk_speed_prior)
+        self._was_walking = is_walking
+
         return is_walking, confidence, self.leader_speed_mps, ground_point

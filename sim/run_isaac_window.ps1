@@ -42,6 +42,7 @@ param(
     [switch]$Headless,
     [switch]$FastRender,
     [switch]$PatientPhysics,
+    [string]$PatientCharacterUsd = "",
     [switch]$WarmIsaac,
     [string]$WarmCommandFile = "",
     [int]$WarmMaxRuns = 10,
@@ -52,8 +53,12 @@ param(
     # Isolated stair-climb test: drive straight forward up the stairs (no Docker/person-follow)
     # and exit when the robot reaches (StairWaypointX, StairWaypointY) = the top landing.
     [switch]$StairWaypointTest,
-    [double]$StairWaypointX = 6.2,
-    [double]$StairWaypointY = 0.0
+    [double]$StairWaypointX = 6.77,
+    [double]$StairWaypointY = 0.0,
+    # Let autonomous scene motion (the patient patrol) start immediately instead of
+    # waiting for the Docker controller's first command. Enables a Docker-free
+    # patient-locomotion walk_log run.
+    [switch]$NoHoldMotion
 )
 
 $ErrorActionPreference = "Stop"
@@ -137,6 +142,7 @@ $locomotionArgs += " --parkour-mask-fill $ParkourMaskFill"
 $locomotionArgs += " --stair-preset $StairPreset"
 # Optional per-step rise override (0 = keep the preset). Lets a run halve/shorten the risers.
 if ($StairStepHeight -gt 0) { $locomotionArgs += " --stair-step-height $StairStepHeight" }
+if ($PatientCharacterUsd) { $locomotionArgs += " --patient-character-usd `"$PatientCharacterUsd`"" }
 if ($FinalScene) { $locomotionArgs += " --final-scene" }
 # Walk mode and speed governor are ON by default in isaac_env.py; pass disable flags for A/B.
 if ($NoParkourWalkMode) { $locomotionArgs += " --no-parkour-walk-mode" }
@@ -230,7 +236,13 @@ if ($PatientPhysics) {
     Write-ConsoleLog "  Patient physics:     ON (dynamic biped articulation enabled)"
 }
 
-$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" $personArgs --go2-x $Go2X --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera $rawArg $locomotionArgs $validationCamArg $selfTestArg $warmArg $benchArg $handoffArg $waypointArg $o2Arg $patientPhysicsArg > `"$RawLog`" 2>&1`""
+$holdMotionArg = ""
+if ($NoHoldMotion) {
+    $holdMotionArg = "--no-hold-motion-until-command"
+    Write-ConsoleLog "  Scene motion:        starts immediately (patient walks without waiting for a controller command)"
+}
+
+$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" $personArgs --go2-x $Go2X --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera $rawArg $locomotionArgs $validationCamArg $selfTestArg $warmArg $benchArg $handoffArg $waypointArg $o2Arg $patientPhysicsArg $holdMotionArg > `"$RawLog`" 2>&1`""
 
 # Start the process with direct OS redirection to prevent pipeline blocking
 $process = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs -PassThru -NoNewWindow

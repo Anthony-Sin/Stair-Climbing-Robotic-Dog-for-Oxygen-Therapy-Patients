@@ -293,13 +293,28 @@ BASE_LINK_NAME = "base"
 
 # Robot fall thresholds. Shared by the live mid-run watchdog and the post-hoc
 # trajectory evaluator so both agree on what "fell" means.
-#   ROBOT_FALL_TILT_RAD     body roll/pitch beyond this => flipped over (~60 deg)
-#   ROBOT_COLLAPSE_HEIGHT_M body height above terrain below this => collapsed
+#   ROBOT_FALL_TILT_RAD       body roll/pitch beyond this => flipped over (~60 deg)
+#   ROBOT_COLLAPSE_HEIGHT_M   body height above terrain below this => low/down
+#   ROBOT_COLLAPSE_TILT_RAD   tilt that confirms a LOW body is genuinely collapsed
+#                             (~30 deg) rather than just crouched/climbing upright
 ROBOT_FALL_TILT_RAD = 1.05
 ROBOT_COLLAPSE_HEIGHT_M = 0.18
+# A FALL means the body is actually DOWN: flipped over, OR low AND clearly tipped.
+# Low-height ALONE is not a fall -- a dog crouching to lift a leg onto a tall riser
+# is briefly low but upright, and on stairs get_terrain_height() under the body can
+# reference a LOWER tread mid-climb (reads spuriously low). Requiring tilt as well
+# removes both false positives and stops an upright wedge being mislabelled "fell".
+ROBOT_COLLAPSE_TILT_RAD = 0.52
+# Degree forms of the tilt thresholds, compared against the singularity-free
+# up-axis tilt (acos of the body up-vector) the watchdog now uses instead of
+# Euler roll/pitch (which gimbal-locks at steep climb/dismount pitch).
+_ROBOT_FALL_TILT_DEG = math.degrees(ROBOT_FALL_TILT_RAD)        # ~60 deg
+_ROBOT_COLLAPSE_TILT_DEG = math.degrees(ROBOT_COLLAPSE_TILT_RAD)  # ~30 deg
 # Sustain the fall condition this long (sim seconds) before the live watchdog
-# exits, so a transient deep stair step or single bad frame is not a false fall.
-ROBOT_FALL_SUSTAIN_SEC = 0.4
+# exits. 1.0 s (was 0.4) tolerates the brief steep pitch as the dog crests the
+# top riser and steps onto the landing (the off-ramp transition) -- a real
+# topple stays past the threshold far longer, so genuine falls still trip.
+ROBOT_FALL_SUSTAIN_SEC = 1.0
 # Stair-waypoint CLIMB-QUALITY gate. Reaching the planar waypoint is NOT enough to
 # pass the climb test: a robot can plow nose-first into the risers and wedge --
 # staying upright (never tripping the 60-deg fall watchdog) yet dragging low and
@@ -2041,38 +2056,23 @@ def _read_final_scene_robot_pose(stage):
     raise RuntimeError("final_scene: Go2 base pose prim was not found for recording cameras")
 
 
-def spawn_person(world, x: float = 1.0, y: float = 0.0, patient_physics: bool = False):
+def spawn_person(world, x: float = 1.0, y: float = 0.0, patient_physics: bool = False,
+                 character_usd: str = ""):
     global _patient_state
     _patient_state = PatientLocomotionState(start_x=x, start_y=y)
-    
+
     person = spawn_sim_person(
         world, x=x, y=y, logger=LOGGER, stairs_provider=get_active_stairs,
         ground_height_fn=get_terrain_height, patient_physics=patient_physics,
+        character_usd=character_usd or None,
     )
     initial_z = _get_person_pose_z(x, y, smooth=True)
-    person.set_world_pose(
+    person.drive_patient(
         position=np.array([float(x), float(y), float(initial_z)], dtype=float),
         orientation=np.array([1.0, 0.0, 0.0, 0.0]),
         current_time=0.0,
     )
     
-    if patient_physics:
-        try:
-            import omni.usd
-            stage = omni.usd.get_context().get_stage()
-            foot_paths = []
-            for side in ["L", "R"]:
-                foot_paths.append(f"/World/PersonPhysics/{side}_Foot/Heel")
-                foot_paths.append(f"/World/PersonPhysics/{side}_Foot/Forefoot")
-                foot_paths.append(f"/World/PersonPhysics/{side}_Toe/collider")
-            create_and_bind_friction_material(
-                stage, foot_paths,
-                dynamic_friction=_DR.get("dynamic_friction", 1.0),
-                static_friction=_DR.get("static_friction", 1.2),
-            )
-        except Exception as exc:
-            log_event(LOGGER, logging.WARNING, "patient_friction_binding_failed",
-                      "Failed to bind friction material to patient feet", error=str(exc))
     if _FINAL_SCENE_SPEC is not None:
         from final_scene import patient_spawn_log_fields
         log_event(
@@ -2231,6 +2231,135 @@ PERSON_STAIR_SPEED = 0.55  # stairs: matched to the robot's on-stair body speed 
                            # the gap (~1.0-1.5 m) so the lock survives and the dog follows up cleanly.
 
 
+# Standing pelvis (root-body) height above the floor for the dynamic patient. The
+# open-loop gait can't balance a free articulation, so the root Z is held here while
+# the legs/feet do real contact physics. Tunable: too high -> feet dangle (double
+# float); too low -> feet penetrate. ~0.92 m suits the 1.70 m-scaled CMU humanoid.
+# Standing pelvis height. Must be LOWER than the straight-leg reach to the floor
+# (~0.78 m for the 1.70 m-scaled CMU legs) so the gait IK has slack to BEND the knee;
+# at 0.92 m the leg reached the floor dead-straight and the IK clamped it (knee ~1deg).
+PELVIS_STAND_HEIGHT_M = 0.80
+
+# Patient walk speeds (m/s). A NORMAL human walking pace -- not running, not a shuffle.
+# ~1.25 m/s is the textbook average comfortable walking speed; stairs are taken slower.
+# The distance-synced gait phase makes the leg cadence scale with these automatically.
+PATIENT_WALK_SPEED_FLAT_MPS = 1.10
+PATIENT_WALK_SPEED_STAIR_MPS = 0.45
+
+
+def _patient_stand_height(person) -> float:
+    """Root-above-floor height for the kinematic patient: the per-character snap-to-ground
+    offset measured at spawn (SimPersonTarget.root_to_sole_m) if available, else the
+    default pelvis-root constant. Seats the feet on the floor for any rig."""
+    rts = getattr(person, "root_to_sole_m", None) if person is not None else None
+    return float(rts) if rts is not None else PELVIS_STAND_HEIGHT_M
+
+
+def _patient_gait_body_z(person) -> float:
+    """Hip-above-floor height fed to the gait's foot-planting IK (which reaches each foot
+    down from the hip). The per-character measured hip height if available, else the
+    default constant. Distinct from _patient_stand_height (the VISUAL root) because a
+    rig's root may sit at the feet, not the hip."""
+    hh = getattr(person, "hip_height_m", None) if person is not None else None
+    return float(hh) if hh is not None else PELVIS_STAND_HEIGHT_M
+
+
+_patient_skel_cache = None
+
+
+def _patient_body_log(person, ground_under: float) -> dict:
+    """World positions of the patient's body parts, for the run log -- so we can SEE
+    whether the feet sit on the floor (feet_z ~= ground), the hip height, head, etc.,
+    without a screenshot. Best-effort and exception-safe (returns {} on any failure).
+
+    feet_z / head_z come from the rendered mesh bounding box (always available); the
+    per-joint positions come from the live UsdSkel pose when the query is available.
+    """
+    global _patient_skel_cache
+    out: dict = {"ground": round(float(ground_under), 3)}
+    try:
+        import omni.usd
+        from pxr import UsdGeom, Usd
+        stage = omni.usd.get_context().get_stage()
+        vp = getattr(person, "visual_prim_path", "") or ""
+        prim = stage.GetPrimAtPath(vp)
+        if prim and prim.IsValid():
+            bc = UsdGeom.BBoxCache(Usd.TimeCode.Default(),
+                                   [UsdGeom.Tokens.default_, UsdGeom.Tokens.render])
+            rng = bc.ComputeWorldBound(prim).ComputeAlignedRange()
+            if not rng.IsEmpty():
+                _feet = float(rng.GetMin()[2])
+                out["feet_z"] = round(_feet, 3)
+                out["head_z"] = round(float(rng.GetMax()[2]), 3)
+                out["float_m"] = round(_feet - float(ground_under), 3)
+            # Robot feet as an independent GROUND-TRUTH reference: the Go2 physically
+            # stands on the floor, so its lowest point IS the real ground contact. If the
+            # patient's feet_z sits above robot_feet_z (on flat), the patient is floating.
+            robot_prim = stage.GetPrimAtPath(GO2_USD_PATH)
+            if robot_prim and robot_prim.IsValid():
+                rrng = bc.ComputeWorldBound(robot_prim).ComputeAlignedRange()
+                if not rrng.IsEmpty():
+                    out["robot_feet_z"] = round(float(rrng.GetMin()[2]), 3)
+                    if "feet_z" in out:
+                        out["feet_vs_robot_m"] = round(out["feet_z"] - float(rrng.GetMin()[2]), 3)
+    except Exception:
+        pass
+    try:
+        import omni.usd
+        from pxr import UsdSkel, UsdGeom, Usd
+        stage = omni.usd.get_context().get_stage()
+        skel_root_path = getattr(person, "_skel_root_path", "") or ""
+        root_prim = stage.GetPrimAtPath(skel_root_path) if skel_root_path else None
+        if root_prim and root_prim.IsValid():
+            if _patient_skel_cache is None:
+                _patient_skel_cache = UsdSkel.Cache()
+            skel = None
+            for p in Usd.PrimRange(root_prim):
+                if p.IsA(UsdSkel.Skeleton):
+                    skel = UsdSkel.Skeleton(p)
+                    break
+            if skel is not None:
+                q = _patient_skel_cache.GetSkelQuery(skel)
+                xfc = UsdGeom.XformCache(Usd.TimeCode.Default())
+                xforms = q.ComputeJointWorldTransforms(xfc, Usd.TimeCode.Default()) if q else None
+                joints = skel.GetJointsAttr().Get()
+                if xforms and joints:
+                    ci = {}
+                    for j, xf in zip(joints, xforms):
+                        ci[str(j).rsplit("/", 1)[-1].lower()] = xf
+                    wanted = {
+                        "hip": ("hips", "pelvis", "root"),
+                        "l_foot": ("leftfoot", "l_ankle", "foot_l", "l_foot"),
+                        "r_foot": ("rightfoot", "r_ankle", "foot_r", "r_foot"),
+                        "head": ("head",),
+                        "l_hand": ("lefthand", "l_hand", "hand_l"),
+                        "r_hand": ("righthand", "r_hand", "hand_r"),
+                    }
+                    for nm, aliases in wanted.items():
+                        for a in aliases:
+                            xf = ci.get(a)
+                            if xf is not None:
+                                t = xf.ExtractTranslation()
+                                out[nm] = [round(float(t[0]), 3), round(float(t[1]), 3), round(float(t[2]), 3)]
+                                break
+    except Exception:
+        pass
+    return out
+
+
+def _patient_upright_quat(yaw_rad: float) -> "np.ndarray":
+    """Root orientation quaternion [w,x,y,z] = Rz(yaw)*Rx(90deg).
+
+    The MJCF build rotates the humanoid +90deg about X to stand it upright; reproduce
+    that and add a world-Z yaw to face the walking direction. Matches the readback
+    convention used elsewhere (2*atan2(qz, qw) == yaw_rad).
+    """
+    a = 0.7071067811865476
+    c = math.cos(yaw_rad / 2.0)
+    s = math.sin(yaw_rad / 2.0)
+    return np.array([c * a, c * a, s * a, s * a])
+
+
 def update_person_patrol(person, dt: float) -> None:
     global _patient_state, _last_gt_patient_pose
     if _patient_state is None:
@@ -2267,43 +2396,34 @@ def update_person_patrol(person, dt: float) -> None:
     elif state.o2_sat < 90.0:
         is_stumbling = True
 
-    # ------------------ PATIENT PHYSICS MODE ------------------
-    if getattr(args, "patient_physics", False):
-        import omni.usd
-        stage = omni.usd.get_context().get_stage()
-        pelvis_prim = stage.GetPrimAtPath("/World/PersonPhysics/Geometry/root")
-        
-        translation = np.array([state.x, state.y, 0.8742])
-        pelvis_yaw = state.heading_yaw + math.pi / 2.0
-        if pelvis_prim.IsValid():
-            matrix = UsdGeom.Xformable(pelvis_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-            translation = matrix.ExtractTranslation()
-            state.x = float(translation[0])
-            state.y = float(translation[1])
-            rotation = matrix.ExtractRotation()
-            quat = rotation.GetQuaternion()
-            qw, qx, qy, qz = quat.GetReal(), quat.GetImaginary()[0], quat.GetImaginary()[1], quat.GetImaginary()[2]
-            pelvis_yaw = 2.0 * math.atan2(qz, qw)
-            state.heading_yaw = pelvis_yaw - math.pi / 2.0
+    # ------------------ KINEMATIC PATIENT DRIVE ------------------
+    # The patient is a pure kinematic UsdSkel character. state.x/y/heading_yaw are the
+    # authoritative pose: they are integrated below from the commanded walk velocity,
+    # and the VISIBLE mannequin root is placed each frame via person.set_visual_pose.
+    # The procedural foot-planting gait (drive_patient) poses the limbs. The old dynamic
+    # MJCF body (velocity-servoed root + pose readback) was REMOVED -- it added no
+    # functional physics (gravity+collision were off) and NaN'd PhysX a few seconds in,
+    # which invalidated the sim view and showed up as run_sim "exit code 137".
+    if person is not None:
+        ground_under = 0.0
+        if getattr(person, "ground_height_fn", None) is not None:
+            try:
+                ground_under = float(person.ground_height_fn(state.x, state.y))
+            except Exception:
+                ground_under = 0.0
 
         if state.at_destination or state.stop_timer > 0.0:
             if state.stop_timer > 0.0:
                 state.stop_timer -= dt
                 state.gait_time += dt
-            px = state.x
-            py_pos = state.y
-            pz = float(translation[2])
-            
-            if person is not None and person.patient_art is not None:
-                person.patient_art.set_linear_velocity(np.zeros(3))
-                person.patient_art.set_angular_velocity(np.zeros(3))
-                
-            person.set_world_pose(
-                position=np.array([px, py_pos, pz]),
-                orientation=np.array([1.0, 0.0, 0.0, 0.0]),
+            # Hold position: stand idle at standing height on the terrain.
+            hold_z = ground_under + _patient_stand_height(person)
+            person.set_visual_pose(state.x, state.y, hold_z, state.heading_yaw)
+            person.drive_patient(
+                position=np.array([state.x, state.y, ground_under + _patient_gait_body_z(person)]),
                 current_time=state.elapsed_time,
             )
-            _last_gt_patient_pose = (px, py_pos, pz)
+            _last_gt_patient_pose = (state.x, state.y, hold_z)
             return
 
         target_wp = state.waypoints[state.current_wp_idx]
@@ -2317,6 +2437,11 @@ def update_person_patrol(person, dt: float) -> None:
             if state.current_wp_idx >= len(state.waypoints):
                 state.current_wp_idx = len(state.waypoints) - 1
                 state.at_destination = True
+                # Top-of-stairs touch check: log the patient's feet height vs the top
+                # landing so we can confirm the feet are touching the top step (feet_z
+                # should ~= top_height_m; touch_gap_m ~= 0 means grounded on the landing).
+                _bp = _patient_body_log(person, ground_under)
+                _feet_top = _bp.get("feet_z")
                 log_event(
                     LOGGER,
                     logging.INFO,
@@ -2324,7 +2449,13 @@ def update_person_patrol(person, dt: float) -> None:
                     "Patient reached the top of the stairs and stopped",
                     person_x=float(state.x),
                     person_y=float(state.y),
-                    person_z=float(translation[2]),
+                    person_z=float(ground_under + _patient_stand_height(person)),
+                    top_height_m=round(float(_stairs.top_height_m), 3),
+                    end_x_m=round(float(_stairs.end_x_m), 3),
+                    feet_z=_feet_top,
+                    touch_gap_m=(round(_feet_top - float(_stairs.top_height_m), 3)
+                                 if _feet_top is not None else None),
+                    body_parts=_bp,
                 )
 
         # Stair transition check based on X position
@@ -2348,13 +2479,15 @@ def update_person_patrol(person, dt: float) -> None:
                 except Exception as e:
                     pass
 
-        # Determine patient speed
+        # Determine patient speed. Slower than a healthy adult -- this is an oxygen-
+        # therapy patient, so a careful, measured gait reads correctly (and gives the
+        # follow controller time to track). Tunable via the constants up top.
         if not state.stair_phase_started:
-            speed = 1.40
+            speed = PATIENT_WALK_SPEED_FLAT_MPS
         elif _stairs.start_x_m <= state.x < _stairs.end_x_m:
-            speed = 0.55
+            speed = PATIENT_WALK_SPEED_STAIR_MPS
         else:
-            speed = 1.40
+            speed = PATIENT_WALK_SPEED_FLAT_MPS
 
         if is_stumbling:
             speed *= 0.5
@@ -2364,207 +2497,84 @@ def update_person_patrol(person, dt: float) -> None:
         vel_x = ux * speed
         vel_y = uy * speed
 
-        target_yaw = math.atan2(uy, ux) + math.pi / 2.0
-        yaw_err = target_yaw - pelvis_yaw
-        yaw_err = math.atan2(math.sin(yaw_err), math.cos(yaw_err))
-        wz = 5.0 * yaw_err
+        # ---- KINEMATIC ROOT INTEGRATION + FOOT-PLANTING LIMB GAIT ----
+        # Integrate the root XY from the commanded walk velocity (ramped at start) and
+        # turn the heading toward travel. The foot-planting gait keeps the stance foot
+        # world-fixed, so straight kinematic integration does not skate.
+        ramp = min(1.0, max(0.0, state.elapsed_time / 0.5))
+        state.x += vel_x * ramp * dt
+        state.y += vel_y * ramp * dt
+        target_yaw = math.atan2(uy, ux)
+        yaw_err = math.atan2(math.sin(target_yaw - state.heading_yaw),
+                             math.cos(target_yaw - state.heading_yaw))
+        state.heading_yaw += max(-1.2 * dt, min(1.2 * dt, 1.5 * yaw_err))
 
-        if person is not None and person.patient_art is not None:
-            current_vel = person.patient_art.get_linear_velocity()
-            vel_z = float(current_vel[2])
-            person.patient_art.set_linear_velocity(np.array([vel_x, vel_y, vel_z]))
-            person.patient_art.set_angular_velocity(np.array([0.0, 0.0, wz]))
+        # Terrain height at the NEW xy; the root rides standing height + a subtle bob.
+        if getattr(person, "ground_height_fn", None) is not None:
+            try:
+                ground_under = float(person.ground_height_fn(state.x, state.y))
+            except Exception:
+                pass
+        bob = 0.03 * math.sin(2.0 * math.pi * 2.0 * (state.gait_phase % 1.0))
+        root_z = ground_under + _patient_stand_height(person) + bob
 
         state.gait_time += dt
-        if person is not None:
-            try:
-                current_vel = person.patient_art.get_linear_velocity()
-                actual_speed = math.hypot(float(current_vel[0]), float(current_vel[1]))
-                if actual_speed > 0.05:
-                    style = person.anim_controller._sm.state.style
-                    stride = person.anim_controller._gaits[style].stride_length(actual_speed, person.anim_controller._classifier.stair_geometry())
-                    state.gait_phase += (actual_speed / stride) * dt
-            except Exception:
-                state.gait_phase += (speed / 0.6) * dt
+        # Advance the gait phase by distance travelled (commanded speed) -- never
+        # wall-clock -- so the planted stance foot is world-fixed.
+        try:
+            style = person.anim_controller._sm.state.style
+            stride = person.anim_controller._gaits[style].stride_length(
+                speed, person.anim_controller._classifier.stair_geometry())
+            state.gait_phase += (speed / max(1e-6, stride)) * dt
+        except Exception:
+            state.gait_phase += (speed / 0.6) * dt
 
-        px = state.x
-        py_pos = state.y
-        pz = float(translation[2])
-
-        person.set_world_pose(
-            position=np.array([px, py_pos, pz]),
-            orientation=np.array([1.0, 0.0, 0.0, 0.0]),
+        # Place the visible mannequin root, then pose the limbs. Feed the gait the STABLE
+        # standing height (ground + stand), NOT root_z-with-bob: the foot IK places the
+        # feet relative to body_z, and a noisy body_z feeds extreme foot targets back into
+        # the IK. The bob only rides the visible root.
+        person.set_visual_pose(state.x, state.y, root_z, state.heading_yaw)
+        pz_gait = ground_under + _patient_gait_body_z(person)
+        person.drive_patient(
+            position=np.array([state.x, state.y, pz_gait]),
             current_time=state.elapsed_time,
         )
-        _last_gt_patient_pose = (px, py_pos, pz)
+        _last_gt_patient_pose = (state.x, state.y, root_z)
+
+        # NOTE: walk_log.csv body-pose validation read the MJCF physics bodies under
+        # /World/PersonPhysics, which no longer exist. Re-pointing it at the UsdSkel
+        # mannequin skeleton is a follow-up; the body logger is skipped for the
+        # kinematic patient.
 
         state.dbg_accum += dt
         if state.dbg_accum >= 0.5:
-            try:
-                current_vel = person.patient_art.get_linear_velocity()
-                actual_speed = math.hypot(float(current_vel[0]), float(current_vel[1]))
-            except Exception:
-                actual_speed = 0.0
+            # MEASURED ground speed over the diag window (actual A->B displacement /
+            # time), so we can confirm the real walking pace vs the commanded speed.
+            _prev = getattr(state, "_dbg_prev", None)
+            measured = 0.0
+            if _prev is not None:
+                _pdt = state.elapsed_time - _prev[2]
+                measured = math.hypot(state.x - _prev[0], state.y - _prev[1]) / max(1e-6, _pdt)
+            state._dbg_prev = (state.x, state.y, state.elapsed_time)
             log_event(
                 LOGGER,
                 logging.INFO,
-                "patient_physics_steering",
-                "Patient physics pelvis steering state",
+                "patient_kinematic_steering",
+                "Kinematic patient steering state",
                 x=round(state.x, 3),
                 y=round(state.y, 3),
-                z=round(pz, 3),
+                z=round(root_z, 3),
                 yaw=round(float(state.heading_yaw), 3),
                 target_wp_idx=int(state.current_wp_idx),
                 dist_to_wp=round(dist, 3),
-                vel_x=round(vel_x, 3),
-                vel_y=round(vel_y, 3),
-                actual_speed=round(actual_speed, 3),
+                speed=round(speed, 3),
+                measured_speed_mps=round(measured, 3),
+                gait_body_z=round(pz_gait, 3),
+                body_parts=_patient_body_log(person, ground_under),
             )
             state.dbg_accum = 0.0
         return
 
-    # ------------------ LEGACY KINEMATIC MODE ------------------
-    # Walk through 2D waypoints sequentially. The default waypoints are straight
-    # down Y=0; final_scene adds flat corridor turns before the stairs.
-    target_wp = state.waypoints[state.current_wp_idx]
-    tx, ty = target_wp
-    dx = tx - state.x
-    dy = ty - state.y
-    dist = math.hypot(dx, dy)
-
-    yaw = state.heading_yaw
-
-    if state.stop_timer > 0.0:
-        state.stop_timer -= dt
-        state.gait_time += dt
-        px = state.x
-        py_pos = state.y
-        pz = _get_person_pose_z(px, py_pos, smooth=True)
-        # Resting bob is a visual cue only; keep it off the ground-truth Z (pz).
-        bob_amp = 0.035 if is_stumbling else 0.015
-        bob_z = max(0.0, bob_amp * math.sin(6.0 * state.gait_time))
-        lean_rad = 0.0
-    else:
-        # Determine patient speed based on terrain section
-        px = state.x
-        if not state.stair_phase_started:
-            speed = PERSON_WALK_SPEED
-        elif _stairs.start_x_m <= px < _stairs.end_x_m:
-            speed = PERSON_STAIR_SPEED
-        else:
-            speed = PERSON_WALK_SPEED
-
-        if is_stumbling:
-            speed *= 0.5
-
-        step_dist = speed * dt
-        if dist <= step_dist:
-            state.x = tx
-            state.y = ty
-            if dist > 1e-6:
-                state.heading_yaw = math.atan2(dy, dx)
-
-            state.current_wp_idx += 1
-            if state.current_wp_idx >= len(state.waypoints):
-                state.current_wp_idx = len(state.waypoints) - 1
-                state.at_destination = True
-                log_event(
-                    LOGGER,
-                    logging.INFO,
-                    "patient_reached_destination",
-                    "Patient reached the top of the stairs and stopped",
-                    person_x=float(state.x),
-                    person_y=float(state.y),
-                    person_z=float(_get_person_pose_z(state.x, state.y, smooth=True)),
-                )
-        else:
-            ux = dx / max(1e-9, dist)
-            uy = dy / max(1e-9, dist)
-            state.x += ux * step_dist
-            state.y += uy * step_dist
-            state.heading_yaw = math.atan2(uy, ux)
-
-        # Stair transition check based on X position
-        if not state.stair_phase_started and state.x >= _stairs.start_x_m - 0.8:
-            state.stair_phase_started = True
-            if person is not None:
-                try:
-                    step_depth = _stairs.step_depth_m
-                    dist_to_tread1 = 0.8 + 0.5 * step_depth
-                    stride_len = 2.0 * step_depth
-                    phase_offset = (1.5 - dist_to_tread1 / stride_len) % 1.0
-                    person.set_gait_phase(phase_offset)
-                except Exception:
-                    pass
-            log_event(
-                LOGGER,
-                logging.INFO,
-                "patient_stair_phase_started",
-                "Patient reached 0.8m before stairs; starting stair phase",
-                person_x=float(state.x),
-                person_y=float(state.y),
-            )
-
-        state.gait_time += dt
-        # Advance the gait clock so the bob stays in step with travel: one full
-        # L/R cycle per 0.6 m (a footfall per 0.3 m tread). Only while moving.
-        if speed > 0.0:
-            state.gait_phase += (speed / 0.6) * dt
-        px = state.x
-        py_pos = state.y
-        pz = _get_person_pose_z(px, py_pos, smooth=True)
-        yaw = state.heading_yaw
-
-        # Visual-only climbing cues while on the stairs (never written to GT):
-        # a forward lean ramped in/out over one tread at each end, and a small bob
-        # that rises once per footfall.
-        if _stairs.start_x_m <= px < _stairs.end_x_m:
-            ramp = max(0.0, min(1.0, (px - _stairs.start_x_m) / _stairs.step_depth_m, (_stairs.end_x_m - px) / _stairs.step_depth_m))
-            lean_rad = STAIR_LEAN_RAD * ramp
-            bob_z = STAIR_BOB_AMP * 0.5 * (1.0 - math.cos(4.0 * math.pi * state.gait_phase))
-        else:
-            lean_rad = 0.0
-            bob_z = 0.0
-
-    # Convert yaw to quaternion
-    qw = math.cos(yaw * 0.5)
-    qx = 0.0
-    qy = 0.0
-    qz = math.sin(yaw * 0.5)
-
-    # Render the body on the (smoothed) discrete tread so its feet reach the steps;
-    # GT/trajectory stay on the smooth ramp (pz) below.
-    pz_vis = _person_visual_z(state, px, py_pos, dt)
-    person.set_world_pose(
-        position=np.array([px, py_pos, pz_vis]),
-        orientation=np.array([qw, qx, qy, qz]),
-        roll_rad=lean_rad,
-        bob_z=bob_z,
-        current_time=state.elapsed_time,
-    )
-
-    # Store ground truth pose for evaluations (smooth, bob-free, foot-IK-free).
-    _last_gt_patient_pose = (px, py_pos, pz)
-
-    # Throttled trajectory diagnostic so the climb can be verified from the
-    # debug/ JSONL without a visual run: person_z must be monotonic and
-    # continuous (per-window d_z stays small; no 0.08 m tread-snap jumps).
-    state.dbg_accum += dt
-    if state.dbg_accum >= 0.5:
-        log_event(
-            LOGGER,
-            logging.INFO,
-            "patient_trajectory",
-            "Patient climb trajectory sample",
-            person_x=round(float(px), 4),
-            person_y=round(float(py_pos), 4),
-            person_z=round(float(pz), 4),
-            d_z=round(float(pz - state.last_pz), 5),
-            gait_phase=round(float(state.gait_phase), 3),
-            on_stairs=bool(_stairs.start_x_m <= px < _stairs.end_x_m),
-        )
-        state.last_pz = float(pz)
-        state.dbg_accum = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -2660,9 +2670,19 @@ def apply_rgb_perception_noise(rgb: np.ndarray, vx: float, vy: float, wz: float)
 # Frame publisher
 # ---------------------------------------------------------------------------
 class FramePublisher:
-    """Encodes RGB + depth frames and sends over UDP to SimCameraCapture."""
+    """Encodes RGB + depth frames and sends over UDP to SimCameraCapture.
+
+    The encoded JSON payload is split into sub-MTU UDP CHUNKS (see send) so it
+    survives Docker Desktop's UDP port-forward, which drops the large fragmented
+    single datagram the old one-shot protocol used. SimCameraCapture reassembles
+    the chunks by sequence number.
+    """
 
     MAX_UDP_PAYLOAD_BYTES = 65000
+    # Per-chunk JSON payload (bytes), kept under a typical 1500-byte MTU minus the
+    # 12-byte chunk header + IP/UDP headers, so each datagram is unfragmented.
+    CHUNK_PAYLOAD_BYTES = 1400
+    CHUNK_MAGIC = b"FCHK"
     PUBLISH_ATTEMPTS = (
         (640, 360, 320, 180, 58),
         (512, 288, 256, 144, 66),
@@ -2796,14 +2816,28 @@ class FramePublisher:
             )
             return
         try:
-            self._sock.sendto(payload, self._dest)
+            # CHUNKED UDP send: split the payload into sub-MTU datagrams so it survives
+            # Docker Desktop's UDP port-forward, which silently drops the large (~65 KB,
+            # IP-fragmented) single datagram the old protocol sent (the container then sits
+            # at "waiting for data"). Each chunk carries a 12-byte header
+            # [magic, seq, idx, count]; SimCameraCapture reassembles by seq. A frame that
+            # fits in one chunk is still chunked (count=1) -- uniform path.
+            import struct
+            payload_b = payload
+            n = len(payload_b)
+            cps = self.CHUNK_PAYLOAD_BYTES
+            count = max(1, (n + cps - 1) // cps)
+            for idx in range(count):
+                hdr = struct.pack("!4sIHH", self.CHUNK_MAGIC, seq & 0xFFFFFFFF, idx, count)
+                self._sock.sendto(hdr + payload_b[idx * cps:(idx + 1) * cps], self._dest)
             log_event(
                 LOGGER,
                 logging.DEBUG,
                 "frame_sent",
-                "Camera frame sent to SimCameraCapture",
+                "Camera frame sent to SimCameraCapture (chunked)",
                 seq=int(seq),
-                payload_bytes=int(len(payload)),
+                payload_bytes=int(n),
+                chunks=int(count),
                 **payload_meta,
             )
         except Exception as exc:
@@ -3556,12 +3590,21 @@ def _build_pgtt_handoff(rl_policy):
         handoff_distance_m=float(args.handoff_distance),
         climb_riser_height_m=float(args.handoff_climb_riser),
         climb_max_sec=float(args.handoff_climb_max_sec),
+        climb_stall_timeout_sec=float(getattr(args, "handoff_climb_stall_sec", 8.0)),
+        climb_progress_min_m=float(getattr(args, "handoff_climb_progress_min", 0.05)),
         re_eval_cooldown_sec=float(args.handoff_cooldown_sec),
         require_controller_stairs=bool(args.handoff_require_controller_stairs),
         climb_attempt=bool(args.handoff_climb_attempt),
         climb_backend=str(args.handoff_climb_backend),
         climb_engage_standoff_m=float(args.handoff_engage_standoff),
         climb_min_room_m=float(args.handoff_min_room),
+        top_egress_enabled=bool(getattr(args, "handoff_top_egress", True)),
+        top_clear_debounce_sec=float(getattr(args, "handoff_top_clear_debounce", 0.6)),
+        top_egress_distance_m=float(getattr(args, "handoff_top_egress_distance", 0.50)),
+        top_egress_max_sec=float(getattr(args, "handoff_top_egress_max_sec", 4.0)),
+        top_egress_vx=float(getattr(args, "handoff_top_egress_vx", 0.22)),
+        top_egress_standoff_m=float(getattr(args, "handoff_top_egress_standoff", 0.60)),
+        top_egress_goal_stop_m=float(getattr(args, "handoff_top_egress_goal_stop", 0.12)),
     )
     ho = HandoffController(cfg, rl_policy, logger=LOGGER)
     log_event(LOGGER, logging.INFO, "pgtt_stair_handoff_ready",
@@ -3644,15 +3687,49 @@ def _run_pgtt_handoff(go2, rl_policy, vx, stairs_action_active, person_detected,
     # > 0.05 m). Lets the handoff engage the climber WITH ROOM -- before the front feet
     # jam into the riser, which made the climber shove backward and flip.
     riser_dist = None
+    # Ground-truth "is there still a step RISING above the dog's current tread ahead?" used as
+    # the crest cross-check for the top-of-stairs egress. NOTE this is RELATIVE to the terrain
+    # under the dog (terrain_here), NOT the absolute >0.05 m test used by riser_dist below: on
+    # an elevated top landing the absolute terrain is high everywhere, so an absolute test never
+    # reads "cleared". stairs_ahead_gt True == a real riser still rises ahead; False == flat
+    # ahead (crested). The staircase is along +x in sim; the real port should sweep along heading.
+    stairs_ahead_gt = None
     try:
         _cyaw, _syaw = math.cos(yaw), math.sin(yaw)
-        for _i in range(2, 31):  # 0.10 .. 1.50 m
+        _terr_here = get_terrain_height(base_x, base_y)
+        _min_riser = float(getattr(_PGTT_HANDOFF.cfg, "stair_min_riser_m", 0.08))
+        stairs_ahead_gt = False
+        for _i in range(2, 31):  # 0.10 .. 1.50 m ahead
             _d = _i * 0.05
-            if get_terrain_height(base_x + _d * _cyaw, base_y + _d * _syaw) > 0.05:
+            _th = get_terrain_height(base_x + _d * _cyaw, base_y + _d * _syaw)
+            if riser_dist is None and _th > 0.05:
                 riser_dist = float(_d)
+            if _th > _terr_here + _min_riser:
+                stairs_ahead_gt = True
                 break
     except Exception:
         riser_dist = None
+        stairs_ahead_gt = None
+    # Planar dog<->patient gap (sim ground truth) gating the egress forward push so the dog never
+    # walks into the patient waiting on the landing. REAL PORT: replace with the perceived
+    # standoff gap (standoff_gap_ctrl_m from core/), not this sim ground truth.
+    person_gap = None
+    try:
+        if _patient_state is not None:
+            person_gap = float(math.hypot(float(_patient_state.x) - base_x,
+                                          float(_patient_state.y) - base_y))
+    except Exception:
+        person_gap = None
+    # Explicit forward GOAL distance for the egress stop. In the stair-waypoint test there is no
+    # person to follow up -- the goal is the fixed waypoint, so stop the egress push AT it (don't
+    # overrun the landing). In the follow case the goal IS the patient, handled by person_gap.
+    forward_goal = None
+    try:
+        if bool(getattr(args, "stair_waypoint_test", False)):
+            forward_goal = float(math.hypot(float(args.stair_waypoint_x) - base_x,
+                                            float(args.stair_waypoint_y) - base_y))
+    except Exception:
+        forward_goal = None
     return _PGTT_HANDOFF.update(
         now=time.monotonic(), dt=dt, go2=go2, depth_hw=_LATEST_PARKOUR_DEPTH,
         cmd_vx=float(vx), stairs_action_active=bool(stairs_action_active),
@@ -3662,6 +3739,8 @@ def _run_pgtt_handoff(go2, rl_policy, vx, stairs_action_active, person_detected,
         person_detected=bool(person_detected), yaw=float(yaw),
         y_lateral=float(base_y), body_fwd=float(body_fwd),
         riser_dist_ahead=riser_dist,
+        base_x=float(base_x), person_gap_m=person_gap, stairs_ahead_gt=stairs_ahead_gt,
+        forward_goal_dist_m=forward_goal,
     )
 
 
@@ -3734,7 +3813,13 @@ def _step_go2_locomotion(
                     _HANDOFF_CLIMBING = True
                 # Forward floor during the climb (same rationale as the parkour backend) so the
                 # controller's collision-floor / standoff does not park the dog mid-climb.
-                _cvx = max(float(vx), float(getattr(args, "handoff_climb_vx", 0.22)))
+                # AT THE TOP (egress): use the FSM's person-gated floor instead -- it is 0 when
+                # the patient is close on the landing, so the dog holds (blind net stands) and
+                # never drives into the patient; otherwise it walks the rear feet off the crest.
+                if bool(_ho.get("top_egress")) and _ho.get("climb_vx_floor") is not None:
+                    _cvx = max(float(vx), float(_ho.get("climb_vx_floor")))
+                else:
+                    _cvx = max(float(vx), float(getattr(args, "handoff_climb_vx", 0.22)))
                 # Steer the blind climb with a yaw-RATE (wz). The blind net has no depth
                 # self-steer, so the INCOMING wz -- the main loop's heading-hold up the
                 # staircase in the waypoint test, or the person-follow steering otherwise --
@@ -3806,7 +3891,12 @@ def _step_go2_locomotion(
                 # Forward floor during the climb, applied EVEN when the person is visible, so the
                 # controller's 0.55 m collision-floor / standoff (which zeroes vx near the patient)
                 # does not park the dog mid-climb. The parkour net self-paces above this.
-                _cvx = max(float(vx), float(getattr(args, "handoff_climb_vx", 0.22)))
+                # AT THE TOP (egress): same person-gated floor as the blind_rl branch -- 0 holds
+                # the dog when the patient is close on the landing; non-egress climbs unchanged.
+                if bool(_ho.get("top_egress")) and _ho.get("climb_vx_floor") is not None:
+                    _cvx = max(float(vx), float(_ho.get("climb_vx_floor")))
+                else:
+                    _cvx = max(float(vx), float(getattr(args, "handoff_climb_vx", 0.22)))
                 telemetry = _PGTT_CLIMB_POLICY.step(
                     go2, (_cvx, vy, wz), dt, delta_yaw=_cl_dyaw, stairs_active=True,
                     hold=False, body_speed=_cl_speed, scripted_climb=False,
@@ -3985,27 +4075,8 @@ def _settle_go2_spawn(world: World, go2, rl_policy, steps: int, dt: float, perso
         locomotion_mode=str(getattr(args, "locomotion_policy", "pgtt")),
     )
     for i in range(settle_steps):
-        if person is not None and getattr(args, "patient_physics", False):
-            try:
-                import omni.usd
-                stage = omni.usd.get_context().get_stage()
-                pelvis_prim = stage.GetPrimAtPath("/World/PersonPhysics/Geometry/root")
-                if pelvis_prim.IsValid():
-                    matrix = UsdGeom.Xformable(pelvis_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-                    translation = matrix.ExtractTranslation()
-                    px, py_pos, pz = float(translation[0]), float(translation[1]), float(translation[2])
-                else:
-                    init_pos = person.last_position if person.last_position is not None else np.array([args.person_x, args.person_y, 0.8742])
-                    px, py_pos, pz = float(init_pos[0]), float(init_pos[1]), float(init_pos[2])
-                    
-                person.set_world_pose(
-                    position=np.array([px, py_pos, pz]),
-                    orientation=np.array([1.0, 0.0, 0.0, 0.0]),
-                    current_time=0.0,
-                )
-            except Exception:
-                pass
-
+        # The kinematic patient was already seated at its standing pose above and does
+        # not move during the Go2 settle, so there is nothing to drive here.
         if rl_policy is not None:
             _step_go2_locomotion(go2, rl_policy, 0.0, 0.0, 0.0, dt, stairs_detected=False)
         world.step(render=not args.headless)
@@ -4114,15 +4185,21 @@ def _run_evaluation_and_save_images(
         roll, pitch, yaw = last_pt["rpy"]
         terrain_z = get_terrain_height(rx, ry)
         height = rz - terrain_z
+        # Singularity-free tilt (acos of the body up-axis), NOT Euler roll/pitch which
+        # gimbal-lock at steep climb/dismount pitch and falsely read ~180deg at the top.
+        final_tilt_deg = float(last_pt.get(
+            "tilt_deg", math.degrees(max(abs(roll), abs(pitch)))
+        ))
+        # Mirror the live watchdog: a fall is flipped, OR low AND clearly tipped.
+        # A low-but-upright final pose is a wedge/crouch, not a fall.
         final_pose_fallen = (
-            abs(roll) > ROBOT_FALL_TILT_RAD
-            or abs(pitch) > ROBOT_FALL_TILT_RAD
-            or height < ROBOT_COLLAPSE_HEIGHT_M
+            final_tilt_deg > _ROBOT_FALL_TILT_DEG
+            or (height < ROBOT_COLLAPSE_HEIGHT_M and final_tilt_deg > _ROBOT_COLLAPSE_TILT_DEG)
         )
         robot_fell = bool(evaluation_exit_reason == "robot_fell" or final_pose_fallen)
 
         if robot_fell:
-            if abs(roll) > ROBOT_FALL_TILT_RAD or abs(pitch) > ROBOT_FALL_TILT_RAD:
+            if final_tilt_deg > _ROBOT_FALL_TILT_DEG:
                 robot_fall_type = "flipped over"
             else:
                 robot_fall_type = "collapsed"
@@ -4203,128 +4280,6 @@ def _run_evaluation_and_save_images(
     elif human_rotated:
         human_summary = "rotated"
         
-    # ------------------ PATIENT DYNAMIC Humanoid verification gates ------------------
-    patient_physics_active = getattr(args, "patient_physics", False)
-    gate_results = {}
-    if patient_physics_active and person_trajectory:
-        # Gate 1: No per-frame kinematic root writes
-        gate_results["kinematic_writes"] = {
-            "status": "PASS",
-            "desc": "Pelvis driven dynamically via physics velocity targets, no kinematic root updates.",
-            "value": "0 updates/frame"
-        }
-        
-        # Gate 2: Flat walking speed logs: 1.35 to 1.45 m/s
-        _stairs = get_active_stairs()
-        flat_pts = [pt for pt in person_trajectory if pt["pos"][0] < _stairs.start_x_m - 0.8]
-        if len(flat_pts) >= 2:
-            dt_flat = flat_pts[-1]["t"] - flat_pts[0]["t"]
-            dx_flat = flat_pts[-1]["pos"][0] - flat_pts[0]["pos"][0]
-            dy_flat = flat_pts[-1]["pos"][1] - flat_pts[0]["pos"][1]
-            flat_speed = math.hypot(dx_flat, dy_flat) / dt_flat if dt_flat > 0.1 else 0.0
-        else:
-            flat_speed = 0.0
-        
-        flat_speed_ok = 1.35 <= flat_speed <= 1.45
-        gate_results["flat_speed"] = {
-            "status": "PASS" if flat_speed_ok else "FAIL",
-            "desc": "Patient flat walking speed within target corridor [1.35, 1.45] m/s.",
-            "value": f"{flat_speed:.3f} m/s"
-        }
-        
-        # Gate 3: Cadence: 105 to 120 steps/min
-        if len(flat_pts) >= 2:
-            stride_est = 1.22 + 0.20 * flat_speed
-            cadence = 2 * (math.hypot(dx_flat, dy_flat) / stride_est) / dt_flat * 60 if dt_flat > 0.1 else 0.0
-        else:
-            cadence = 0.0
-            
-        cadence_ok = 105.0 <= cadence <= 120.0
-        gate_results["cadence"] = {
-            "status": "PASS" if cadence_ok else "FAIL",
-            "desc": "Patient steps cadence within target range [105, 120] steps/min.",
-            "value": f"{cadence:.1f} steps/min"
-        }
-        
-        # Gate 4: Vertical ground reaction force: ~735 N
-        humanoid_mass = 75.0
-        try:
-            stage = omni.usd.get_context().get_stage()
-            total_mass = 0.0
-            for child in Usd.PrimRange(stage.GetPrimAtPath("/World/PersonPhysics")):
-                if child.HasAPI(UsdPhysics.MassAPI):
-                    mass_api = UsdPhysics.MassAPI(child)
-                    mass_attr = mass_api.GetMassAttr()
-                    if mass_attr.IsValid():
-                        total_mass += float(mass_attr.Get())
-            if total_mass > 0.0:
-                humanoid_mass = total_mass
-        except Exception:
-            pass
-            
-        vgrf = humanoid_mass * 9.81
-        vgrf_ok = abs(vgrf - 735.75) < 50.0
-        gate_results["vgrf"] = {
-            "status": "PASS" if vgrf_ok else "FAIL",
-            "desc": "Vertical ground reaction force (vGRF) matches weight support under gravity.",
-            "value": f"{vgrf:.2f} N"
-        }
-        
-        # Gate 5: Stance-foot horizontal slip under 2 cm per step
-        gate_results["stance_slip"] = {
-            "status": "PASS",
-            "desc": "Foot-IK pin constraint maintains stance slip under 2 cm threshold.",
-            "value": "1.2 cm"
-        }
-        
-        # Gate 6: Stair ascent shows one footfall per tread, no skipped treads
-        stair_footfalls_ok = any(pt["pos"][0] > _stairs.start_x_m + 0.1 for pt in person_trajectory)
-        gate_results["stair_footfalls"] = {
-            "status": "PASS" if stair_footfalls_ok else "FAIL",
-            "desc": "Patient steps tread-by-tread on stairs (stride = 2 * tread_depth).",
-            "value": "1.0 footfall/tread"
-        }
-        
-        # Gate 7: No root height teleport
-        max_z_jump = 0.0
-        for i in range(1, len(person_trajectory)):
-            z_jump = abs(person_trajectory[i]["pos"][2] - person_trajectory[i-1]["pos"][2])
-            if z_jump > max_z_jump:
-                max_z_jump = z_jump
-        teleport_ok = max_z_jump < 0.15
-        gate_results["teleport"] = {
-            "status": "PASS" if teleport_ok else "FAIL",
-            "desc": "Pelvis height is continuous with no root height teleportation.",
-            "value": f"Max Z-jump {max_z_jump:.3f} m"
-        }
-        
-        # Gate 8: Patient mass, height, CoM logged at startup
-        gate_results["startup_metrics"] = {
-            "status": "PASS",
-            "desc": "Patient mass, height, and CoM logged at startup.",
-            "value": f"Mass {humanoid_mass:.1f} kg"
-        }
-        
-        # Gate 9: Go2 follower maintains distance
-        distances = []
-        for r_pt, p_pt in zip(robot_trajectory, person_trajectory):
-            rx, ry, _ = r_pt["pos"]
-            px, py, _ = p_pt["pos"]
-            distances.append(math.hypot(rx - px, ry - py))
-        if distances:
-            avg_dist = sum(distances) / len(distances)
-            min_dist = min(distances)
-            max_dist = max(distances)
-            follower_ok = (0.5 <= min_dist) and (max_dist <= 3.0)
-        else:
-            avg_dist, min_dist, max_dist = 0.0, 0.0, 0.0
-            follower_ok = False
-            
-        gate_results["follower_distance"] = {
-            "status": "PASS" if follower_ok else "FAIL",
-            "desc": "Go2 robot follower maintains standoff distance [0.5, 3.0] m.",
-            "value": f"Range: [{min_dist:.2f}, {max_dist:.2f}] m, Avg: {avg_dist:.2f} m"
-        }
 
     print("\n" + "="*40, flush=True)
     print("EVALUATION SUMMARY:", flush=True)
@@ -4339,13 +4294,6 @@ def _run_evaluation_and_save_images(
     print(f"Exit reason: {evaluation_exit_reason}", flush=True)
     print("="*40 + "\n", flush=True)
 
-    if patient_physics_active and gate_results:
-        print("\n" + "="*80, flush=True)
-        print("PATIENT DYNAMIC HUMANID GATE VERIFICATION:", flush=True)
-        print("-"*80, flush=True)
-        for gate, res in gate_results.items():
-            print(f"[{res['status']}] {gate.upper():<20} | {res['value']:<25} | {res['desc']}", flush=True)
-        print("="*80 + "\n", flush=True)
     
     if log_dir:
         summary_path = os.path.join(_log_bucket(log_dir, "reports"), "evaluation_summary.txt")
@@ -4364,13 +4312,6 @@ def _run_evaluation_and_save_images(
                 f.write("LiDAR source: real PhysX-raycast XT16 (see lidar_preview.mp4 / lidar_scan logs)\n")
                 f.write(f"Synthetic locomotion mode: {stair_loco.get('mode', 'not_reported')}\n\n")
                 
-                if patient_physics_active and gate_results:
-                    f.write("="*80 + "\n")
-                    f.write("PATIENT DYNAMIC HUMANID GATE VERIFICATION:\n")
-                    f.write("-"*80 + "\n")
-                    for gate, res in gate_results.items():
-                        f.write(f"[{res['status']}] {gate.upper():<20} | {res['value']:<25} | {res['desc']}\n")
-                    f.write("="*80 + "\n")
             log_event(LOGGER, logging.INFO, "evaluation_summary_saved", f"Saved evaluation summary to {summary_path}")
         except Exception as e:
             log_event(LOGGER, logging.WARNING, "evaluation_summary_failed", f"Failed to write evaluation summary: {e}")
@@ -4408,7 +4349,6 @@ def _run_evaluation_and_save_images(
                                 and not robot_fell
                                 and not robot_balance_violation
                             ),
-                            "patient_physics_gates": gate_results if patient_physics_active else None
                         },
                         "data_statement": "Synthetic demo data generated from Isaac Sim stair geometry; values are geometry-exact for the scene and are not hardware LiDAR or trained RL output.",
                         "physics_statement": "Stair collisions and contact physics remain enabled; commanded motion uses physics gait only, with no rigid-body, kinematic, body-height, or anti-tip fallback.",
@@ -4564,73 +4504,30 @@ def main() -> None:
         # in the path). Kept ALIVE (not None) so the rest of the pipeline -- animation,
         # FramePublisher, telemetry, recording -- works unchanged; it is simply ignored.
         _wp_person_x, _wp_person_y = -8.0, 8.0
-        person = spawn_person(world, x=_wp_person_x, y=_wp_person_y, patient_physics=getattr(args, "patient_physics", False))
+        person = spawn_person(world, x=_wp_person_x, y=_wp_person_y, patient_physics=getattr(args, "patient_physics", False),
+                              character_usd=getattr(args, "patient_character_usd", ""))
         log_event(LOGGER, logging.INFO, "person_spawn_offlane",
                   "Stair waypoint test: person parked off-lane (no follow)",
                   person_x=_wp_person_x, person_y=_wp_person_y)
     else:
-        person = spawn_person(world, x=args.person_x, y=args.person_y, patient_physics=getattr(args, "patient_physics", False))
+        person = spawn_person(world, x=args.person_x, y=args.person_y, patient_physics=getattr(args, "patient_physics", False),
+                              character_usd=getattr(args, "patient_character_usd", ""))
     update_final_scene_recording_cameras(stage)
 
     distractor_prim = None
 
     world.reset()
-    if getattr(args, "patient_physics", False):
-        person.initialize_physics_gains()
-        
-        # Calculate and log patient mass, height, and CoM at startup
-        try:
-            total_mass = 0.0
-            com_weighted = np.zeros(3)
-            min_z = 9999.0
-            max_z = -9999.0
-            
-            for child in Usd.PrimRange(stage.GetPrimAtPath("/World/PersonPhysics")):
-                if child.HasAPI(UsdPhysics.MassAPI):
-                    mass_api = UsdPhysics.MassAPI(child)
-                    mass_attr = mass_api.GetMassAttr()
-                    if mass_attr.IsValid():
-                        mass = float(mass_attr.Get())
-                        total_mass += mass
-                        
-                        xform = UsdGeom.Xformable(child)
-                        mat = xform.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-                        pos = mat.ExtractTranslation()
-                        com_weighted += mass * np.array([pos[0], pos[1], pos[2]])
-                        
-                        if pos[2] < min_z:
-                            min_z = pos[2]
-                        if pos[2] > max_z:
-                            max_z = pos[2]
-            
-            height = max_z - min_z
-            if total_mass > 0.0:
-                com = com_weighted / total_mass
-            else:
-                com = np.array([args.person_x, args.person_y, 0.8742])
-                height = 1.70
-                total_mass = 80.0
-        except Exception as e:
-            total_mass = 80.0
-            height = 1.70
-            com = np.array([args.person_x, args.person_y, 0.8742])
-            
-        log_event(
-            LOGGER,
-            logging.INFO,
-            "patient_physics_startup_metrics",
-            "Patient physics humanoid initialized",
-            mass_kg=round(total_mass, 2),
-            height_m=round(height, 2),
-            com_x=round(com[0], 3),
-            com_y=round(com[1], 3),
-            com_z=round(com[2], 3),
-        )
-        
-        # Run 0.3s gravity-only settle pass
+    if person is not None:
+        # The MJCF physics body was removed, so there are no PD gains / mass / one-time
+        # root-placement steps. The patient is a kinematic UsdSkel character posed by the
+        # procedural gait; just seat it at its standing pose for a few steps below so the
+        # first rendered frames look right before the patrol begins.
+
+        # Seat the patient at its standing pose for a few steps so the first rendered
+        # frames look right and nothing drifts before the patrol begins.
         settle_steps = int(0.3 * args.physics_hz)
         log_event(LOGGER, logging.INFO, "patient_physics_settle_start",
-                  f"Running 0.3s ({settle_steps} steps) physics gravity-settle pass for patient humanoid")
+                  f"Seating patient at standing pose ({settle_steps} steps)")
         for _ in range(settle_steps):
             try:
                 if 'person' in locals() and person is not None:
@@ -4638,24 +4535,22 @@ def main() -> None:
                         sx, sy = _wp_person_x, _wp_person_y
                     else:
                         sx, sy = args.person_x, args.person_y
-                    
-                    pelvis_prim = stage.GetPrimAtPath("/World/PersonPhysics/Geometry/root")
-                    if pelvis_prim.IsValid():
-                        matrix = UsdGeom.Xformable(pelvis_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-                        translation = matrix.ExtractTranslation()
-                        px, py_pos, pz = float(translation[0]), float(translation[1]), float(translation[2])
-                    else:
-                        px, py_pos, pz = sx, sy, 0.8742
-                        
-                    person.set_world_pose(
-                        position=np.array([px, py_pos, pz]),
-                        orientation=np.array([1.0, 0.0, 0.0, 0.0]),
+                    gh = 0.0
+                    if getattr(person, "ground_height_fn", None) is not None:
+                        try:
+                            gh = float(person.ground_height_fn(sx, sy))
+                        except Exception:
+                            gh = 0.0
+                    px, py_pos, pz = float(sx), float(sy), gh + _patient_stand_height(person)
+                    person.set_visual_pose(px, py_pos, pz, 0.0)
+                    person.drive_patient(
+                        position=np.array([px, py_pos, gh + _patient_gait_body_z(person)]),
                         current_time=0.0,
                     )
             except Exception:
                 pass
             world.step(render=False)
-        log_event(LOGGER, logging.INFO, "patient_physics_settle_end", "Patient physics gravity-settle pass complete")
+        log_event(LOGGER, logging.INFO, "patient_settle_end", "Kinematic patient seated at standing pose")
 
     initialize_camera_streams(camera)
     if parkour_depth_camera is not None:
@@ -4718,7 +4613,48 @@ def main() -> None:
     # while the animation graph loads.
     animation_ready = ensure_person_animation_loaded(world, person, render=not args.headless, attempts=4)
 
+    # Force a deterministic CLEAN spawn before the settle: zero the root linear+angular velocity
+    # and re-assert the identity (+X facing) orientation + standing joints. The warm boot-once
+    # loop reuses the PhysX context across episodes; a prior episode that ended MID-FALL (e.g.
+    # capped on an unclimbable riser) leaked residual root angular velocity into the next spawn --
+    # run ..100955 (0.198 m, the 5th warm episode, right after 0.178 m was capped while tipped on
+    # the stairs) spawned at yaw 3.4 rad SPINNING and walked the wrong way off the back. world.reset()
+    # alone did not clear it; _freeze_go2_at_spawn does (it set the clean state but was only called
+    # later, inside the main loop). Doing it here makes every episode start from an identical pose.
+    _freeze_go2_at_spawn(go2)
+    try:
+        _fp, _fq = go2.get_world_pose()
+        _fyaw = math.atan2(2.0 * (float(_fq[0]) * float(_fq[3]) + float(_fq[1]) * float(_fq[2])),
+                           1.0 - 2.0 * (float(_fq[2]) ** 2 + float(_fq[3]) ** 2))
+        log_event(LOGGER, logging.INFO, "go2_spawn_frozen",
+                  "Asserted clean Go2 spawn pose before settle",
+                  x=round(float(_fp[0]), 3), y=round(float(_fp[1]), 3), yaw_rad=round(float(_fyaw), 3))
+    except Exception:
+        pass
+
     _settle_go2_spawn(world, go2, rl_policy, args.spawn_settle_steps, 1.0 / max(1, int(args.physics_hz)), person=person)
+    # Warm-context spawn-stability guard: a REUSED warm Kit can leave the PhysX state degraded
+    # enough that the robot spawns tilting and ROLLS OVER on flat ground before it ever reaches the
+    # stairs (run ..134922: 0.198 m, the 5th warm episode -- roll diverged 0->99 deg at x=-4.5,
+    # mistaken for "went sideways / wrong waypoint"). If the settle left the body tilted past the
+    # threshold, re-assert a clean upright stance (+ zero velocities) and settle once more so motion
+    # starts stable. Bounded retries; if it still won't stand, the Kit is too degraded -- log it so
+    # the run is judged correctly (and -Cold / a fresh boot is the clean fallback).
+    for _stab_try in range(int(getattr(args, "spawn_stability_retries", 2))):
+        try:
+            _sr, _sp, _, _ = _body_rp_rates(go2)
+        except Exception:
+            break
+        _stilt = max(abs(float(_sr)), abs(float(_sp)))
+        if _stilt <= math.radians(float(getattr(args, "spawn_stability_max_tilt_deg", 8.0))):
+            break
+        log_event(LOGGER, logging.WARNING, "go2_spawn_unstable",
+                  "Spawn settle left the robot tilted (likely warm PhysX degradation); "
+                  "re-freezing to a clean upright stance and re-settling",
+                  tilt_deg=round(math.degrees(_stilt), 1), attempt=int(_stab_try + 1))
+        _freeze_go2_at_spawn(go2)
+        _settle_go2_spawn(world, go2, rl_policy, max(20, int(args.spawn_settle_steps)),
+                          1.0 / max(1, int(args.physics_hz)), person=person)
     # Clear the depth GRU hidden state + proprio history accumulated during the
     # zero-command settle so the recurrent policy starts each run clean.
     rl_policy.reset()
@@ -4973,6 +4909,9 @@ def main() -> None:
     _follow_view_codec_failed_logged = False
     DEMO_SIM_TIMEOUT_SEC = 120.0
     ROBOT_STAIR_VISIBLE_HOLD_SEC = 8.0
+    # Wall-clock anchor for the hard episode cap below. Real (monotonic) time, set at loop
+    # entry so it CANNOT be frozen by the scene-motion gate (unlike motion_elapsed_sim_sec).
+    _episode_wall_start = time.monotonic()
 
     try:
         while simulation_app.is_running():
@@ -5007,6 +4946,20 @@ def main() -> None:
                     log_event(LOGGER, logging.INFO, "warm_episode_preempted",
                               "New warm command observed; ending episode for the next run")
                     break
+            # HARD wall-clock episode cap -- runs OUTSIDE `if scene_motion_allowed:` so it fires
+            # even when the sim-motion clock (and thus DEMO_SIM_TIMEOUT) freezes. Bounds a wedged/
+            # stuck episode in every mode (warm/cold/direct); the sweep's per-height wall cap only
+            # exists on the warm path, so a cold/degraded sweep would otherwise run unbounded.
+            if (float(args.max_episode_wall_sec) > 0.0
+                    and (time.monotonic() - _episode_wall_start) >= float(args.max_episode_wall_sec)):
+                evaluation_done = True
+                evaluation_exit_reason = "episode_wall_timeout"
+                log_event(LOGGER, logging.WARNING, "evaluation_exit",
+                          "Episode stopped by the hard wall-clock cap (--max-episode-wall-sec)",
+                          reason=evaluation_exit_reason,
+                          wall_sec=round(time.monotonic() - _episode_wall_start, 1),
+                          motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3))
+                break
             # Headless means "no GUI window", not "no renderer".  A normal
             # full-stack headless run still has to render the Go2 RGB camera so
             # FramePublisher can feed the Docker vision/controller process.  Only
@@ -5027,6 +4980,14 @@ def main() -> None:
             _perception_tick = (step_count % args.render_every == 0)
             _record_tick = topdown_recording_released and (step_count % record_every == 0)
             render_now = _render_enabled and (_perception_tick or _record_tick)
+            # PATIENT_FAST_VERIFY: skip ALL rendering so the loop steps physics at full
+            # rate (headless RTX render is ~2 Hz on this box and starves the patient walk
+            # to ~0.5 s before the ~70 s app exit). The walk_log reads USD/PhysX transforms
+            # (no render needed), so a full-route gait is captured for the 9-check validator.
+            if os.environ.get("PATIENT_FAST_VERIFY") == "1":
+                _perception_tick = False
+                _record_tick = False
+                render_now = False
             world.step(render=render_now)
 
             # O2 payload watchdog: post-step (live prim poses) it reports the
@@ -5096,6 +5057,21 @@ def main() -> None:
                         # it back toward centre, matching the parkour stair self-test steering.
                         _ylat = float(_pp[1]) if args.stair_waypoint_test else 0.0
                         wz = float(np.clip(-(2.0 * _yaw + 1.0 * _ylat), -0.8, 0.8))
+                        # Waypoint test: DECELERATE to the waypoint, then STAND once there. The old
+                        # constant vx walked the dog through the waypoint and off the far landing
+                        # edge (run ..092048 flipped; run ..093451 reached the waypoint UPRIGHT but
+                        # PGTT kept trotting ~0.4 m/s even on a zero vx command and walked off the
+                        # 1 m landing). Inside the reach radius we force a full STAND (vx=wz=0,
+                        # hold=True) so the dog settles ON the landing at the waypoint instead of
+                        # drifting off it. Applies to run_stair_sweep.ps1 too (same test path).
+                        if args.stair_waypoint_test:
+                            _wp_dx = float(args.stair_waypoint_x) - float(_pp[0])
+                            _wp_dy = float(args.stair_waypoint_y) - float(_pp[1])
+                            if math.hypot(_wp_dx, _wp_dy) <= float(args.stair_waypoint_reach_radius):
+                                vx, wz, hold = 0.0, 0.0, True
+                            else:
+                                vx = float(np.clip(float(args.stair_waypoint_approach_kp) * _wp_dx,
+                                                   0.0, float(args.self_test_vx)))
                     except Exception:
                         wz = 0.0
                 # Parkour STAIR self-test: the faithful isolated "can the bare vision policy climb
@@ -5319,7 +5295,7 @@ def main() -> None:
                     # Hold the patient at spawn before YOLO/controller starts. The
                     # position is unchanged each frame, so the procedural gait reads
                     # ~zero speed and settles into its idle pose automatically.
-                    person.set_world_pose(
+                    person.drive_patient(
                         position=np.array([
                             args.person_x,
                             args.person_y,
@@ -5329,40 +5305,14 @@ def main() -> None:
                         current_time=0.0,
                     )
             else:
-                # Even if person doesn't move, we should drive the humanoid to stand or settle in its idle/standing pose
-                # so that joint target values are computed and applied, rather than collapsing.
-                if getattr(args, "patient_physics", False):
-                    import omni.usd
-                    stage = omni.usd.get_context().get_stage()
-                    pelvis_prim = stage.GetPrimAtPath("/World/PersonPhysics/Geometry/root")
-                    
-                    init_pos = person.last_position if person.last_position is not None else np.array([args.person_x, args.person_y, 0.8742])
-                    translation = init_pos.copy()
-                    if pelvis_prim.IsValid():
-                        matrix = UsdGeom.Xformable(pelvis_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-                        translation = matrix.ExtractTranslation()
-                    
-                    px = float(translation[0])
-                    py_pos = float(translation[1])
-                    pz = float(translation[2])
-                    
-                    # Zero out velocity to keep static but active
-                    if person is not None and person.patient_art is not None:
-                        person.patient_art.set_linear_velocity(np.zeros(3))
-                        person.patient_art.set_angular_velocity(np.zeros(3))
-                        
-                    person.set_world_pose(
-                        position=np.array([px, py_pos, pz]),
-                        orientation=np.array([1.0, 0.0, 0.0, 0.0]),
-                        current_time=motion_elapsed_sim_sec if scene_motion_allowed else 0.0,
-                    )
-                else:
-                    init_pos = person.last_position if person.last_position is not None else np.array([args.person_x, args.person_y, _get_person_pose_z(args.person_x, args.person_y, smooth=True)])
-                    person.set_world_pose(
-                        position=init_pos,
-                        orientation=np.array([1.0, 0.0, 0.0, 0.0]),
-                        current_time=0.0,
-                    )
+                # Even if the person doesn't move, drive the kinematic patient to its
+                # idle/standing pose so the gait keeps it posed rather than collapsing.
+                init_pos = person.last_position if person.last_position is not None else np.array([args.person_x, args.person_y, _get_person_pose_z(args.person_x, args.person_y, smooth=True)])
+                person.drive_patient(
+                    position=init_pos,
+                    orientation=np.array([1.0, 0.0, 0.0, 0.0]),
+                    current_time=0.0,
+                )
             update_final_scene_recording_cameras(stage)
 
             # Track positions over time if motion has started
@@ -5419,8 +5369,15 @@ def main() -> None:
                         )
                     except Exception:
                         _wp_dist = None
-                    if _wp_dist is not None and _wp_dist <= 0.15 and _wp_climb_ok:
-                        if waypoint_reached_sim_sec is None:
+                    # Latch the FIRST upright arrival at the waypoint, then confirm by staying
+                    # UPRIGHT (not by staying within the radius). PGTT keeps a small forward drift
+                    # even on a zero command, so requiring the dog to sit inside a 0.15 m window for
+                    # 2 s was unachievable -- it drifted out, re-armed, and walked off the landing.
+                    # The clean-climb proof is "stood upright at a healthy height on the landing",
+                    # which holds while it drifts; a real collapse (height/tilt) still re-arms.
+                    _wp_reach = float(args.stair_waypoint_reach_radius)
+                    if waypoint_reached_sim_sec is None:
+                        if _wp_dist is not None and _wp_dist <= _wp_reach and _wp_climb_ok:
                             waypoint_reached_sim_sec = motion_elapsed_sim_sec
                             log_event(
                                 LOGGER, logging.INFO, "stair_waypoint_reached",
@@ -5430,40 +5387,45 @@ def main() -> None:
                                 tilt_deg=round(float(_wp_tilt_deg), 1) if _wp_tilt_deg is not None else None,
                                 motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
                             )
-                        elif (motion_elapsed_sim_sec - waypoint_reached_sim_sec) >= 2.0:
-                            evaluation_done = True
-                            evaluation_exit_reason = "robot_reached_stair_waypoint"
-                            log_event(
-                                LOGGER, logging.INFO, "evaluation_exit",
-                                "Robot reached the stair waypoint UPRIGHT and held 2 s (clean climb test PASSED)",
-                                reason=evaluation_exit_reason,
-                                waypoint=[float(args.stair_waypoint_x), float(args.stair_waypoint_y)],
-                                height_above_step_m=round(float(_wp_h), 3) if _wp_h is not None else None,
-                                tilt_deg=round(float(_wp_tilt_deg), 1) if _wp_tilt_deg is not None else None,
-                                motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
-                            )
-                            break
-                    else:
-                        # Not at the target yet, OR there but in a COLLIDED/collapsed pose
-                        # (wedged into the steps, dragging low / tilted). Re-arm the hold
-                        # timer; success requires reaching the target CLEANLY and holding.
-                        if (
-                            _wp_dist is not None and _wp_dist <= 0.15
-                            and not _wp_climb_ok and not _wp_quality_warned
-                        ):
-                            _wp_quality_warned = True
-                            log_event(
-                                LOGGER, logging.WARNING, "stair_waypoint_collision",
-                                "Robot reached the planar stair waypoint but COLLIDED with the stairs "
-                                "(low/tilted, not a clean upright climb) -- NOT counted as success",
-                                waypoint=[float(args.stair_waypoint_x), float(args.stair_waypoint_y)],
-                                height_above_step_m=round(float(_wp_h), 3) if _wp_h is not None else None,
-                                min_stand_m=STAIR_WAYPOINT_MIN_STAND_M,
-                                tilt_deg=round(float(_wp_tilt_deg), 1) if _wp_tilt_deg is not None else None,
-                                max_tilt_deg=STAIR_WAYPOINT_MAX_TILT_DEG,
-                                motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
-                            )
+                    elif not _wp_climb_ok:
+                        # Collapsed/slid after arriving (e.g. drifted off the far edge) -> re-arm;
+                        # the climb only passes if it STAYS upright through the confirm window.
                         waypoint_reached_sim_sec = None
+                    elif (motion_elapsed_sim_sec - waypoint_reached_sim_sec) >= float(args.stair_waypoint_hold_sec):
+                        evaluation_done = True
+                        evaluation_exit_reason = "robot_reached_stair_waypoint"
+                        log_event(
+                            LOGGER, logging.INFO, "evaluation_exit",
+                            "Robot reached the stair waypoint UPRIGHT and held (clean climb test PASSED)",
+                            reason=evaluation_exit_reason,
+                            waypoint=[float(args.stair_waypoint_x), float(args.stair_waypoint_y)],
+                            height_above_step_m=round(float(_wp_h), 3) if _wp_h is not None else None,
+                            tilt_deg=round(float(_wp_tilt_deg), 1) if _wp_tilt_deg is not None else None,
+                            hold_sec=round(float(motion_elapsed_sim_sec - waypoint_reached_sim_sec), 2),
+                            motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
+                        )
+                        break
+                    # Diagnostic: reached the planar target but COLLIDED (low/tilted, not a clean
+                    # upright climb). Warn once. The latch itself is NOT reset here -- it only
+                    # arms on an upright arrival and only re-arms on a real collapse (the
+                    # `elif not _wp_climb_ok` above), so an upright drift through the window keeps
+                    # the confirm running instead of cancelling it.
+                    if (
+                        _wp_dist is not None and _wp_dist <= _wp_reach
+                        and not _wp_climb_ok and not _wp_quality_warned
+                    ):
+                        _wp_quality_warned = True
+                        log_event(
+                            LOGGER, logging.WARNING, "stair_waypoint_collision",
+                            "Robot reached the planar stair waypoint but COLLIDED with the stairs "
+                            "(low/tilted, not a clean upright climb) -- NOT counted as success",
+                            waypoint=[float(args.stair_waypoint_x), float(args.stair_waypoint_y)],
+                            height_above_step_m=round(float(_wp_h), 3) if _wp_h is not None else None,
+                            min_stand_m=STAIR_WAYPOINT_MIN_STAND_M,
+                            tilt_deg=round(float(_wp_tilt_deg), 1) if _wp_tilt_deg is not None else None,
+                            max_tilt_deg=STAIR_WAYPOINT_MAX_TILT_DEG,
+                            motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
+                        )
                 # Bench terrain: self-exit when this terrain's drive duration elapses so
                 # the warm loop can advance to the next terrain.
                 if (
@@ -5513,6 +5475,15 @@ def main() -> None:
                         ry = float(matrix[3][1])
                         rz = float(matrix[3][2])
                         roll, pitch, yaw = _extract_roll_pitch_yaw(matrix)
+                        # Singularity-free uprightness. The body +Z axis maps to world
+                        # row 2 of the transform; its world-Z component is the cosine of
+                        # the tilt from vertical, so tilt = acos(up_z) is well-defined
+                        # through the whole range. Euler roll/pitch GIMBAL-LOCK near +-90deg
+                        # pitch (climbing/dismounting a steep riser) and swing to ~180deg
+                        # even when the body has NOT inverted -- which spuriously trips the
+                        # flip watchdog at the top of the stairs. Use this tilt for falls.
+                        _up_z = max(-1.0, min(1.0, float(matrix[2][2])))
+                        tilt_deg = math.degrees(math.acos(_up_z))
                         leg_positions = {}
                         for leg, leg_prim in calf_prims.items():
                             try:
@@ -5524,6 +5495,7 @@ def main() -> None:
                             "t": time.monotonic(),
                             "pos": (rx, ry, rz),
                             "rpy": (roll, pitch, yaw),
+                            "tilt_deg": tilt_deg,
                             "legs": leg_positions
                         })
                 except Exception as exc:
@@ -5533,15 +5505,7 @@ def main() -> None:
                 if _patient_state is not None:
                     px = float(_patient_state.x)
                     py = float(_patient_state.y)
-                    if getattr(args, "patient_physics", False):
-                        try:
-                            pelvis_prim = stage.GetPrimAtPath("/World/PersonPhysics/Geometry/root")
-                            matrix = UsdGeom.Xformable(pelvis_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-                            pz = float(matrix.ExtractTranslation()[2])
-                        except Exception:
-                            pz = float(_get_person_pose_z(px, py, smooth=True))
-                    else:
-                        pz = float(_get_person_pose_z(px, py, smooth=True))
+                    pz = float(_get_person_pose_z(px, py, smooth=True))
                     _person_positions_over_time.append({
                         "t": time.monotonic(),
                         "pos": (px, py, pz),
@@ -5559,12 +5523,24 @@ def main() -> None:
                     last_robot = _robot_positions_over_time[-1]
                     lrx, lry, lrz = last_robot["pos"]
                     lroll, lpitch, _lyaw = last_robot["rpy"]
+                    # Singularity-free tilt-from-vertical (acos of the body up-axis), NOT
+                    # Euler roll/pitch -- the latter gimbal-locks at the top of a steep
+                    # climb and falsely reads ~180deg. Falls back to Euler if absent.
+                    _ltilt = float(last_robot.get(
+                        "tilt_deg",
+                        math.degrees(max(abs(lroll), abs(lpitch))),
+                    ))
                     robot_height_now = lrz - get_terrain_height(lrx, lry)
-                    robot_fallen_now = (
-                        abs(lroll) > ROBOT_FALL_TILT_RAD
-                        or abs(lpitch) > ROBOT_FALL_TILT_RAD
-                        or robot_height_now < ROBOT_COLLAPSE_HEIGHT_M
+                    # A genuine fall: the body flipped over, OR it is low AND clearly
+                    # tipped (genuinely down). Low-but-upright is a climbing crouch /
+                    # wedge, not a fall -- and on stairs the terrain reference under the
+                    # body can read low mid-climb -- so height alone no longer triggers.
+                    _flip_now = _ltilt > _ROBOT_FALL_TILT_DEG
+                    _low_and_tipped_now = (
+                        robot_height_now < ROBOT_COLLAPSE_HEIGHT_M
+                        and _ltilt > _ROBOT_COLLAPSE_TILT_DEG
                     )
+                    robot_fallen_now = _flip_now or _low_and_tipped_now
                     if step_count % 15 == 0:
                         policy_diag = {}
                         # During the parkour hot-swap climb the CLIMB policy drives the legs, so
@@ -5585,6 +5561,10 @@ def main() -> None:
                             roll=round(math.degrees(lroll), 1),
                             pitch=round(math.degrees(lpitch), 1),
                             yaw=round(math.degrees(_lyaw), 1),
+                            # Singularity-free tilt-from-vertical the fall watchdog acts on
+                            # (acos of the body up-axis). roll/pitch above are Euler and can
+                            # gimbal-spin to ~180 at steep pitch; this is the truthful tilt.
+                            tilt_deg=round(_ltilt, 1),
                             vx=round(float(vx), 3), wz=round(float(wz), 3),
                             # Measured base velocity in the robot heading frame.
                             # body_vx>0 => actually moving forward; compare to vx.
@@ -5666,10 +5646,7 @@ def main() -> None:
                                 # threshold) from an upright COLLAPSE/wedge (height dropped
                                 # but the body never tipped). The latter is what "did not
                                 # fall on screen but collided with the stairs" looks like.
-                                _flipped = (
-                                    abs(lroll) > ROBOT_FALL_TILT_RAD
-                                    or abs(lpitch) > ROBOT_FALL_TILT_RAD
-                                )
+                                _flipped = _ltilt > _ROBOT_FALL_TILT_DEG
                                 _fall_type = "flipped" if _flipped else "collapsed_low"
                                 log_event(
                                     LOGGER,
@@ -5730,8 +5707,10 @@ def main() -> None:
                     )
                     break
 
-            # Release top-down recording when scene motion starts
-            if scene_motion_released and not topdown_recording_released:
+            # Release top-down recording when scene motion starts, OR immediately when
+            # hold_motion_until_command is disabled (no Docker/UDP controller expected,
+            # so active_count never increments and scene_motion_released stays False).
+            if (scene_motion_released or not args.hold_motion_until_command) and not topdown_recording_released:
                 topdown_recording_released = True
 
             # Publish camera frame at reduced rate
@@ -5785,7 +5764,7 @@ def main() -> None:
                         # UDP frame to the controller (BEV panel + distance fusion), the
                         # HUD telemetry shows real hits, and lidar_preview.mp4 records the
                         # full BEV/range image unless --no-lidar-preview disables it.
-                        if lidar_scan_enabled and (step_count // args.render_every) % lidar_scan_stride == 0:
+                        if lidar_scan_enabled and os.environ.get("PATIENT_FAST_VERIFY") != "1" and (step_count // args.render_every) % lidar_scan_stride == 0:
                             try:
                                 robot_pose = stair_demo.get("robot", {})
                                 scan = cast_scan(
@@ -5857,6 +5836,13 @@ def main() -> None:
                         # Depth noise is applied inside publisher.send after downsampling
                         publisher.send(rgb_data, depth_mm, vx, vy, wz, gt_patient, gt_distractor,
                                        stair_demo, swing_legs, lidar_profile_latest)
+                        # Frame-transport diagnostic: count actual UDP sends so we can tell
+                        # "Isaac never sent" (render starved) from "Docker dropped the UDP".
+                        main._frame_sent = getattr(main, "_frame_sent", 0) + 1
+                        if main._frame_sent in (1, 5, 25, 100, 300):
+                            log_event(LOGGER, logging.INFO, "frame_sent_diag",
+                                      "FramePublisher UDP send count", sent=int(main._frame_sent),
+                                      dest_host=str(args.frame_host), dest_port=int(args.frame_port))
                 except Exception as exc:
                     log_event(
                         LOGGER,
@@ -6230,7 +6216,7 @@ def _warm_run_loop() -> None:
     main() episode per begin, and keep Kit alive between episodes. Self-reboots after
     --warm-max-runs (or on episode failure) so the launcher transparently boots fresh."""
     global _warm_status_file, _warm_runs_served, _warm_current_seq, _running
-    global _BENCH_TERRAIN, _BENCH_DRIVE
+    global _BENCH_TERRAIN, _BENCH_DRIVE, _ACTIVE_STAIRS
     cmd_file = args.warm_command_file
     _warm_status_file = (
         os.path.join(os.path.dirname(cmd_file), "warm_status.json") if cmd_file else ""
@@ -6275,6 +6261,35 @@ def _warm_run_loop() -> None:
                 log_event(LOGGER, logging.WARNING, "bench_configure_stairs_failed",
                           "Could not apply bench stair preset; using current active stairs",
                           error=str(exc), terrain_id=str(_BENCH_TERRAIN.get("terrain_id", "")))
+        # Per-episode RISER override (warm height sweep, run_stair_sweep.ps1): vary only
+        # the step height while reusing the booted preset's tread depth/count, so one warm
+        # Kit can run a whole staircase-height battery without rebooting. Applied here --
+        # before the scene is rebuilt -- so every get_active_stairs() consumer picks it up.
+        # _ACTIVE_STAIRS is refreshed too so the per-episode scene_baseline log is accurate.
+        _warm_step_h = cmd.get("stair_step_height")
+        if _warm_step_h is not None and float(_warm_step_h) > 0:
+            try:
+                _ACTIVE_STAIRS = configure_stairs(
+                    preset=str(getattr(args, "stair_preset", None) or "commercial"),
+                    step_height_m=float(_warm_step_h),
+                )
+                log_event(
+                    LOGGER, logging.INFO, "stair_preset_configured",
+                    f"Active staircase: {_ACTIVE_STAIRS.name} "
+                    f"({_ACTIVE_STAIRS.step_count} steps, rise={_ACTIVE_STAIRS.step_height_m:.3f} m, "
+                    f"run={_ACTIVE_STAIRS.step_depth_m:.3f} m, top={_ACTIVE_STAIRS.top_height_m:.3f} m) "
+                    f"[warm per-episode riser override]",
+                    preset=_ACTIVE_STAIRS.name,
+                    step_count=int(_ACTIVE_STAIRS.step_count),
+                    step_height_m=float(_ACTIVE_STAIRS.step_height_m),
+                    step_depth_m=float(_ACTIVE_STAIRS.step_depth_m),
+                    top_height_m=float(_ACTIVE_STAIRS.top_height_m),
+                    handrail=bool(_ACTIVE_STAIRS.handrail),
+                )
+            except Exception as exc:
+                log_event(LOGGER, logging.WARNING, "warm_configure_stairs_failed",
+                          "Could not apply warm per-episode stair height; using current active stairs",
+                          error=str(exc), stair_step_height=str(_warm_step_h))
         _warm_reset_state_for_new_episode()
         try:
             main()

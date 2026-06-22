@@ -40,6 +40,8 @@ from core.control.follow_shaping import (
     _update_carrot_heading,
 )
 from core.hud.preview_recorder import _AsyncPreviewWorker
+from go2_locomotion.pgtt_stair_handoff import DepthStairDetector, HandoffConfig
+from core.control.climb_fsm import ClimbFSM
 
 
 def _parse_enabled_log_components(raw_value: str) -> Set[str]:
@@ -198,6 +200,12 @@ def main():
         consistency_required=args.stairs_consistency_required,
     )
     yolo_stairs.initialize()
+
+    # Depth-based near-field stair detector (Rec 2): geometrically profiles the
+    # parkour depth camera column data so stair detection stays reliable even when
+    # YOLO-World blanks out at close range (<0.8 m from the first riser face).
+    _depth_stair_cfg = HandoffConfig()
+    _depth_stair_detector = DepthStairDetector(_depth_stair_cfg)
 
     tracker = SinglePersonTracker(
         debug=args.debug,
@@ -395,6 +403,13 @@ def main():
  
     last_command_trans_x = 0.0
     last_command_rotation = 0.0
+
+    # Explicit climb FSM (Rec 4): owns all 8 implicit latch variables and exposes
+    # fsm.state (named string) in debug_info["fsm_state"] each frame. The dispatch
+    # logic below still reads the same latch variables (synced from the FSM after
+    # fsm.update()), so the dispatch behaviour is unchanged — this is a pure refactor.
+    climb_fsm = ClimbFSM(args)
+
     # Method 3 momentum-aware stop ramp state. On a flat-ground stop decision the forward command
     # is ramped down over --follow-stop-ramp-sec (gait stays alive) and the stance-lock hold is
     # only asserted once the ramp has bled the command below --follow-stop-ramp-eps.
@@ -615,17 +630,39 @@ def main():
                     last_stairs_bbox = list(stairs_result.get("bbox"))
                     last_stairs_conf = float(stairs_result.get("conf", 0.0))
 
+            # Depth-based near-field stair detection (Rec 2): run the geometric depth
+            # column profiler and merge its result with YOLO. When YOLO blanks out at
+            # close range the depth detector keeps stairs_detected True, eliminating the
+            # need for the close-dropout latch as the primary compensation.
+            _depth_det = _depth_stair_detector.detect(depth_img)
+            _depth_stairs_confirmed = (
+                bool(_depth_det.get("stair_detected", False))
+                and int(_depth_det.get("stair_count", 0)) >= _depth_stair_cfg.stair_min_count
+            )
+            if _depth_stairs_confirmed:
+                stair_latch_counter = int(args.stairs_latch_frames)
+                # Use the depth detector's leading edge as stairs_depth_m when YOLO bbox
+                # depth is unavailable (populated below after stair depth measurement).
+            debug_info["depth_stair_detected"] = bool(_depth_det.get("stair_detected", False))
+            debug_info["depth_stair_count"] = int(_depth_det.get("stair_count", 0))
+            debug_info["depth_stair_leading_edge_m"] = _depth_det.get("leading_edge_distance")
+
             stairs_detected = stair_latch_counter > 0
             if stair_latch_counter > 0:
                 stair_latch_counter -= 1
 
             # Widen the follow standoff while on stairs so the dog trails the person
             # by a comfortable gap instead of parking one step behind and starving
-            # the forward command. Takes effect on the next frame's follower update.
+            # the forward command. Speed-adaptive buffer: expand the standoff by
+            # leader_speed * lookahead so a fast-moving patient doesn't trigger a
+            # collision block mid-climb. Takes effect on the next frame's follower update.
+            _leader_spd = float(debug_info.get("leader_speed_mps", 0.0))
+            _stair_standoff_base = float(args.stair_target_distance) if stairs_detected else float(args.target_distance)
+            _stair_lookahead_sec = 0.5  # tunable: seconds of patient travel added as buffer
             person_follower.config.target_distance = (
-                float(args.stair_target_distance)
+                _stair_standoff_base + _leader_spd * _stair_lookahead_sec
                 if stairs_detected
-                else float(args.target_distance)
+                else _stair_standoff_base
             )
 
             stairs_bbox = stairs_result.get("bbox") or last_stairs_bbox
@@ -658,7 +695,10 @@ def main():
                 last_stairs_depth_m = stairs_depth_m
                 stairs_depth_ever_confirmed = True
             elif stairs_detected:
-                stairs_depth_m = last_stairs_depth_m
+                # Use depth-detector leading edge as first fallback (more current than
+                # the latched YOLO bbox depth), then fall back to the last trusted value.
+                _le = _depth_det.get("leading_edge_distance")
+                stairs_depth_m = float(_le) if _le is not None else last_stairs_depth_m
 
             debug_info["stairs_detected"] = stairs_detected
             debug_info["stairs_raw_detected"] = bool(stairs_result.get("raw_detected", False))
@@ -1138,6 +1178,36 @@ def main():
                 max(float(args.stair_forward_floor), float(args.stair_loss_forward_floor)),
                 float(args.trans_x_max) * float(args.stair_speed_scale)))
 
+            # --- ClimbFSM update (Rec 4) ---
+            # Run the FSM with all per-frame signals; it recomputes all latch variables
+            # internally and returns debug fields. The existing dispatch still uses the
+            # LOCAL latch variables (stair_climb_committed, etc.) so we sync them back
+            # from the FSM after the update so both remain consistent.
+            _fsm_debug = climb_fsm.update(
+                current_time,
+                stairs_detected=bool(debug_info.get("stairs_detected", False)),
+                stairs_action_active=bool(debug_info.get("stairs_action_active", False)),
+                stairs_depth_m=stairs_depth_m,
+                last_stairs_depth_m=last_stairs_depth_m,
+                stairs_depth_ever_confirmed=stairs_depth_ever_confirmed,
+                person_detected=bool(debug_info.get("person_detected", False)),
+                depth_distance_m=debug_info.get("depth_distance_m"),
+                front_near_m=_front_near_m,
+                standoff_gap_ctrl_m=debug_info.get("standoff_gap_ctrl_m"),
+                lost_age_sec=debug_info.get("lost_age_sec"),
+                motion_allowed=motion_allowed,
+            )
+            debug_info.update(_fsm_debug)
+            # Sync FSM-owned latch state back to local variables used by dispatch below
+            stair_climb_committed = climb_fsm.stair_climb_committed
+            stair_climb_commit_ts = climb_fsm.stair_climb_commit_ts
+            stair_climb_latch_until = climb_fsm.stair_climb_latch_until
+            _climbing_persist_until = climb_fsm._climbing_persist_until
+            _stairs_seen_ts = climb_fsm._stairs_seen_ts
+            last_person_gap_m = climb_fsm.last_person_gap_m
+            stop_ramp_active = climb_fsm.stop_ramp_active
+            stop_ramp_vx = climb_fsm.stop_ramp_vx
+
             controller = robot_controller
 
             # --- Committed straight-up stair climb (the climb method) ---
@@ -1494,6 +1564,19 @@ def main():
                 stop_ramp_active = False
                 stop_ramp_vx = 0.0
                 stop_ramp_last_ts = current_time
+
+            # Sync dispatch-modified latch variables back into the FSM so it starts the
+            # next frame with the correct state (stop_ramp, on-stairs timestamps, etc.)
+            climb_fsm.stop_ramp_active = stop_ramp_active
+            climb_fsm.stop_ramp_vx = stop_ramp_vx
+            climb_fsm.stop_ramp_last_ts = stop_ramp_last_ts
+            climb_fsm.stair_climb_committed = stair_climb_committed
+            climb_fsm.stair_climb_commit_ts = stair_climb_commit_ts
+            climb_fsm.stair_climb_latch_until = stair_climb_latch_until
+            climb_fsm._climbing_persist_until = _climbing_persist_until
+            climb_fsm._stairs_seen_ts = _stairs_seen_ts
+            if last_person_gap_m is not None:
+                climb_fsm.last_person_gap_m = last_person_gap_m
 
             if motion_allowed and not raw_recording_released:
                 raw_recording_released = True

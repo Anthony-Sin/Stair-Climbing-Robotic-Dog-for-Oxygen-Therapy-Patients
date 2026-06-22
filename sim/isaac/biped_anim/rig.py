@@ -70,6 +70,34 @@ _JOINT_TARGETS: List[Tuple[str, str, str]] = [
     ("spine_pitch", "Spine1", "spine"),
 ]
 
+# The rig's canonical joint leaf names (above) are the CC/iClone "Biped_Setup"
+# convention. A custom or skinned character (Mixamo, Omniverse People, Unreal) names
+# its bones differently. This maps each canonical name to the alternatives we accept,
+# so the gait rig binds without renaming the character's skeleton. Matching is
+# case-insensitive; add a skeleton's names here if "biped_rig_skeleton_joints" shows
+# them unresolved. Order is preference (first hit wins).
+_JOINT_ALIASES: Dict[str, List[str]] = {
+    "L_UpLeg":  ["LeftUpLeg", "mixamorig:LeftUpLeg", "LeftUpperLeg", "LeftThigh", "thigh_l", "L_Thigh", "LeftHip"],
+    "R_UpLeg":  ["RightUpLeg", "mixamorig:RightUpLeg", "RightUpperLeg", "RightThigh", "thigh_r", "R_Thigh", "RightHip"],
+    "L_LoLeg":  ["LeftLeg", "mixamorig:LeftLeg", "LeftLowerLeg", "LeftCalf", "calf_l", "L_Calf", "L_Shin", "LeftKnee"],
+    "R_LoLeg":  ["RightLeg", "mixamorig:RightLeg", "RightLowerLeg", "RightCalf", "calf_r", "R_Calf", "R_Shin", "RightKnee"],
+    "L_Ankle":  ["LeftFoot", "mixamorig:LeftFoot", "foot_l", "L_Foot", "LeftAnkle"],
+    "R_Ankle":  ["RightFoot", "mixamorig:RightFoot", "foot_r", "R_Foot", "RightAnkle"],
+    "L_Ball":   ["LeftToeBase", "mixamorig:LeftToeBase", "ball_l", "L_Toe", "LeftToe", "L_ToeBase"],
+    "R_Ball":   ["RightToeBase", "mixamorig:RightToeBase", "ball_r", "R_Toe", "RightToe", "R_ToeBase"],
+    "L_UpArm":  ["LeftArm", "mixamorig:LeftArm", "LeftUpperArm", "upperarm_l", "L_Upperarm", "LeftShoulder"],
+    "R_UpArm":  ["RightArm", "mixamorig:RightArm", "RightUpperArm", "upperarm_r", "R_Upperarm", "RightShoulder"],
+    "L_LoArm":  ["LeftForeArm", "mixamorig:LeftForeArm", "LeftLowerArm", "lowerarm_l", "L_Forearm", "LeftElbow"],
+    "R_LoArm":  ["RightForeArm", "mixamorig:RightForeArm", "RightLowerArm", "lowerarm_r", "R_Forearm", "RightElbow"],
+    "Spine1":   ["Spine", "Spine01", "Spine02", "Spine03", "mixamorig:Spine1", "mixamorig:Spine", "Spine2", "Spine_01", "spine_01", "spine_02", "spine_03"],
+}
+
+# When no standing/idle clip is found, the neutral pose is the bind T-pose (arms
+# straight out to the sides). This is the angle each shoulder is adducted so the arms
+# hang at the sides instead. TUNABLE: raise to bring the arms further down; if the arms
+# rotate the WRONG way (out/up instead of down), flip the per-side sign in _build.
+_ARMS_DOWN_ADDUCT_RAD = math.radians(75.0)
+
 _PROCEDURAL_ANIM_NAME = "ProceduralGait"
 # Substrings (in priority order) used to find the asset's standing pose clip.
 _STANDING_ANIM_HINTS = ("idle", "stand")
@@ -217,10 +245,24 @@ class BipedRig:
                 out[str(j).rsplit("/", 1)[-1]] = _gf_quat_to_wxyz(q)
             return out
 
+        # Collect every SkelAnimation clip under the character so a mismatched clip
+        # naming is visible in one run (logged below), then match an idle/standing pose
+        # by hint. A custom/skinned character whose animationGraph was stripped often has
+        # NO clips here -> empty -> the caller uses the bind pose + synthetic arms-down.
+        anim_prims = [p for p in Usd.PrimRange(search_root)
+                      if p.GetTypeName() == "SkelAnimation"]
+        if self._logger is not None:
+            from sim_logging_utils import log_event
+            log_event(
+                self._logger,
+                logging.INFO,
+                "biped_rig_anim_clips",
+                "SkelAnimation clips found for the standing-pose base",
+                clip_names=[p.GetName() for p in anim_prims],
+                standing_hints=list(_STANDING_ANIM_HINTS),
+            )
         for hint in _STANDING_ANIM_HINTS:
-            for prim in Usd.PrimRange(search_root):
-                if prim.GetTypeName() != "SkelAnimation":
-                    continue
+            for prim in anim_prims:
                 if hint in prim.GetName().lower():
                     found = _read(prim)
                     if found:
@@ -242,6 +284,34 @@ class BipedRig:
         n = len(self._joints)
         full_to_idx = {j: i for i, j in enumerate(self._joints)}
         leaf_to_idx = {j.rsplit("/", 1)[-1]: i for i, j in enumerate(self._joints)}
+
+        # Bind the rig's canonical joint names onto whatever naming THIS skeleton uses
+        # (Mixamo/Omniverse-People/Unreal vs the CC/iClone Biped_Setup default), so a
+        # custom or skinned character animates without renaming its bones. Each missing
+        # canonical name adopts the index of the first alias present in the skeleton.
+        _actual_leaves = sorted(leaf_to_idx.keys())
+        _ci_leaf = {}
+        for _nm, _ix in leaf_to_idx.items():
+            _ci_leaf.setdefault(_nm.lower(), _ix)
+        for _canon, _aliases in _JOINT_ALIASES.items():
+            if _canon in leaf_to_idx:
+                continue
+            for _alt in _aliases:
+                _ix = _ci_leaf.get(_alt.lower())
+                if _ix is not None:
+                    leaf_to_idx[_canon] = _ix
+                    break
+        if self._logger is not None:
+            from sim_logging_utils import log_event
+            log_event(
+                self._logger,
+                logging.INFO,
+                "biped_rig_skeleton_joints",
+                "Resolved skeleton joints for the gait rig (alias-mapped to canonical names)",
+                joint_leaf_names=_actual_leaves,
+                canonical_resolved={_c: (_c in leaf_to_idx) for _c in _JOINT_ALIASES},
+            )
+
         parent_idx = [
             full_to_idx.get(j.rsplit("/", 1)[0], -1) if "/" in j else -1
             for j in self._joints
@@ -301,6 +371,33 @@ class BipedRig:
         # natural planted reach). Left None if any joint is missing -> the gait
         # falls back to the open-loop swing.
         self.leg_geometry = self._measure_leg_geometry(leaf_to_idx, world_pos)
+
+        # ARMS-DOWN: with no standing/idle clip the neutral pose is the bind T-pose
+        # (arms straight out). Adduct the shoulders so the arms hang at the sides --
+        # otherwise the character walks like a scarecrow. World up is +Z; rotate each
+        # upper arm about the body forward axis toward straight-down. The walk-swing the
+        # gait adds later rides on top of this corrected base.
+        if not used_standing:
+            up_world = np.array([0.0, 0.0, 1.0])
+            fwd_world = np.cross(up_world, lateral_world)
+            fn = float(np.linalg.norm(fwd_world))
+            if fn > 1e-6:
+                fwd_world = fwd_world / fn
+                for _leaf, _side in (("L_UpArm", +1.0), ("R_UpArm", -1.0)):
+                    _si = leaf_to_idx.get(_leaf)
+                    if _si is None:
+                        continue
+                    _pi = parent_idx[_si]
+                    _pr = world_rot[_pi] if (_pi >= 0 and world_rot[_pi] is not None) else np.eye(3)
+                    _Rw = _axis_angle_to_mat3(fwd_world, _side * _ARMS_DOWN_ADDUCT_RAD)
+                    _new_local = (_pr.T @ _Rw @ _pr) @ local_rot_col[_si]
+                    # Update BOTH the rendered base quat AND the matrix the gait swings
+                    # from (local_rot_col, read by the _JOINT_TARGETS loop below) so the
+                    # arm does not snap back to T-pose when the gait writes it each frame.
+                    local_rot_col[_si] = _new_local
+                    world_rot[_si] = _pr @ _new_local
+                    _w, _x, _y, _z = _mat3_to_quat_wxyz(_new_local)
+                    self._base_quats[_si] = Gf.Quatf(_w, _x, _y, _z)
 
         # Per driven joint: express lateral_world in the joint's STANDING local
         # frame. axis_local = R_world_standing^{-1} @ lateral = R_world_standing.T @ lateral.

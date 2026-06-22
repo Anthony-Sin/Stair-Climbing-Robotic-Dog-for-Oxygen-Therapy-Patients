@@ -67,7 +67,14 @@ param(
     # Isolated stair-climb test (Docker-free): drive straight up the stairs and exit at
     # the target waypoint. Pair with -HandoffClimbBackend blind_rl to test the blind RL climb.
     [switch]$StairWaypointTest,
-    [double]$StairWaypointX = 6.2,
+    # Planar X target (m) the robot must reach UPRIGHT to pass the waypoint test. Derived
+    # from the staircase the launcher actually builds: it forces the 'commercial' preset
+    # (start_x 2.0 + 14 steps x 0.305 m run => top edge at x=6.27, landing 1.0 m deep -> far
+    # edge 7.27). 6.77 = the CENTRE of that landing, so the dog stops with ~0.5 m margin before
+    # the far edge instead of trotting off it (the old 6.5 sat only 0.23 m on and the residual
+    # PGTT drift carried it off the back). Only the RISER changes via -StairStepHeight (height
+    # moves the top's Z, not its X), so this X is correct for every height in the sweep.
+    [double]$StairWaypointX = 6.77,
     [double]$StairWaypointY = 0.0,
     [switch]$NoParkourPersonMask,
     [switch]$WithO2Payload,
@@ -78,6 +85,11 @@ param(
     [switch]$Headless,
     [switch]$FastRender,
     [switch]$PatientPhysics,
+    [string]$PatientCharacterUsd = "",
+    # Start scene motion (patient patrol) immediately instead of waiting for the
+    # Docker controller's first command. Pair with --no-docker-run for a Docker-free
+    # patient-locomotion walk_log run.
+    [switch]$NoHoldMotion,
     [switch]$WarmIsaac,
     [switch]$WarmShutdown,
     [int]$WarmMaxRuns = 10
@@ -156,12 +168,18 @@ function Get-NextWarmSeq {
 }
 
 function Write-WarmCommand {
-    param([string]$CommandFile, [int]$Seq, [string]$Action, [string]$RunDir)
+    param([string]$CommandFile, [int]$Seq, [string]$Action, [string]$RunDir, [double]$StairStepHeight = 0)
     $dir = Split-Path -Parent $CommandFile
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-    $obj = [ordered]@{ seq = $Seq; action = $Action; run_dir = $RunDir; stamp = (Get-Date -Format o) }
+    # stair_step_height: per-episode riser override for the warm height sweep (0 = keep
+    # the booted preset). isaac_env's _warm_run_loop applies it via configure_stairs before
+    # rebuilding the scene, so one warm Kit runs a whole staircase-height battery.
+    $obj = [ordered]@{ seq = $Seq; action = $Action; run_dir = $RunDir; stair_step_height = $StairStepHeight; stamp = (Get-Date -Format o) }
+    $json = $obj | ConvertTo-Json -Compress
     $tmp = "$CommandFile.tmp"
-    $obj | ConvertTo-Json -Compress | Set-Content -LiteralPath $tmp -Encoding UTF8
+    # UTF-8 WITHOUT BOM: PS 5.1 'Set-Content -Encoding UTF8' prepends a BOM that Python's
+    # json.load(open(path)) rejects with "Expecting value" (see CLAUDE.md incident ledger).
+    [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding $false))
     Move-Item -LiteralPath $tmp -Destination $CommandFile -Force
 }
 
@@ -1240,7 +1258,6 @@ if ($NoIsaac) {
         "-IsaacSimDir", $IsaacSimDir,
         "-RepoRoot", $RepoRoot,
         "-RunLogDir", $RunLogDir,
-        "-RawVideoPath", (Join-Path $VideosDir "scene_view.mp4"),
         "-FrameHost", $FrameHost,
         "-FramePort", [string]$FramePort,
         "-CmdPort", [string]$CmdPort,
@@ -1260,6 +1277,14 @@ if ($NoIsaac) {
         # see project_follow_up_stairs_goal + project_stair_approach_commit.
         "-StairPreset", "commercial"
     )
+    # scene_view recording path. Per the incident ledger, a FIXED boot path makes EVERY
+    # warm episode overwrite the SAME scene_view.mp4 (topdown/lidar/follow already derive
+    # per-episode from the retargeted log_dir, but scene_view honours raw_video_path if set).
+    # So pass it ONLY for one-shot runs; in warm mode leave it empty so isaac_env derives a
+    # fresh per-episode scene_view path and every height's video is kept.
+    if (-not $WarmIsaac) {
+        $isaacArgs += "-RawVideoPath"; $isaacArgs += (Join-Path $VideosDir "scene_view.mp4")
+    }
     if ($Sim2RealValidationCam) {
         $isaacArgs += "-Sim2RealValidationCam"
     }
@@ -1289,6 +1314,12 @@ if ($NoIsaac) {
     }
     if ($PatientPhysics) {
         $isaacArgs += "-PatientPhysics"
+    }
+    if ($PatientCharacterUsd) {
+        $isaacArgs += "-PatientCharacterUsd"; $isaacArgs += $PatientCharacterUsd
+    }
+    if ($NoHoldMotion) {
+        $isaacArgs += "-NoHoldMotion"
     }
     if ($SelfTestWalk) {
         $isaacArgs += "-SelfTestWalk"
@@ -1337,8 +1368,8 @@ if ($NoIsaac) {
             status_file = $WarmStatusFile
         }
         $seq = Get-NextWarmSeq -CommandFile $WarmCommandFile
-        Write-WarmCommand -CommandFile $WarmCommandFile -Seq $seq -Action "begin" -RunDir $RunLogDir
-        Write-Stage "isaac" "warm_begin" "Posted warm begin to the live Isaac" @{ command = "seq=$seq"; run_log_dir = $RunLogDir }
+        Write-WarmCommand -CommandFile $WarmCommandFile -Seq $seq -Action "begin" -RunDir $RunLogDir -StairStepHeight $StairStepHeight
+        Write-Stage "isaac" "warm_begin" "Posted warm begin to the live Isaac" @{ command = "seq=$seq"; run_log_dir = $RunLogDir; stair_step_height = $StairStepHeight }
     } else {
         $startParams = @{
             FilePath = "powershell.exe"
@@ -1359,8 +1390,8 @@ if ($NoIsaac) {
         }
         if ($WarmIsaac) {
             $seq = Get-NextWarmSeq -CommandFile $WarmCommandFile
-            Write-WarmCommand -CommandFile $WarmCommandFile -Seq $seq -Action "begin" -RunDir $RunLogDir
-            Write-Stage "isaac" "warm_begin" "Posted warm begin to the new Isaac" @{ command = "seq=$seq"; run_log_dir = $RunLogDir }
+            Write-WarmCommand -CommandFile $WarmCommandFile -Seq $seq -Action "begin" -RunDir $RunLogDir -StairStepHeight $StairStepHeight
+            Write-Stage "isaac" "warm_begin" "Posted warm begin to the new Isaac" @{ command = "seq=$seq"; run_log_dir = $RunLogDir; stair_step_height = $StairStepHeight }
         }
     }
 }
@@ -1390,7 +1421,13 @@ if ($PauseAfterIsaac -and -not $NoPauseAfterIsaac -and -not $NoIsaac -and -not $
 
 if ($NoDockerRun) {
     Write-Stage "docker" "skipped" "Docker run skipped by --no-docker-run"
-    if (-not $NoIsaac -and $proc) {
+    if ($WarmIsaac) {
+        # Warm Kit is meant to stay alive across episodes -- it NEVER exits on its own, so
+        # do NOT wait for it here (that would hang the boot for the full timeout, then kill
+        # the warm Kit). The caller (run_stair_sweep.ps1) waits for episode completion via
+        # warm_status.json instead. world_ready was already confirmed above.
+        Write-Stage "isaac" "warm_running" "Warm Isaac episode running; caller polls warm_status for completion"
+    } elseif (-not $NoIsaac -and $proc) {
         Write-Host "Waiting for Isaac Sim process (PID $($proc.Id)) to complete..."
         $totalWait = 0
         $checkInterval = 1

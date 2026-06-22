@@ -28,6 +28,7 @@ class PersonFollowingConfig:
     trans_x_kd: float = 0.0
     max_trans_x_speed: float = 0.0
     trans_x_tolerance: float = 0.0
+    trans_x_dist_kp: float = 0.8          # P-gain on distance error; cruise is the cap
     trans_x_antiwindup_gain: float = 0.0
     trans_x_smoothing_alpha: float = 0.0
     
@@ -565,24 +566,28 @@ class PersonFollower:
 
         debug_info['center_x'] = float(bbox_center_x)
 
-        # Three-zone distance control (no proportional term — fixed cruise / hold):
-        #   far zone      (error > +tolerance)       → drive forward at cruise speed
+        # Proportional distance control: speed scales linearly with distance error up to
+        # cruise cap. This eliminates the saw-tooth oscillation of the old bang-bang model
+        # (charge at max → overshoot → stop → repeat) so the robot decelerates smoothly
+        # into standoff. The hold band and too-close clamp are preserved.
+        #   far zone      (error > +tolerance)       → P-controller capped at cruise speed
         #   stop band     (-tolerance to +tolerance) → hold at target distance (zero)
         #   too-close zone (error < -tolerance)      → hold (command zero; never reverse)
         cruise = float(self.config.max_trans_x_speed)
+        kp_dist = float(self.config.trans_x_dist_kp)
         distance_error = float(depth_m) - float(self.config.target_distance)
         tolerance = float(self.config.trans_x_tolerance)
         if distance_error > tolerance:
-            # Person farther than target+tolerance: approach at cruise speed.
-            trans_x_cmd_raw = cruise
+            # Proportional approach: ramp from near-zero up to cruise as error grows.
+            trans_x_cmd_raw = min(cruise, kp_dist * distance_error)
         elif distance_error >= -tolerance:
             # Person within target band (±tolerance): hold position.
             trans_x_cmd_raw = 0.0
         else:
             # Too close: never command forward velocity.
             trans_x_cmd_raw = 0.0
-        # The distance PID is not used in this cruise/hold model; clear its
-        # integral so no windup carries over if the PID path is ever re-enabled.
+        # The distance PID is not used in this model; clear its integral so no windup
+        # carries over if the PID path is ever re-enabled.
         self.trans_x_pid_controller.integral_error = 0.0
         debug_info['trans_x_cmd_raw'] = float(trans_x_cmd_raw)
         debug_info['trans_x_cruise_speed'] = cruise
@@ -600,9 +605,32 @@ class PersonFollower:
         debug_info['trans_x_cmd'] = trans_x_cmd
         debug_info['trans_x_pid_state'] = self.trans_x_pid_controller.get_state()
 
-        # Calculate rotation error and command using center_x
+        # Calculate rotation error and command using center_x.
+        # Keypoint-based bearing override: when both hips are visible, use their midpoint
+        # as the horizontal anchor instead of bbox center. Hip keypoints stay stable when
+        # the lower body is occluded by a stair riser, where the bbox center migrates and
+        # the edge_penalty amplifies the error at the worst moment.
+        _bear_x1, _bear_y1, _bear_x2, _bear_y2 = float(x1), float(y1), float(x2), float(y2)
+        if keypoints is not None and visibility is not None and len(keypoints) > 12 and len(visibility) > 12:
+            _lhip_vis = float(visibility[11])
+            _rhip_vis = float(visibility[12])
+            if _lhip_vis >= 0.5 and _rhip_vis >= 0.5:
+                _hip_cx = (float(keypoints[11][0]) + float(keypoints[12][0])) / 2.0
+                _hip_cy = (float(keypoints[11][1]) + float(keypoints[12][1])) / 2.0
+                # Build a narrow synthetic bbox centred on the hip midpoint so the
+                # edge/size penalties still use the full original bbox for suppression.
+                _w = max(1.0, float(x2 - x1))
+                _bear_x1 = _hip_cx - _w * 0.5
+                _bear_x2 = _hip_cx + _w * 0.5
+                _bear_y1 = _hip_cy - (_bear_y2 - _bear_y1) * 0.5
+                _bear_y2 = _hip_cy + (_bear_y2 - _bear_y1) * 0.5
+                debug_info['bearing_source'] = 'hip_keypoints'
+            else:
+                debug_info['bearing_source'] = 'bbox_center'
+        else:
+            debug_info['bearing_source'] = 'bbox_center'
         rotation_error, edge_penalty, size_penalty, size_ratio, suppression, principal_x_used, principal_source = calculate_bbox_rotation_error(
-            self.config, (x1, y1, x2, y2), frame_shape, use_camera_intrinsics=True
+            self.config, (_bear_x1, _bear_y1, _bear_x2, _bear_y2), frame_shape, use_camera_intrinsics=True
         )
         rotation_cmd_raw = self.rotation_pid_controller.update(rotation_error, 0.0)
         rotation_cmd = -rotation_cmd_raw

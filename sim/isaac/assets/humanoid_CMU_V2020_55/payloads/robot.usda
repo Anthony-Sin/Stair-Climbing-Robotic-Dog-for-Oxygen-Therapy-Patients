@@ -1,0 +1,625 @@
+#usda 1.0
+(
+    customLayerData = {
+        string creator = "MuJoCo USD Converter v0.2.0"
+    }
+    defaultPrim = "humanoid_CMU"
+    doc = """Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\tmp940swx0k\\humanoid_CMU.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\mjcf_import_humanoid_CMU_V2020_uiejo4yw\\usdex_humanoid_CMU_V2020\\humanoid_CMU.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\mjcf_import_humanoid_CMU_V2020_uiejo4yw\\temp_humanoid_CMU_V2020\\humanoid_CMU_V2020.usd
+"""
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+over "humanoid_CMU" (
+    prepend apiSchemas = ["IsaacRobotAPI"]
+)
+{
+    prepend rel isaac:physics:robotJoints = [
+        </humanoid_CMU/Geometry/root/lhipjoint/PhysicsFixedJoint>,
+        </humanoid_CMU/Geometry/root/rhipjoint/PhysicsFixedJoint>,
+        </humanoid_CMU/Geometry/root/lowerback/lowerbackrz>,
+        </humanoid_CMU/Geometry/root/lowerback/lowerbackry>,
+        </humanoid_CMU/Geometry/root/lowerback/lowerbackrx>,
+        </humanoid_CMU/Geometry/root/lhipjoint/lfemur/lfemurrz>,
+        </humanoid_CMU/Geometry/root/lhipjoint/lfemur/lfemurry>,
+        </humanoid_CMU/Geometry/root/lhipjoint/lfemur/lfemurrx>,
+        </humanoid_CMU/Geometry/root/lhipjoint/lfemur/ltibia/ltibiarx>,
+        </humanoid_CMU/Geometry/root/lhipjoint/lfemur/ltibia/lfoot/lfootrz>,
+        </humanoid_CMU/Geometry/root/lhipjoint/lfemur/ltibia/lfoot/lfootrx>,
+        </humanoid_CMU/Geometry/root/lhipjoint/lfemur/ltibia/lfoot/ltoes/ltoesrx>,
+        </humanoid_CMU/Geometry/root/rhipjoint/rfemur/rfemurrz>,
+        </humanoid_CMU/Geometry/root/rhipjoint/rfemur/rfemurry>,
+        </humanoid_CMU/Geometry/root/rhipjoint/rfemur/rfemurrx>,
+        </humanoid_CMU/Geometry/root/rhipjoint/rfemur/rtibia/rtibiarx>,
+        </humanoid_CMU/Geometry/root/rhipjoint/rfemur/rtibia/rfoot/rfootrz>,
+        </humanoid_CMU/Geometry/root/rhipjoint/rfemur/rtibia/rfoot/rfootrx>,
+        </humanoid_CMU/Geometry/root/rhipjoint/rfemur/rtibia/rfoot/rtoes/rtoesrx>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/upperbackrz>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/upperbackry>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/upperbackrx>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/thoraxrz>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/thoraxry>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/thoraxrx>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck/lowerneckrz>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck/lowerneckry>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck/lowerneckrx>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lclaviclerz>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lclaviclery>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rclaviclerz>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rclaviclery>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck/upperneck/upperneckrz>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck/upperneck/upperneckry>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck/upperneck/upperneckrx>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck/upperneck/head/headrz>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck/upperneck/head/headry>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck/upperneck/head/headrx>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lhumerusrz>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lhumerusry>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lhumerusrx>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lradius/lradiusrx>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lradius/lwrist_1/lwristry>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lradius/lwrist_1/lhand/lhandrz>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lradius/lwrist_1/lhand/lhandrx>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lradius/lwrist_1/lhand/lfingers/lfingersrx>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lradius/lwrist_1/lhand/lthumb/lthumbrz>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lradius/lwrist_1/lhand/lthumb/lthumbrx>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rhumerusrz>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rhumerusry>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rhumerusrx>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rradius/rradiusrx>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rradius/rwrist/rwristry>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rradius/rwrist/rhand/rhandrz>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rradius/rwrist/rhand/rhandrx>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rradius/rwrist/rhand/rfingers/rfingersrx>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rradius/rwrist/rhand/rthumb/rthumbrz>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rradius/rwrist/rhand/rthumb/rthumbrx>,
+    ]
+    prepend rel isaac:physics:robotLinks = [
+        </humanoid_CMU/Geometry/root>,
+        </humanoid_CMU/Geometry/root/lhipjoint>,
+        </humanoid_CMU/Geometry/root/lhipjoint/lfemur>,
+        </humanoid_CMU/Geometry/root/lhipjoint/lfemur/ltibia>,
+        </humanoid_CMU/Geometry/root/lhipjoint/lfemur/ltibia/lfoot>,
+        </humanoid_CMU/Geometry/root/lhipjoint/lfemur/ltibia/lfoot/ltoes>,
+        </humanoid_CMU/Geometry/root/rhipjoint>,
+        </humanoid_CMU/Geometry/root/rhipjoint/rfemur>,
+        </humanoid_CMU/Geometry/root/rhipjoint/rfemur/rtibia>,
+        </humanoid_CMU/Geometry/root/rhipjoint/rfemur/rtibia/rfoot>,
+        </humanoid_CMU/Geometry/root/rhipjoint/rfemur/rtibia/rfoot/rtoes>,
+        </humanoid_CMU/Geometry/root/lowerback>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck/upperneck>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck/upperneck/head>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lradius>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lradius/lwrist_1>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lradius/lwrist_1/lhand>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lradius/lwrist_1/lhand/lfingers>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lradius/lwrist_1/lhand/lthumb>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rradius>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rradius/rwrist>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rradius/rwrist/rhand>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rradius/rwrist/rhand/rfingers>,
+        </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rradius/rwrist/rhand/rthumb>,
+    ]
+    token isaac:robotType = "Default"
+
+    over "Geometry"
+    {
+        over "root" (
+            prepend apiSchemas = ["IsaacLinkAPI"]
+        )
+        {
+            over "lhipjoint" (
+                prepend apiSchemas = ["IsaacLinkAPI"]
+            )
+            {
+                over "lfemur" (
+                    prepend apiSchemas = ["IsaacLinkAPI"]
+                )
+                {
+                    over "ltibia" (
+                        prepend apiSchemas = ["IsaacLinkAPI"]
+                    )
+                    {
+                        over "lfoot" (
+                            prepend apiSchemas = ["IsaacLinkAPI"]
+                        )
+                        {
+                            over "ltoes" (
+                                prepend apiSchemas = ["IsaacLinkAPI"]
+                            )
+                            {
+                                over "ltoesrx" (
+                                    prepend apiSchemas = ["IsaacJointAPI"]
+                                )
+                                {
+                                }
+                            }
+
+                            over "lfootrz" (
+                                prepend apiSchemas = ["IsaacJointAPI"]
+                            )
+                            {
+                            }
+
+                            over "lfootrx" (
+                                prepend apiSchemas = ["IsaacJointAPI"]
+                            )
+                            {
+                            }
+                        }
+
+                        over "ltibiarx" (
+                            prepend apiSchemas = ["IsaacJointAPI"]
+                        )
+                        {
+                        }
+                    }
+
+                    over "lfemurrz" (
+                        prepend apiSchemas = ["IsaacJointAPI"]
+                    )
+                    {
+                    }
+
+                    over "lfemurry" (
+                        prepend apiSchemas = ["IsaacJointAPI"]
+                    )
+                    {
+                    }
+
+                    over "lfemurrx" (
+                        prepend apiSchemas = ["IsaacJointAPI"]
+                    )
+                    {
+                    }
+                }
+
+                over "PhysicsFixedJoint" (
+                    prepend apiSchemas = ["IsaacJointAPI"]
+                )
+                {
+                }
+            }
+
+            over "rhipjoint" (
+                prepend apiSchemas = ["IsaacLinkAPI"]
+            )
+            {
+                over "rfemur" (
+                    prepend apiSchemas = ["IsaacLinkAPI"]
+                )
+                {
+                    over "rtibia" (
+                        prepend apiSchemas = ["IsaacLinkAPI"]
+                    )
+                    {
+                        over "rfoot" (
+                            prepend apiSchemas = ["IsaacLinkAPI"]
+                        )
+                        {
+                            over "rtoes" (
+                                prepend apiSchemas = ["IsaacLinkAPI"]
+                            )
+                            {
+                                over "rtoesrx" (
+                                    prepend apiSchemas = ["IsaacJointAPI"]
+                                )
+                                {
+                                }
+                            }
+
+                            over "rfootrz" (
+                                prepend apiSchemas = ["IsaacJointAPI"]
+                            )
+                            {
+                            }
+
+                            over "rfootrx" (
+                                prepend apiSchemas = ["IsaacJointAPI"]
+                            )
+                            {
+                            }
+                        }
+
+                        over "rtibiarx" (
+                            prepend apiSchemas = ["IsaacJointAPI"]
+                        )
+                        {
+                        }
+                    }
+
+                    over "rfemurrz" (
+                        prepend apiSchemas = ["IsaacJointAPI"]
+                    )
+                    {
+                    }
+
+                    over "rfemurry" (
+                        prepend apiSchemas = ["IsaacJointAPI"]
+                    )
+                    {
+                    }
+
+                    over "rfemurrx" (
+                        prepend apiSchemas = ["IsaacJointAPI"]
+                    )
+                    {
+                    }
+                }
+
+                over "PhysicsFixedJoint" (
+                    prepend apiSchemas = ["IsaacJointAPI"]
+                )
+                {
+                }
+            }
+
+            over "lowerback" (
+                prepend apiSchemas = ["IsaacLinkAPI"]
+            )
+            {
+                over "upperback" (
+                    prepend apiSchemas = ["IsaacLinkAPI"]
+                )
+                {
+                    over "thorax" (
+                        prepend apiSchemas = ["IsaacLinkAPI"]
+                    )
+                    {
+                        over "lowerneck" (
+                            prepend apiSchemas = ["IsaacLinkAPI"]
+                        )
+                        {
+                            over "upperneck" (
+                                prepend apiSchemas = ["IsaacLinkAPI"]
+                            )
+                            {
+                                over "head" (
+                                    prepend apiSchemas = ["IsaacLinkAPI"]
+                                )
+                                {
+                                    over "headrz" (
+                                        prepend apiSchemas = ["IsaacJointAPI"]
+                                    )
+                                    {
+                                    }
+
+                                    over "headry" (
+                                        prepend apiSchemas = ["IsaacJointAPI"]
+                                    )
+                                    {
+                                    }
+
+                                    over "headrx" (
+                                        prepend apiSchemas = ["IsaacJointAPI"]
+                                    )
+                                    {
+                                    }
+                                }
+
+                                over "upperneckrz" (
+                                    prepend apiSchemas = ["IsaacJointAPI"]
+                                )
+                                {
+                                }
+
+                                over "upperneckry" (
+                                    prepend apiSchemas = ["IsaacJointAPI"]
+                                )
+                                {
+                                }
+
+                                over "upperneckrx" (
+                                    prepend apiSchemas = ["IsaacJointAPI"]
+                                )
+                                {
+                                }
+                            }
+
+                            over "lowerneckrz" (
+                                prepend apiSchemas = ["IsaacJointAPI"]
+                            )
+                            {
+                            }
+
+                            over "lowerneckry" (
+                                prepend apiSchemas = ["IsaacJointAPI"]
+                            )
+                            {
+                            }
+
+                            over "lowerneckrx" (
+                                prepend apiSchemas = ["IsaacJointAPI"]
+                            )
+                            {
+                            }
+                        }
+
+                        over "lclavicle" (
+                            prepend apiSchemas = ["IsaacLinkAPI"]
+                        )
+                        {
+                            over "lhumerus" (
+                                prepend apiSchemas = ["IsaacLinkAPI"]
+                            )
+                            {
+                                over "lradius" (
+                                    prepend apiSchemas = ["IsaacLinkAPI"]
+                                )
+                                {
+                                    over "lwrist_1" (
+                                        prepend apiSchemas = ["IsaacLinkAPI"]
+                                    )
+                                    {
+                                        over "lhand" (
+                                            prepend apiSchemas = ["IsaacLinkAPI"]
+                                        )
+                                        {
+                                            over "lfingers" (
+                                                prepend apiSchemas = ["IsaacLinkAPI"]
+                                            )
+                                            {
+                                                over "lfingersrx" (
+                                                    prepend apiSchemas = ["IsaacJointAPI"]
+                                                )
+                                                {
+                                                }
+                                            }
+
+                                            over "lthumb" (
+                                                prepend apiSchemas = ["IsaacLinkAPI"]
+                                            )
+                                            {
+                                                over "lthumbrz" (
+                                                    prepend apiSchemas = ["IsaacJointAPI"]
+                                                )
+                                                {
+                                                }
+
+                                                over "lthumbrx" (
+                                                    prepend apiSchemas = ["IsaacJointAPI"]
+                                                )
+                                                {
+                                                }
+                                            }
+
+                                            over "lhandrz" (
+                                                prepend apiSchemas = ["IsaacJointAPI"]
+                                            )
+                                            {
+                                            }
+
+                                            over "lhandrx" (
+                                                prepend apiSchemas = ["IsaacJointAPI"]
+                                            )
+                                            {
+                                            }
+                                        }
+
+                                        over "lwristry" (
+                                            prepend apiSchemas = ["IsaacJointAPI"]
+                                        )
+                                        {
+                                        }
+                                    }
+
+                                    over "lradiusrx" (
+                                        prepend apiSchemas = ["IsaacJointAPI"]
+                                    )
+                                    {
+                                    }
+                                }
+
+                                over "lhumerusrz" (
+                                    prepend apiSchemas = ["IsaacJointAPI"]
+                                )
+                                {
+                                }
+
+                                over "lhumerusry" (
+                                    prepend apiSchemas = ["IsaacJointAPI"]
+                                )
+                                {
+                                }
+
+                                over "lhumerusrx" (
+                                    prepend apiSchemas = ["IsaacJointAPI"]
+                                )
+                                {
+                                }
+                            }
+
+                            over "lclaviclerz" (
+                                prepend apiSchemas = ["IsaacJointAPI"]
+                            )
+                            {
+                            }
+
+                            over "lclaviclery" (
+                                prepend apiSchemas = ["IsaacJointAPI"]
+                            )
+                            {
+                            }
+                        }
+
+                        over "rclavicle" (
+                            prepend apiSchemas = ["IsaacLinkAPI"]
+                        )
+                        {
+                            over "rhumerus" (
+                                prepend apiSchemas = ["IsaacLinkAPI"]
+                            )
+                            {
+                                over "rradius" (
+                                    prepend apiSchemas = ["IsaacLinkAPI"]
+                                )
+                                {
+                                    over "rwrist" (
+                                        prepend apiSchemas = ["IsaacLinkAPI"]
+                                    )
+                                    {
+                                        over "rhand" (
+                                            prepend apiSchemas = ["IsaacLinkAPI"]
+                                        )
+                                        {
+                                            over "rfingers" (
+                                                prepend apiSchemas = ["IsaacLinkAPI"]
+                                            )
+                                            {
+                                                over "rfingersrx" (
+                                                    prepend apiSchemas = ["IsaacJointAPI"]
+                                                )
+                                                {
+                                                }
+                                            }
+
+                                            over "rthumb" (
+                                                prepend apiSchemas = ["IsaacLinkAPI"]
+                                            )
+                                            {
+                                                over "rthumbrz" (
+                                                    prepend apiSchemas = ["IsaacJointAPI"]
+                                                )
+                                                {
+                                                }
+
+                                                over "rthumbrx" (
+                                                    prepend apiSchemas = ["IsaacJointAPI"]
+                                                )
+                                                {
+                                                }
+                                            }
+
+                                            over "rhandrz" (
+                                                prepend apiSchemas = ["IsaacJointAPI"]
+                                            )
+                                            {
+                                            }
+
+                                            over "rhandrx" (
+                                                prepend apiSchemas = ["IsaacJointAPI"]
+                                            )
+                                            {
+                                            }
+                                        }
+
+                                        over "rwristry" (
+                                            prepend apiSchemas = ["IsaacJointAPI"]
+                                        )
+                                        {
+                                        }
+                                    }
+
+                                    over "rradiusrx" (
+                                        prepend apiSchemas = ["IsaacJointAPI"]
+                                    )
+                                    {
+                                    }
+                                }
+
+                                over "rhumerusrz" (
+                                    prepend apiSchemas = ["IsaacJointAPI"]
+                                )
+                                {
+                                }
+
+                                over "rhumerusry" (
+                                    prepend apiSchemas = ["IsaacJointAPI"]
+                                )
+                                {
+                                }
+
+                                over "rhumerusrx" (
+                                    prepend apiSchemas = ["IsaacJointAPI"]
+                                )
+                                {
+                                }
+                            }
+
+                            over "rclaviclerz" (
+                                prepend apiSchemas = ["IsaacJointAPI"]
+                            )
+                            {
+                            }
+
+                            over "rclaviclery" (
+                                prepend apiSchemas = ["IsaacJointAPI"]
+                            )
+                            {
+                            }
+                        }
+
+                        over "thoraxrz" (
+                            prepend apiSchemas = ["IsaacJointAPI"]
+                        )
+                        {
+                        }
+
+                        over "thoraxry" (
+                            prepend apiSchemas = ["IsaacJointAPI"]
+                        )
+                        {
+                        }
+
+                        over "thoraxrx" (
+                            prepend apiSchemas = ["IsaacJointAPI"]
+                        )
+                        {
+                        }
+                    }
+
+                    over "upperbackrz" (
+                        prepend apiSchemas = ["IsaacJointAPI"]
+                    )
+                    {
+                    }
+
+                    over "upperbackry" (
+                        prepend apiSchemas = ["IsaacJointAPI"]
+                    )
+                    {
+                    }
+
+                    over "upperbackrx" (
+                        prepend apiSchemas = ["IsaacJointAPI"]
+                    )
+                    {
+                    }
+                }
+
+                over "lowerbackrz" (
+                    prepend apiSchemas = ["IsaacJointAPI"]
+                )
+                {
+                }
+
+                over "lowerbackry" (
+                    prepend apiSchemas = ["IsaacJointAPI"]
+                )
+                {
+                }
+
+                over "lowerbackrx" (
+                    prepend apiSchemas = ["IsaacJointAPI"]
+                )
+                {
+                }
+            }
+        }
+    }
+}
+

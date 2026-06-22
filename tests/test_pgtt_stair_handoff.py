@@ -220,10 +220,162 @@ def test_approach_engage():
     print("approach_engage OK  (jammed skipped; standoff engages with room; parkour hot-swap)")
 
 
+def test_top_egress():
+    """Top-of-stairs egress: crest -> walk off the last step -> hand back to PGTT, person-gated."""
+    cfg = HandoffConfig(climb_attempt=True, climb_engage_standoff_m=0.65, climb_min_room_m=0.40,
+                        stair_commit_enabled=True, require_controller_stairs=False,
+                        stair_commit_max_sec=25.0, climb_backend="blind_rl",
+                        top_egress_enabled=True, top_clear_debounce_sec=0.1,
+                        top_egress_distance_m=0.20, top_egress_vx=0.22,
+                        top_egress_standoff_m=0.60, top_egress_max_sec=4.0, climb_max_sec=60.0)
+    ho = HandoffController(cfg, _FakePgtt(), logger=None)
+    Dstairs, Dflat = synth_staircase_depth(), synth_flat_depth()
+    base = dict(go2=object(), stairs_action_active=True, base_z=0.30, body_speed=0.2,
+                roll=0.0, pitch=0.0, roll_rate=0.0, pitch_rate=0.0, height_above_step=0.30,
+                person_detected=False, yaw=0.0, y_lateral=0.0, body_fwd=0.2, cmd_vx=0.22)
+
+    # Engage the blind_rl climb at a standoff (committing + room), stairs still ahead.
+    ho.update(now=1.0, dt=0.05, depth_hw=Dstairs, riser_dist_ahead=0.50,
+              stairs_ahead_gt=True, base_x=0.0, person_gap_m=5.0, **base)
+    r = ho.update(now=1.05, dt=0.05, depth_hw=Dstairs, riser_dist_ahead=0.50,
+                  stairs_ahead_gt=True, base_x=0.0, person_gap_m=5.0, **base)
+    assert r["state"] == "climb" and r["use_parkour"], r
+    assert not r["top_egress"], f"stairs still ahead -> not egress yet: {r}"
+
+    # Reach the top: flat depth AND ground-truth clear. Debounce, then enter egress with a
+    # forward floor (patient far -> push the rear feet off the crest), still under the climb policy.
+    t, entered = 1.1, None
+    for _ in range(10):
+        t += 0.05
+        r = ho.update(now=t, dt=0.05, depth_hw=Dflat, riser_dist_ahead=None,
+                      stairs_ahead_gt=False, base_x=0.0, person_gap_m=5.0, **base)
+        if r["top_egress"]:
+            entered = r
+            break
+    assert entered is not None and entered["state"] == "climb", "should egress at the crest, still climbing"
+    assert abs(entered["climb_vx_floor"] - 0.22) < 1e-6, f"patient far -> egress pushes forward: {entered}"
+
+    # Patient now CLOSE on the landing -> floor drops to 0 (hold in place, never collide).
+    r = ho.update(now=t + 0.05, dt=0.05, depth_hw=Dflat, riser_dist_ahead=None,
+                  stairs_ahead_gt=False, base_x=0.0, person_gap_m=0.4, **base)
+    assert r["top_egress"] and r["climb_vx_floor"] == 0.0, f"close patient -> hold: {r}"
+
+    # Walk the rear feet off the crest (base_x advances past top_egress_distance_m) -> hand back.
+    handed, bx = False, 0.0
+    for _ in range(12):
+        t += 0.05
+        bx += 0.05
+        r = ho.update(now=t, dt=0.05, depth_hw=Dflat, riser_dist_ahead=None,
+                      stairs_ahead_gt=False, base_x=bx, person_gap_m=5.0, **base)
+        if r["state"] == "walk":
+            handed = True
+            break
+    assert handed, "should hand back to PGTT after the egress travel completes"
+    print("top_egress OK  (crest -> egress push; close patient holds at 0; hands back after egress)")
+
+
+def test_egress_stops_at_goal():
+    """Egress must stop AT a forward goal (waypoint) and not overrun it (no person)."""
+    cfg = HandoffConfig(climb_attempt=True, climb_engage_standoff_m=0.65, climb_min_room_m=0.40,
+                        stair_commit_enabled=True, require_controller_stairs=False,
+                        climb_backend="blind_rl", climb_max_sec=999.0, climb_stall_timeout_sec=999.0,
+                        top_egress_enabled=True, top_clear_debounce_sec=0.1,
+                        top_egress_distance_m=0.50, top_egress_goal_stop_m=0.12, climb_progress_min_m=0.05)
+    ho = HandoffController(cfg, _FakePgtt(), logger=None)
+    Dstairs, Dflat = synth_staircase_depth(), synth_flat_depth()
+    base = dict(go2=object(), stairs_action_active=True, body_speed=0.2,
+                roll=0.0, pitch=0.0, roll_rate=0.0, pitch_rate=0.0, height_above_step=0.30,
+                person_detected=False, yaw=0.0, y_lateral=0.0, body_fwd=0.2, cmd_vx=0.22,
+                person_gap_m=9.0)  # person far / off-lane (waypoint test)
+    z = 0.30
+    ho.update(now=1.0, dt=0.05, depth_hw=Dstairs, riser_dist_ahead=0.50, stairs_ahead_gt=True,
+              base_x=6.0, base_z=z, **base)
+    # Crest at x=6.0; waypoint at 6.3. Egress pushes (floor>0) while far from the goal, then ENDS
+    # AT the goal (within goal_stop 0.12 m) -- before the 0.5 m egress distance -- without overrun.
+    t, pushed_far, handed = 1.0, False, False
+    bx = 6.0
+    for _ in range(20):
+        t += 0.05; bx += 0.02; z += 0.001
+        goal = 6.3 - bx
+        r = ho.update(now=t, dt=0.05, depth_hw=Dflat, riser_dist_ahead=None, stairs_ahead_gt=False,
+                      base_x=bx, base_z=z, forward_goal_dist_m=goal, **base)
+        if r.get("top_egress") and goal > 0.12 and (r["climb_vx_floor"] or 0.0) > 0.0:
+            pushed_far = True            # floor IS emitted while still far from the goal
+        if r["state"] == "walk":
+            handed = True
+            assert goal <= 0.12 + 1e-6, f"must hand back AT the goal, not before (goal={goal:.3f})"
+            assert bx <= 6.30 + 1e-6, f"must not overrun the waypoint (x={bx:.3f} > 6.30)"
+            break
+    assert pushed_far, "egress must push forward (floor>0) while far from the goal"
+    assert handed, "egress should end (hand back) at the waypoint"
+    print("egress_stops_at_goal OK  (pushes while far; ends AT the waypoint; no overrun)")
+
+
+def test_no_false_crest_between_risers():
+    """A transient flat depth profile mid-climb (GT still rising) must NOT declare the top."""
+    cfg = HandoffConfig(climb_attempt=True, climb_engage_standoff_m=0.65, climb_min_room_m=0.40,
+                        stair_commit_enabled=True, require_controller_stairs=False,
+                        climb_backend="blind_rl", top_clear_debounce_sec=0.1,
+                        top_egress_distance_m=0.20, climb_max_sec=60.0)
+    ho = HandoffController(cfg, _FakePgtt(), logger=None)
+    Dstairs, Dflat = synth_staircase_depth(), synth_flat_depth()
+    base = dict(go2=object(), stairs_action_active=True, base_z=0.30, body_speed=0.2,
+                roll=0.0, pitch=0.0, roll_rate=0.0, pitch_rate=0.0, height_above_step=0.30,
+                person_detected=False, yaw=0.0, y_lateral=0.0, body_fwd=0.2, cmd_vx=0.22)
+    ho.update(now=1.0, dt=0.05, depth_hw=Dstairs, riser_dist_ahead=0.50,
+              stairs_ahead_gt=True, base_x=0.0, person_gap_m=5.0, **base)
+    # Flat DEPTH (det clear) but the ground truth still says a riser rises ahead -> NOT cleared.
+    t = 1.05
+    for _ in range(10):
+        t += 0.05
+        r = ho.update(now=t, dt=0.05, depth_hw=Dflat, riser_dist_ahead=0.40,
+                      stairs_ahead_gt=True, base_x=0.0, person_gap_m=5.0, **base)
+        assert not r["top_egress"], f"GT riser still ahead -> must not crest: {r}"
+    assert r["state"] == "climb", "still climbing between risers"
+    print("no_false_crest OK  (flat depth but GT rising -> stays in climb, no egress)")
+
+
+def test_climb_progress_watchdog():
+    """A still-RISING climb is not cut off; a wedged (no-height-gain) climb hands back."""
+    cfg = HandoffConfig(climb_attempt=True, climb_engage_standoff_m=0.65, climb_min_room_m=0.40,
+                        stair_commit_enabled=True, require_controller_stairs=False,
+                        climb_backend="blind_rl", climb_max_sec=999.0,
+                        climb_stall_timeout_sec=1.0, climb_progress_min_m=0.05,
+                        top_clear_debounce_sec=0.1)
+    ho = HandoffController(cfg, _FakePgtt(), logger=None)
+    Dstairs = synth_staircase_depth()
+    base = dict(go2=object(), depth_hw=Dstairs, stairs_action_active=True, body_speed=0.2,
+                roll=0.0, pitch=0.0, roll_rate=0.0, pitch_rate=0.0, height_above_step=0.30,
+                person_detected=False, yaw=0.0, y_lateral=0.0, body_fwd=0.2, cmd_vx=0.22,
+                riser_dist_ahead=0.50, stairs_ahead_gt=True, base_x=0.0, person_gap_m=5.0)
+    # Engage, then climb while the body keeps RISING -> never hands back on the watchdog.
+    z = 0.30
+    ho.update(now=1.0, dt=0.05, base_z=z, **base)
+    t = 1.0
+    for _ in range(40):                       # 2.0 s with steady height gain (> stall window)
+        t += 0.05; z += 0.02                  # +0.4 m/s vertical -> always "progressing"
+        r = ho.update(now=t, dt=0.05, base_z=z, **base)
+    assert r["state"] == "climb", f"a still-rising climb must NOT hand back: {r}"
+    # Now WEDGE it: body height frozen -> watchdog fires within climb_stall_timeout_sec.
+    handed = False
+    for _ in range(40):
+        t += 0.05
+        r = ho.update(now=t, dt=0.05, base_z=z, **base)   # z frozen
+        if r["state"] == "walk":
+            handed = True
+            break
+    assert handed, "a wedged climb (no height gain) must hand back via the progress watchdog"
+    print("climb_progress_watchdog OK  (rising climb continues; wedged climb hands back)")
+
+
 if __name__ == "__main__":
     test_detector()
     test_stall()
     test_fsm()
     test_stair_commit()
     test_approach_engage()
+    test_top_egress()
+    test_egress_stops_at_goal()
+    test_no_false_crest_between_risers()
+    test_climb_progress_watchdog()
     print("ALL HANDOFF TESTS PASS")

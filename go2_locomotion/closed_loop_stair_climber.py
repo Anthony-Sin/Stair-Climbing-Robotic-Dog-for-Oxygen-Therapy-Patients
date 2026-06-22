@@ -187,6 +187,8 @@ class ClosedLoopStairClimber:
         self._mode = "climb"     # FSM drops to RECOVER/BRAKE as needed; a level, slow body crawls
         self._prev_target = None
         self._last = {}
+        self._advance_mps = self.BODY_ADVANCE_MPS  # may be seeded at hand-off via set_initial_speed
+        self._advance_ramp_rate = 0.0              # m/s per second to ramp down; 0 = no ramp
 
     def reset(self):
         self._phase = 0.0
@@ -197,6 +199,20 @@ class ClosedLoopStairClimber:
         self._prev_swing = None
         self._mode = "climb"     # FSM drops to RECOVER/BRAKE as needed; a level, slow body crawls
         self._prev_target = None
+        self._advance_mps = self.BODY_ADVANCE_MPS
+        self._advance_ramp_rate = 0.0
+
+    def set_initial_speed(self, v0: float, ramp_sec: float = 0.5) -> None:
+        """Seed crawl speed from RL hand-off body speed and ramp to BODY_ADVANCE_MPS.
+
+        Prevents the large pitch spike that occurs when the IK climber takes over
+        from the RL policy mid-stride (0.5 m/s -> 0.07 m/s step jolt). The speed
+        decays at (v0 - BODY_ADVANCE_MPS) / ramp_sec per second.
+        """
+        v0 = float(v0)
+        ramp_sec = max(0.1, float(ramp_sec))
+        self._advance_mps = max(self.BODY_ADVANCE_MPS, v0)
+        self._advance_ramp_rate = max(0.0, (v0 - self.BODY_ADVANCE_MPS) / ramp_sec)
 
     @property
     def active(self) -> bool:
@@ -300,9 +316,19 @@ class ClosedLoopStairClimber:
                 self.HEIGHT_KP * (target_h - float(height_above_step)),
                 -self.POSE_CORR_MAX_M, self.POSE_CORR_MAX_M))
 
+        # Velocity-matched hand-off: ramp _advance_mps down toward BODY_ADVANCE_MPS each step
+        # so the RL hand-off speed (up to ~0.5 m/s) decays smoothly instead of jumping instantly.
+        if self._advance_ramp_rate > 0.0:
+            self._advance_mps = max(
+                self.BODY_ADVANCE_MPS,
+                self._advance_mps - self._advance_ramp_rate * dt,
+            )
+            if self._advance_mps <= self.BODY_ADVANCE_MPS:
+                self._advance_ramp_rate = 0.0
+
         # Forward swing reach == distance a stance foot recedes over its stance window, so the foot
         # is periodic and the swing starts exactly where stance left it (no positional jump).
-        step_reach = self.BODY_ADVANCE_MPS * self.DUTY * self.CYCLE_SEC
+        step_reach = self._advance_mps * self.DUTY * self.CYCLE_SEC
 
         # Hips stay at the default abduction (straight-ahead climb); only thigh/calf are solved.
         target = _DEFAULT.copy()
@@ -329,7 +355,7 @@ class ClosedLoopStairClimber:
                 # recession to one stride so a long stance (or the engage transient) cannot walk the
                 # foot back past the leg's workspace.
                 if may_advance:
-                    self._foot[leg][0] = max(self._foot[leg][0] - self.BODY_ADVANCE_MPS * dt,
+                    self._foot[leg][0] = max(self._foot[leg][0] - self._advance_mps * dt,
                                              nx - step_reach)
                     relax = min(1.0, dt / self.RELAX_TAU_SEC)
                     self._foot[leg][1] += (nz - self._foot[leg][1]) * relax

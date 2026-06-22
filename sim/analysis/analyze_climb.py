@@ -83,13 +83,20 @@ def main():
     mean_pitch_on = (sum(pitches) / len(pitches)) if pitches else None
     min_pitch_on = min(pitches) if pitches else None
     max_abs_roll_on = max(rolls_on) if rolls_on else None
-    # Peak body tilt over the WHOLE run. A genuine FALL is a large roll OR pitch
-    # (flip/topple). A stair COLLISION is the opposite: the body stays roughly
-    # upright (tilt well under the fall line) but plows nose-first into the risers,
-    # so its pitch is persistently nose-DOWN and it DRAGS low as it wedges.
-    max_tilt = max(
-        (max(abs(s.get("roll", 0)), abs(s.get("pitch", 0))) for s in rows), default=0.0
-    )
+    # Peak body tilt over the WHOLE run. A genuine FALL is a large tilt-from-vertical
+    # (flip/topple). A stair COLLISION is the opposite: the body stays roughly upright
+    # (tilt under the fall line) but plows nose-first into the risers, so its pitch is
+    # persistently nose-DOWN and it DRAGS low as it wedges.
+    # Prefer the singularity-free up-axis tilt (tilt_deg) logged by isaac_env -- Euler
+    # roll/pitch gimbal-lock at steep climb/dismount pitch and read ~180deg even when
+    # upright, which faked "flipped over" at the top of the stairs. Fall back to the
+    # Euler max only for older logs that predate tilt_deg.
+    if any("tilt_deg" in s for s in rows):
+        max_tilt = max((abs(s.get("tilt_deg", 0)) for s in rows), default=0.0)
+    else:
+        max_tilt = max(
+            (max(abs(s.get("roll", 0)), abs(s.get("pitch", 0))) for s in rows), default=0.0
+        )
     # follow / collision
     gaps = [s.get("gap_m") for s in rows if s.get("gap_m") is not None]
     min_gap = min(gaps) if gaps else None
@@ -137,14 +144,22 @@ def main():
     dragging = on_stairs and (min_h_on is not None and min_h_on < COLLAPSE_H_M)
     collided = (not fell) and on_stairs and (nose_diving or dragging)
     # final pose: standing upright at a healthy height (not nose-down, not dragging).
+    # Use the singularity-free up-axis tilt when present (Euler roll/pitch gimbal-spin
+    # at steep pitch); fall back to Euler roll/pitch for older logs.
     final_h = float(final.get("h", 0) or 0)
-    final_pitch = abs(float(final.get("pitch", 0) or 0))
-    final_roll = abs(float(final.get("roll", 0) or 0))
-    final_upright = (
-        final_h >= CLEAN_STAND_H_M
-        and final_pitch <= UPRIGHT_TILT_DEG
-        and final_roll <= UPRIGHT_TILT_DEG
-    )
+    if "tilt_deg" in final:
+        final_upright = (
+            final_h >= CLEAN_STAND_H_M
+            and abs(float(final.get("tilt_deg", 0) or 0)) <= UPRIGHT_TILT_DEG
+        )
+    else:
+        final_pitch = abs(float(final.get("pitch", 0) or 0))
+        final_roll = abs(float(final.get("roll", 0) or 0))
+        final_upright = (
+            final_h >= CLEAN_STAND_H_M
+            and final_pitch <= UPRIGHT_TILT_DEG
+            and final_roll <= UPRIGHT_TILT_DEG
+        )
     # CLEAN climb: advanced well past the base, never flipped, never plowed/dragged,
     # and ended standing upright at a healthy height.
     clean_climb = (

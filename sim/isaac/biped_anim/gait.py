@@ -63,7 +63,7 @@ class GaitParams:
     ankle_bias: float = 0.0
 
     # Shoulder: counter-swing amplitude (tracks the opposite leg) + bias.
-    shoulder_amp: float = 0.32
+    shoulder_amp: float = 0.50
     shoulder_bias: float = 0.0
 
     # Elbow: held slightly bent, with a small swing-coupled flex.
@@ -348,7 +348,7 @@ class StairClimb(Gait):
                 # reach (which would lift the foot off the tread), and extra swing
                 # clearance so the foot clears the next riser.
                 stance_frac=0.5,
-                foot_clearance_m=0.14,
+                foot_clearance_m=0.18,  # moderate lead-foot lift (high values whip the now-live knee)
                 stance_reach_scale=0.85,
             ),
             leg_geom=leg_geom,

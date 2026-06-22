@@ -1,0 +1,1566 @@
+#usda 1.0
+(
+    customLayerData = {
+        string creator = "MuJoCo USD Converter v0.2.0"
+    }
+    defaultPrim = "humanoid_CMU"
+    doc = """Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\tmpsklhs627\\humanoid_CMU.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\mjcf_import_humanoid_CMU_V2020_9t59s31g\\usdex_humanoid_CMU_V2020\\humanoid_CMU.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\mjcf_import_humanoid_CMU_V2020_9t59s31g\\temp_humanoid_CMU_V2020\\humanoid_CMU_V2020.usd
+
+
+Generated from Composed Stage of root layer C:\\Users\\antho\\Downloads\\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\\sim\\isaac\\assets\\humanoid_CMU_V2020_36\\payloads\\base.usd
+"""
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    subLayers = [
+        @./robot.usda@
+    ]
+    upAxis = "Z"
+)
+
+def Xform "humanoid_CMU" (
+    prepend apiSchemas = ["GeomModelAPI"]
+    assetInfo = {
+        string name = "humanoid_CMU"
+    }
+    kind = "component"
+)
+{
+    float3[] extentsHint = [(-0.8795682, -0.9362067, -0.102215216), (0.881725, 0.7284861, 0.2408181), (3.4028235e38, 3.4028235e38, 3.4028235e38), (-3.4028235e38, -3.4028235e38, -3.4028235e38), (3.4028235e38, 3.4028235e38, 3.4028235e38), (-3.4028235e38, -3.4028235e38, -3.4028235e38), (-0.8580682, -0.94545436, -0.014721703), (0.86022496, 0.44437826, 0.2408181)]
+
+    def Scope "Geometry"
+    {
+        def Xform "root"
+        {
+            quatf xformOp:orient = (1, 0, 0, 0)
+            float3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+            def Capsule "root_geom" (
+                prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+            )
+            {
+                uniform token axis = "Z"
+                float3[] extent = [(-0.1, -0.1, -0.17), (0.1, 0.1, 0.17)]
+                double height = 0.14
+                rel material:binding = </humanoid_CMU/Materials/self>
+                rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial>
+                color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                    interpolation = "constant"
+                )
+                int[] primvars:displayColor:indices = None
+                float[] primvars:displayOpacity = [1] (
+                    interpolation = "constant"
+                )
+                int[] primvars:displayOpacity:indices = None
+                double radius = 0.1
+                quatf xformOp:orient = (-0.70710677, 0, 0.70710677, 0)
+                float3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0, -0.05, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+
+            def Sphere "root"
+            {
+                float3[] extent = [(-0.01, -0.01, -0.01), (0.01, 0.01, 0.01)]
+                color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                    interpolation = "constant"
+                )
+                int[] primvars:displayColor:indices = None
+                float[] primvars:displayOpacity = [0] (
+                    interpolation = "constant"
+                )
+                int[] primvars:displayOpacity:indices = None
+                uniform token purpose = "guide"
+                double radius = 0.01
+                quatf xformOp:orient = (1, 0, 0, 0)
+                float3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+
+            def Xform "lhipjoint"
+            {
+                quatf xformOp:orient = (1, 0, 0, 0)
+                float3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                def Capsule "lhipjoint" (
+                    prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                )
+                {
+                    uniform token axis = "Z"
+                    float3[] extent = [(-0.008, -0.008, -0.02987363), (0.008, 0.008, 0.02987363)]
+                    double height = 0.04374726
+                    rel material:binding = </humanoid_CMU/Materials/self>
+                    rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial>
+                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                        interpolation = "constant"
+                    )
+                    int[] primvars:displayColor:indices = None
+                    float[] primvars:displayOpacity = [1] (
+                        interpolation = "constant"
+                    )
+                    int[] primvars:displayOpacity:indices = None
+                    double radius = 0.008
+                    quatf xformOp:orient = (-0.5708, 0.56660193, 0.5942639, 4.6705807e-17)
+                    float3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0.0509685, -0.0459037, 0.024723)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+
+                def Xform "lfemur"
+                {
+                    quatf xformOp:orient = (0.9848078, 0, 0, 0.17364797)
+                    float3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0.101937, -0.0918074, 0.0494461)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                    def Capsule "lfemur_upper" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                    )
+                    {
+                        uniform token axis = "Z"
+                        float3[] extent = [(-0.085, -0.085, -0.168), (0.085, 0.085, 0.168)]
+                        double height = 0.166
+                        rel material:binding = </humanoid_CMU/Materials/self>
+                        rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial>
+                        color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayColor:indices = None
+                        float[] primvars:displayOpacity = [1] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayOpacity:indices = None
+                        double radius = 0.085
+                        quatf xformOp:orient = (-0.69636416, 0.6963642, 0.12278805, 0.12278805)
+                        float3 xformOp:scale = (1, 1, 1)
+                        double3 xformOp:translate = (0, -0.115473, 0)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                    }
+
+                    def Capsule "lfemur" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                    )
+                    {
+                        uniform token axis = "Z"
+                        float3[] extent = [(-0.07, -0.07, -0.252226), (0.07, 0.07, 0.252226)]
+                        double height = 0.364452
+                        rel material:binding = </humanoid_CMU/Materials/self>
+                        rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial>
+                        color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayColor:indices = None
+                        float[] primvars:displayOpacity = [1] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayOpacity:indices = None
+                        double radius = 0.07
+                        quatf xformOp:orient = (-0.69636416, 0.6963642, 0.12278805, 0.12278805)
+                        float3 xformOp:scale = (1, 1, 1)
+                        double3 xformOp:translate = (0, -0.202473, 0)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                    }
+
+                    def Xform "ltibia"
+                    {
+                        quatf xformOp:orient = (1, 0, 0, 0)
+                        float3 xformOp:scale = (1, 1, 1)
+                        double3 xformOp:translate = (0, -0.404945, 0)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                        def Capsule "ltibia" (
+                            prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                        )
+                        {
+                            uniform token axis = "Z"
+                            float3[] extent = [(-0.04, -0.04, -0.2225614), (0.04, 0.04, 0.2225614)]
+                            double height = 0.3651228
+                            rel material:binding = </humanoid_CMU/Materials/self>
+                            rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial>
+                            color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                interpolation = "constant"
+                            )
+                            int[] primvars:displayColor:indices = None
+                            float[] primvars:displayOpacity = [1] (
+                                interpolation = "constant"
+                            )
+                            int[] primvars:displayOpacity:indices = None
+                            double radius = 0.04
+                            quatf xformOp:orient = (-0.69636416, 0.6963642, 0.12278805, 0.12278805)
+                            float3 xformOp:scale = (1, 1, 1)
+                            double3 xformOp:translate = (0, -0.202846, 0)
+                            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                        }
+
+                        def Xform "lfoot"
+                        {
+                            quatf xformOp:orient = (-0.70710677, 0.70710677, 0, 0)
+                            float3 xformOp:scale = (1, 1, 1)
+                            double3 xformOp:translate = (0, -0.415693, 0)
+                            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                            def Capsule "lfoot" (
+                                prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                            )
+                            {
+                                uniform token axis = "Z"
+                                float3[] extent = [(-0.025, -0.025, -0.105), (0.025, 0.025, 0.105)]
+                                double height = 0.16
+                                rel material:binding = </humanoid_CMU/Materials/self>
+                                rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial_1>
+                                color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayColor:indices = None
+                                float[] primvars:displayOpacity = [1] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayOpacity:indices = None
+                                double radius = 0.025
+                                quatf xformOp:orient = (0.76725554, -0.64051145, 0.023064882, -0.02306584)
+                                float3 xformOp:scale = (1, 1, 1)
+                                double3 xformOp:translate = (-0.0269999975006, -0.05, -0.0113878)
+                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                            }
+
+                            def Capsule "lfoot_ch" (
+                                prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                            )
+                            {
+                                uniform token axis = "Z"
+                                float3[] extent = [(-0.025, -0.025, -0.105), (0.025, 0.025, 0.105)]
+                                double height = 0.16
+                                rel material:binding = </humanoid_CMU/Materials/self>
+                                rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial_1>
+                                color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayColor:indices = None
+                                float[] primvars:displayOpacity = [1] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayOpacity:indices = None
+                                double radius = 0.025
+                                quatf xformOp:orient = (0.728873, -0.5939949, -0.24074295, -0.24074262)
+                                float3 xformOp:scale = (1, 1, 1)
+                                double3 xformOp:translate = (0.0270000024994, -0.05, -0.0113878)
+                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                            }
+
+                            def Capsule "lfoot_touch"
+                            {
+                                uniform token axis = "Z"
+                                float3[] extent = [(-0.025, -0.025, -0.035), (0.025, 0.025, 0.035)]
+                                double height = 0.02
+                                color3f[] primvars:displayColor = [(1, 0, 0)] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayColor:indices = None
+                                float[] primvars:displayOpacity = [0.5] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayOpacity:indices = None
+                                uniform token purpose = "guide"
+                                double radius = 0.025
+                                quatf xformOp:orient = (0.7071068, 0, 0.7071067, 0)
+                                float3 xformOp:scale = (1, 1, 1)
+                                double3 xformOp:translate = (0, 0.02, -0.015)
+                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                            }
+
+                            def Xform "ltoes"
+                            {
+                                quatf xformOp:orient = (1, 0, 0, 0)
+                                float3 xformOp:scale = (1, 1, 1)
+                                double3 xformOp:translate = (0, -0.156372, -0.0227756)
+                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                def Sphere "ltoes0" (
+                                    prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                )
+                                {
+                                    float3[] extent = [(-0.025, -0.025, -0.025), (0.025, 0.025, 0.025)]
+                                    rel material:binding = </humanoid_CMU/Materials/self>
+                                    rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial_1>
+                                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayColor:indices = None
+                                    float[] primvars:displayOpacity = [1] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayOpacity:indices = None
+                                    double radius = 0.025
+                                    quatf xformOp:orient = (1, 0, 0, 0)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (0, -0.01, -0.01)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                }
+
+                                def Sphere "ltoes1" (
+                                    prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                )
+                                {
+                                    float3[] extent = [(-0.025, -0.025, -0.025), (0.025, 0.025, 0.025)]
+                                    rel material:binding = </humanoid_CMU/Materials/self>
+                                    rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial_1>
+                                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayColor:indices = None
+                                    float[] primvars:displayOpacity = [1] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayOpacity:indices = None
+                                    double radius = 0.025
+                                    quatf xformOp:orient = (1, 0, 0, 0)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (0.03, -0.01, -0.01)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                }
+
+                                def Sphere "ltoes2" (
+                                    prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                )
+                                {
+                                    float3[] extent = [(-0.025, -0.025, -0.025), (0.025, 0.025, 0.025)]
+                                    rel material:binding = </humanoid_CMU/Materials/self>
+                                    rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial_1>
+                                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayColor:indices = None
+                                    float[] primvars:displayOpacity = [1] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayOpacity:indices = None
+                                    double radius = 0.025
+                                    quatf xformOp:orient = (1, 0, 0, 0)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (-0.03, -0.01, -0.01)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                }
+
+                                def Capsule "ltoes_touch"
+                                {
+                                    uniform token axis = "Z"
+                                    float3[] extent = [(-0.025, -0.025, -0.055), (0.025, 0.025, 0.055)]
+                                    double height = 0.06
+                                    color3f[] primvars:displayColor = [(1, 0, 0)] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayColor:indices = None
+                                    float[] primvars:displayOpacity = [0.5] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayOpacity:indices = None
+                                    uniform token purpose = "guide"
+                                    double radius = 0.025
+                                    quatf xformOp:orient = (0.7071068, 0, 0.7071067, 0)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (0, -0.01, -0.02)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            def Xform "rhipjoint"
+            {
+                quatf xformOp:orient = (1, 0, 0, 0)
+                float3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                def Capsule "rhipjoint" (
+                    prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                )
+                {
+                    uniform token axis = "Z"
+                    float3[] extent = [(-0.008, -0.008, -0.02987363), (0.008, 0.008, 0.02987363)]
+                    double height = 0.04374726
+                    rel material:binding = </humanoid_CMU/Materials/self>
+                    rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial>
+                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                        interpolation = "constant"
+                    )
+                    int[] primvars:displayColor:indices = None
+                    float[] primvars:displayOpacity = [1] (
+                        interpolation = "constant"
+                    )
+                    int[] primvars:displayOpacity:indices = None
+                    double radius = 0.008
+                    quatf xformOp:orient = (0.5748561, -0.54759413, 0.6080141, 4.564956e-17)
+                    float3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (-0.0509685, -0.0459037, 0.024723)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+
+                def Xform "rfemur"
+                {
+                    quatf xformOp:orient = (0.9848078, 0, 0, -0.17364797)
+                    float3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (-0.101937, -0.0918074, 0.0494461)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                    def Capsule "rfemur_upper" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                    )
+                    {
+                        uniform token axis = "Z"
+                        float3[] extent = [(-0.085, -0.085, -0.168), (0.085, 0.085, 0.168)]
+                        double height = 0.166
+                        rel material:binding = </humanoid_CMU/Materials/self>
+                        rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial>
+                        color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayColor:indices = None
+                        float[] primvars:displayOpacity = [1] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayOpacity:indices = None
+                        double radius = 0.085
+                        quatf xformOp:orient = (-0.69636416, 0.6963642, -0.12278805, -0.12278805)
+                        float3 xformOp:scale = (1, 1, 1)
+                        double3 xformOp:translate = (0, -0.115473, 0)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                    }
+
+                    def Capsule "rfemur" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                    )
+                    {
+                        uniform token axis = "Z"
+                        float3[] extent = [(-0.07, -0.07, -0.252226), (0.07, 0.07, 0.252226)]
+                        double height = 0.364452
+                        rel material:binding = </humanoid_CMU/Materials/self>
+                        rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial>
+                        color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayColor:indices = None
+                        float[] primvars:displayOpacity = [1] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayOpacity:indices = None
+                        double radius = 0.07
+                        quatf xformOp:orient = (-0.69636416, 0.6963642, -0.12278805, -0.12278805)
+                        float3 xformOp:scale = (1, 1, 1)
+                        double3 xformOp:translate = (0, -0.202473, 0)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                    }
+
+                    def Xform "rtibia"
+                    {
+                        quatf xformOp:orient = (1, 0, 0, 0)
+                        float3 xformOp:scale = (1, 1, 1)
+                        double3 xformOp:translate = (0, -0.404945, 0)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                        def Capsule "rtibia" (
+                            prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                        )
+                        {
+                            uniform token axis = "Z"
+                            float3[] extent = [(-0.04, -0.04, -0.2225614), (0.04, 0.04, 0.2225614)]
+                            double height = 0.3651228
+                            rel material:binding = </humanoid_CMU/Materials/self>
+                            rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial>
+                            color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                interpolation = "constant"
+                            )
+                            int[] primvars:displayColor:indices = None
+                            float[] primvars:displayOpacity = [1] (
+                                interpolation = "constant"
+                            )
+                            int[] primvars:displayOpacity:indices = None
+                            double radius = 0.04
+                            quatf xformOp:orient = (-0.69636416, 0.6963642, -0.12278805, -0.12278805)
+                            float3 xformOp:scale = (1, 1, 1)
+                            double3 xformOp:translate = (0, -0.202846, 0)
+                            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                        }
+
+                        def Xform "rfoot"
+                        {
+                            quatf xformOp:orient = (0.7071068, -0.7071067, 0, 0)
+                            float3 xformOp:scale = (1, 1, 1)
+                            double3 xformOp:translate = (0, -0.415693, 0)
+                            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                            def Capsule "rfoot" (
+                                prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                            )
+                            {
+                                uniform token axis = "Z"
+                                float3[] extent = [(-0.025, -0.025, -0.105), (0.025, 0.025, 0.105)]
+                                double height = 0.16
+                                rel material:binding = </humanoid_CMU/Materials/self>
+                                rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial_1>
+                                color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayColor:indices = None
+                                float[] primvars:displayOpacity = [1] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayOpacity:indices = None
+                                double radius = 0.025
+                                quatf xformOp:orient = (0.7352071, -0.5863353, 0.2405011, 0.24050082)
+                                float3 xformOp:scale = (1, 1, 1)
+                                double3 xformOp:translate = (-0.0269999965316, -0.05, -0.0113878)
+                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                            }
+
+                            def Capsule "rfoot_ch" (
+                                prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                            )
+                            {
+                                uniform token axis = "Z"
+                                float3[] extent = [(-0.025, -0.025, -0.105), (0.025, 0.025, 0.105)]
+                                double height = 0.16
+                                rel material:binding = </humanoid_CMU/Materials/self>
+                                rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial_1>
+                                color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayColor:indices = None
+                                float[] primvars:displayOpacity = [1] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayOpacity:indices = None
+                                double radius = 0.025
+                                quatf xformOp:orient = (0.7731249, -0.6332311, -0.025458464, 0.025458364)
+                                float3 xformOp:scale = (1, 1, 1)
+                                double3 xformOp:translate = (0.0270000034684, -0.05, -0.0113878)
+                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                            }
+
+                            def Capsule "rfoot_touch"
+                            {
+                                uniform token axis = "Z"
+                                float3[] extent = [(-0.025, -0.025, -0.035), (0.025, 0.025, 0.035)]
+                                double height = 0.02
+                                color3f[] primvars:displayColor = [(1, 0, 0)] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayColor:indices = None
+                                float[] primvars:displayOpacity = [0.5] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayOpacity:indices = None
+                                uniform token purpose = "guide"
+                                double radius = 0.025
+                                quatf xformOp:orient = (0.7071068, 0, 0.7071067, 0)
+                                float3 xformOp:scale = (1, 1, 1)
+                                double3 xformOp:translate = (0, 0.02, -0.015)
+                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                            }
+
+                            def Xform "rtoes"
+                            {
+                                quatf xformOp:orient = (1, 0, 0, 0)
+                                float3 xformOp:scale = (1, 1, 1)
+                                double3 xformOp:translate = (0, -0.156372, -0.0227756)
+                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                def Sphere "rtoes0" (
+                                    prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                )
+                                {
+                                    float3[] extent = [(-0.025, -0.025, -0.025), (0.025, 0.025, 0.025)]
+                                    rel material:binding = </humanoid_CMU/Materials/self>
+                                    rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial_1>
+                                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayColor:indices = None
+                                    float[] primvars:displayOpacity = [1] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayOpacity:indices = None
+                                    double radius = 0.025
+                                    quatf xformOp:orient = (1, 0, 0, 0)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (0, -0.01, -0.01)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                }
+
+                                def Sphere "rtoes1" (
+                                    prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                )
+                                {
+                                    float3[] extent = [(-0.025, -0.025, -0.025), (0.025, 0.025, 0.025)]
+                                    rel material:binding = </humanoid_CMU/Materials/self>
+                                    rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial_1>
+                                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayColor:indices = None
+                                    float[] primvars:displayOpacity = [1] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayOpacity:indices = None
+                                    double radius = 0.025
+                                    quatf xformOp:orient = (1, 0, 0, 0)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (0.03, -0.01, -0.01)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                }
+
+                                def Sphere "rtoes2" (
+                                    prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                )
+                                {
+                                    float3[] extent = [(-0.025, -0.025, -0.025), (0.025, 0.025, 0.025)]
+                                    rel material:binding = </humanoid_CMU/Materials/self>
+                                    rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial_1>
+                                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayColor:indices = None
+                                    float[] primvars:displayOpacity = [1] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayOpacity:indices = None
+                                    double radius = 0.025
+                                    quatf xformOp:orient = (1, 0, 0, 0)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (-0.03, -0.01, -0.01)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                }
+
+                                def Capsule "rtoes_touch"
+                                {
+                                    uniform token axis = "Z"
+                                    float3[] extent = [(-0.025, -0.025, -0.055), (0.025, 0.025, 0.055)]
+                                    double height = 0.06
+                                    color3f[] primvars:displayColor = [(1, 0, 0)] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayColor:indices = None
+                                    float[] primvars:displayOpacity = [0.5] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayOpacity:indices = None
+                                    uniform token purpose = "guide"
+                                    double radius = 0.025
+                                    quatf xformOp:orient = (0.7071068, 0, 0.7071067, 0)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (0, -0.01, -0.02)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            def Xform "lowerback"
+            {
+                quatf xformOp:orient = (1, 0, 0, 0)
+                float3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                def Capsule "lowerback" (
+                    prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                )
+                {
+                    uniform token axis = "Z"
+                    float3[] extent = [(-0.085, -0.085, -0.13040017), (0.085, 0.085, 0.13040017)]
+                    double height = 0.09080032
+                    rel material:binding = </humanoid_CMU/Materials/self>
+                    rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial>
+                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                        interpolation = "constant"
+                    )
+                    int[] primvars:displayColor:indices = None
+                    float[] primvars:displayOpacity = [1] (
+                        interpolation = "constant"
+                    )
+                    int[] primvars:displayOpacity:indices = None
+                    double radius = 0.085
+                    quatf xformOp:orient = (0.70710677, 0, 0.70710677, 0)
+                    float3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0.00282931, 0.0566065, 0.01)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+
+                def Xform "upperback"
+                {
+                    quatf xformOp:orient = (1, 0, 0, 0)
+                    float3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0.000565862, 0.113213, -0.00805298)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                    def Capsule "upperback" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                    )
+                    {
+                        uniform token axis = "Z"
+                        float3[] extent = [(-0.09, -0.09, -0.13542616), (0.09, 0.09, 0.13542616)]
+                        double height = 0.09085232
+                        rel material:binding = </humanoid_CMU/Materials/self>
+                        rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial>
+                        color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayColor:indices = None
+                        float[] primvars:displayOpacity = [1] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayOpacity:indices = None
+                        double radius = 0.09
+                        quatf xformOp:orient = (0.70710677, 0, 0.70710677, 0)
+                        float3 xformOp:scale = (1, 1, 1)
+                        double3 xformOp:translate = (0.000256264, 0.0567802, 0.02)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                    }
+
+                    def Xform "thorax"
+                    {
+                        quatf xformOp:orient = (1, 0, 0, 0)
+                        float3 xformOp:scale = (1, 1, 1)
+                        double3 xformOp:translate = (0.000512528, 0.11356, 0.000936821)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                        def Capsule "thorax" (
+                            prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                        )
+                        {
+                            uniform token axis = "Z"
+                            float3[] extent = [(-0.095, -0.095, -0.1520206), (0.095, 0.095, 0.1520206)]
+                            double height = 0.1140412
+                            rel material:binding = </humanoid_CMU/Materials/self>
+                            rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial>
+                            color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                interpolation = "constant"
+                            )
+                            int[] primvars:displayColor:indices = None
+                            float[] primvars:displayOpacity = [1] (
+                                interpolation = "constant"
+                            )
+                            int[] primvars:displayOpacity:indices = None
+                            double radius = 0.095
+                            quatf xformOp:orient = (0.70710677, 0, 0.70710677, 0)
+                            float3 xformOp:scale = (1, 1, 1)
+                            double3 xformOp:translate = (0, 0.0569725, 0.02)
+                            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                        }
+
+                        def Xform "lowerneck"
+                        {
+                            quatf xformOp:orient = (1, 0, 0, 0)
+                            float3 xformOp:scale = (1, 1, 1)
+                            double3 xformOp:translate = (0, 0.113945, 0.00468037)
+                            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                            def Capsule "lowerneck" (
+                                prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                            )
+                            {
+                                uniform token axis = "Z"
+                                float3[] extent = [(-0.075, -0.075, -0.09779225), (0.075, 0.075, 0.09779225)]
+                                double height = 0.0455845
+                                rel material:binding = </humanoid_CMU/Materials/self>
+                                rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial>
+                                color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayColor:indices = None
+                                float[] primvars:displayOpacity = [1] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayOpacity:indices = None
+                                double radius = 0.075
+                                quatf xformOp:orient = (0.70710677, 0.70710677, 0, 0)
+                                float3 xformOp:scale = (1, 1, 1)
+                                double3 xformOp:translate = (-0.00165071, 0.0452401, 0.00534359)
+                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                            }
+
+                            def Xform "upperneck"
+                            {
+                                quatf xformOp:orient = (1, 0, 0, 0)
+                                float3 xformOp:scale = (1, 1, 1)
+                                double3 xformOp:translate = (-0.00330143, 0.0904801, 0.0106872)
+                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                def Capsule "upperneck" (
+                                    prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                )
+                                {
+                                    uniform token axis = "Z"
+                                    float3[] extent = [(-0.05, -0.05, -0.0725272), (0.05, 0.05, 0.0725272)]
+                                    double height = 0.0450544
+                                    rel material:binding = </humanoid_CMU/Materials/self>
+                                    rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial>
+                                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayColor:indices = None
+                                    float[] primvars:displayOpacity = [1] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayOpacity:indices = None
+                                    double radius = 0.05
+                                    quatf xformOp:orient = (0.70710677, 0.70710677, 0, 0)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (0.000500875, 0.0449956, -0.00224644)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                }
+
+                                def Xform "head"
+                                {
+                                    quatf xformOp:orient = (1, 0, 0, 0)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (0.00100175, 0.13, -0.00449288)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                    def Capsule "head" (
+                                        prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                    )
+                                    {
+                                        uniform token axis = "Z"
+                                        float3[] extent = [(-0.095, -0.095, -0.119104), (0.095, 0.095, 0.119104)]
+                                        double height = 0.048208
+                                        rel material:binding = </humanoid_CMU/Materials/self>
+                                        rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial>
+                                        color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                            interpolation = "constant"
+                                        )
+                                        int[] primvars:displayColor:indices = None
+                                        float[] primvars:displayOpacity = [1] (
+                                            interpolation = "constant"
+                                        )
+                                        int[] primvars:displayOpacity:indices = None
+                                        double radius = 0.095
+                                        quatf xformOp:orient = (0.70710677, 0.70710677, 0, 0)
+                                        float3 xformOp:scale = (1, 1, 1)
+                                        double3 xformOp:translate = (0.000341465, 0.048184, 0.025)
+                                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                    }
+                                }
+                            }
+                        }
+
+                        def Xform "lclavicle"
+                        {
+                            quatf xformOp:orient = (1, 0, 0, 0)
+                            float3 xformOp:scale = (1, 1, 1)
+                            double3 xformOp:translate = (0, 0.113945, 0.00468037)
+                            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                            def Capsule "lclavicle" (
+                                prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                            )
+                            {
+                                uniform token axis = "Z"
+                                float3[] extent = [(-0.075, -0.075, -0.135), (0.075, 0.075, 0.135)]
+                                double height = 0.12
+                                rel material:binding = </humanoid_CMU/Materials/self>
+                                rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial>
+                                color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayColor:indices = None
+                                float[] primvars:displayOpacity = [1] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayOpacity:indices = None
+                                double radius = 0.075
+                                quatf xformOp:orient = (0.68797076, 0.27898815, -0.6699715, -4.034412e-17)
+                                float3 xformOp:scale = (1, 1, 1)
+                                double3 xformOp:translate = (0.0918817, 0.0382636, 0.00535704)
+                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                            }
+
+                            def Xform "lhumerus"
+                            {
+                                quatf xformOp:orient = (-0.18301292, -0.68301266, 0.68301266, -0.1830129)
+                                float3 xformOp:scale = (1, 1, 1)
+                                double3 xformOp:translate = (0.18, 0.09, 0.0107141)
+                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                def Capsule "lhumerus" (
+                                    prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                )
+                                {
+                                    uniform token axis = "Z"
+                                    float3[] extent = [(-0.042, -0.042, -0.1665789), (0.042, 0.042, 0.1665789)]
+                                    double height = 0.2491578
+                                    rel material:binding = </humanoid_CMU/Materials/self>
+                                    rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial>
+                                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayColor:indices = None
+                                    float[] primvars:displayOpacity = [1] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayOpacity:indices = None
+                                    double radius = 0.042
+                                    quatf xformOp:orient = (0.6123725, -0.61237246, 0.35355327, 0.35355327)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (0, -0.138421, 0)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                }
+
+                                def Sphere "lhumerus_ft"
+                                {
+                                    float3[] extent = [(-0.01, -0.01, -0.01), (0.01, 0.01, 0.01)]
+                                    color3f[] primvars:displayColor = [(1, 0, 0)] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayColor:indices = None
+                                    float[] primvars:displayOpacity = [0.5] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayOpacity:indices = None
+                                    uniform token purpose = "guide"
+                                    double radius = 0.01
+                                    quatf xformOp:orient = (1, 0, 0, 0)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (0, 0, 0)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                }
+
+                                def Xform "lradius"
+                                {
+                                    quatf xformOp:orient = (1, 0, 0, 0)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (0, -0.276843, 0)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                    def Capsule "lradius" (
+                                        prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                    )
+                                    {
+                                        uniform token axis = "Z"
+                                        float3[] extent = [(-0.03, -0.03, -0.11169111), (0.03, 0.03, 0.11169111)]
+                                        double height = 0.16338222
+                                        rel material:binding = </humanoid_CMU/Materials/self>
+                                        rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial>
+                                        color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                            interpolation = "constant"
+                                        )
+                                        int[] primvars:displayColor:indices = None
+                                        float[] primvars:displayOpacity = [1] (
+                                            interpolation = "constant"
+                                        )
+                                        int[] primvars:displayOpacity:indices = None
+                                        double radius = 0.03
+                                        quatf xformOp:orient = (0.6123725, -0.61237246, 0.35355327, 0.35355327)
+                                        float3 xformOp:scale = (1, 1, 1)
+                                        double3 xformOp:translate = (0, -0.0907679, 0)
+                                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                    }
+
+                                    def Sphere "lwrist"
+                                    {
+                                        float3[] extent = [(-0.005, -0.005, -0.005), (0.005, 0.005, 0.005)]
+                                        color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                            interpolation = "constant"
+                                        )
+                                        int[] primvars:displayColor:indices = None
+                                        float[] primvars:displayOpacity = [1] (
+                                            interpolation = "constant"
+                                        )
+                                        int[] primvars:displayOpacity:indices = None
+                                        uniform token purpose = "guide"
+                                        double radius = 0.005
+                                        quatf xformOp:orient = (-0.50000024, 0, 0.86602527, 0)
+                                        float3 xformOp:scale = (1, 1, 1)
+                                        double3 xformOp:translate = (0, -0.181536, 0)
+                                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                    }
+
+                                    def Xform "lwrist_1" (
+                                        displayName = "lwrist"
+                                    )
+                                    {
+                                        quatf xformOp:orient = (-0.50000024, 0, 0.86602527, 0)
+                                        float3 xformOp:scale = (1, 1, 1)
+                                        double3 xformOp:translate = (0, -0.181536, 0)
+                                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                        def Capsule "lwrist" (
+                                            prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                        )
+                                        {
+                                            uniform token axis = "Z"
+                                            float3[] extent = [(-0.02, -0.02, -0.05), (0.02, 0.02, 0.05)]
+                                            double height = 0.06
+                                            rel material:binding = </humanoid_CMU/Materials/self>
+                                            rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial>
+                                            color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                                interpolation = "constant"
+                                            )
+                                            int[] primvars:displayColor:indices = None
+                                            float[] primvars:displayOpacity = [1] (
+                                                interpolation = "constant"
+                                            )
+                                            int[] primvars:displayOpacity:indices = None
+                                            double radius = 0.02
+                                            quatf xformOp:orient = (-1.5938967e-11, 1.5938813e-11, 0.70710677, 0.70710677)
+                                            float3 xformOp:scale = (1, 1, 1)
+                                            double3 xformOp:translate = (0, -0.03, 0)
+                                            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                        }
+
+                                        def Xform "lhand"
+                                        {
+                                            quatf xformOp:orient = (1, 0, 0, 0)
+                                            float3 xformOp:scale = (1, 1, 1)
+                                            double3 xformOp:translate = (0, -0.0907676, 0)
+                                            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                            def Xform "lfingers"
+                                            {
+                                                quatf xformOp:orient = (1, 0, 0, 0)
+                                                float3 xformOp:scale = (1, 1, 1)
+                                                double3 xformOp:translate = (0, -0.075, 0)
+                                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                                def Capsule "lfinger0" (
+                                                    prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                                )
+                                                {
+                                                    uniform token axis = "Z"
+                                                    float3[] extent = [(-0.0065, -0.0065, -0.0465), (0.0065, 0.0065, 0.0465)]
+                                                    double height = 0.08
+                                                    rel material:binding = </humanoid_CMU/Materials/self>
+                                                    rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial_1>
+                                                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayColor:indices = None
+                                                    float[] primvars:displayOpacity = [1] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayOpacity:indices = None
+                                                    double radius = 0.0065
+                                                    quatf xformOp:orient = (-0.70710677, 0.70710677, 0, 0)
+                                                    float3 xformOp:scale = (1, 1, 1)
+                                                    double3 xformOp:translate = (-0.024, -0.025, 0)
+                                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                                }
+
+                                                def Capsule "lfinger1" (
+                                                    prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                                )
+                                                {
+                                                    uniform token axis = "Z"
+                                                    float3[] extent = [(-0.0065, -0.0065, -0.0465), (0.0065, 0.0065, 0.0465)]
+                                                    double height = 0.08
+                                                    rel material:binding = </humanoid_CMU/Materials/self>
+                                                    rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial_1>
+                                                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayColor:indices = None
+                                                    float[] primvars:displayOpacity = [1] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayOpacity:indices = None
+                                                    double radius = 0.0065
+                                                    quatf xformOp:orient = (-0.70710677, 0.70710677, 0, 0)
+                                                    float3 xformOp:scale = (1, 1, 1)
+                                                    double3 xformOp:translate = (-0.008, -0.03, 0)
+                                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                                }
+
+                                                def Capsule "lfinger2" (
+                                                    prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                                )
+                                                {
+                                                    uniform token axis = "Z"
+                                                    float3[] extent = [(-0.006, -0.006, -0.046), (0.006, 0.006, 0.046)]
+                                                    double height = 0.08
+                                                    rel material:binding = </humanoid_CMU/Materials/self>
+                                                    rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial_1>
+                                                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayColor:indices = None
+                                                    float[] primvars:displayOpacity = [1] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayOpacity:indices = None
+                                                    double radius = 0.006
+                                                    quatf xformOp:orient = (-0.70710677, 0.70710677, 0, 0)
+                                                    float3 xformOp:scale = (1, 1, 1)
+                                                    double3 xformOp:translate = (0.008, -0.03, 0)
+                                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                                }
+
+                                                def Capsule "lfinger3" (
+                                                    prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                                )
+                                                {
+                                                    uniform token axis = "Z"
+                                                    float3[] extent = [(-0.0055, -0.0055, -0.0455), (0.0055, 0.0055, 0.0455)]
+                                                    double height = 0.08
+                                                    rel material:binding = </humanoid_CMU/Materials/self>
+                                                    rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial_1>
+                                                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayColor:indices = None
+                                                    float[] primvars:displayOpacity = [1] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayOpacity:indices = None
+                                                    double radius = 0.0055
+                                                    quatf xformOp:orient = (-0.70710677, 0.70710677, 0, 0)
+                                                    float3 xformOp:scale = (1, 1, 1)
+                                                    double3 xformOp:translate = (0.024, -0.025, 0)
+                                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                                }
+
+                                                def Cube "lfingers_touch"
+                                                {
+                                                    float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+                                                    color3f[] primvars:displayColor = [(1, 0, 0)] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayColor:indices = None
+                                                    float[] primvars:displayOpacity = [0.5] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayOpacity:indices = None
+                                                    uniform token purpose = "guide"
+                                                    double size = 2
+                                                    quatf xformOp:orient = (1, 0, 0, 0)
+                                                    float3 xformOp:scale = (0.023, 0.013, 0.003)
+                                                    double3 xformOp:translate = (0, -0.042, -0.007)
+                                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                                }
+                                            }
+
+                                            def Xform "lthumb"
+                                            {
+                                                quatf xformOp:orient = (0.92387974, 0, 0, -0.38268292)
+                                                float3 xformOp:scale = (1, 1, 1)
+                                                double3 xformOp:translate = (-0.025, 0, 0)
+                                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                                def Capsule "lthumb" (
+                                                    prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                                )
+                                                {
+                                                    uniform token axis = "Z"
+                                                    float3[] extent = [(-0.008, -0.008, -0.038), (0.008, 0.008, 0.038)]
+                                                    double height = 0.06
+                                                    rel material:binding = </humanoid_CMU/Materials/self>
+                                                    rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial_1>
+                                                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayColor:indices = None
+                                                    float[] primvars:displayOpacity = [1] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayOpacity:indices = None
+                                                    double radius = 0.008
+                                                    quatf xformOp:orient = (-1.6081226e-16, -2.2993472e-17, 0.70710677, 0.70710677)
+                                                    float3 xformOp:scale = (1, 1, 1)
+                                                    double3 xformOp:translate = (0, -0.03, 0)
+                                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                                }
+
+                                                def Cube "lthumb_touch"
+                                                {
+                                                    float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+                                                    color3f[] primvars:displayColor = [(1, 0, 0)] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayColor:indices = None
+                                                    float[] primvars:displayOpacity = [0.5] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayOpacity:indices = None
+                                                    uniform token purpose = "guide"
+                                                    double size = 2
+                                                    quatf xformOp:orient = (1, 0, 0, 0)
+                                                    float3 xformOp:scale = (0.006, 0.013, 0.003)
+                                                    double3 xformOp:translate = (0, -0.043, -0.007)
+                                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        def Xform "rclavicle"
+                        {
+                            quatf xformOp:orient = (1, 0, 0, 0)
+                            float3 xformOp:scale = (1, 1, 1)
+                            double3 xformOp:translate = (0, 0.113945, 0.00468037)
+                            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                            def Capsule "rclavicle" (
+                                prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                            )
+                            {
+                                uniform token axis = "Z"
+                                float3[] extent = [(-0.075, -0.075, -0.135), (0.075, 0.075, 0.135)]
+                                double height = 0.12
+                                rel material:binding = </humanoid_CMU/Materials/self>
+                                rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial>
+                                color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayColor:indices = None
+                                float[] primvars:displayOpacity = [1] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayOpacity:indices = None
+                                double radius = 0.075
+                                quatf xformOp:orient = (0.68797076, 0.27898815, 0.6699715, 4.034412e-17)
+                                float3 xformOp:scale = (1, 1, 1)
+                                double3 xformOp:translate = (-0.0918817, 0.0382636, 0.00535704)
+                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                            }
+
+                            def Xform "rhumerus"
+                            {
+                                quatf xformOp:orient = (0.18301292, 0.68301266, 0.68301266, -0.1830129)
+                                float3 xformOp:scale = (1, 1, 1)
+                                double3 xformOp:translate = (-0.18, 0.09, 0.0107141)
+                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                def Capsule "rhumerus" (
+                                    prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                )
+                                {
+                                    uniform token axis = "Z"
+                                    float3[] extent = [(-0.042, -0.042, -0.1665789), (0.042, 0.042, 0.1665789)]
+                                    double height = 0.2491578
+                                    rel material:binding = </humanoid_CMU/Materials/self>
+                                    rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial>
+                                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayColor:indices = None
+                                    float[] primvars:displayOpacity = [1] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayOpacity:indices = None
+                                    double radius = 0.042
+                                    quatf xformOp:orient = (0.6123725, -0.61237246, -0.35355327, -0.35355327)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (0, -0.138421, 0)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                }
+
+                                def Sphere "rhumerus_ft"
+                                {
+                                    float3[] extent = [(-0.01, -0.01, -0.01), (0.01, 0.01, 0.01)]
+                                    color3f[] primvars:displayColor = [(1, 0, 0)] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayColor:indices = None
+                                    float[] primvars:displayOpacity = [0.5] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayOpacity:indices = None
+                                    uniform token purpose = "guide"
+                                    double radius = 0.01
+                                    quatf xformOp:orient = (1, 0, 0, 0)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (0, 0, 0)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                }
+
+                                def Xform "rradius"
+                                {
+                                    quatf xformOp:orient = (1, 0, 0, 0)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (0, -0.276843, 0)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                    def Capsule "rradius" (
+                                        prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                    )
+                                    {
+                                        uniform token axis = "Z"
+                                        float3[] extent = [(-0.03, -0.03, -0.11169111), (0.03, 0.03, 0.11169111)]
+                                        double height = 0.16338222
+                                        rel material:binding = </humanoid_CMU/Materials/self>
+                                        rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial>
+                                        color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                            interpolation = "constant"
+                                        )
+                                        int[] primvars:displayColor:indices = None
+                                        float[] primvars:displayOpacity = [1] (
+                                            interpolation = "constant"
+                                        )
+                                        int[] primvars:displayOpacity:indices = None
+                                        double radius = 0.03
+                                        quatf xformOp:orient = (0.6123799, -0.61237186, -0.35355392, -0.3535409)
+                                        float3 xformOp:scale = (1, 1, 1)
+                                        double3 xformOp:translate = (0, -0.0907679, 0)
+                                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                    }
+
+                                    def Xform "rwrist"
+                                    {
+                                        quatf xformOp:orient = (0.50000024, 0, 0.86602527, 0)
+                                        float3 xformOp:scale = (1, 1, 1)
+                                        double3 xformOp:translate = (0, -0.181536, 0)
+                                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                        def Capsule "rwrist" (
+                                            prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                        )
+                                        {
+                                            uniform token axis = "Z"
+                                            float3[] extent = [(-0.02, -0.02, -0.05), (0.02, 0.02, 0.05)]
+                                            double height = 0.06
+                                            rel material:binding = </humanoid_CMU/Materials/self>
+                                            rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial>
+                                            color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                                interpolation = "constant"
+                                            )
+                                            int[] primvars:displayColor:indices = None
+                                            float[] primvars:displayOpacity = [1] (
+                                                interpolation = "constant"
+                                            )
+                                            int[] primvars:displayOpacity:indices = None
+                                            double radius = 0.02
+                                            quatf xformOp:orient = (6.123234e-17, -2.2993472e-17, 0.70710677, 0.70710677)
+                                            float3 xformOp:scale = (1, 1, 1)
+                                            double3 xformOp:translate = (0, -0.03, 0)
+                                            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                        }
+
+                                        def Xform "rhand"
+                                        {
+                                            quatf xformOp:orient = (1, 0, 0, 0)
+                                            float3 xformOp:scale = (1, 1, 1)
+                                            double3 xformOp:translate = (0, -0.0907676, 0)
+                                            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                            def Xform "rfingers"
+                                            {
+                                                quatf xformOp:orient = (1, 0, 0, 0)
+                                                float3 xformOp:scale = (1, 1, 1)
+                                                double3 xformOp:translate = (0, -0.075, 0)
+                                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                                def Capsule "rfinger0" (
+                                                    prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                                )
+                                                {
+                                                    uniform token axis = "Z"
+                                                    float3[] extent = [(-0.0065, -0.0065, -0.0465), (0.0065, 0.0065, 0.0465)]
+                                                    double height = 0.08
+                                                    rel material:binding = </humanoid_CMU/Materials/self>
+                                                    rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial_1>
+                                                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayColor:indices = None
+                                                    float[] primvars:displayOpacity = [1] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayOpacity:indices = None
+                                                    double radius = 0.0065
+                                                    quatf xformOp:orient = (-0.70710677, 0.70710677, 0, 0)
+                                                    float3 xformOp:scale = (1, 1, 1)
+                                                    double3 xformOp:translate = (0.024, -0.025, 0)
+                                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                                }
+
+                                                def Capsule "rfinger1" (
+                                                    prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                                )
+                                                {
+                                                    uniform token axis = "Z"
+                                                    float3[] extent = [(-0.0065, -0.0065, -0.0465), (0.0065, 0.0065, 0.0465)]
+                                                    double height = 0.08
+                                                    rel material:binding = </humanoid_CMU/Materials/self>
+                                                    rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial_1>
+                                                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayColor:indices = None
+                                                    float[] primvars:displayOpacity = [1] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayOpacity:indices = None
+                                                    double radius = 0.0065
+                                                    quatf xformOp:orient = (-0.70710677, 0.70710677, 0, 0)
+                                                    float3 xformOp:scale = (1, 1, 1)
+                                                    double3 xformOp:translate = (0.008, -0.03, 0)
+                                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                                }
+
+                                                def Capsule "rfinger2" (
+                                                    prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                                )
+                                                {
+                                                    uniform token axis = "Z"
+                                                    float3[] extent = [(-0.006, -0.006, -0.046), (0.006, 0.006, 0.046)]
+                                                    double height = 0.08
+                                                    rel material:binding = </humanoid_CMU/Materials/self>
+                                                    rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial_1>
+                                                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayColor:indices = None
+                                                    float[] primvars:displayOpacity = [1] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayOpacity:indices = None
+                                                    double radius = 0.006
+                                                    quatf xformOp:orient = (-0.70710677, 0.70710677, 0, 0)
+                                                    float3 xformOp:scale = (1, 1, 1)
+                                                    double3 xformOp:translate = (-0.008, -0.03, 0)
+                                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                                }
+
+                                                def Capsule "rfinger3" (
+                                                    prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                                )
+                                                {
+                                                    uniform token axis = "Z"
+                                                    float3[] extent = [(-0.0055, -0.0055, -0.0455), (0.0055, 0.0055, 0.0455)]
+                                                    double height = 0.08
+                                                    rel material:binding = </humanoid_CMU/Materials/self>
+                                                    rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial_1>
+                                                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayColor:indices = None
+                                                    float[] primvars:displayOpacity = [1] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayOpacity:indices = None
+                                                    double radius = 0.0055
+                                                    quatf xformOp:orient = (-0.70710677, 0.70710677, 0, 0)
+                                                    float3 xformOp:scale = (1, 1, 1)
+                                                    double3 xformOp:translate = (-0.024, -0.025, 0)
+                                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                                }
+
+                                                def Cube "rfingers_touch"
+                                                {
+                                                    float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+                                                    color3f[] primvars:displayColor = [(1, 0, 0)] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayColor:indices = None
+                                                    float[] primvars:displayOpacity = [0.5] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayOpacity:indices = None
+                                                    uniform token purpose = "guide"
+                                                    double size = 2
+                                                    quatf xformOp:orient = (1, 0, 0, 0)
+                                                    float3 xformOp:scale = (0.023, 0.013, 0.003)
+                                                    double3 xformOp:translate = (0, -0.042, -0.007)
+                                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                                }
+                                            }
+
+                                            def Xform "rthumb"
+                                            {
+                                                quatf xformOp:orient = (0.92387974, 0, 0, 0.38268292)
+                                                float3 xformOp:scale = (1, 1, 1)
+                                                double3 xformOp:translate = (0.025, 0, 0)
+                                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                                def Capsule "rthumb" (
+                                                    prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+                                                )
+                                                {
+                                                    uniform token axis = "Z"
+                                                    float3[] extent = [(-0.008, -0.008, -0.038), (0.008, 0.008, 0.038)]
+                                                    double height = 0.06
+                                                    rel material:binding = </humanoid_CMU/Materials/self>
+                                                    rel material:binding:physics = </humanoid_CMU/Physics/PhysicsMaterial_1>
+                                                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayColor:indices = None
+                                                    float[] primvars:displayOpacity = [1] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayOpacity:indices = None
+                                                    double radius = 0.008
+                                                    quatf xformOp:orient = (6.2177215e-11, -6.3528356e-11, 0.70710677, 0.70710677)
+                                                    float3 xformOp:scale = (1, 1, 1)
+                                                    double3 xformOp:translate = (0, -0.03, 0)
+                                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                                }
+
+                                                def Cube "rthumb_touch"
+                                                {
+                                                    float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+                                                    color3f[] primvars:displayColor = [(1, 0, 0)] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayColor:indices = None
+                                                    float[] primvars:displayOpacity = [0.5] (
+                                                        interpolation = "constant"
+                                                    )
+                                                    int[] primvars:displayOpacity:indices = None
+                                                    uniform token purpose = "guide"
+                                                    double size = 2
+                                                    quatf xformOp:orient = (1, 0, 0, 0)
+                                                    float3 xformOp:scale = (0.006, 0.013, 0.003)
+                                                    double3 xformOp:translate = (0, -0.043, -0.007)
+                                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    def Scope "Materials"
+    {
+        def Material "self" (
+            instanceable = true
+            prepend references = @./materials.usda@</Materials/self>
+        )
+        {
+        }
+    }
+
+    def Scope "Physics"
+    {
+        def Material "PhysicsMaterial"
+        {
+        }
+
+        def Material "PhysicsMaterial_1"
+        {
+        }
+    }
+}
+

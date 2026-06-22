@@ -1,0 +1,762 @@
+#usda 1.0
+(
+    customLayerData = {
+        string creator = "MuJoCo USD Converter v0.2.0"
+    }
+    defaultPrim = "humanoid_CMU"
+    doc = """Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\tmp6h22akzl\\humanoid_CMU.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\mjcf_import_humanoid_CMU_V2020_a7drl3l9\\usdex_humanoid_CMU_V2020\\humanoid_CMU.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\antho\\AppData\\Local\\Temp\\mjcf_import_humanoid_CMU_V2020_a7drl3l9\\temp_humanoid_CMU_V2020\\humanoid_CMU_V2020.usd
+
+
+Generated from Composed Stage of root layer C:\\Users\\antho\\Downloads\\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\\sim\\isaac\\assets\\humanoid_CMU_V2020_45\\payloads\\base.usd
+"""
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    subLayers = [
+        @./physics.usda@
+    ]
+    upAxis = "Z"
+)
+
+over "humanoid_CMU"
+{
+    over "Geometry"
+    {
+        over "root"
+        {
+            over "lhipjoint"
+            {
+                over "lfemur"
+                {
+                    over "ltibia"
+                    {
+                        over "lfoot"
+                        {
+                            over "ltoes"
+                            {
+                                over "ltoesrx" (
+                                    prepend apiSchemas = ["PhysxJointAPI"]
+                                )
+                                {
+                                    float physxJoint:armature = 0.01
+                                }
+                            }
+
+                            def PhysicsJoint "lfootrz" (
+                                prepend apiSchemas = ["PhysxJointAPI", "PhysicsLimitAPI:rotZ", "PhysicsLimitAPI:rotX"]
+                            )
+                            {
+                                float limit:rotX:physics:high = 45.836624
+                                float limit:rotX:physics:low = -44.999992
+                                float limit:rotZ:physics:high = 20.000008
+                                float limit:rotZ:physics:low = -69.99997
+                                rel physics:body0 = </humanoid_CMU/Geometry/root/lhipjoint/lfemur/ltibia>
+                                rel physics:body1 = </humanoid_CMU/Geometry/root/lhipjoint/lfemur/ltibia/lfoot>
+                                bool physics:jointEnabled = 1
+                                point3f physics:localPos0 = (5.551115e-17, -0.415693, 0)
+                                point3f physics:localPos1 = (0, 0, 0)
+                                quatf physics:localRot0 = (-0.70710677, 0.70710677, 1.3877788e-17, 2.7755576e-17)
+                                quatf physics:localRot1 = (1, 0, 0, 0)
+                                float physxJoint:armature = 0.01
+                            }
+
+                            over "lfootrx" (
+                                active = false
+                                prepend apiSchemas = ["PhysxJointAPI"]
+                            )
+                            {
+                                float physxJoint:armature = 0.01
+                            }
+                        }
+
+                        over "ltibiarx" (
+                            prepend apiSchemas = ["PhysxJointAPI"]
+                        )
+                        {
+                            float physxJoint:armature = 0.01
+                        }
+                    }
+
+                    def PhysicsJoint "lfemurrz" (
+                        prepend apiSchemas = ["PhysxJointAPI", "PhysicsLimitAPI:rotZ", "PhysicsLimitAPI:rotY", "PhysicsLimitAPI:rotX"]
+                    )
+                    {
+                        float limit:rotX:physics:high = 20.000008
+                        float limit:rotX:physics:low = -160.00018
+                        float limit:rotY:physics:high = 69.99997
+                        float limit:rotY:physics:low = -69.99997
+                        float limit:rotZ:physics:high = 69.99997
+                        float limit:rotZ:physics:low = -60.00014
+                        rel physics:body0 = </humanoid_CMU/Geometry/root/lhipjoint>
+                        rel physics:body1 = </humanoid_CMU/Geometry/root/lhipjoint/lfemur>
+                        bool physics:jointEnabled = 1
+                        point3f physics:localPos0 = (0.101937, -0.0918074, 0.0494461)
+                        point3f physics:localPos1 = (0, 0, 0)
+                        quatf physics:localRot0 = (0.9848078, 0, 0, 0.17364797)
+                        quatf physics:localRot1 = (1, 0, 0, 0)
+                        float physxJoint:armature = 0.01
+                    }
+
+                    over "lfemurry" (
+                        active = false
+                        prepend apiSchemas = ["PhysxJointAPI"]
+                    )
+                    {
+                        float physxJoint:armature = 0.01
+                    }
+
+                    over "lfemurrx" (
+                        active = false
+                        prepend apiSchemas = ["PhysxJointAPI"]
+                    )
+                    {
+                        float physxJoint:armature = 0.01
+                    }
+                }
+            }
+
+            over "rhipjoint"
+            {
+                over "rfemur"
+                {
+                    over "rtibia"
+                    {
+                        over "rfoot"
+                        {
+                            over "rtoes"
+                            {
+                                over "rtoesrx" (
+                                    prepend apiSchemas = ["PhysxJointAPI"]
+                                )
+                                {
+                                    float physxJoint:armature = 0.01
+                                }
+                            }
+
+                            def PhysicsJoint "rfootrz" (
+                                prepend apiSchemas = ["PhysxJointAPI", "PhysicsLimitAPI:rotZ", "PhysicsLimitAPI:rotX"]
+                            )
+                            {
+                                float limit:rotX:physics:high = 45.836624
+                                float limit:rotX:physics:low = -44.999992
+                                float limit:rotZ:physics:high = 69.99997
+                                float limit:rotZ:physics:low = -20.000008
+                                rel physics:body0 = </humanoid_CMU/Geometry/root/rhipjoint/rfemur/rtibia>
+                                rel physics:body1 = </humanoid_CMU/Geometry/root/rhipjoint/rfemur/rtibia/rfoot>
+                                bool physics:jointEnabled = 1
+                                point3f physics:localPos0 = (-5.551115e-17, -0.415693, 0)
+                                point3f physics:localPos1 = (0, 0, 0)
+                                quatf physics:localRot0 = (0.7071068, -0.7071067, -1.3877788e-17, 0)
+                                quatf physics:localRot1 = (1, 0, 0, 0)
+                                float physxJoint:armature = 0.01
+                            }
+
+                            over "rfootrx" (
+                                active = false
+                                prepend apiSchemas = ["PhysxJointAPI"]
+                            )
+                            {
+                                float physxJoint:armature = 0.01
+                            }
+                        }
+
+                        over "rtibiarx" (
+                            prepend apiSchemas = ["PhysxJointAPI"]
+                        )
+                        {
+                            float physxJoint:armature = 0.01
+                        }
+                    }
+
+                    def PhysicsJoint "rfemurrz" (
+                        prepend apiSchemas = ["PhysxJointAPI", "PhysicsLimitAPI:rotZ", "PhysicsLimitAPI:rotY", "PhysicsLimitAPI:rotX"]
+                    )
+                    {
+                        float limit:rotX:physics:high = 20.000008
+                        float limit:rotX:physics:low = -160.00018
+                        float limit:rotY:physics:high = 69.99997
+                        float limit:rotY:physics:low = -69.99997
+                        float limit:rotZ:physics:high = 60.00014
+                        float limit:rotZ:physics:low = -69.99997
+                        rel physics:body0 = </humanoid_CMU/Geometry/root/rhipjoint>
+                        rel physics:body1 = </humanoid_CMU/Geometry/root/rhipjoint/rfemur>
+                        bool physics:jointEnabled = 1
+                        point3f physics:localPos0 = (-0.101937, -0.0918074, 0.0494461)
+                        point3f physics:localPos1 = (0, 0, 0)
+                        quatf physics:localRot0 = (0.9848078, 0, 0, -0.17364797)
+                        quatf physics:localRot1 = (1, 0, 0, 0)
+                        float physxJoint:armature = 0.01
+                    }
+
+                    over "rfemurry" (
+                        active = false
+                        prepend apiSchemas = ["PhysxJointAPI"]
+                    )
+                    {
+                        float physxJoint:armature = 0.01
+                    }
+
+                    over "rfemurrx" (
+                        active = false
+                        prepend apiSchemas = ["PhysxJointAPI"]
+                    )
+                    {
+                        float physxJoint:armature = 0.01
+                    }
+                }
+            }
+
+            over "lowerback"
+            {
+                over "upperback"
+                {
+                    over "thorax"
+                    {
+                        over "lowerneck"
+                        {
+                            over "upperneck"
+                            {
+                                over "head"
+                                {
+                                    def PhysicsJoint "headrz" (
+                                        prepend apiSchemas = ["PhysxJointAPI", "PhysicsLimitAPI:rotZ", "PhysicsLimitAPI:rotY", "PhysicsLimitAPI:rotX"]
+                                    )
+                                    {
+                                        float limit:rotX:physics:high = 44.999992
+                                        float limit:rotX:physics:low = -20.000008
+                                        float limit:rotY:physics:high = 30.000013
+                                        float limit:rotY:physics:low = -30.000013
+                                        float limit:rotZ:physics:high = 30.000013
+                                        float limit:rotZ:physics:low = -30.000013
+                                        rel physics:body0 = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck/upperneck>
+                                        rel physics:body1 = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck/upperneck/head>
+                                        bool physics:jointEnabled = 1
+                                        point3f physics:localPos0 = (0.00100175, 0.13, -0.00449288)
+                                        point3f physics:localPos1 = (0, 0, 0)
+                                        quatf physics:localRot0 = (1, 0, 0, 0)
+                                        quatf physics:localRot1 = (1, 0, 0, 0)
+                                        float physxJoint:armature = 0.01
+                                    }
+
+                                    over "headry" (
+                                        active = false
+                                        prepend apiSchemas = ["PhysxJointAPI"]
+                                    )
+                                    {
+                                        float physxJoint:armature = 0.01
+                                    }
+
+                                    over "headrx" (
+                                        active = false
+                                        prepend apiSchemas = ["PhysxJointAPI"]
+                                    )
+                                    {
+                                        float physxJoint:armature = 0.01
+                                    }
+                                }
+
+                                def PhysicsJoint "upperneckrz" (
+                                    prepend apiSchemas = ["PhysxJointAPI", "PhysicsLimitAPI:rotZ", "PhysicsLimitAPI:rotY", "PhysicsLimitAPI:rotX"]
+                                )
+                                {
+                                    float limit:rotX:physics:high = 44.999992
+                                    float limit:rotX:physics:low = -20.000008
+                                    float limit:rotY:physics:high = 30.000013
+                                    float limit:rotY:physics:low = -30.000013
+                                    float limit:rotZ:physics:high = 30.000013
+                                    float limit:rotZ:physics:low = -30.000013
+                                    rel physics:body0 = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck>
+                                    rel physics:body1 = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck/upperneck>
+                                    bool physics:jointEnabled = 1
+                                    point3f physics:localPos0 = (-0.00330143, 0.0904801, 0.0106872)
+                                    point3f physics:localPos1 = (0, 0, 0)
+                                    quatf physics:localRot0 = (1, 0, 0, 0)
+                                    quatf physics:localRot1 = (1, 0, 0, 0)
+                                    float physxJoint:armature = 0.01
+                                }
+
+                                over "upperneckry" (
+                                    active = false
+                                    prepend apiSchemas = ["PhysxJointAPI"]
+                                )
+                                {
+                                    float physxJoint:armature = 0.01
+                                }
+
+                                over "upperneckrx" (
+                                    active = false
+                                    prepend apiSchemas = ["PhysxJointAPI"]
+                                )
+                                {
+                                    float physxJoint:armature = 0.01
+                                }
+                            }
+
+                            def PhysicsJoint "lowerneckrz" (
+                                prepend apiSchemas = ["PhysxJointAPI", "PhysicsLimitAPI:rotZ", "PhysicsLimitAPI:rotY", "PhysicsLimitAPI:rotX"]
+                            )
+                            {
+                                float limit:rotX:physics:high = 44.999992
+                                float limit:rotX:physics:low = -20.000008
+                                float limit:rotY:physics:high = 30.000013
+                                float limit:rotY:physics:low = -30.000013
+                                float limit:rotZ:physics:high = 30.000013
+                                float limit:rotZ:physics:low = -30.000013
+                                rel physics:body0 = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax>
+                                rel physics:body1 = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lowerneck>
+                                bool physics:jointEnabled = 1
+                                point3f physics:localPos0 = (0, 0.113945, 0.00468037)
+                                point3f physics:localPos1 = (0, 0, 0)
+                                quatf physics:localRot0 = (1, 0, 0, 0)
+                                quatf physics:localRot1 = (1, 0, 0, 0)
+                                float physxJoint:armature = 0.01
+                            }
+
+                            over "lowerneckry" (
+                                active = false
+                                prepend apiSchemas = ["PhysxJointAPI"]
+                            )
+                            {
+                                float physxJoint:armature = 0.01
+                            }
+
+                            over "lowerneckrx" (
+                                active = false
+                                prepend apiSchemas = ["PhysxJointAPI"]
+                            )
+                            {
+                                float physxJoint:armature = 0.01
+                            }
+                        }
+
+                        over "lclavicle"
+                        {
+                            over "lhumerus"
+                            {
+                                over "lradius"
+                                {
+                                    over "lwrist_1"
+                                    {
+                                        over "lhand"
+                                        {
+                                            over "lfingers"
+                                            {
+                                                over "lfingersrx" (
+                                                    prepend apiSchemas = ["PhysxJointAPI"]
+                                                )
+                                                {
+                                                    float physxJoint:armature = 0.01
+                                                }
+                                            }
+
+                                            over "lthumb"
+                                            {
+                                                def PhysicsJoint "lthumbrz" (
+                                                    prepend apiSchemas = ["PhysxJointAPI", "PhysicsLimitAPI:rotZ", "PhysicsLimitAPI:rotX"]
+                                                )
+                                                {
+                                                    float limit:rotX:physics:high = 89.95438
+                                                    float limit:rotX:physics:low = 0
+                                                    float limit:rotZ:physics:high = 44.999992
+                                                    float limit:rotZ:physics:low = -44.999992
+                                                    rel physics:body0 = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lradius/lwrist_1/lhand>
+                                                    rel physics:body1 = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lradius/lwrist_1/lhand/lthumb>
+                                                    bool physics:jointEnabled = 1
+                                                    point3f physics:localPos0 = (-0.025, -2.220446e-16, 0)
+                                                    point3f physics:localPos1 = (0, 0, 0)
+                                                    quatf physics:localRot0 = (-0.92387974, -2.7755576e-17, -2.7755576e-17, 0.38268292)
+                                                    quatf physics:localRot1 = (1, 0, 0, 0)
+                                                    float physxJoint:armature = 0.01
+                                                }
+
+                                                over "lthumbrx" (
+                                                    active = false
+                                                    prepend apiSchemas = ["PhysxJointAPI"]
+                                                )
+                                                {
+                                                    float physxJoint:armature = 0.01
+                                                }
+                                            }
+
+                                            def PhysicsJoint "lhandrz" (
+                                                prepend apiSchemas = ["PhysxJointAPI", "PhysicsLimitAPI:rotZ", "PhysicsLimitAPI:rotX"]
+                                            )
+                                            {
+                                                float limit:rotX:physics:high = 90.00021
+                                                float limit:rotX:physics:low = -90.00021
+                                                float limit:rotZ:physics:high = 44.999992
+                                                float limit:rotZ:physics:low = -44.999992
+                                                rel physics:body0 = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lradius/lwrist_1>
+                                                rel physics:body1 = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus/lradius/lwrist_1/lhand>
+                                                bool physics:jointEnabled = 1
+                                                point3f physics:localPos0 = (0, -0.0907676, -5.551115e-17)
+                                                point3f physics:localPos1 = (0, 0, 0)
+                                                quatf physics:localRot0 = (1, 0, 0, 0)
+                                                quatf physics:localRot1 = (1, 0, 0, 0)
+                                                float physxJoint:armature = 0.01
+                                            }
+
+                                            over "lhandrx" (
+                                                active = false
+                                                prepend apiSchemas = ["PhysxJointAPI"]
+                                            )
+                                            {
+                                                float physxJoint:armature = 0.01
+                                            }
+                                        }
+
+                                        over "lwristry" (
+                                            prepend apiSchemas = ["PhysxJointAPI"]
+                                        )
+                                        {
+                                            float physxJoint:armature = 0.01
+                                        }
+                                    }
+
+                                    over "lradiusrx" (
+                                        prepend apiSchemas = ["PhysxJointAPI"]
+                                    )
+                                    {
+                                        float physxJoint:armature = 0.01
+                                    }
+                                }
+
+                                def PhysicsJoint "lhumerusrz" (
+                                    prepend apiSchemas = ["PhysxJointAPI", "PhysicsLimitAPI:rotZ", "PhysicsLimitAPI:rotY", "PhysicsLimitAPI:rotX"]
+                                )
+                                {
+                                    float limit:rotX:physics:high = 90.00021
+                                    float limit:rotX:physics:low = -60.00014
+                                    float limit:rotY:physics:high = 90.00021
+                                    float limit:rotY:physics:low = -90.00021
+                                    float limit:rotZ:physics:high = 90.00021
+                                    float limit:rotZ:physics:low = -63.025356
+                                    rel physics:body0 = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle>
+                                    rel physics:body1 = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle/lhumerus>
+                                    bool physics:jointEnabled = 1
+                                    point3f physics:localPos0 = (0.18, 0.09, 0.0107141)
+                                    point3f physics:localPos1 = (0, 0, 0)
+                                    quatf physics:localRot0 = (0.18301292, 0.68301266, -0.68301266, 0.1830129)
+                                    quatf physics:localRot1 = (1, 0, 0, 0)
+                                    float physxJoint:armature = 0.01
+                                }
+
+                                over "lhumerusry" (
+                                    active = false
+                                    prepend apiSchemas = ["PhysxJointAPI"]
+                                )
+                                {
+                                    float physxJoint:armature = 0.01
+                                }
+
+                                over "lhumerusrx" (
+                                    active = false
+                                    prepend apiSchemas = ["PhysxJointAPI"]
+                                )
+                                {
+                                    float physxJoint:armature = 0.01
+                                }
+                            }
+
+                            def PhysicsJoint "lclaviclerz" (
+                                prepend apiSchemas = ["PhysxJointAPI", "PhysicsLimitAPI:rotZ", "PhysicsLimitAPI:rotY"]
+                            )
+                            {
+                                float limit:rotY:physics:high = 10.000004
+                                float limit:rotY:physics:low = -20.000008
+                                float limit:rotZ:physics:high = 20.000008
+                                float limit:rotZ:physics:low = 0
+                                rel physics:body0 = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax>
+                                rel physics:body1 = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/lclavicle>
+                                bool physics:jointEnabled = 1
+                                point3f physics:localPos0 = (0, 0.113945, 0.00468037)
+                                point3f physics:localPos1 = (0, 0, 0)
+                                quatf physics:localRot0 = (1, 0, 0, 0)
+                                quatf physics:localRot1 = (1, 0, 0, 0)
+                                float physxJoint:armature = 0.01
+                            }
+
+                            over "lclaviclery" (
+                                active = false
+                                prepend apiSchemas = ["PhysxJointAPI"]
+                            )
+                            {
+                                float physxJoint:armature = 0.01
+                            }
+                        }
+
+                        over "rclavicle"
+                        {
+                            over "rhumerus"
+                            {
+                                over "rradius"
+                                {
+                                    over "rwrist"
+                                    {
+                                        over "rhand"
+                                        {
+                                            over "rfingers"
+                                            {
+                                                over "rfingersrx" (
+                                                    prepend apiSchemas = ["PhysxJointAPI"]
+                                                )
+                                                {
+                                                    float physxJoint:armature = 0.01
+                                                }
+                                            }
+
+                                            over "rthumb"
+                                            {
+                                                def PhysicsJoint "rthumbrz" (
+                                                    prepend apiSchemas = ["PhysxJointAPI", "PhysicsLimitAPI:rotZ", "PhysicsLimitAPI:rotX"]
+                                                )
+                                                {
+                                                    float limit:rotX:physics:high = 89.95438
+                                                    float limit:rotX:physics:low = 0
+                                                    float limit:rotZ:physics:high = 44.999992
+                                                    float limit:rotZ:physics:low = -44.999992
+                                                    rel physics:body0 = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rradius/rwrist/rhand>
+                                                    rel physics:body1 = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rradius/rwrist/rhand/rthumb>
+                                                    bool physics:jointEnabled = 1
+                                                    point3f physics:localPos0 = (0.025, 1.110223e-16, 0)
+                                                    point3f physics:localPos1 = (0, 0, 0)
+                                                    quatf physics:localRot0 = (0.92387974, -1.6653345e-16, -5.551115e-17, 0.38268292)
+                                                    quatf physics:localRot1 = (1, 0, 0, 0)
+                                                    float physxJoint:armature = 0.01
+                                                }
+
+                                                over "rthumbrx" (
+                                                    active = false
+                                                    prepend apiSchemas = ["PhysxJointAPI"]
+                                                )
+                                                {
+                                                    float physxJoint:armature = 0.01
+                                                }
+                                            }
+
+                                            def PhysicsJoint "rhandrz" (
+                                                prepend apiSchemas = ["PhysxJointAPI", "PhysicsLimitAPI:rotZ", "PhysicsLimitAPI:rotX"]
+                                            )
+                                            {
+                                                float limit:rotX:physics:high = 90.00021
+                                                float limit:rotX:physics:low = -90.00021
+                                                float limit:rotZ:physics:high = 44.999992
+                                                float limit:rotZ:physics:low = -44.999992
+                                                rel physics:body0 = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rradius/rwrist>
+                                                rel physics:body1 = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus/rradius/rwrist/rhand>
+                                                bool physics:jointEnabled = 1
+                                                point3f physics:localPos0 = (0, -0.0907676, -5.551115e-17)
+                                                point3f physics:localPos1 = (0, 0, 0)
+                                                quatf physics:localRot0 = (1, 0, 0, 0)
+                                                quatf physics:localRot1 = (1, 0, 0, 0)
+                                                float physxJoint:armature = 0.01
+                                            }
+
+                                            over "rhandrx" (
+                                                active = false
+                                                prepend apiSchemas = ["PhysxJointAPI"]
+                                            )
+                                            {
+                                                float physxJoint:armature = 0.01
+                                            }
+                                        }
+
+                                        over "rwristry" (
+                                            prepend apiSchemas = ["PhysxJointAPI"]
+                                        )
+                                        {
+                                            float physxJoint:armature = 0.01
+                                        }
+                                    }
+
+                                    over "rradiusrx" (
+                                        prepend apiSchemas = ["PhysxJointAPI"]
+                                    )
+                                    {
+                                        float physxJoint:armature = 0.01
+                                    }
+                                }
+
+                                def PhysicsJoint "rhumerusrz" (
+                                    prepend apiSchemas = ["PhysxJointAPI", "PhysicsLimitAPI:rotZ", "PhysicsLimitAPI:rotY", "PhysicsLimitAPI:rotX"]
+                                )
+                                {
+                                    float limit:rotX:physics:high = 90.00021
+                                    float limit:rotX:physics:low = -60.00014
+                                    float limit:rotY:physics:high = 90.00021
+                                    float limit:rotY:physics:low = -90.00021
+                                    float limit:rotZ:physics:high = 90.00021
+                                    float limit:rotZ:physics:low = -63.025356
+                                    rel physics:body0 = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle>
+                                    rel physics:body1 = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle/rhumerus>
+                                    bool physics:jointEnabled = 1
+                                    point3f physics:localPos0 = (-0.18, 0.09, 0.0107141)
+                                    point3f physics:localPos1 = (0, 0, 0)
+                                    quatf physics:localRot0 = (0.18301292, 0.68301266, 0.68301266, -0.1830129)
+                                    quatf physics:localRot1 = (1, 0, 0, 0)
+                                    float physxJoint:armature = 0.01
+                                }
+
+                                over "rhumerusry" (
+                                    active = false
+                                    prepend apiSchemas = ["PhysxJointAPI"]
+                                )
+                                {
+                                    float physxJoint:armature = 0.01
+                                }
+
+                                over "rhumerusrx" (
+                                    active = false
+                                    prepend apiSchemas = ["PhysxJointAPI"]
+                                )
+                                {
+                                    float physxJoint:armature = 0.01
+                                }
+                            }
+
+                            def PhysicsJoint "rclaviclerz" (
+                                prepend apiSchemas = ["PhysxJointAPI", "PhysicsLimitAPI:rotZ", "PhysicsLimitAPI:rotY"]
+                            )
+                            {
+                                float limit:rotY:physics:high = 20.000008
+                                float limit:rotY:physics:low = -10.000004
+                                float limit:rotZ:physics:high = 0
+                                float limit:rotZ:physics:low = -20.000008
+                                rel physics:body0 = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax>
+                                rel physics:body1 = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax/rclavicle>
+                                bool physics:jointEnabled = 1
+                                point3f physics:localPos0 = (0, 0.113945, 0.00468037)
+                                point3f physics:localPos1 = (0, 0, 0)
+                                quatf physics:localRot0 = (1, 0, 0, 0)
+                                quatf physics:localRot1 = (1, 0, 0, 0)
+                                float physxJoint:armature = 0.01
+                            }
+
+                            over "rclaviclery" (
+                                active = false
+                                prepend apiSchemas = ["PhysxJointAPI"]
+                            )
+                            {
+                                float physxJoint:armature = 0.01
+                            }
+                        }
+
+                        def PhysicsJoint "thoraxrz" (
+                            prepend apiSchemas = ["PhysxJointAPI", "PhysicsLimitAPI:rotZ", "PhysicsLimitAPI:rotY", "PhysicsLimitAPI:rotX"]
+                        )
+                        {
+                            float limit:rotX:physics:high = 44.999992
+                            float limit:rotX:physics:low = -20.000008
+                            float limit:rotY:physics:high = 30.000013
+                            float limit:rotY:physics:low = -30.000013
+                            float limit:rotZ:physics:high = 30.000013
+                            float limit:rotZ:physics:low = -30.000013
+                            rel physics:body0 = </humanoid_CMU/Geometry/root/lowerback/upperback>
+                            rel physics:body1 = </humanoid_CMU/Geometry/root/lowerback/upperback/thorax>
+                            bool physics:jointEnabled = 1
+                            point3f physics:localPos0 = (0.000512528, 0.11356, 0.000936821)
+                            point3f physics:localPos1 = (0, 0, 0)
+                            quatf physics:localRot0 = (1, 0, 0, 0)
+                            quatf physics:localRot1 = (1, 0, 0, 0)
+                            float physxJoint:armature = 0.01
+                        }
+
+                        over "thoraxry" (
+                            active = false
+                            prepend apiSchemas = ["PhysxJointAPI"]
+                        )
+                        {
+                            float physxJoint:armature = 0.01
+                        }
+
+                        over "thoraxrx" (
+                            active = false
+                            prepend apiSchemas = ["PhysxJointAPI"]
+                        )
+                        {
+                            float physxJoint:armature = 0.01
+                        }
+                    }
+
+                    def PhysicsJoint "upperbackrz" (
+                        prepend apiSchemas = ["PhysxJointAPI", "PhysicsLimitAPI:rotZ", "PhysicsLimitAPI:rotY", "PhysicsLimitAPI:rotX"]
+                    )
+                    {
+                        float limit:rotX:physics:high = 44.999992
+                        float limit:rotX:physics:low = -20.000008
+                        float limit:rotY:physics:high = 30.000013
+                        float limit:rotY:physics:low = -30.000013
+                        float limit:rotZ:physics:high = 30.000013
+                        float limit:rotZ:physics:low = -30.000013
+                        rel physics:body0 = </humanoid_CMU/Geometry/root/lowerback>
+                        rel physics:body1 = </humanoid_CMU/Geometry/root/lowerback/upperback>
+                        bool physics:jointEnabled = 1
+                        point3f physics:localPos0 = (0.000565862, 0.113213, -0.00805298)
+                        point3f physics:localPos1 = (0, 0, 0)
+                        quatf physics:localRot0 = (1, 0, 0, 0)
+                        quatf physics:localRot1 = (1, 0, 0, 0)
+                        float physxJoint:armature = 0.01
+                    }
+
+                    over "upperbackry" (
+                        active = false
+                        prepend apiSchemas = ["PhysxJointAPI"]
+                    )
+                    {
+                        float physxJoint:armature = 0.01
+                    }
+
+                    over "upperbackrx" (
+                        active = false
+                        prepend apiSchemas = ["PhysxJointAPI"]
+                    )
+                    {
+                        float physxJoint:armature = 0.01
+                    }
+                }
+
+                def PhysicsJoint "lowerbackrz" (
+                    prepend apiSchemas = ["PhysxJointAPI", "PhysicsLimitAPI:rotZ", "PhysicsLimitAPI:rotY", "PhysicsLimitAPI:rotX"]
+                )
+                {
+                    float limit:rotX:physics:high = 44.999992
+                    float limit:rotX:physics:low = -20.000008
+                    float limit:rotY:physics:high = 30.000013
+                    float limit:rotY:physics:low = -30.000013
+                    float limit:rotZ:physics:high = 30.000013
+                    float limit:rotZ:physics:low = -30.000013
+                    rel physics:body0 = </humanoid_CMU/Geometry/root>
+                    rel physics:body1 = </humanoid_CMU/Geometry/root/lowerback>
+                    bool physics:jointEnabled = 1
+                    point3f physics:localPos0 = (0, 0, 0)
+                    point3f physics:localPos1 = (0, 0, 0)
+                    quatf physics:localRot0 = (1, 0, 0, 0)
+                    quatf physics:localRot1 = (1, 0, 0, 0)
+                    float physxJoint:armature = 0.01
+                }
+
+                over "lowerbackry" (
+                    active = false
+                    prepend apiSchemas = ["PhysxJointAPI"]
+                )
+                {
+                    float physxJoint:armature = 0.01
+                }
+
+                over "lowerbackrx" (
+                    active = false
+                    prepend apiSchemas = ["PhysxJointAPI"]
+                )
+                {
+                    float physxJoint:armature = 0.01
+                }
+            }
+        }
+    }
+}
+
