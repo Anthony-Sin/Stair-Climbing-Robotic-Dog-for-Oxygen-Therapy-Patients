@@ -37,6 +37,14 @@ from world.skel_anim_utils import (  # noqa: F401
     _estimate_gait_period,
 )
 
+# The invisible H1 physics humanoid that now DRIVES the patient (hard replace of the
+# old kinematic/procedural gait). The visible mesh is puppeteered onto it each frame.
+from world.h1_puppet import H1Puppet, H1_MIN_WALK_VX, H1_MAX_WZ
+
+# H1 prim path: the robot is invisible (render geometry hidden, collision kept), so the
+# follow logic keeps tracking the visible PERSON_VISUAL_PRIM exactly as before.
+PERSON_H1_PRIM = "/World/PersonH1"
+
 
 CHARACTER_PARENT_PRIM = "/World/Characters"
 PERSON_VISUAL_PRIM = "/World/Characters/SimWalker"
@@ -139,6 +147,19 @@ class SimPersonTarget:
     # started; False = start failed (don't retry). See world.patient_body_logger.
     body_logger: Any = None
 
+    # --- H1 physics puppet (hard replace of the kinematic/procedural patient gait) ---
+    # h1   : world.h1_puppet.H1Puppet -- the invisible H1 humanoid + frozen RL policy
+    #        that physically walks/climbs. It is the locomotion engine for the patient.
+    # rig  : biped_anim.rig.BipedRig  -- writes the visible mesh's bone rotations; we
+    #        feed it H1-derived joint angles (NOT a synthetic gait) so the limbs follow
+    #        the real physics legs. _z_offset seats the mesh feet on the ground while the
+    #        body rides the H1 pelvis (which rises step-by-step up the stairs).
+    h1: Any = None
+    rig: Any = None
+    _z_offset: float = 0.0
+    _retarget_err_logged: bool = False
+    _rig_err_logged: bool = False
+
     def drive_patient(
         self,
         position: np.ndarray,
@@ -150,18 +171,12 @@ class SimPersonTarget:
         current_time: Optional[float] = None,
         kinematic: bool = False,
     ) -> None:
-        """Advance the procedural gait and write its joint angles to the MJCF body.
-
-        ``kinematic=True`` HARD-SETS the joint positions (``set_joint_positions``) so
-        the MJCF skeleton exactly follows the host-verified foot-planting gait every
-        frame -- no PD fling, no contact-impact divergence. The caller poses the root
-        kinematically too; together this drives the full chain deterministically (a
-        balance-free dynamic humanoid otherwise diverges, PhysX non-finite bounds).
-        ``kinematic=False`` writes PD drive TARGETS instead (legacy dynamic path).
+        """Advance the procedural gait and write its joint angles onto the rig.
 
         ``position`` is the pelvis pose; it is used to estimate travel (the gait's
         moving hint) and to ground-reference the feet. ``orientation``/``roll_rad``/
-        ``pitch_rad``/``bob_z`` are accepted for call-site stability and ignored.
+        ``pitch_rad``/``bob_z``/``kinematic`` are accepted for call-site stability and
+        otherwise unused (the kinematic UsdSkel mannequin has no dynamic body).
         """
         position = np.asarray(position, dtype=float)
         if position.shape[0] < 3:
@@ -174,9 +189,6 @@ class SimPersonTarget:
             distance = 0.0
         walking = distance > 5e-5
 
-        # Idle debounce on the SIMULATION clock (never wall-clock): switch to walk
-        # instantly on motion, but only fall back to idle after PERSON_IDLE_DEBOUNCE_SEC
-        # of stillness so brief stops don't flip the gait state back and forth.
         now = float(current_time) if current_time is not None else (
             self.last_time if self.last_time is not None else 0.0
         )
@@ -189,9 +201,8 @@ class SimPersonTarget:
         px, py_pos, pz = float(position[0]), float(position[1]), float(position[2])
 
         # Drive the procedural limb gait from the patient's real (x, y). The controller
-        # classifies terrain (flat vs stair), advances the gait phase from actual travel
-        # and emits a JointPose; we then write that pose onto the MJCF joint drives so
-        # PhysX moves the real limbs (and, through contact, plants the feet).
+        # classifies terrain (flat vs stair), advances the gait phase from actual travel,
+        # and applies the resulting JointPose onto the rig (it owns its own BipedRig).
         if self.anim_controller is not None:
             try:
                 self.anim_controller.update(
@@ -202,32 +213,6 @@ class SimPersonTarget:
                     ground_height_fn=self.ground_height_fn,
                     current_time=current_time,
                 )
-                if self.patient_art is not None:
-                    pose = self.anim_controller._last_pose
-                    if pose is not None:
-                        self._write_joint_targets_from_pose(pose, kinematic=kinematic)
-                        # Reliable gait diagnostic (proven self.logger path, no nested
-                        # swallow): raw gait pose + the live stair-gait params, so we can
-                        # see whether gait.py edits actually reach the running gait and
-                        # how the IK responds. Once per ~200 calls.
-                        self._gait_diag_n = getattr(self, "_gait_diag_n", 0) + 1
-                        if self.logger is not None and self._gait_diag_n % 200 == 5:
-                            try:
-                                _ac = self.anim_controller
-                                _stylenow = _ac._sm.state.style
-                                _g = _ac._gaits.get(_stylenow)
-                                _clear = getattr(getattr(_g, "params", None), "foot_clearance_m", None)
-                                log_event(
-                                    self.logger, logging.INFO, "patient_gait_pose_diag",
-                                    "Live gait pose + params",
-                                    style=str(_stylenow),
-                                    knee_l=round(float(pose.knee_l), 4),
-                                    hip_l=round(float(pose.hip_l), 4),
-                                    shoulder_l=round(float(pose.shoulder_l), 4),
-                                    foot_clearance_m=_clear,
-                                )
-                            except Exception:
-                                pass
             except Exception as exc:
                 if self.logger is not None and not getattr(self, "_anim_update_err_logged", False):
                     self._anim_update_err_logged = True
@@ -242,6 +227,109 @@ class SimPersonTarget:
         self.last_position = position.copy()
         if current_time is not None:
             self.last_time = float(current_time)
+
+    def set_command(self, vx: float, vy: float, wz: float) -> None:
+        """Set the H1's body-frame velocity command (m/s, m/s, rad/s)."""
+        if self.h1 is not None:
+            self.h1.set_command(vx, vy, wz)
+
+    def hold(self, dt: float = 0.0) -> None:
+        """Command the H1 to stand in place and puppeteer the mesh onto it."""
+        self.set_command(0.0, 0.0, 0.0)
+        self.retarget()
+
+    def walk_toward(self, target_x: float, target_y: float, speed: float, dt: float) -> None:
+        """Steer the H1 toward world ``(target_x, target_y)`` at ``speed`` m/s.
+
+        The H1 flat-terrain policy takes a body-frame ``(vx, vy, wz)`` command. We aim
+        it with a yaw rate proportional to the bearing error and drive ``vx`` forward
+        (floored so the policy commits to a real stride; scaled down while badly
+        mis-aimed so it turns before barrelling forward), then puppeteer the visible
+        mesh onto the resulting physics pose.
+        """
+        if self.h1 is None:
+            return
+        rp = self.h1.root_pose()
+        if rp is None:
+            # H1 not initialized yet: keep it standing until the policy comes online.
+            self.set_command(0.0, 0.0, 0.0)
+            self.retarget()
+            return
+        pos, yaw = rp
+        dx = float(target_x) - float(pos[0])
+        dy = float(target_y) - float(pos[1])
+        bearing = math.atan2(dy, dx)
+        yaw_err = math.atan2(math.sin(bearing - yaw), math.cos(bearing - yaw))
+
+        if speed > 1e-3:
+            vx = max(H1_MIN_WALK_VX, float(speed))
+            vx *= max(0.0, math.cos(yaw_err))  # turn first when badly mis-aimed
+        else:
+            vx = 0.0
+        wz = max(-H1_MAX_WZ, min(H1_MAX_WZ, 1.5 * yaw_err))
+        self.set_command(vx, 0.0, wz)
+        self.retarget()
+
+    def h1_xy_yaw(self) -> Optional[Tuple[float, float, float]]:
+        """Authoritative patient (x, y, yaw) read back from the H1 pelvis."""
+        if self.h1 is None:
+            return None
+        rp = self.h1.root_pose()
+        if rp is None:
+            return None
+        pos, yaw = rp
+        return float(pos[0]), float(pos[1]), float(yaw)
+
+    def retarget(self) -> None:
+        """Puppeteer the visible mesh onto the current H1 pose (root + limb joints)."""
+        if self.h1 is None or not self.h1.ready:
+            return
+        rp = self.h1.root_pose()
+        if rp is None:
+            return
+        pos, yaw = rp
+        vx_pos = float(pos[0])
+        vy_pos = float(pos[1])
+        pelvis_z = float(pos[2])
+        # Auto-calibrate the H1->mesh vertical offset from the MEASURED standing pelvis
+        # height while the H1 is on (near-)flat ground, so the mesh feet sit on the floor
+        # (the flat policy settles to its own crouch height, ~0.9 m, NOT the 1.05 m spawn).
+        # Freeze it once on the stairs so the mesh body rides UP with the climbing pelvis.
+        g_h1 = 0.0
+        if self.ground_height_fn is not None:
+            try:
+                g_h1 = float(self.ground_height_fn(vx_pos, vy_pos))
+            except Exception:
+                g_h1 = 0.0
+        if g_h1 < 0.05:
+            r2s = self.root_to_sole_m if self.root_to_sole_m is not None else 0.9
+            self._z_offset = pelvis_z - r2s
+        vz_pos = pelvis_z - self._z_offset
+        try:
+            _set_xform_pose(
+                self.visual_prim_path,
+                np.array([vx_pos, vy_pos, vz_pos], dtype=float),
+                float(yaw) + PERSON_VISUAL_FORWARD_YAW_OFFSET_RAD,
+            )
+            self.last_position = np.array([vx_pos, vy_pos, vz_pos], dtype=float)
+        except Exception as exc:
+            if self.logger is not None and not self._retarget_err_logged:
+                self._retarget_err_logged = True
+                log_event(self.logger, logging.WARNING, "patient_retarget_root_failed",
+                          "Failed to place the patient mesh on the H1 root", error=str(exc))
+        # Limb retarget: feed the H1's sagittal joint angles into the proven rig writer
+        # (geometry-derived flexion axes; only the sign table is tunable). The body
+        # physically climbs from the root-follow above regardless of these signs.
+        if self.rig is not None:
+            pose = self.h1.joint_pose()
+            if pose is not None:
+                try:
+                    self.rig.apply(pose)
+                except Exception as exc:
+                    if self.logger is not None and not self._rig_err_logged:
+                        self._rig_err_logged = True
+                        log_event(self.logger, logging.WARNING, "patient_retarget_limbs_failed",
+                                  "Failed to apply H1 joint angles to the patient rig", error=str(exc))
 
     # Per-channel sign convention for the MJCF drives (tunable from a single place;
     # the structural axis choice is fixed in _resolve_patient_dofs by joint range).
@@ -1447,6 +1535,7 @@ def spawn_sim_person(
     ground_height_fn: Optional[Callable[[float, float], float]] = None,
     patient_physics: bool = False,
     character_usd: Optional[str] = None,
+    anim_mode: str = "clip",
 ) -> "SimPersonTarget":
     """Spawn the patient character with a procedural limb-driven gait.
 
@@ -1479,8 +1568,6 @@ def spawn_sim_person(
                 _resolve_character_with_clips(logger)
             )
 
-    # Only snap-to-ground calibrate a CUSTOM character; the default Biped_Setup is
-    # already tuned around PELVIS_STAND_HEIGHT_M, so leave it byte-identical.
     _is_custom_character = bool(character_usd)
     character_usd = _char_usd_cache
 
@@ -1510,7 +1597,7 @@ def spawn_sim_person(
     try:
         from biped_anim import build_biped_animation_controller
         anim_controller = build_biped_animation_controller(
-            stage, skel_root_path, stairs_provider, logger=logger
+            stage, skel_root_path, stairs_provider, logger=logger, anim_mode=anim_mode
         )
     except Exception as e:
         if logger is not None:
@@ -1537,13 +1624,9 @@ def spawn_sim_person(
     collider_height_m = 1.70
 
     # The patient is a KINEMATIC UsdSkel character posed by the procedural foot-planting
-    # gait (biped_anim). The previous dynamic MJCF physics humanoid was REMOVED: it ran
-    # with gravity AND collision disabled (so the physics bought nothing functional) and
-    # its hand rigid bodies imported with negative mass, which seeded a PhysX NaN that
-    # invalidated the simulation view a few seconds in -- the launcher then SIGKILLed the
-    # controller (run_sim "exit code 137"). The mannequin mesh stays VISIBLE: it is the
-    # body the front RealSense/YOLO sees and the follow controller tracks. The root is
-    # placed kinematically by the patrol driver via SimPersonTarget.set_visual_pose.
+    # gait (biped_anim). The mannequin mesh stays VISIBLE: it is the body the front
+    # RealSense/YOLO sees and the follow controller tracks. The root is placed
+    # kinematically by the patrol driver via SimPersonTarget.set_visual_pose.
     collider = None
 
     target = SimPersonTarget(
@@ -1559,13 +1642,15 @@ def spawn_sim_person(
         patient_art=None,
     )
 
-    # Snap-to-ground calibration (CUSTOM characters only; Biped_Setup stays on its tuned
-    # PELVIS_STAND_HEIGHT_M). The character is placed with its SkelRoot at world z=0, so
-    # its world-bbox MIN-Z is the sole's offset BELOW the root -> seating the root at
-    # ground + that offset puts the FEET on the floor for any rig (pelvis-root or
-    # feet-root). Separately, the gait's body_z must equal the rendered HIP height (the
-    # foot IK reaches down from the hip), derived from the rig's measured leg reach.
-    if _is_custom_character:
+    # Snap-to-ground calibration (ALL characters, default Biped_Setup included). The
+    # character is placed with its SkelRoot at world z=0, so its world-bbox MIN-Z is the
+    # sole's offset BELOW the root -> seating the root at ground + that offset puts the
+    # FEET on the floor for any rig (pelvis-root or feet-root), instead of the hardcoded
+    # PELVIS_STAND_HEIGHT_M guess that floated/penetrated the feet on the default rig.
+    # Separately, the foot-planting IK's body_z is referenced to the GROUND (offset 0):
+    # the rig's measured reach is near its max leg length, so any positive body_z offset
+    # over-extends and CLAMPS the leg dead-straight (the stiff, gliding, floating walk).
+    if True:
         try:
             _bbox_cache = UsdGeom.BBoxCache(
                 Usd.TimeCode.Default(),
@@ -1585,11 +1670,20 @@ def spawn_sim_person(
             # body_z to the ground (offset 0 => drop 0 => foot at standing reach) so the
             # legs bend naturally and the swing knee-lift reads as stepping.
             target.hip_height_m = 0.0
+            # H1 -> mesh vertical calibration: seat the mesh feet on the ground when the
+            # H1 stands (pelvis at H1_STAND_PELVIS_Z), then let the mesh rise WITH the H1
+            # pelvis as it climbs each step. _z_offset = H1 standing pelvis Z minus the
+            # mesh's standing root height (ground + root_to_sole).
+            # Initial offset 0 (mesh root rides the H1 pelvis directly); retarget()
+            # auto-calibrates the precise offset from the MEASURED flat standing pelvis
+            # height each frame on flat ground, then freezes it on the stairs.
+            target._z_offset = 0.0
             if logger is not None:
                 log_event(logger, logging.INFO, "patient_ground_calibrated",
-                          "Calibrated custom patient to seat feet on the floor",
+                          "Calibrated patient mesh to ride the H1 pelvis with feet on the floor",
                           root_to_sole_m=(round(target.root_to_sole_m, 4)
                                           if target.root_to_sole_m is not None else None),
+                          h1_mesh_z_offset_init=round(float(target._z_offset), 4),
                           hip_height_m=(round(target.hip_height_m, 4)
                                         if target.hip_height_m is not None else None))
         except Exception as _gce:

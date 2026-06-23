@@ -63,6 +63,20 @@ class WallCameraSpec:
     target_lead_x_m: float = 0.15
     mount_size_m: Vec3 = (0.16, 0.08, 0.08)
     mount_color: Vec3 = (0.08, 0.09, 0.10)
+    # ---- autofit (zoom-to-fit overview) mode ----
+    # Used only when mode == "autofit": the camera holds a FIXED lens
+    # (focal_length_mm) on a fixed 3/4 vantage (azimuth+elevation from the subject
+    # bounding-box centre) and DOLLIES its distance each frame so the whole bbox of
+    # {robot, patient, stair span} always fits the vertical FOV with `fit_margin`
+    # padding -- i.e. it zooms out as the subjects spread and in as they cluster,
+    # and can never clip the action. `autofit_static` latches the first settled
+    # frame for a rock-steady wide shot (the --overview-mode fixed alternative).
+    fit_margin: float = 1.18
+    eye_azimuth_deg: float = 215.0
+    eye_elevation_deg: float = 58.0
+    autofit_min_distance_m: float = 4.0
+    autofit_max_distance_m: float = 24.0
+    autofit_static: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +229,7 @@ class FinalSceneSpec:
         roles = set()
         for camera in self.wall_recording_cameras:
             assert camera.focal_length_mm > 0.0
-            assert camera.mode in {"chase", "fixed_aim"}
+            assert camera.mode in {"chase", "fixed_aim", "autofit"}
             assert camera.subject in {"robot"}
             assert 0.0 < camera.frame_fill <= 1.0
             assert camera.focal_min_mm > 0.0

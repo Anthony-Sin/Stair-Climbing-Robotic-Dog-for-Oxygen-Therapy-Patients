@@ -53,6 +53,38 @@ if args.final_scene:
     from final_scene import configure_launch_args, stair_half_width as _final_scene_stair_half_width
     _FINAL_SCENE_SPEC = configure_launch_args(args, _flag_passed)
 
+# Default-scene (non --final-scene) cinematic recording cameras. Built lazily on
+# first use so the import order (and the final_scene reuse) stays robust. None when
+# --final-scene is active (that path uses _FINAL_SCENE_SPEC instead).
+_DEFAULT_SCENE_CAMERA_SPEC = None
+_default_scene_camera_spec_built = False
+_default_scene_wall_camera_update_warned = False
+
+
+def _get_default_scene_camera_spec():
+    """The default-scene recording-camera bundle (autofit overview + cinematic
+    chase), reusing the final-scene director. None under --final-scene."""
+    global _DEFAULT_SCENE_CAMERA_SPEC, _default_scene_camera_spec_built
+    if args.final_scene:
+        return None
+    if not _default_scene_camera_spec_built:
+        _default_scene_camera_spec_built = True
+        try:
+            from recording_cameras import build_default_camera_spec
+            _DEFAULT_SCENE_CAMERA_SPEC = build_default_camera_spec(
+                overview_mode=args.overview_mode,
+                chase_distance_m=float(args.view_camera_distance),
+                chase_height_m=float(args.view_camera_height),
+                chase_side_m=float(args.view_camera_side_offset),
+            )
+        except Exception as exc:
+            log_event(LOGGER, logging.WARNING, "default_camera_spec_failed",
+                      "Could not build the default-scene cinematic camera bundle; "
+                      "falling back to the legacy static topdown / scene viewport",
+                      error=str(exc))
+            _DEFAULT_SCENE_CAMERA_SPEC = None
+    return _DEFAULT_SCENE_CAMERA_SPEC
+
 
 # --sim2real-validation-cam = the REAL-SIMULATED ENV preset. The sim has exactly
 # two configurations: the default "perfect env" (everything clean/ideal) and this
@@ -1100,6 +1132,28 @@ def add_scene_left_camera(stage, resolution: tuple = (1920, 1080)) -> Optional[C
             )
             return None
 
+    # Default / terrain-bench scenes: auto-drive a code-driven cinematic CHASE for
+    # scene_view.mp4 (no manual GUI-viewport aiming). Falls back to the Isaac scene
+    # Left viewport camera only if creation fails.
+    bundle = _get_default_scene_camera_spec()
+    if bundle is not None:
+        try:
+            from final_scene import create_wall_recording_camera
+            camera_spec = create_wall_recording_camera(
+                stage,
+                "scene_view",
+                spec=bundle,
+                log=lambda level, action, msg, **f: log_event(LOGGER, level, action, msg, **f),
+            )
+            log_event(LOGGER, logging.INFO, "default_scene_view_camera_created",
+                      "Created cinematic chase camera for scene_view.mp4 (auto-driven follow)",
+                      camera_path=camera_spec.prim_path)
+            return Camera(prim_path=camera_spec.prim_path, name=camera_spec.name, resolution=resolution)
+        except Exception as exc:
+            log_event(LOGGER, logging.WARNING, "default_scene_view_camera_failed",
+                      "Could not create the cinematic chase scene_view camera; "
+                      "falling back to the Isaac scene Left viewport", error=str(exc))
+
     path = _find_isaac_scene_left_camera(stage)
     if path is None:
         log_event(LOGGER, logging.WARNING, "scene_left_camera_not_found",
@@ -1172,6 +1226,28 @@ def add_topdown_camera(stage, resolution: tuple = (1920, 1080)) -> Camera:
             log=lambda level, action, msg, **f: log_event(LOGGER, level, action, msg, **f),
         )
         return Camera(prim_path=camera_spec.prim_path, name=camera_spec.name, resolution=resolution)
+
+    # Default / terrain-bench scenes: a dynamic autofit OVERVIEW driven by the
+    # shared cinematic director (keeps robot + patient + stairs framed, never
+    # clips). Falls back to the legacy static top-down only if creation fails.
+    bundle = _get_default_scene_camera_spec()
+    if bundle is not None:
+        try:
+            from final_scene import create_wall_recording_camera
+            camera_spec = create_wall_recording_camera(
+                stage,
+                "topdown",
+                spec=bundle,
+                log=lambda level, action, msg, **f: log_event(LOGGER, level, action, msg, **f),
+            )
+            log_event(LOGGER, logging.INFO, "default_overview_camera_created",
+                      "Created autofit zoom-to-fit overview camera (topdown.mp4 subject framing)",
+                      camera_path=camera_spec.prim_path, overview_mode=args.overview_mode)
+            return Camera(prim_path=camera_spec.prim_path, name=camera_spec.name, resolution=resolution)
+        except Exception as exc:
+            log_event(LOGGER, logging.WARNING, "default_overview_camera_failed",
+                      "Could not create the autofit overview camera; using the legacy static top-down",
+                      error=str(exc))
 
     if not stage.GetPrimAtPath("/World/View").IsValid():
         stage.DefinePrim("/World/View", "Xform")
@@ -1416,18 +1492,26 @@ def _get_person_pose_z(x: float, y: float, *, smooth: bool = True) -> float:
     return person_pose_z(base_z, _FINAL_SCENE_SPEC)
 
 
-# Time constant (s) for easing the VISUAL body height toward the discrete tread.
-# Small => the body steps up crisply per tread; large => it glides. ~0.12 s reads
-# as a person stepping up without the teleport pop the raw discrete height gives.
-_PERSON_VISUAL_Z_TAU = 0.12
+# Time constant (s) for easing the VISUAL body height toward the body reference.
+# Small => the body tracks the steps crisply (feet stay planted); large => it glides
+# but LAGS, and on stairs a lagging body sinks the planted feet INTO the tread after
+# each nosing. 0.05 s keeps the lag (hence the foot dip) tiny while still taking the
+# hard edge off the per-tread rise.
+_PERSON_VISUAL_Z_TAU = 0.05
 
 
 def _person_visual_z(state, x: float, y: float, dt: float) -> float:
-    """Rendered-root Z: the DISCRETE tread top under the body, eased over time.
+    """Rendered-root + gait body reference Z: the DISCRETE tread top, eased over time.
 
-    The patient's collider + skeleton root sit here so the feet land on the steps
-    (the foot-planting gait then references this height per foot). Ground-truth Z is
-    handled separately on the smooth ramp, so this never distorts recorded GT.
+    The body reference must sit at the tread the feet stand on, NOT raised: the asset's
+    legs stand near-straight (hip->ankle reach is ~98% of full leg length), so they have
+    almost no extra reach. Raising the body even half a riser put the treads OUT of reach
+    -> the feet could no longer plant and just HOVERED a few cm above every step while the
+    swing barely lifted (the "no foot ever in the air / mushy float" look). At the tread
+    height the planted foot reaches the step and the swing foot lifts a full ~0.11 m clear,
+    i.e. a real alternating step. The two-legs-up artifact is handled by the short easing
+    tau (it was the easing LAG, not the body height). Per-foot IK still references each
+    foot's own discrete tread. GT Z is on the smooth ramp separately, so GT is unaffected.
     """
     target = _get_person_pose_z(x, y, smooth=False)  # discrete tread top (+ final-scene offset)
     a = 1.0 if dt <= 0.0 else min(1.0, dt / _PERSON_VISUAL_Z_TAU)
@@ -2057,14 +2141,39 @@ def _read_final_scene_robot_pose(stage):
 
 
 def spawn_person(world, x: float = 1.0, y: float = 0.0, patient_physics: bool = False,
-                 character_usd: str = ""):
+                 character_usd: str = "", anim_mode: str = "clip"):
     global _patient_state
     _patient_state = PatientLocomotionState(start_x=x, start_y=y)
+
+    # Log WHERE the patient begins and the full route it will walk, so a run can be
+    # read start-to-finish from the JSONL alone (no screenshot): spawn point, the
+    # ordered waypoints, which waypoint is the stair base, and the first/last targets.
+    _stairs_at_spawn = get_active_stairs()
+    _wps = _patient_state.waypoints
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "patient_route_start",
+        f"Patient route begins at (x={x:.3f}, y={y:.3f}) with {len(_wps)} waypoints; "
+        f"flat walk to the stair base then one waypoint per tread.",
+        start_x=float(x),
+        start_y=float(y),
+        waypoint_count=len(_wps),
+        waypoints=[[round(float(wx), 3), round(float(wy), 3)] for wx, wy in _wps],
+        stair_base_wp_idx=int(_patient_state.stair_base_wp_idx),
+        first_waypoint=[round(float(_wps[0][0]), 3), round(float(_wps[0][1]), 3)],
+        stair_start_x_m=round(float(_stairs_at_spawn.start_x_m), 3),
+        stair_end_x_m=round(float(_stairs_at_spawn.end_x_m), 3),
+        step_count=int(_stairs_at_spawn.step_count),
+        step_height_m=round(float(_stairs_at_spawn.step_height_m), 4),
+        flat_walk_speed_mps=float(PATIENT_WALK_SPEED_FLAT_MPS),
+        stair_walk_speed_mps=float(PATIENT_WALK_SPEED_STAIR_MPS),
+    )
 
     person = spawn_sim_person(
         world, x=x, y=y, logger=LOGGER, stairs_provider=get_active_stairs,
         ground_height_fn=get_terrain_height, patient_physics=patient_physics,
-        character_usd=character_usd or None,
+        character_usd=character_usd or None, anim_mode=anim_mode,
     )
     initial_z = _get_person_pose_z(x, y, smooth=True)
     person.drive_patient(
@@ -2138,6 +2247,69 @@ def update_final_scene_recording_cameras(stage) -> None:
                 logging.WARNING,
                 "final_scene_wall_camera_tracking_failed",
                 "Final-scene wall recording camera tracking failed",
+                error=str(exc),
+            )
+
+
+def _stair_span_subject_points():
+    """World points the autofit overview must always keep in frame: the stair base
+    (front edge, on the ground) and the stair top (rear edge, at the crest), along
+    the centre lane. Read from the active runtime StairSpec so a preset change
+    propagates automatically. Robot + patient are added by the director."""
+    s = _ACTIVE_STAIRS
+    if s is None:
+        return ()
+    try:
+        base_x = float(s.start_x_m)
+        end_x = float(s.end_x_m)
+        top_z = float(s.top_height_m)
+    except Exception:
+        return ()
+    return (
+        (base_x, 0.0, float(get_terrain_height(base_x, 0.0))),
+        (end_x, 0.0, top_z),
+    )
+
+
+def update_default_scene_recording_cameras(stage) -> None:
+    """Per-frame update for the default-scene (non --final-scene) cinematic cameras
+    (autofit overview + chase), mirroring update_final_scene_recording_cameras but
+    feeding the stair span so the overview frames the whole climb."""
+    global _default_scene_wall_camera_update_warned
+    bundle = _get_default_scene_camera_spec()
+    if bundle is None or stage is None:
+        return
+    try:
+        if _patient_state is not None:
+            px = float(_patient_state.x)
+            py = float(_patient_state.y)
+        else:
+            px = float(args.person_x)
+            py = float(args.person_y)
+        pz = float(_get_person_pose_z(px, py, smooth=True))
+        robot_xyz, robot_yaw, _robot_pose_path = _read_final_scene_robot_pose(stage)
+        dt = 1.0 / max(1.0, float(args.physics_hz))
+        from final_scene import update_wall_recording_cameras
+        update_wall_recording_cameras(
+            stage,
+            (px, py, pz),
+            robot_xyz=robot_xyz,
+            robot_yaw=robot_yaw,
+            dt=dt,
+            raycast_fn=_physx_raycast_distance,
+            terrain_height_fn=get_terrain_height,
+            subject_points=_stair_span_subject_points(),
+            spec=bundle,
+            log=lambda level, action, msg, **f: log_event(LOGGER, level, action, msg, **f),
+        )
+    except Exception as exc:
+        if not _default_scene_wall_camera_update_warned:
+            _default_scene_wall_camera_update_warned = True
+            log_event(
+                LOGGER,
+                logging.WARNING,
+                "default_scene_camera_tracking_failed",
+                "Default-scene cinematic recording camera tracking failed",
                 error=str(exc),
             )
 
@@ -2240,11 +2412,22 @@ PERSON_STAIR_SPEED = 0.55  # stairs: matched to the robot's on-stair body speed 
 # at 0.92 m the leg reached the floor dead-straight and the IK clamped it (knee ~1deg).
 PELVIS_STAND_HEIGHT_M = 0.80
 
-# Patient walk speeds (m/s). A NORMAL human walking pace -- not running, not a shuffle.
-# ~1.25 m/s is the textbook average comfortable walking speed; stairs are taken slower.
-# The distance-synced gait phase makes the leg cadence scale with these automatically.
-PATIENT_WALK_SPEED_FLAT_MPS = 1.10
-PATIENT_WALK_SPEED_STAIR_MPS = 0.45
+# Patient walk speeds (m/s). The flat pace is matched to the frozen parkour/blind
+# policy's REAL motion floor (~0.5 m/s) so the dog can actually keep up: at the old
+# textbook 1.10 m/s the patient out-walked the robot's slowest trot from the very
+# first step (observed run_sim_20260622_180224: patient cruised at a measured 1.1 m/s
+# the whole way from spawn x=-3.5 to the stair base x~2.0 while the follower floored
+# at ~0.5), so the gap opened and the follow lock had nothing to hold. Stairs are
+# taken slower still. The distance-synced gait phase scales the leg cadence to these
+# automatically, so a lower speed also slows the visible clip cadence to match.
+PATIENT_WALK_SPEED_FLAT_MPS = 0.50
+# Stairs are taken slowly and carefully. At 0.45 m/s the patient climbed at ~1.48
+# steps/sec (0.68 s/step) -- far too brisk, it "raced" up the flight (run
+# run_sim_20260622_182213). 0.22 m/s gives ~0.72 steps/sec (~1.4 s/step), the
+# measured careful pace of an ambulatory O2-therapy patient, and ~doubles the on-stair
+# time. Safe vs the follow lock: the robot is PhysX-pinned at the stair base (it never
+# climbs -- see project_stair_climb_50pct_limit), so matching its on-stair speed is moot.
+PATIENT_WALK_SPEED_STAIR_MPS = 0.22
 
 
 def _patient_stand_height(person) -> float:
@@ -2304,24 +2487,61 @@ def _patient_body_log(person, ground_under: float) -> dict:
                         out["feet_vs_robot_m"] = round(out["feet_z"] - float(rrng.GetMin()[2]), 3)
     except Exception:
         pass
+    # Per-joint WORLD transforms via UsdSkel, so we can report each FOOT's true world
+    # height AND its clearance over the tread directly beneath it -- the real "is the
+    # foot on the step / floating?" metric. (The bbox feet_z above is only the body's
+    # single lowest point, not per foot.) The SkelCache MUST be Populate()-d with the
+    # SkelRoot before GetSkelQuery returns a valid query; the prior code skipped Populate,
+    # so the query came back empty and NO per-foot data was ever logged. On any failure
+    # we stash the reason in skel_status so a run surfaces WHY instead of dropping silently.
+    skel_status = "ok"
     try:
         import omni.usd
         from pxr import UsdSkel, UsdGeom, Usd
         stage = omni.usd.get_context().get_stage()
         skel_root_path = getattr(person, "_skel_root_path", "") or ""
         root_prim = stage.GetPrimAtPath(skel_root_path) if skel_root_path else None
-        if root_prim and root_prim.IsValid():
+        if not (root_prim and root_prim.IsValid()):
+            skel_status = "no_skel_root"
+        else:
             if _patient_skel_cache is None:
                 _patient_skel_cache = UsdSkel.Cache()
+            try:
+                _patient_skel_cache.Populate(UsdSkel.Root(root_prim), Usd.PrimDefaultPredicate)
+            except Exception:
+                try:
+                    _patient_skel_cache.Populate(UsdSkel.Root(root_prim))  # older USD signature
+                except Exception:
+                    pass
             skel = None
             for p in Usd.PrimRange(root_prim):
                 if p.IsA(UsdSkel.Skeleton):
                     skel = UsdSkel.Skeleton(p)
                     break
-            if skel is not None:
+            if skel is None:
+                skel_status = "no_skeleton"
+            else:
                 q = _patient_skel_cache.GetSkelQuery(skel)
                 xfc = UsdGeom.XformCache(Usd.TimeCode.Default())
-                xforms = q.ComputeJointWorldTransforms(xfc, Usd.TimeCode.Default()) if q else None
+                xforms = None
+                if not q:
+                    skel_status = "no_skel_query"
+                else:
+                    # ComputeJointWorldTransforms signature varies by USD version (the
+                    # 2-arg (xfCache, atRest:bool) rejects a TimeCode -> ArgumentError);
+                    # try the bool form first, then the plain 1-arg. Clear the status on
+                    # success so a first-try failure that the fallback recovers from is
+                    # NOT mislabeled (the per-foot data was valid but read 'compute_err').
+                    _last_err = None
+                    for _args in ((xfc,), (xfc, False)):
+                        try:
+                            xforms = q.ComputeJointWorldTransforms(*_args)
+                            if xforms:
+                                break
+                        except Exception as _e:
+                            _last_err = type(_e).__name__
+                    if not xforms and _last_err:
+                        skel_status = f"compute_err:{_last_err}"
                 joints = skel.GetJointsAttr().Get()
                 if xforms and joints:
                     ci = {}
@@ -2329,22 +2549,109 @@ def _patient_body_log(person, ground_under: float) -> dict:
                         ci[str(j).rsplit("/", 1)[-1].lower()] = xf
                     wanted = {
                         "hip": ("hips", "pelvis", "root"),
-                        "l_foot": ("leftfoot", "l_ankle", "foot_l", "l_foot"),
-                        "r_foot": ("rightfoot", "r_ankle", "foot_r", "r_foot"),
+                        "l_foot": ("l_ankle", "leftfoot", "foot_l", "l_foot"),
+                        "r_foot": ("r_ankle", "rightfoot", "foot_r", "r_foot"),
+                        "l_toe": ("l_ball", "lefttoebase", "l_toe", "ball_l"),
+                        "r_toe": ("r_ball", "righttoebase", "r_toe", "ball_r"),
                         "head": ("head",),
-                        "l_hand": ("lefthand", "l_hand", "hand_l"),
-                        "r_hand": ("righthand", "r_hand", "hand_r"),
                     }
                     for nm, aliases in wanted.items():
                         for a in aliases:
                             xf = ci.get(a)
                             if xf is not None:
                                 t = xf.ExtractTranslation()
-                                out[nm] = [round(float(t[0]), 3), round(float(t[1]), 3), round(float(t[2]), 3)]
+                                pos = [round(float(t[0]), 3), round(float(t[1]), 3), round(float(t[2]), 3)]
+                                out[nm] = pos
+                                # Per-foot height over the DISCRETE tread under THAT foot.
+                                # The ANKLE joint sits a fixed amount above the sole (~0.29 m
+                                # on this mannequin), so raw clearance never reads ~0 even
+                                # when planted. Track a per-foot running MINIMUM (the planted
+                                # / standing height) and report lift ABOVE that, so the log
+                                # reads ~0 = planted, >0 = raised -- the true "foot off the
+                                # step" signal, robust to the ankle-above-sole offset.
+                                if nm in ("l_foot", "r_foot"):
+                                    try:
+                                        terr = float(get_terrain_height(float(t[0]), float(t[1])))
+                                        clr = pos[2] - terr
+                                        out[nm + "_clear"] = round(clr, 3)
+                                        mins = getattr(person, "_foot_clear_min", None)
+                                        if mins is None:
+                                            mins = {}
+                                            person._foot_clear_min = mins
+                                        mins[nm] = min(mins.get(nm, clr), clr)
+                                        out[nm + "_lift"] = round(clr - mins[nm], 3)
+                                    except Exception:
+                                        pass
                                 break
-    except Exception:
-        pass
+                elif skel_status == "ok":
+                    skel_status = "empty_xforms"
+    except Exception as _e:
+        skel_status = f"err:{type(_e).__name__}"
+    out["skel_status"] = skel_status
     return out
+
+
+def _patient_lowest_foot(person):
+    """(lowest animated foot-joint world Z, (x, y)) of the patient, or None.
+
+    Reads the LIVE UsdSkel pose, so -- unlike the bind-pose mesh bbox that ``float_m``
+    uses -- it reflects the actual posed (bent-leg) feet. This is the metric that reveals
+    foot hover and the value the foot-grounding shifts onto the tread.
+    """
+    global _patient_skel_cache
+    try:
+        import omni.usd
+        from pxr import UsdSkel, UsdGeom, Usd
+        stage = omni.usd.get_context().get_stage()
+        srp = getattr(person, "_skel_root_path", "") or ""
+        root = stage.GetPrimAtPath(srp) if srp else None
+        if not (root and root.IsValid()):
+            return None
+        if _patient_skel_cache is None:
+            _patient_skel_cache = UsdSkel.Cache()
+        try:
+            _patient_skel_cache.Populate(UsdSkel.Root(root), Usd.PrimDefaultPredicate)
+        except Exception:
+            try:
+                _patient_skel_cache.Populate(UsdSkel.Root(root))
+            except Exception:
+                return None
+        skel = None
+        for p in Usd.PrimRange(root):
+            if p.IsA(UsdSkel.Skeleton):
+                skel = UsdSkel.Skeleton(p)
+                break
+        if skel is None:
+            return None
+        q = _patient_skel_cache.GetSkelQuery(skel)
+        if not q:
+            return None
+        xfc = UsdGeom.XformCache(Usd.TimeCode.Default())
+        xforms = None
+        for _a in ((xfc,), (xfc, False)):
+            try:
+                xforms = q.ComputeJointWorldTransforms(*_a)
+                if xforms:
+                    break
+            except Exception:
+                pass
+        if not xforms:
+            return None
+        joints = skel.GetJointsAttr().Get()
+        feet = ("l_ball", "lefttoebase", "l_toe", "ball_l", "r_ball", "righttoebase",
+                "r_toe", "ball_r", "l_ankle", "leftfoot", "foot_l", "l_foot",
+                "r_ankle", "rightfoot", "foot_r", "r_foot")
+        best = None
+        for j, xf in zip(joints, xforms):
+            leaf = str(j).rsplit("/", 1)[-1].lower()
+            if leaf in feet:
+                tr = xf.ExtractTranslation()
+                z = float(tr[2])
+                if best is None or z < best[0]:
+                    best = (z, (float(tr[0]), float(tr[1])))
+        return best
+    except Exception:
+        return None
 
 
 def _patient_upright_quat(yaw_rad: float) -> "np.ndarray":
@@ -2367,7 +2674,7 @@ def update_person_patrol(person, dt: float) -> None:
 
     state = _patient_state
     state.elapsed_time += dt
-    
+
     # Active staircase geometry (preset-driven) for all stair-zone checks below.
     _stairs = get_active_stairs()
 
@@ -2398,12 +2705,9 @@ def update_person_patrol(person, dt: float) -> None:
 
     # ------------------ KINEMATIC PATIENT DRIVE ------------------
     # The patient is a pure kinematic UsdSkel character. state.x/y/heading_yaw are the
-    # authoritative pose: they are integrated below from the commanded walk velocity,
-    # and the VISIBLE mannequin root is placed each frame via person.set_visual_pose.
-    # The procedural foot-planting gait (drive_patient) poses the limbs. The old dynamic
-    # MJCF body (velocity-servoed root + pose readback) was REMOVED -- it added no
-    # functional physics (gravity+collision were off) and NaN'd PhysX a few seconds in,
-    # which invalidated the sim view and showed up as run_sim "exit code 137".
+    # authoritative pose: integrated from the commanded walk velocity, and the VISIBLE
+    # mannequin root is placed each frame via person.set_visual_pose. The procedural
+    # foot-planting gait (drive_patient) poses the limbs.
     if person is not None:
         ground_under = 0.0
         if getattr(person, "ground_height_fn", None) is not None:
@@ -2437,9 +2741,6 @@ def update_person_patrol(person, dt: float) -> None:
             if state.current_wp_idx >= len(state.waypoints):
                 state.current_wp_idx = len(state.waypoints) - 1
                 state.at_destination = True
-                # Top-of-stairs touch check: log the patient's feet height vs the top
-                # landing so we can confirm the feet are touching the top step (feet_z
-                # should ~= top_height_m; touch_gap_m ~= 0 means grounded on the landing).
                 _bp = _patient_body_log(person, ground_under)
                 _feet_top = _bp.get("feet_z")
                 log_event(
@@ -2458,13 +2759,13 @@ def update_person_patrol(person, dt: float) -> None:
                     body_parts=_bp,
                 )
 
-        # Stair transition check based on X position
-        if not state.stair_phase_started and state.x >= _stairs.start_x_m - 0.8:
+        # Stair transition: realign the gait phase for a centered footfall on tread 1.
+        if not state.stair_phase_started and state.x >= _stairs.start_x_m:
             state.stair_phase_started = True
             if person is not None:
                 try:
                     step_depth = _stairs.step_depth_m
-                    dist_to_tread1 = 0.8 + 0.5 * step_depth
+                    dist_to_tread1 = 0.5 * step_depth
                     stride_len = 2.0 * step_depth
                     phase_offset = (1.5 - dist_to_tread1 / stride_len) % 1.0
                     person.set_gait_phase(phase_offset)
@@ -2472,16 +2773,14 @@ def update_person_patrol(person, dt: float) -> None:
                         LOGGER,
                         logging.INFO,
                         "patient_stair_phase_started",
-                        f"Patient reached 0.8m before stairs (x={state.x:.3f}); resetting gait phase to {phase_offset:.3f} for centered footfall on tread 1",
+                        f"Patient reached the stair base (x={state.x:.3f}); resetting gait phase to {phase_offset:.3f} for centered footfall on tread 1",
                         person_x=float(state.x),
                         person_y=float(state.y),
                     )
                 except Exception as e:
                     pass
 
-        # Determine patient speed. Slower than a healthy adult -- this is an oxygen-
-        # therapy patient, so a careful, measured gait reads correctly (and gives the
-        # follow controller time to track). Tunable via the constants up top.
+        # Determine patient speed (slow, measured oxygen-therapy gait; slower on steps).
         if not state.stair_phase_started:
             speed = PATIENT_WALK_SPEED_FLAT_MPS
         elif _stairs.start_x_m <= state.x < _stairs.end_x_m:
@@ -2498,9 +2797,6 @@ def update_person_patrol(person, dt: float) -> None:
         vel_y = uy * speed
 
         # ---- KINEMATIC ROOT INTEGRATION + FOOT-PLANTING LIMB GAIT ----
-        # Integrate the root XY from the commanded walk velocity (ramped at start) and
-        # turn the heading toward travel. The foot-planting gait keeps the stance foot
-        # world-fixed, so straight kinematic integration does not skate.
         ramp = min(1.0, max(0.0, state.elapsed_time / 0.5))
         state.x += vel_x * ramp * dt
         state.y += vel_y * ramp * dt
@@ -2509,18 +2805,22 @@ def update_person_patrol(person, dt: float) -> None:
                              math.cos(target_yaw - state.heading_yaw))
         state.heading_yaw += max(-1.2 * dt, min(1.2 * dt, 1.5 * yaw_err))
 
-        # Terrain height at the NEW xy; the root rides standing height + a subtle bob.
+        # Discrete tread height at the NEW xy (for the foot-plant LOGGING below).
         if getattr(person, "ground_height_fn", None) is not None:
             try:
                 ground_under = float(person.ground_height_fn(state.x, state.y))
             except Exception:
                 pass
+        # The rendered root AND the gait body reference both ride the EASED discrete tread
+        # (smooth), NOT the raw discrete height, so the body glides up smoothly while the
+        # per-foot IK still ground-references the DISCRETE tread under each foot.
+        eased_ground = _person_visual_z(state, state.x, state.y, dt)
         bob = 0.03 * math.sin(2.0 * math.pi * 2.0 * (state.gait_phase % 1.0))
-        root_z = ground_under + _patient_stand_height(person) + bob
+        root_z = eased_ground + _patient_stand_height(person) + bob
 
         state.gait_time += dt
-        # Advance the gait phase by distance travelled (commanded speed) -- never
-        # wall-clock -- so the planted stance foot is world-fixed.
+        # Advance the gait phase by distance travelled (never wall-clock) so the planted
+        # stance foot is world-fixed.
         try:
             style = person.anim_controller._sm.state.style
             stride = person.anim_controller._gaits[style].stride_length(
@@ -2529,33 +2829,45 @@ def update_person_patrol(person, dt: float) -> None:
         except Exception:
             state.gait_phase += (speed / 0.6) * dt
 
-        # Place the visible mannequin root, then pose the limbs. Feed the gait the STABLE
-        # standing height (ground + stand), NOT root_z-with-bob: the foot IK places the
-        # feet relative to body_z, and a noisy body_z feeds extreme foot targets back into
-        # the IK. The bob only rides the visible root.
+        # Place the visible mannequin root, then pose the limbs (stable standing height,
+        # not root_z-with-bob: the foot IK places feet relative to body_z).
         person.set_visual_pose(state.x, state.y, root_z, state.heading_yaw)
-        pz_gait = ground_under + _patient_gait_body_z(person)
+        pz_gait = eased_ground + _patient_gait_body_z(person)
         person.drive_patient(
             position=np.array([state.x, state.y, pz_gait]),
             current_time=state.elapsed_time,
         )
+        # ---- FOOT-GROUNDING (fixes the hovering bug) ----
+        # The root is placed at the BIND-POSE standing height, but the ANIMATED pose bends
+        # the legs and lifts the feet above the tread (the bbox-based float_m reads the
+        # bind pose and misses it). Measure the lowest ANIMATED foot joint and shift the
+        # visual root by that gap so the planted foot sits on the real step. Smoothed to
+        # damp the brief stance-swap flicker.
+        hover_gap = None
+        _lf = _patient_lowest_foot(person)
+        if _lf is not None:
+            _foot_z, (_fx, _fy) = _lf
+            hover_gap = _foot_z - float(get_terrain_height(_fx, _fy))
+            _corr = getattr(state, "_foot_ground_corr", 0.0)
+            _corr = _corr + 0.7 * (hover_gap - _corr)
+            state._foot_ground_corr = _corr
+            root_z = root_z - _corr
+            person.set_visual_pose(state.x, state.y, root_z, state.heading_yaw)
         _last_gt_patient_pose = (state.x, state.y, root_z)
-
-        # NOTE: walk_log.csv body-pose validation read the MJCF physics bodies under
-        # /World/PersonPhysics, which no longer exist. Re-pointing it at the UsdSkel
-        # mannequin skeleton is a follow-up; the body logger is skipped for the
-        # kinematic patient.
 
         state.dbg_accum += dt
         if state.dbg_accum >= 0.5:
-            # MEASURED ground speed over the diag window (actual A->B displacement /
-            # time), so we can confirm the real walking pace vs the commanded speed.
+            state.dbg_accum = 0.0
             _prev = getattr(state, "_dbg_prev", None)
             measured = 0.0
             if _prev is not None:
                 _pdt = state.elapsed_time - _prev[2]
                 measured = math.hypot(state.x - _prev[0], state.y - _prev[1]) / max(1e-6, _pdt)
             state._dbg_prev = (state.x, state.y, state.elapsed_time)
+            _ac = getattr(person, "anim_controller", None)
+            _anim_source = getattr(_ac, "_last_anim_source", None) if _ac is not None else None
+            _terr = getattr(getattr(_ac, "_last_terrain", None), "value", None) if _ac is not None else None
+            _phase = round(float(_ac.phase), 3) if _ac is not None else None
             log_event(
                 LOGGER,
                 logging.INFO,
@@ -2569,12 +2881,14 @@ def update_person_patrol(person, dt: float) -> None:
                 dist_to_wp=round(dist, 3),
                 speed=round(speed, 3),
                 measured_speed_mps=round(measured, 3),
-                gait_body_z=round(pz_gait, 3),
+                anim_source=_anim_source,
+                terrain=_terr,
+                gait_phase=_phase,
+                hover_gap_m=(round(float(hover_gap), 3) if hover_gap is not None else None),
+                foot_ground_corr_m=round(float(getattr(state, "_foot_ground_corr", 0.0)), 3),
                 body_parts=_patient_body_log(person, ground_under),
             )
-            state.dbg_accum = 0.0
         return
-
 
 
 # ---------------------------------------------------------------------------
@@ -2694,9 +3008,16 @@ class FramePublisher:
     )
     
     def __init__(self, host: str, port: int) -> None:
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 22)
-        self._dest = (host, port)
+        # Frames cross host->container over TCP (length-prefixed). Docker Desktop's
+        # published-port UDP forwarding drops 100% of host->container UDP on some engine
+        # versions, which left the container at "waiting for data"; TCP forwarding is
+        # reliable. SimCameraCapture is the TCP SERVER; Isaac is the client and connects
+        # lazily (and reconnects) so boot ordering with the container does not matter.
+        self._host = str(host)
+        self._port = int(port)
+        self._dest = (self._host, self._port)
+        self._sock = None
+        self._connected = False
         self._seq  = 0
         self._warning_times = {}
         self._suppressed_warnings = {}
@@ -2714,6 +3035,39 @@ class FramePublisher:
             depth_height=int(first_depth_h),
             jpeg_quality=int(first_quality),
         )
+
+    def _ensure_connected(self) -> bool:
+        """Lazily (re)connect the TCP frame link to SimCameraCapture.
+
+        Isaac is the client; the controller container is the server (it publishes the
+        frame port). Returns True when a live connection is available. Never raises --
+        a failed connect just returns False and is retried on the next frame, so Isaac
+        can start sending before the container is listening.
+        """
+        if self._connected and self._sock is not None:
+            return True
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 22)
+            s.settimeout(1.0)
+            s.connect(self._dest)
+            s.settimeout(2.0)
+            self._sock = s
+            self._connected = True
+            log_event(
+                LOGGER,
+                logging.INFO,
+                "frame_link_connected",
+                "Camera frame TCP link connected to SimCameraCapture",
+                dest_host=self._host,
+                dest_port=self._port,
+            )
+            return True
+        except Exception:
+            self._sock = None
+            self._connected = False
+            return False
 
     def _warn_rate_limited(self, event: str, message: str, *, interval_sec: float = 5.0, **fields) -> None:
         now = time.monotonic()
@@ -2815,41 +3169,59 @@ class FramePublisher:
                 **payload_meta,
             )
             return
+        import struct
+        if not self._ensure_connected():
+            # Container TCP server not listening yet (or link is down). Drop this frame
+            # and retry the connect on the next one. Rate-limited so the brief window
+            # before the controller container starts listening does not spam the log.
+            self._warn_rate_limited(
+                "frame_not_connected",
+                "Camera frame TCP link not established yet; frame dropped",
+                seq=int(seq),
+                dest_host=self._host,
+                dest_port=self._port,
+            )
+            return
         try:
-            # CHUNKED UDP send: split the payload into sub-MTU datagrams so it survives
-            # Docker Desktop's UDP port-forward, which silently drops the large (~65 KB,
-            # IP-fragmented) single datagram the old protocol sent (the container then sits
-            # at "waiting for data"). Each chunk carries a 12-byte header
-            # [magic, seq, idx, count]; SimCameraCapture reassembles by seq. A frame that
-            # fits in one chunk is still chunked (count=1) -- uniform path.
-            import struct
-            payload_b = payload
-            n = len(payload_b)
-            cps = self.CHUNK_PAYLOAD_BYTES
-            count = max(1, (n + cps - 1) // cps)
-            for idx in range(count):
-                hdr = struct.pack("!4sIHH", self.CHUNK_MAGIC, seq & 0xFFFFFFFF, idx, count)
-                self._sock.sendto(hdr + payload_b[idx * cps:(idx + 1) * cps], self._dest)
+            # Length-prefixed TCP frame: 4-byte big-endian payload length + payload.
+            # TCP (vs the old chunked UDP) survives Docker Desktop's port-forward, which
+            # drops host->container UDP on some engine versions. SimCameraCapture is the
+            # server and reassembles by reading the length then that many bytes.
+            n = len(payload)
+            self._sock.sendall(struct.pack("!I", n) + payload)
             log_event(
                 LOGGER,
                 logging.DEBUG,
                 "frame_sent",
-                "Camera frame sent to SimCameraCapture (chunked)",
+                "Camera frame sent to SimCameraCapture (tcp)",
                 seq=int(seq),
                 payload_bytes=int(n),
-                chunks=int(count),
                 **payload_meta,
             )
         except Exception as exc:
+            # Connection broke mid-stream -- tear it down so the next frame reconnects.
+            self._connected = False
+            try:
+                if self._sock is not None:
+                    self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
             self._warn_rate_limited(
                 "frame_send_error",
-                "Camera frame send failed",
+                "Camera frame send failed (tcp); will reconnect",
                 seq=int(seq),
                 error=str(exc),
             )
-            
+
     def close(self) -> None:
-        self._sock.close()
+        try:
+            if self._sock is not None:
+                self._sock.close()
+        except Exception:
+            pass
+        self._sock = None
+        self._connected = False
 
 
 class Ros2BridgeCloudSender:
@@ -4505,14 +4877,17 @@ def main() -> None:
         # FramePublisher, telemetry, recording -- works unchanged; it is simply ignored.
         _wp_person_x, _wp_person_y = -8.0, 8.0
         person = spawn_person(world, x=_wp_person_x, y=_wp_person_y, patient_physics=getattr(args, "patient_physics", False),
-                              character_usd=getattr(args, "patient_character_usd", ""))
+                              character_usd=getattr(args, "patient_character_usd", ""),
+                              anim_mode=getattr(args, "patient_anim_mode", "clip"))
         log_event(LOGGER, logging.INFO, "person_spawn_offlane",
                   "Stair waypoint test: person parked off-lane (no follow)",
                   person_x=_wp_person_x, person_y=_wp_person_y)
     else:
         person = spawn_person(world, x=args.person_x, y=args.person_y, patient_physics=getattr(args, "patient_physics", False),
-                              character_usd=getattr(args, "patient_character_usd", ""))
+                              character_usd=getattr(args, "patient_character_usd", ""),
+                              anim_mode=getattr(args, "patient_anim_mode", "clip"))
     update_final_scene_recording_cameras(stage)
+    update_default_scene_recording_cameras(stage)
 
     distractor_prim = None
 
@@ -4794,14 +5169,32 @@ def main() -> None:
     record_every = int(args.render_every)
     record_fps = args.physics_hz / max(1, record_every)
 
+    # Recording encoder: prefer an HD ffmpeg H.264 pipe (up to --record-resolution),
+    # fall back to the bundled mp4v (~768x432 cap). Resolved once and shared by all
+    # recording cameras via RecordingWriter.
+    from recording_writer import RecordingWriter, resolve_ffmpeg, parse_resolution
+    _record_res = parse_resolution(args.record_resolution)
+    _reclog = lambda level, action, msg, **f: log_event(LOGGER, level, action, msg, **f)
+    _ffmpeg_exe = resolve_ffmpeg() if args.record_encoder in ("auto", "ffmpeg") else None
+    log_event(LOGGER, logging.INFO, "recording_encoder_selected",
+              "Recording video encoder resolved",
+              encoder=args.record_encoder,
+              ffmpeg_available=bool(_ffmpeg_exe),
+              ffmpeg_path=(_ffmpeg_exe or ""),
+              target_resolution=f"{_record_res[0]}x{_record_res[1]}",
+              mp4v_fallback_cap="768x432")
+
     # Top-down video writer — starts when scene_motion_released becomes True
     topdown_video_path = os.path.join(_log_bucket(args.log_dir, "videos"), "topdown.mp4") if args.log_dir else ""
-    topdown_video_writer = None
+    topdown_recorder = None
     topdown_recording_released = False
     if topdown_video_path:
         topdown_video_dir = os.path.dirname(topdown_video_path)
         if topdown_video_dir:
             os.makedirs(topdown_video_dir, exist_ok=True)
+        topdown_recorder = RecordingWriter(topdown_video_path, record_fps,
+                                           encoder=args.record_encoder, max_resolution=_record_res,
+                                           role="topdown", log=_reclog)
 
     # External scene view (Isaac scene Left camera) -> scene_view.mp4. run_sim points
     # --raw-video-path at the videos dir so it sits beside opencv_preview.mp4
@@ -4809,21 +5202,27 @@ def main() -> None:
     # top-down recorder once scene motion is released.
     raw_video_path = args.raw_video_path or (
         os.path.join(_log_bucket(args.log_dir, "videos"), "scene_view.mp4") if args.log_dir else "")
-    raw_video_writer = None
+    raw_recorder = None
     if scene_left_camera is not None and raw_video_path:
         raw_video_dir = os.path.dirname(raw_video_path)
         if raw_video_dir:
             os.makedirs(raw_video_dir, exist_ok=True)
+        raw_recorder = RecordingWriter(raw_video_path, record_fps,
+                                       encoder=args.record_encoder, max_resolution=_record_res,
+                                       role="scene_view", log=_reclog)
     else:
         raw_video_path = ""
 
     # Follow-view video (headless only): records the robot-tracking chase camera to follow_view.mp4
     follow_view_video_path = os.path.join(_log_bucket(args.log_dir, "videos"), "follow_view.mp4") if (follow_view_camera is not None and args.log_dir) else ""
-    follow_view_video_writer = None
+    follow_view_recorder = None
     if follow_view_video_path:
         fv_video_dir = os.path.dirname(follow_view_video_path)
         if fv_video_dir:
             os.makedirs(fv_video_dir, exist_ok=True)
+        follow_view_recorder = RecordingWriter(follow_view_video_path, record_fps,
+                                               encoder=args.record_encoder, max_resolution=_record_res,
+                                               role="follow_view", log=_reclog)
 
     # Simulated Hesai XT16 LiDAR: real PhysX raycasts against the scene geometry,
     # rendered to log_dir/lidar_preview.mp4 (BEV scatter + range image). Scanned at
@@ -4852,8 +5251,9 @@ def main() -> None:
               perception_fps=round(float(_render_rate_hz), 2),
               record_every=int(record_every),
               render_every=int(args.render_every),
-              recording_resolution="768x432 (16:9 source downscaled to fit the mpeg4 encoder)",
-              recording_max_pixels=int(_RECORD_MAX_PIXELS))
+              recording_resolution=(f"up to {_record_res[0]}x{_record_res[1]} (ffmpeg H.264)"
+                                    if _ffmpeg_exe else "768x432 (mp4v fallback)"),
+              mp4v_fallback_max_pixels=int(_RECORD_MAX_PIXELS))
     lidar_scan_stride = max(1, int(round(_render_rate_hz / max(0.1, args.lidar_hz))))
     if lidar_scan_enabled:
         log_event(LOGGER, logging.INFO, "lidar_preview_configured",
@@ -4904,9 +5304,7 @@ def main() -> None:
     _topdown_starved_logged = False
     _raw_starved_logged = False
     _follow_view_starved_logged = False
-    _topdown_codec_failed_logged = False
-    _raw_codec_failed_logged = False
-    _follow_view_codec_failed_logged = False
+    # (codec-failure logging now lives inside RecordingWriter)
     DEMO_SIM_TIMEOUT_SEC = 120.0
     ROBOT_STAIR_VISIBLE_HOLD_SEC = 8.0
     # Wall-clock anchor for the hard episode cap below. Real (monotonic) time, set at loop
@@ -5050,28 +5448,33 @@ def main() -> None:
                         _w, _xq, _yq, _zq = (float(v) for v in _q)
                         _yaw = math.atan2(2.0 * (_w * _zq + _xq * _yq),
                                           1.0 - 2.0 * (_yq * _yq + _zq * _zq))
-                        # Steer to face +X AND (waypoint test) re-center to the y=0 staircase
-                        # centreline. A yaw-ONLY hold cannot catch a lateral drift, so a small
-                        # sideways slip crabs the dog off the stair edge and it rolls (run ..022123:
-                        # y 0.04->0.63 m while yaw grew, rolled to -27 deg). The lateral term pulls
-                        # it back toward centre, matching the parkour stair self-test steering.
-                        _ylat = float(_pp[1]) if args.stair_waypoint_test else 0.0
-                        wz = float(np.clip(-(2.0 * _yaw + 1.0 * _ylat), -0.8, 0.8))
-                        # Waypoint test: DECELERATE to the waypoint, then STAND once there. The old
-                        # constant vx walked the dog through the waypoint and off the far landing
-                        # edge (run ..092048 flipped; run ..093451 reached the waypoint UPRIGHT but
-                        # PGTT kept trotting ~0.4 m/s even on a zero vx command and walked off the
-                        # 1 m landing). Inside the reach radius we force a full STAND (vx=wz=0,
-                        # hold=True) so the dog settles ON the landing at the waypoint instead of
-                        # drifting off it. Applies to run_stair_sweep.ps1 too (same test path).
                         if args.stair_waypoint_test:
+                            # GO-TO-GOAL steering toward the waypoint (drives BOTH heading->target
+                            # AND y->centreline). The old "-(2*yaw + 1*y)" face-+x/null-y law has a
+                            # stable OFF-AXIS equilibrium at 2*yaw = -y: a persistent lateral gait
+                            # drift settled the dog crabbing ~70 deg off-axis, arcing it out to
+                            # y=-2.3 and SPIRALLING past the waypoint (run ..141746 -- "went in a
+                            # circle"). Aiming at the target has its ONLY equilibrium AT the target,
+                            # so a lateral disturbance is actively corrected, not accommodated. The
+                            # forward speed decelerates with the TRUE remaining distance (hypot), and
+                            # inside the reach radius the dog STANDS (vx=wz=0, hold) so it settles ON
+                            # the landing instead of trotting off it. Applies to run_stair_sweep.ps1.
                             _wp_dx = float(args.stair_waypoint_x) - float(_pp[0])
                             _wp_dy = float(args.stair_waypoint_y) - float(_pp[1])
-                            if math.hypot(_wp_dx, _wp_dy) <= float(args.stair_waypoint_reach_radius):
+                            _wp_dist = math.hypot(_wp_dx, _wp_dy)
+                            if _wp_dist <= float(args.stair_waypoint_reach_radius):
                                 vx, wz, hold = 0.0, 0.0, True
                             else:
-                                vx = float(np.clip(float(args.stair_waypoint_approach_kp) * _wp_dx,
+                                _desired_yaw = math.atan2(_wp_dy, _wp_dx)
+                                _yaw_err_wp = math.atan2(math.sin(_desired_yaw - _yaw),
+                                                         math.cos(_desired_yaw - _yaw))
+                                wz = float(np.clip(float(args.stair_waypoint_heading_kp) * _yaw_err_wp,
+                                                   -0.8, 0.8))
+                                vx = float(np.clip(float(args.stair_waypoint_approach_kp) * _wp_dist,
                                                    0.0, float(args.self_test_vx)))
+                        else:
+                            # Non-waypoint self-test: simple face-+X heading hold (no y correction).
+                            wz = float(np.clip(-2.0 * _yaw, -0.8, 0.8))
                     except Exception:
                         wz = 0.0
                 # Parkour STAIR self-test: the faithful isolated "can the bare vision policy climb
@@ -5314,6 +5717,7 @@ def main() -> None:
                     current_time=0.0,
                 )
             update_final_scene_recording_cameras(stage)
+            update_default_scene_recording_cameras(stage)
 
             # Track positions over time if motion has started
             if scene_motion_allowed:
@@ -5836,12 +6240,14 @@ def main() -> None:
                         # Depth noise is applied inside publisher.send after downsampling
                         publisher.send(rgb_data, depth_mm, vx, vy, wz, gt_patient, gt_distractor,
                                        stair_demo, swing_legs, lidar_profile_latest)
-                        # Frame-transport diagnostic: count actual UDP sends so we can tell
-                        # "Isaac never sent" (render starved) from "Docker dropped the UDP".
+                        # Frame-transport diagnostic: count actual TCP sends and report the
+                        # link state so we can tell "Isaac never sent" (render starved) from
+                        # "link not connected" (container TCP server not up / forwarding down).
                         main._frame_sent = getattr(main, "_frame_sent", 0) + 1
                         if main._frame_sent in (1, 5, 25, 100, 300):
                             log_event(LOGGER, logging.INFO, "frame_sent_diag",
-                                      "FramePublisher UDP send count", sent=int(main._frame_sent),
+                                      "FramePublisher TCP send count", sent=int(main._frame_sent),
+                                      connected=bool(getattr(publisher, "_connected", False)),
                                       dest_host=str(args.frame_host), dest_port=int(args.frame_port))
                 except Exception as exc:
                     log_event(
@@ -5857,47 +6263,20 @@ def main() -> None:
             # render_now already drew a fresh RTX frame this step (the record cadence is
             # folded into the render gate), so get_rgb() returns a current image.
             if _record_tick:
-                # Top-down overhead recording — starts when scene motion is released
-                if topdown_camera is not None and topdown_video_path:
+                # Top-down overhead recording — starts when scene motion is released.
+                # RecordingWriter lazily opens an HD ffmpeg pipe (or mp4v fallback) on
+                # the first frame and resizes per backend.
+                if topdown_camera is not None and topdown_recorder is not None:
                     try:
                         import cv2 as _cv2
                         td_rgb = topdown_camera.get_rgb()
-                        if td_rgb is not None and getattr(td_rgb, "size", 1) != 0:
-                            td_bgr = _cv2.cvtColor(td_rgb, _cv2.COLOR_RGB2BGR)
-                            # Shrink so the mpeg4 writer can open (mp4v -22 at 1080p)
-                            td_bgr = _downscale_for_recording(td_bgr)
-                            if topdown_video_writer is None:
-                                td_h, td_w = td_bgr.shape[:2]
-                                import platform as _td_plat
-                                _td_codecs = ("avc1", "mp4v") if _td_plat.system() == "Windows" else ("mp4v",)
-                                _tdvw = None
-                                for _codec in _td_codecs:
-                                    _fourcc = _cv2.VideoWriter_fourcc(*_codec)
-                                    _tdvw = _cv2.VideoWriter(
-                                        topdown_video_path, _fourcc,
-                                        max(1.0, record_fps),
-                                        (int(td_w), int(td_h)),
-                                    )
-                                    if _tdvw.isOpened():
-                                        break
-                                    _tdvw.release(); _tdvw = None
-                                if _tdvw is not None and _tdvw.isOpened():
-                                    topdown_video_writer = _tdvw
-                                    log_event(LOGGER, logging.INFO, "topdown_video_started",
-                                              "Top-down video recording started",
-                                              path=topdown_video_path, fps=round(float(record_fps), 2),
-                                              resolution=f"{int(td_w)}x{int(td_h)}")
-                                elif not _topdown_codec_failed_logged:
-                                    _topdown_codec_failed_logged = True
-                                    log_event(LOGGER, logging.WARNING, "topdown_recording_codec_failed",
-                                              "No codec could open the top-down VideoWriter; topdown.mp4 will be missing. "
-                                              "See isaac_raw.log for the FFMPEG/codec error.",
-                                              codecs_tried=list(_td_codecs),
-                                              resolution=f"{int(td_w)}x{int(td_h)}",
-                                              fps=round(float(record_fps), 2))
-                            if topdown_video_writer is not None:
-                                topdown_video_writer.write(td_bgr)
-                        elif topdown_video_writer is None:
+                        td_arr = np.asarray(td_rgb) if td_rgb is not None else None
+                        if td_arr is not None and td_arr.size != 0:
+                            if td_arr.ndim == 3 and td_arr.shape[2] == 4:
+                                td_arr = td_arr[:, :, :3]
+                            td_bgr = _cv2.cvtColor(td_arr.astype(np.uint8), _cv2.COLOR_RGB2BGR)
+                            topdown_recorder.write(td_bgr)
+                        elif not topdown_recorder.started:
                             # No frame yet and recording never started: the render product
                             # is being starved. The first few empties are warmup, so warn
                             # once past that so a silently-empty topdown.mp4 is visible mid-run.
@@ -5916,8 +6295,8 @@ def main() -> None:
                                       "Top-down recording capture raised; topdown.mp4 may be empty",
                                       error=str(_td_exc))
 
-                # External scene_view recording (Isaac scene Left camera) -> scene_view.mp4
-                if scene_left_camera is not None and raw_video_path:
+                # External scene_view recording (cinematic chase / Isaac scene Left) -> scene_view.mp4
+                if scene_left_camera is not None and raw_recorder is not None:
                     try:
                         import cv2 as _cv2_raw
                         sl_rgb = scene_left_camera.get_rgb()
@@ -5926,40 +6305,8 @@ def main() -> None:
                             if sl_arr.ndim == 3 and sl_arr.shape[2] == 4:
                                 sl_arr = sl_arr[:, :, :3]
                             sl_bgr = _cv2_raw.cvtColor(sl_arr.astype(np.uint8), _cv2_raw.COLOR_RGB2BGR)
-                            # Shrink so the mpeg4 writer can open (mp4v -22 at 1080p)
-                            sl_bgr = _downscale_for_recording(sl_bgr)
-                            if raw_video_writer is None:
-                                sl_h, sl_w = sl_bgr.shape[:2]
-                                import platform as _raw_plat
-                                _raw_codecs = ("avc1", "mp4v") if _raw_plat.system() == "Windows" else ("mp4v",)
-                                _rvw = None
-                                for _codec in _raw_codecs:
-                                    _rvw = _cv2_raw.VideoWriter(
-                                        raw_video_path,
-                                        _cv2_raw.VideoWriter_fourcc(*_codec),
-                                        max(1.0, record_fps),
-                                        (int(sl_w), int(sl_h)),
-                                    )
-                                    if _rvw.isOpened():
-                                        break
-                                    _rvw.release(); _rvw = None
-                                if _rvw is not None and _rvw.isOpened():
-                                    raw_video_writer = _rvw
-                                    log_event(LOGGER, logging.INFO, "raw_video_started",
-                                              "External scene_view (Isaac scene Left) recording started",
-                                              path=raw_video_path, fps=round(float(record_fps), 2),
-                                              resolution=f"{int(sl_w)}x{int(sl_h)}")
-                                elif not _raw_codec_failed_logged:
-                                    _raw_codec_failed_logged = True
-                                    log_event(LOGGER, logging.WARNING, "scene_view_recording_codec_failed",
-                                              "No codec could open the scene_view VideoWriter; scene_view.mp4 will be missing. "
-                                              "See isaac_raw.log for the FFMPEG/codec error.",
-                                              codecs_tried=list(_raw_codecs),
-                                              resolution=f"{int(sl_w)}x{int(sl_h)}",
-                                              fps=round(float(record_fps), 2))
-                            if raw_video_writer is not None:
-                                raw_video_writer.write(sl_bgr)
-                        elif raw_video_writer is None:
+                            raw_recorder.write(sl_bgr)
+                        elif not raw_recorder.started:
                             # No frame yet and recording never started: the render product
                             # is being starved. Warn once past warmup so a silently-empty
                             # scene_view.mp4 is visible mid-run.
@@ -5979,7 +6326,7 @@ def main() -> None:
                                       error=str(_raw_exc))
 
                 # Follow-view chase camera recording -> follow_view.mp4 (headless mode)
-                if follow_view_camera is not None and follow_view_video_path:
+                if follow_view_camera is not None and follow_view_recorder is not None:
                     try:
                         import cv2 as _cv2_fv
                         fv_rgb = follow_view_camera.get_rgb()
@@ -5988,38 +6335,8 @@ def main() -> None:
                             if fv_arr.ndim == 3 and fv_arr.shape[2] == 4:
                                 fv_arr = fv_arr[:, :, :3]
                             fv_bgr = _cv2_fv.cvtColor(fv_arr.astype(np.uint8), _cv2_fv.COLOR_RGB2BGR)
-                            fv_bgr = _downscale_for_recording(fv_bgr)
-                            if follow_view_video_writer is None:
-                                fv_h, fv_w = fv_bgr.shape[:2]
-                                import platform as _fv_plat
-                                _fv_codecs = ("avc1", "mp4v") if _fv_plat.system() == "Windows" else ("mp4v",)
-                                _fvvw = None
-                                for _codec in _fv_codecs:
-                                    _fvvw = _cv2_fv.VideoWriter(
-                                        follow_view_video_path,
-                                        _cv2_fv.VideoWriter_fourcc(*_codec),
-                                        max(1.0, record_fps),
-                                        (int(fv_w), int(fv_h)),
-                                    )
-                                    if _fvvw.isOpened():
-                                        break
-                                    _fvvw.release(); _fvvw = None
-                                if _fvvw is not None and _fvvw.isOpened():
-                                    follow_view_video_writer = _fvvw
-                                    log_event(LOGGER, logging.INFO, "follow_view_video_started",
-                                              "Follow-view chase camera recording started",
-                                              path=follow_view_video_path, fps=round(float(record_fps), 2),
-                                              resolution=f"{int(fv_w)}x{int(fv_h)}")
-                                elif not _follow_view_codec_failed_logged:
-                                    _follow_view_codec_failed_logged = True
-                                    log_event(LOGGER, logging.WARNING, "follow_view_recording_codec_failed",
-                                              "No codec could open the follow_view VideoWriter; follow_view.mp4 will be missing.",
-                                              codecs_tried=list(_fv_codecs),
-                                              resolution=f"{int(fv_w)}x{int(fv_h)}",
-                                              fps=round(float(record_fps), 2))
-                            if follow_view_video_writer is not None:
-                                follow_view_video_writer.write(fv_bgr)
-                        elif follow_view_video_writer is None:
+                            follow_view_recorder.write(fv_bgr)
+                        elif not follow_view_recorder.started:
                             _follow_view_empty_record_ticks += 1
                             if not _follow_view_starved_logged and _follow_view_empty_record_ticks == 30:
                                 _follow_view_starved_logged = True
@@ -6055,11 +6372,11 @@ def main() -> None:
         if not args.warm_isaac:
             _running = False
             publisher.close()
-        if topdown_video_writer is not None:
+        if topdown_recorder is not None and topdown_recorder.started:
             try:
-                topdown_video_writer.release()
+                topdown_recorder.release()
                 log_event(LOGGER, logging.INFO, "topdown_video_saved", "Top-down video recording finalized",
-                          path=topdown_video_path)
+                          path=topdown_video_path, backend=topdown_recorder.backend, frames=int(topdown_recorder.frames))
             except Exception:
                 pass
         elif topdown_video_path and _topdown_empty_record_ticks > 0:
@@ -6074,11 +6391,11 @@ def main() -> None:
                           path=lidar_video_path)
             except Exception:
                 pass
-        if raw_video_writer is not None:
+        if raw_recorder is not None and raw_recorder.started:
             try:
-                raw_video_writer.release()
-                log_event(LOGGER, logging.INFO, "raw_video_saved", "External scene_view (Isaac scene Left) recording finalized",
-                          path=raw_video_path)
+                raw_recorder.release()
+                log_event(LOGGER, logging.INFO, "raw_video_saved", "External scene_view recording finalized",
+                          path=raw_video_path, backend=raw_recorder.backend, frames=int(raw_recorder.frames))
             except Exception:
                 pass
         elif raw_video_path and _raw_empty_record_ticks > 0:
@@ -6086,11 +6403,11 @@ def main() -> None:
                       "scene_view.mp4 was never recorded: the scene_view render product returned no frame on every record tick",
                       empty_record_ticks=int(_raw_empty_record_ticks),
                       locomotion_mode="parkour")
-        if follow_view_video_writer is not None:
+        if follow_view_recorder is not None and follow_view_recorder.started:
             try:
-                follow_view_video_writer.release()
+                follow_view_recorder.release()
                 log_event(LOGGER, logging.INFO, "follow_view_video_saved", "Follow-view chase camera recording finalized",
-                          path=follow_view_video_path)
+                          path=follow_view_video_path, backend=follow_view_recorder.backend, frames=int(follow_view_recorder.frames))
             except Exception:
                 pass
         elif follow_view_video_path and _follow_view_empty_record_ticks > 0:

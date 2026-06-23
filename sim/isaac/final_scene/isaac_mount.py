@@ -192,6 +192,9 @@ class _CameraState:
     update_count: int = 0
     logged_start: bool = False
     last_blocked: Optional[bool] = None
+    # autofit "fixed" mode: latched eye/target so the wide shot never moves.
+    latched_eye: Optional[Vec3] = None
+    latched_target: Optional[Vec3] = None
 
 
 class CinematicDirector:
@@ -211,6 +214,7 @@ class CinematicDirector:
         dt: float,
         raycast_fn=None,
         terrain_height_fn=None,
+        subject_points=None,
         log: Optional[LogFn] = None,
     ) -> None:
         logf = log or _default_log
@@ -229,6 +233,7 @@ class CinematicDirector:
                 raycast_fn,
                 terrain_height_fn,
                 logf,
+                subject_points,
             )
 
     def _state_for(self, camera: WallCameraSpec) -> _CameraState:
@@ -455,6 +460,96 @@ class CinematicDirector:
                 candidate_index=int(selected_eye_index),
             )
 
+    # ---- autofit (zoom-to-fit overview) ----------------------------------
+    def _autofit_points(self, robot: Vec3, patient, terrain_z: float, subject_points) -> List[Vec3]:
+        """Subjects the overview must keep in frame: the robot torso, the patient,
+        and any extra world points (the caller passes the stair base + top)."""
+        pts: List[Vec3] = [(
+            float(robot[0]),
+            float(robot[1]),
+            max(float(robot[2]), float(terrain_z) + _ROBOT_TORSO_MIN_HEIGHT_M),
+        )]
+        if patient is not None:
+            try:
+                pts.append(_as_vec3(patient))
+            except Exception:
+                pass
+        if subject_points:
+            for p in subject_points:
+                try:
+                    pts.append(_as_vec3(p))
+                except Exception:
+                    continue
+        return pts
+
+    @staticmethod
+    def _bounding_sphere(pts: List[Vec3]) -> Tuple[Vec3, float]:
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        zs = [p[2] for p in pts]
+        lo = (min(xs), min(ys), min(zs))
+        hi = (max(xs), max(ys), max(zs))
+        center = (0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2]))
+        radius = 0.5 * _length(_sub(hi, lo))
+        return center, radius
+
+    def _autofit_solve(self, camera: WallCameraSpec, pts: List[Vec3]) -> Tuple[Vec3, Vec3, float, float]:
+        """Fixed lens on a fixed 3/4 vantage; solve the dolly DISTANCE so the
+        subject bounding sphere fits within the (narrower) vertical FOV with
+        `fit_margin` padding -> guaranteed no clipping, as tight as the clamp
+        allows. Returns (eye, target=bbox centre, focal_mm, distance)."""
+        center, radius = self._bounding_sphere(pts)
+        radius = max(0.5, radius * float(camera.fit_margin))
+        focal = float(camera.focal_length_mm)
+        # Vertical aperture is the limiting (narrower) FOV axis for a 16:9 frame;
+        # fitting the sphere there guarantees it also fits the wider horizontal FOV.
+        fov_v = 2.0 * math.atan(float(camera.vertical_aperture_mm) / (2.0 * max(1.0e-3, focal)))
+        sin_half = max(1.0e-3, math.sin(0.5 * fov_v))
+        dist = _clamp(radius / sin_half, camera.autofit_min_distance_m, camera.autofit_max_distance_m)
+        az = math.radians(float(camera.eye_azimuth_deg))
+        el = math.radians(float(camera.eye_elevation_deg))
+        cos_el = math.cos(el)
+        direction = (cos_el * math.cos(az), cos_el * math.sin(az), math.sin(el))
+        eye = _add(center, _scale(direction, dist))
+        return eye, center, focal, dist
+
+    def _update_autofit(
+        self,
+        stage,
+        camera: WallCameraSpec,
+        state: _CameraState,
+        robot: Vec3,
+        patient,
+        terrain_z: float,
+        dt: float,
+        subject_points,
+        logf: LogFn,
+    ) -> None:
+        pts = self._autofit_points(robot, patient, terrain_z, subject_points)
+        desired_eye, desired_target, focal, dist = self._autofit_solve(camera, pts)
+        if camera.autofit_static and state.latched_eye is not None:
+            desired_eye = state.latched_eye
+            desired_target = state.latched_target
+        state.eye = _damp(state.eye, desired_eye, camera.damping_tau_s, dt)
+        state.target = _damp(state.target, desired_target, camera.damping_tau_s, dt)
+        state.focal_mm = focal
+        state.update_count += 1
+        # Fixed mode: latch the first settled frame so the wide shot never moves.
+        if camera.autofit_static and state.latched_eye is None and state.update_count >= 3:
+            state.latched_eye = state.eye
+            state.latched_target = state.target
+        self._apply(stage, camera, state.eye, state.target, state.focal_mm)
+        self._log_camera_state(
+            camera,
+            state,
+            logf,
+            blocked=False,
+            hit_dist=None,
+            target_dist=dist,
+            selected_eye_index=0,
+            desired_focal=focal,
+        )
+
     def _update_camera(
         self,
         stage,
@@ -466,9 +561,13 @@ class CinematicDirector:
         raycast_fn,
         terrain_height_fn,
         logf: LogFn,
+        subject_points=None,
     ) -> None:
         state = self._state_for(camera)
         terrain_z = self._terrain_z(robot, terrain_height_fn)
+        if camera.mode == "autofit":
+            self._update_autofit(stage, camera, state, robot, patient, terrain_z, dt, subject_points, logf)
+            return
         subject = self._subject_point(camera, robot, terrain_z)
         target = self._aim_with_lookahead(camera, state, subject, dt)
 
@@ -549,7 +648,10 @@ def create_wall_recording_camera(
         Gf.Vec2f(float(camera.clipping_range_m[0]), float(camera.clipping_range_m[1]))
     )
     _set_camera_look_at(stage, camera.prim_path, camera.eye_m, camera.initial_target_m)
-    if camera.mode != "chase":
+    # Only the static fixed-aim cameras get a visible wall-mount cube. Chase and
+    # autofit cameras move every frame, so a cube pinned at the spec's static
+    # eye_m would float in the shot.
+    if camera.mode == "fixed_aim":
         _ensure_wall_mount_visual(stage, camera)
     logf(
         logging.INFO,
@@ -577,10 +679,17 @@ def update_wall_recording_cameras(
     dt: float = 1.0 / 60.0,
     raycast_fn=None,
     terrain_height_fn=None,
+    subject_points=None,
     spec: FinalSceneSpec = SPEC,
     log: Optional[LogFn] = None,
 ) -> None:
-    """Update final-scene recording cameras with the robot as the framed subject."""
+    """Update recording cameras with the robot as the framed subject.
+
+    Generic over the spec: any object exposing ``wall_recording_cameras`` and
+    ``wall_camera_parent_path`` works, so the default (non --final-scene) sim
+    reuses this same engine via its own lightweight spec bundle. ``subject_points``
+    are extra world points the autofit overview must keep in frame (the stair span).
+    """
     global _CINEMATIC_DIRECTOR, _CINEMATIC_DIRECTOR_SPEC_ID
     logf = log or _default_log
     if robot_xyz is None:
@@ -596,6 +705,7 @@ def update_wall_recording_cameras(
         dt=dt,
         raycast_fn=raycast_fn,
         terrain_height_fn=terrain_height_fn,
+        subject_points=subject_points,
         log=logf,
     )
 

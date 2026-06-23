@@ -17,6 +17,7 @@ import logging
 import math
 from typing import Callable, Dict, Optional
 
+from .clip_player import ClipPlayer
 from .gait import FlatWalk, Gait, Idle, StairClimb
 from .locomotion_controller import LocomotionController
 from .state_machine import AnimationStateMachine
@@ -33,6 +34,8 @@ class BipedAnimationController:
         locomotion: Optional[LocomotionController] = None,
         state_machine: Optional[AnimationStateMachine] = None,
         gaits: Optional[Dict[AnimStyle, Gait]] = None,
+        clip_player: Optional[ClipPlayer] = None,
+        mocap_pose_clips: Optional[Dict[AnimStyle, object]] = None,
         clock: Optional[Callable[[], float]] = None,
         logger: Optional[logging.Logger] = None,
     ) -> None:
@@ -40,6 +43,15 @@ class BipedAnimationController:
         self._classifier = classifier
         self._loco = locomotion or LocomotionController()
         self._sm = state_machine or AnimationStateMachine()
+        # Optional mocap-clip source. When it has a clip for the active gait style the
+        # full captured per-bone pose is played (realistic); styles without a clip fall
+        # back to the analytic ``gait`` below. None -> analytic gait everywhere.
+        self._clip_player = clip_player
+        # Optional per-style mocap JointPose clips (real captured anatomical angles, e.g. a
+        # CMU "walk up stairs" motion for STAIR_CLIMB). Sampled per frame and applied via
+        # rig.apply -- the same path as the analytic gait. None -> analytic gait.
+        self._mocap_pose_clips = mocap_pose_clips
+        self._last_anim_source = "gait"
         self._gaits: Dict[AnimStyle, Gait] = gaits or {
             AnimStyle.IDLE: Idle(),
             AnimStyle.FLAT_WALK: FlatWalk(),
@@ -121,7 +133,44 @@ class BipedAnimationController:
 
             ground_sampler = _sample_ground
 
-        # Blend the active gait poses by their state-machine weights.
+        # Dominant style this frame (highest state-machine weight).
+        dominant = (
+            max(state.weights.items(), key=lambda kv: kv[1])[0]
+            if state.weights else AnimStyle.IDLE
+        )
+
+        # Mocap clip path: if a clip is registered for the dominant style, play its full
+        # captured per-bone pose (realistic). Styles without a clip (or no clip player)
+        # fall through to the analytic gait blend below. A hard switch at the weight
+        # crossover keeps clip and analytic poses from being blended across different
+        # representations; the transition is brief (one classifier debounce).
+        clip_quats = None
+        if self._clip_player is not None:
+            clip_quats = self._clip_player.sample(dominant, loco.phase)
+        if clip_quats is not None:
+            self._last_anim_source = "clip"
+            self._last_pose = JointPose.zero()
+            self._rig.apply_clip(clip_quats)
+            self._maybe_log(now, x, y, terrain, state, loco, self._last_pose)
+            return
+
+        # Mocap JointPose clip path: a style driven by a REAL captured motion's per-frame
+        # anatomical angles (e.g. a CMU stair-climb clip for STAIR_CLIMB) instead of the
+        # synthetic gait, applied through the SAME rig.apply() as the analytic gait. The
+        # ground sampler is unused here -- the captured motion already carries the stair
+        # foot lift; the visual root still rides the eased tread (set by the patrol).
+        if self._mocap_pose_clips is not None:
+            mclip = self._mocap_pose_clips.get(dominant)
+            if mclip is not None:
+                self._last_anim_source = "mocap_pose"
+                pose = mclip.sample(loco.phase)
+                self._last_pose = pose
+                self._rig.apply(pose)
+                self._maybe_log(now, x, y, terrain, state, loco, pose)
+                return
+
+        # Analytic gait path: blend the active gait poses by their state-machine weights.
+        self._last_anim_source = "gait"
         contributions = []
         for style, weight in state.weights.items():
             if weight <= 1e-4:
@@ -149,8 +198,9 @@ class BipedAnimationController:
                 self._logger,
                 _logging.INFO,
                 "biped_gait_state",
-                "Procedural patient gait state (throttled)",
+                "Patient gait state (throttled)",
                 terrain=terrain.value,
+                anim_source=self._last_anim_source,
                 dominant_style=dominant.value,
                 weights={k.value: round(float(v), 2) for k, v in state.weights.items()},
                 phase=round(float(loco.phase), 3),

@@ -82,6 +82,13 @@ def build_parser() -> argparse.ArgumentParser:
                              "oxygen-patient asset rigged to the NVIDIA biped skeleton). Empty = the "
                              "default Biped_Setup mannequin. The asset is localized under "
                              "sim/isaac/assets/characters/ and posed by the procedural gait.")
+    parser.add_argument("--patient-anim-mode", type=str, default="clip",
+                        choices=["clip", "procedural"],
+                        help="How the patient is animated. 'clip' (default) plays the character's "
+                             "baked walk SkelAnimation as full per-bone mocap on flat ground "
+                             "(realistic), falling back to the analytic foot-planting gait for the "
+                             "stair-climb (until a stair-climb clip is supplied). 'procedural' uses "
+                             "the analytic 13-DOF gait everywhere (the prior behaviour).")
     parser.add_argument("--frame-host", type=str, default='0.0.0.0',
                         help="Destination IP for camera frame UDP (WSL2 IP if running vision in WSL)")
     parser.add_argument("--log-dir", type=str, default=str(REPO_ROOT / "log"),
@@ -104,6 +111,21 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Viewport follow camera height above the route")
     parser.add_argument("--view-camera-side-offset", type=float, default=-0.85,
                         help="Viewport follow camera side offset relative to the Go2 heading")
+    # ---- recording camera framing + encoder (non --final-scene reuses the
+    #      final-scene cinematic director: autofit overview + cinematic chase) ----
+    parser.add_argument("--overview-mode", choices=["autofit", "fixed"], default="autofit",
+                        help="Recording overview/topdown camera framing: 'autofit' dynamically "
+                             "zooms/pans to keep robot+patient+stairs framed and never clips; "
+                             "'fixed' latches one wide static shot of the whole scene.")
+    parser.add_argument("--record-encoder", choices=["auto", "ffmpeg", "mp4v"], default="auto",
+                        help="Recording video encoder. 'auto' uses an ffmpeg H.264 pipe when "
+                             "available (enables 720p/1080p) and falls back to the bundled mp4v "
+                             "(~768x432 cap); 'ffmpeg' forces the pipe (mp4v fallback if ffmpeg "
+                             "is missing); 'mp4v' forces the legacy bundled encoder.")
+    parser.add_argument("--record-resolution", type=str, default="1280x720",
+                        help="Max recording resolution WxH for the ffmpeg encoder (e.g. 1920x1080). "
+                             "Larger frames are downscaled aspect-preserving. The mp4v fallback "
+                             "ignores this and uses its ~768x432 macroblock cap.")
     parser.add_argument("--verification-image", type=str, default="",
                         help="Write a wide scene verification PNG showing robot, person, and stairs")
     parser.add_argument("--exit-after-verification", action="store_true",
@@ -604,6 +626,11 @@ def build_parser() -> argparse.ArgumentParser:
                              "that stops accumulating motion time runs unbounded (run ..113133: 0.178 m cold "
                              "spun ~20 min, motion frozen at 78 s). This bounds EVERY episode in every mode "
                              "(warm/cold/direct). 0 disables. Set ~300 for a strict 5-min cap.")
+    parser.add_argument("--stair-waypoint-heading-kp", type=float, default=1.5,
+                        help="P-gain on the GO-TO-GOAL heading error (bearing-to-waypoint minus body "
+                             "yaw) for the waypoint test: wz = clip(kp*yaw_err, -0.8, 0.8). Replaces "
+                             "the old face-+x/null-y law that had an off-axis equilibrium and spiralled "
+                             "the dog past the waypoint on a lateral gait drift. Higher = turns harder.")
     parser.add_argument("--stair-waypoint-approach-kp", type=float, default=2.0,
                         help="P-gain decelerating the waypoint-test forward command as it nears the "
                              "waypoint (vx = clip(kp*dist_to_waypoint, 0, --self-test-vx)). Inside "

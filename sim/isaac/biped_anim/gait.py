@@ -338,17 +338,39 @@ class StairClimb(Gait):
                 knee_amp=1.5,         # pronounced knee lift to clear the riser
                 knee_bias=0.14,
                 ankle_amp=0.3,
-                shoulder_amp=0.3,
-                elbow_bias=0.4,       # arms held higher/closer climbing
-                spine_pitch=0.24,     # lean into the stairs
+                shoulder_amp=0.16,    # gentle arm swing. 0.3 pumped the arms ~0.5 rad
+                                      # peak-to-peak on the climb -- a frantic, exaggerated
+                                      # upper body. A careful stair climb barely swings.
+                elbow_bias=0.28,      # arms held softly bent, not clutched up high (0.4)
+                spine_pitch=0.12,     # a gentle lean into the stairs (0.24 read as an
+                                      # over-exaggerated stoop in the climb footage)
                 min_activation=0.85,  # stay high-stepping even at slow climb speed
-                # Foot-planting (IK) overrides: shorter stance so the foot lifts
-                # sooner, a crouched stance with extension headroom so the planted
-                # leg can extend as the body climbs over it WITHOUT running out of
-                # reach (which would lift the foot off the tread), and extra swing
-                # clearance so the foot clears the next riser.
+                # Foot-planting (IK) override. stance_frac is the fraction of the cycle a
+                # foot is PLANTED. 0.5 (no double-support) made BOTH legs bend/lift at the
+                # stance<->swing hand-offs -- the "two legs up at once" artifact: each foot
+                # was planted only half the cycle, so at every transition one foot was still
+                # finishing its lift while the other had already started -- they overlapped.
+                # stance_frac is the fraction of the cycle a foot is planted. Raising it
+                # was tried (0.6) to add double-support, but with the no-skate constraint a
+                # planted foot must sweep 0.5*stance_frac*stride, so a HIGHER stance_frac
+                # makes the foot LAND FURTHER AHEAD on a HIGHER tread -> deeper early-stance
+                # bend -> WORSE "two legs up". The real cause was the body reference sitting
+                # at the lower straddled tread (see isaac_env _person_visual_z: the pelvis is
+                # now centred half a riser between the two treads), which lets BOTH legs reach
+                # their treads symmetrically. With that, 0.5 gives clean single-leg swing.
                 stance_frac=0.5,
-                foot_clearance_m=0.18,  # moderate lead-foot lift (high values whip the now-live knee)
+                # Swing-foot clearance ABOVE the eased liftoff->landing tread line. The
+                # ground path already raises the foot a full riser between treads, so
+                # this is only the extra arch over the nosing. 0.18 m made the lead foot
+                # fly ~18 cm over each step -- a cartoonish high-march that read as the
+                # patient "floating" up the stairs. A minimum is structurally required:
+                # the foot must clear the discrete nosing it is swinging over or it clips
+                # the next tread (test_biped_foot_planting asserts cl_max > 0.08 with no
+                # penetration). 0.12 m is the lowest value that keeps a safe anti-clip
+                # margin across risers while cutting the peak swing lift for a calmer,
+                # more natural stair step. (0.10 is the hard floor; below it the swing foot
+                # clips the discrete nosing -- test_biped_foot_planting.)
+                foot_clearance_m=0.11,
                 stance_reach_scale=0.85,
             ),
             leg_geom=leg_geom,

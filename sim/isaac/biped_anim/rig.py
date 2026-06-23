@@ -37,8 +37,19 @@ import numpy as np
 import omni
 from pxr import Gf, Sdf, Usd, UsdSkel, Vt
 
+from .clip_player import ClipTracks, build_clip_tracks
 from .foot_planting import LegGeometry
 from .types import JointPose
+
+# Default loop window (in the clip's own time-code units) for the Biped_Setup walk
+# clip: a stable mid-clip L/R cycle, away from the startup transition. These are the
+# values the legacy baked-clip playback was tuned to (see world.skel_anim_utils); the
+# per-run "biped_clip_extracted" log reports the clip's true sample span so they can be
+# retuned for a different asset. window_len should span ONE full L/R gait cycle.
+_CLIP_WINDOW_START_TC = 186.0
+_CLIP_WINDOW_LEN_TC = 80.0
+# Substrings (priority order) used to find a walk/locomotion clip on the character.
+_WALK_ANIM_HINTS = ("stand_walk", "walk", "locomotion", "stride")
 
 
 # --- TUNABLE: per-channel-group rotation direction. Flip a value to +/-1 if that
@@ -529,3 +540,205 @@ class BipedRig:
     def reset_to_rest(self) -> None:
         if self._rotations_attr is not None:
             self._rotations_attr.Set(Vt.QuatfArray(list(self._base_quats)))
+
+    def apply_clip(self, per_joint_quats) -> None:
+        """Write one frame of FULL per-joint rotations (mocap-clip playback).
+
+        ``per_joint_quats`` is a list of ``(w, x, y, z)`` tuples, one per skeleton
+        joint in ``self._joints`` order (exactly what ``ClipTracks.sample`` returns).
+        Unlike ``apply`` (which starts from the standing base and overrides 13 analytic
+        channels), this sets every joint from the clip -- so the whole body carries the
+        real captured motion, not a synthesised 13-DOF pose.
+        """
+        if not self.ready or self._rotations_attr is None:
+            return
+        n = len(self._base_quats)
+        if not per_joint_quats or len(per_joint_quats) != n:
+            return
+        rotations = []
+        for q in per_joint_quats:
+            rotations.append(Gf.Quatf(float(q[0]), float(q[1]), float(q[2]), float(q[3])))
+        self._rotations_attr.Set(Vt.QuatfArray(rotations))
+
+        if self._pump_on_apply:
+            try:
+                import omni.kit.app
+
+                omni.kit.app.get_app().update()
+            except Exception:
+                pass
+
+    # -- mocap-clip extraction ---------------------------------------------- #
+    @property
+    def joint_count(self) -> int:
+        return len(self._joints)
+
+    def _base_frame_wxyz(self) -> List[Tuple[float, float, float, float]]:
+        """The standing base pose as (w,x,y,z) tuples, one per skeleton joint."""
+        return [_gf_quat_to_wxyz(q) for q in self._base_quats]
+
+    def extract_clip_tracks(
+        self,
+        name_hints: Tuple[str, ...] = _WALK_ANIM_HINTS,
+        *,
+        window_start: Optional[float] = _CLIP_WINDOW_START_TC,
+        window_len: Optional[float] = _CLIP_WINDOW_LEN_TC,
+    ) -> Optional[ClipTracks]:
+        """Read a baked ``SkelAnimation`` clip on the character into ``ClipTracks``.
+
+        The clip's per-bone LOCAL rotations are mapped onto THIS skeleton's joint order
+        (by leaf name; same skeleton, so they are directly compatible). Every output
+        frame starts from the standing base pose and is overridden by the clip for the
+        joints the clip animates -- so a frame is always complete even if the clip omits
+        some bones. The ROOT joint is left at the base (its clip rotation is dropped) so
+        the clip does not fight the externally-driven mannequin root.
+
+        Returns ``None`` if no matching clip is found (caller then uses the analytic gait).
+        """
+        if not self.ready or not self._joints:
+            return None
+        visual_prim_path = self._skel_root_path.rsplit("/", 1)[0]
+        search_root = self._stage.GetPrimAtPath(visual_prim_path)
+        if not search_root or not search_root.IsValid():
+            search_root = self._stage.GetPrimAtPath(self._skel_root_path)
+        if not search_root or not search_root.IsValid():
+            return None
+
+        anim_prims = [p for p in Usd.PrimRange(search_root)
+                      if p.GetTypeName() == "SkelAnimation"
+                      and _PROCEDURAL_ANIM_NAME not in p.GetName()]
+        clip_prim = None
+        for hint in name_hints:
+            for prim in anim_prims:
+                if hint in prim.GetName().lower():
+                    clip_prim = prim
+                    break
+            if clip_prim is not None:
+                break
+        if clip_prim is None:
+            self._log_clip("biped_clip_not_found",
+                           "No walk SkelAnimation clip found for mocap playback",
+                           level=logging.WARNING,
+                           clip_names=[p.GetName() for p in anim_prims],
+                           hints=list(name_hints))
+            return None
+
+        anim = UsdSkel.Animation(clip_prim)
+        clip_joints = anim.GetJointsAttr().Get()
+        rot_attr = anim.GetRotationsAttr()
+        if not clip_joints or not rot_attr or not rot_attr.IsValid():
+            return None
+        time_samples = sorted(rot_attr.GetTimeSamples())
+        if len(time_samples) < 2:
+            return None
+
+        # clip-joint index -> skeleton-joint index (by leaf name), skipping the root so
+        # the externally-driven mannequin root is not overridden by the clip.
+        skel_leaf_to_idx: Dict[str, int] = {}
+        for i, j in enumerate(self._joints):
+            skel_leaf_to_idx.setdefault(j.rsplit("/", 1)[-1], i)
+        root_skel_idx = next((i for i, j in enumerate(self._joints) if "/" not in j), 0)
+
+        clip_to_skel: List[Tuple[int, int]] = []  # (clip_idx, skel_idx)
+        for ci, cj in enumerate(clip_joints):
+            leaf = str(cj).rsplit("/", 1)[-1]
+            si = skel_leaf_to_idx.get(leaf)
+            if si is not None and si != root_skel_idx:
+                clip_to_skel.append((ci, si))
+
+        # Leg (hip) joint skeleton index, for the gait-period autocorrelation below.
+        leg_skel_idx = skel_leaf_to_idx.get("L_UpLeg")
+
+        base = self._base_frame_wxyz()
+        raw_times: List[float] = []
+        raw_frames = []
+        for t in time_samples:
+            rots = rot_attr.Get(t)
+            if not rots:
+                continue
+            frame = list(base)  # start from standing; override animated joints
+            for ci, si in clip_to_skel:
+                if ci < len(rots):
+                    frame[si] = _gf_quat_to_wxyz(rots[ci])
+            raw_times.append(float(t))
+            raw_frames.append(frame)
+
+        # ONE L/R gait cycle must map to phase [0, 1) so the clip cadence tracks the
+        # distance-synced phase (no skate). Detect the cycle period from the clip's
+        # actual leg-joint signal (robust whether or not the asset's walk clip was
+        # re-tiled/looped upstream); fall back to the supplied/default window.
+        detected = self._estimate_clip_period(raw_times, raw_frames, leg_skel_idx)
+        if detected is not None and detected > 1e-3:
+            t0 = raw_times[0] if raw_times else 0.0
+            # Skip the first cycle as warm-up when there's room; else start at t0.
+            win_start = t0 + detected if (raw_times and (raw_times[-1] - t0) > 2.0 * detected) else t0
+            win_len = detected
+        else:
+            win_start, win_len = window_start, window_len
+
+        clip = build_clip_tracks(
+            self.joint_count, raw_times, raw_frames,
+            window_start=win_start, window_len=win_len,
+            name=clip_prim.GetName(),
+        )
+        self._log_clip(
+            "biped_clip_extracted",
+            "Extracted walk clip for mocap playback (full per-bone tracks)",
+            clip_name=clip_prim.GetName(),
+            clip_joint_count=len(clip_joints),
+            mapped_joints=len(clip_to_skel),
+            time_samples=len(time_samples),
+            t_min=float(time_samples[0]),
+            t_max=float(time_samples[-1]),
+            detected_period_tc=(round(float(detected), 3) if detected else None),
+            window_start=round(float(win_start), 3) if win_start is not None else None,
+            window_len=round(float(win_len), 3) if win_len is not None else None,
+            phase_frames=(len(clip.phases) if clip is not None else 0),
+            ok=clip is not None,
+        )
+        return clip
+
+    @staticmethod
+    def _estimate_clip_period(raw_times, raw_frames, leg_skel_idx) -> Optional[float]:
+        """Estimate one L/R gait-cycle period (in time-code units) from a leg joint's
+        rotation-magnitude signal via autocorrelation. Returns None if indeterminate.
+
+        Mirrors world.skel_anim_utils._estimate_gait_period, but operates on the
+        already-extracted (time, full-pose) samples so it adapts to whatever the clip
+        actually contains (original or upstream-re-tiled)."""
+        if leg_skel_idx is None or not raw_times or len(raw_times) < 9:
+            return None
+        try:
+            angles = []
+            for frame in raw_frames:
+                w = float(frame[leg_skel_idx][0])
+                w = max(-1.0, min(1.0, w))
+                angles.append(2.0 * math.acos(abs(w)))
+            sig = np.asarray(angles, dtype=float)
+            sig = sig - sig.mean()
+            if not np.any(sig):
+                return None
+            ac = np.correlate(sig, sig, mode="full")[len(sig) - 1:]
+            ac = ac / ac[0]
+            lag = None
+            for i in range(2, len(ac) - 1):
+                if ac[i] > ac[i - 1] and ac[i] >= ac[i + 1] and ac[i] > 0.3:
+                    lag = i
+                    break
+            if lag is None:
+                return None
+            dts = np.diff(np.asarray(raw_times, dtype=float))
+            med = float(np.median(dts)) if len(dts) else 1.0
+            period = lag * med
+            return period if period > 1e-3 else None
+        except Exception:
+            return None
+
+    def _log_clip(self, code: str, msg: str, *, level: int = logging.INFO, **fields) -> None:
+        if self._logger is None:
+            return
+        try:
+            from sim_logging_utils import log_event
+            log_event(self._logger, level, code, msg, **fields)
+        except Exception:
+            pass

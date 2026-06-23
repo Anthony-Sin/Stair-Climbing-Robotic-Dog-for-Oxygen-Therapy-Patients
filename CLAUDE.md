@@ -191,6 +191,18 @@ Do NOT include directory trees, tech stack summaries, style guides, obvious best
 **LESSON:** `blind_rl` is the rl_sar `go2_robot_lab` policy (`sim/models/locomotion/go2_robot_lab_policy.pt`) — a GENERAL blind proprioceptive WALKER, NOT a stair-trained net. The follow + detect + handoff are solved; the ascent is genuinely unproven/best-effort. Do not represent it as a proven climber; a real blind-parkour net (DreamWaQ++-class) is unavailable.
 **WHY:** Overstating the climb capability misleads HIL planning; the dog reliably reaches the stairs but reliable climbing needs a policy that does not yet exist.
 
+**TRIGGER:** Asked to remove `omni.anim.people` / NavMesh from the sim's human/patient character.
+**LESSON:** This repo never used `omni.anim.people`. The patient's "fake walking animation that glides through stairs" is the procedural UsdSkel gait in `sim/isaac/biped_anim/` driven along a SCRIPTED waypoint path in `isaac_env.update_person_patrol` (kinematic XY + per-bone gait). Change THAT, not a nonexistent anim.people/NavMesh setup.
+**WHY:** Acting on the literal premise wastes time hunting code that isn't there.
+
+**TRIGGER:** Driving the patient (or any humanoid) with the H1 policy from `isaacsim.robot.policy.examples` to climb stairs.
+**LESSON:** `H1FlatTerrainPolicy` is the ONLY shipped humanoid policy and it is FLAT-terrain / not terrain-aware: commanded forward into a riser it walks its fixed gait, catches a foot, and face-plants (pelvis 0.91->0.27 m, confirmed on 0.15 m AND 0.06 m risers). It walks/steers fine on flat. Real climbing needs a stair-capable/perceptive humanoid policy that does not ship -- same frozen-policy-climb-limit class as the Go2.
+**WHY:** The flat policy reaches the stairs but cannot ascend any riser; do not represent the H1-puppet patient (`world/h1_puppet.py`) as a proven climber.
+
+**TRIGGER:** Running an `isaacsim.robot.policy.examples` robot (experimental warp/torch `Articulation`) inside the sim's classic `isaacsim.core.api.World`.
+**LESSON:** They COEXIST without flipping the global backend -- do NOT call `SimulationManager.set_backend("torch")` (it would disturb the frozen Go2/parkour pipeline). Construct the policy before `world.reset()`, lazily `initialize()` it from a `POST_PHYSICS_STEP` callback (guard `is_physics_tensor_entity_valid()`), and read poses via `robot.get_world_poses()[0].numpy()`. Only the physics device is shared. Proven live (`h1_puppet_initialized`) + matches the shipped CPU/numpy H1 unit test.
+**WHY:** Flipping the global backend is unnecessary and risks regressing the working classic-World sim.
+
 ---
 
 ## 9. Testing & Verification

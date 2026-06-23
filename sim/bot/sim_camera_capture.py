@@ -135,12 +135,13 @@ class SimCameraCapture:
         self._stop_event  = threading.Event()
         self._seq_received = 0
         self._seq_dropped  = 0
-        # Chunk-reassembly buffer: {seq: {"count": N, "parts": {idx: bytes}}}. The
-        # sender (isaac_env.FramePublisher) splits each frame into sub-MTU UDP chunks
-        # so they survive Docker Desktop's UDP forwarding; we reassemble by seq. Only a
-        # few in-flight seqs are kept so a lost chunk can't grow the buffer unbounded.
-        self._chunk_buf: Dict[int, Dict] = {}
-        self._CHUNK_MAGIC = b"FCHK"
+        # Camera frames arrive over a length-prefixed TCP stream. Docker Desktop's
+        # published-port UDP forwarding drops host->container datagrams on some engine
+        # versions (the container then sits at "waiting for data"); TCP forwarding is
+        # reliable. This process is the TCP SERVER; isaac_env.FramePublisher connects
+        # as the client and streams frames.
+        self._srv = None
+        self._conn = None
         self._last_frame_meta: Dict = {
             "success":    False,
             "wait_ms":    0.0,
@@ -156,7 +157,7 @@ class SimCameraCapture:
         self._receiver_thread.start()
 
         if self.verbose:
-            print(f"[SimCameraCapture] Listening on UDP 0.0.0.0:{frame_port}")
+            print(f"[SimCameraCapture] TCP frame server on 0.0.0.0:{frame_port}")
             print(f"[SimCameraCapture] Output resolution: {width}x{height}")
         if self._latency_enabled:
             print(
@@ -171,48 +172,15 @@ class SimCameraCapture:
 
     
     def _receive_loop(self) -> None:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 22)
-        sock.bind(("0.0.0.0", self.frame_port))
-        print(f"[SimCameraCapture] Socket bound to 0.0.0.0:{self.frame_port} - waiting for data...", flush=True)
-        sock.settimeout(0.5)
-
+        # Camera frames arrive over a length-prefixed TCP stream. Docker Desktop's
+        # published-port UDP forwarding drops host->container datagrams on some engine
+        # versions (the container then sat at "waiting for data"); TCP forwarding is
+        # reliable. This process is the SERVER; isaac_env.FramePublisher is the client.
         while not self._stop_event.is_set():
             self._flush_delay_buf()
-            try:
-                data, _ = sock.recvfrom(131072)
-            except socket.timeout:
+            data = self._next_frame()
+            if data is None:
                 continue
-            except Exception as exc:
-                if self.verbose:
-                    print(f"[SimCameraCapture] Receive error: {exc}")
-                continue
-
-            # Reassemble chunked frames (header: magic[4] seq[uint32] idx[uint16]
-            # count[uint16]). A datagram WITHOUT the magic is a legacy single-payload
-            # frame and is parsed directly (backward compatible).
-            if len(data) >= 12 and data[:4] == self._CHUNK_MAGIC:
-                try:
-                    _, cseq, cidx, ccount = struct.unpack("!4sIHH", data[:12])
-                    chunk = data[12:]
-                    entry = self._chunk_buf.get(cseq)
-                    if entry is None:
-                        entry = {"count": ccount, "parts": {}}
-                        self._chunk_buf[cseq] = entry
-                        # bound memory: keep only the newest few in-flight seqs
-                        if len(self._chunk_buf) > 8:
-                            for old in sorted(self._chunk_buf.keys())[:-8]:
-                                self._chunk_buf.pop(old, None)
-                    entry["parts"][cidx] = chunk
-                    if len(entry["parts"]) < entry["count"]:
-                        continue  # still waiting for more chunks of this frame
-                    data = b"".join(entry["parts"][i] for i in range(entry["count"]))
-                    self._chunk_buf.pop(cseq, None)
-                except Exception as exc:
-                    if self.verbose:
-                        print(f"[SimCameraCapture] Chunk reassembly error: {exc}", flush=True)
-                    continue
 
             if self.verbose:
                 print(f"[SimCameraCapture] Received frame {len(data)} bytes", flush=True)
@@ -301,7 +269,92 @@ class SimCameraCapture:
                     print(f"[SimCameraCapture] Frame decode error: {exc}", flush=True)
                     import traceback
                     traceback.print_exc()
-        sock.close()
+        self._close_server()
+
+    def _ensure_server(self) -> None:
+        """Lazily create the listening TCP server socket (idempotent)."""
+        if self._srv is not None:
+            return
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("0.0.0.0", self.frame_port))
+        srv.listen(1)
+        srv.settimeout(0.5)
+        self._srv = srv
+        print(f"[SimCameraCapture] TCP server bound to 0.0.0.0:{self.frame_port} - waiting for Isaac to connect...", flush=True)
+
+    def _next_frame(self):
+        """Return the next complete frame payload (bytes), or None on timeout/stop.
+
+        Accepts the Isaac TCP client on first use and after any disconnect, then reads
+        a 4-byte big-endian length prefix followed by that many payload bytes. A None
+        return just means "nothing yet" -- the caller loops.
+        """
+        self._ensure_server()
+        if self._conn is None:
+            try:
+                conn, peer = self._srv.accept()
+            except socket.timeout:
+                return None
+            except Exception as exc:
+                if self.verbose:
+                    print(f"[SimCameraCapture] accept error: {exc}", flush=True)
+                return None
+            conn.settimeout(0.5)
+            self._conn = conn
+            if self.verbose:
+                print(f"[SimCameraCapture] Isaac frame link connected from {peer[0]}", flush=True)
+        header = self._recv_exact(4)
+        if header is None:
+            self._drop_conn()
+            return None
+        (length,) = struct.unpack("!I", header)
+        if length <= 0 or length > (64 << 20):
+            if self.verbose:
+                print(f"[SimCameraCapture] bad frame length {length}; resyncing", flush=True)
+            self._drop_conn()
+            return None
+        data = self._recv_exact(length)
+        if data is None:
+            self._drop_conn()
+            return None
+        return data
+
+    def _recv_exact(self, n: int):
+        """Read exactly n bytes from the active connection, or None on EOF/stop."""
+        buf = bytearray()
+        while len(buf) < n:
+            if self._stop_event.is_set():
+                return None
+            try:
+                chunk = self._conn.recv(n - len(buf))
+            except socket.timeout:
+                continue
+            except Exception:
+                return None
+            if not chunk:
+                return None  # peer closed
+            buf.extend(chunk)
+        return bytes(buf)
+
+    def _drop_conn(self) -> None:
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
+            if self.verbose and not self._stop_event.is_set():
+                print("[SimCameraCapture] Isaac frame link closed; waiting for reconnect...", flush=True)
+
+    def _close_server(self) -> None:
+        self._drop_conn()
+        if self._srv is not None:
+            try:
+                self._srv.close()
+            except Exception:
+                pass
+            self._srv = None
 
     def _push_to_queue(self, item) -> None:
         """Put a frame on the size-1 delivery queue, dropping the stale one."""

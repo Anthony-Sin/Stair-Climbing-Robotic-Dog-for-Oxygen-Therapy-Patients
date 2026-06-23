@@ -844,7 +844,9 @@ function Stop-StaleSimContainers {
     }
 
     $filterImage = "ancestor=$ImageName"
-    $filterPort = "publish=$PublishedUdpPort/udp"
+    # The camera frame port is published as TCP (the frame transport is TCP -- Docker
+    # Desktop's host->container UDP forwarding is unreliable; see FramePublisher).
+    $filterPort = "publish=$PublishedUdpPort/tcp"
     $raw = & wsl.exe -e docker ps --filter $filterImage --filter $filterPort --format "{{.Names}}" 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Stage "docker" "warning" "Could not inspect stale sim containers before launch" @{
@@ -1553,7 +1555,11 @@ if ($NoDockerRun) {
         "--gpus",
         "all",
         "-p",
-        "${FramePort}:${FramePort}/udp",
+        # Camera frames stream host->container over TCP (length-prefixed). Docker
+        # Desktop's published-port UDP forwarding drops 100% of host->container UDP on
+        # some engine versions (container stuck at "waiting for data"); TCP is reliable.
+        # The container is the TCP server; Isaac's FramePublisher connects as client.
+        "${FramePort}:${FramePort}/tcp",
         "-v",
         "${WslRepoRoot}:/workspace",
         "-v",
