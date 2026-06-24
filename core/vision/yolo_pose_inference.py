@@ -24,8 +24,8 @@ KEYPOINT_PAIRS = [
     (12, 14), (14, 16),
 ]
 
-YOLO_MAIN = (220, 238, 96)
-YOLO_MAIN_DIM = (86, 112, 64)
+YOLO_MAIN = (30, 30, 200)      # bold red target lock (BGR)
+YOLO_MAIN_DIM = (12, 12, 88)   # dim red
 YOLO_SECONDARY = (70, 79, 84)
 YOLO_BADGE_BG = (16, 28, 45)
 YOLO_TEXT = (205, 218, 218)

@@ -61,7 +61,9 @@ _CHANNEL_SIGNS: Dict[str, float] = {
     "shoulder": +1.0,
     "elbow": +1.0,
     "spine": +1.0,
+    "lumbar": +1.0,
     "toe": +1.0,
+    "pelvis": +1.0,
 }
 
 # anatomical JointPose field -> (rig joint leaf name, channel group for sign lookup)
@@ -78,7 +80,9 @@ _JOINT_TARGETS: List[Tuple[str, str, str]] = [
     ("shoulder_r", "R_UpArm", "shoulder"),
     ("elbow_l", "L_LoArm", "elbow"),
     ("elbow_r", "R_LoArm", "elbow"),
-    ("spine_pitch", "Spine1", "spine"),
+    ("lumbar_pitch", "Spine", "lumbar"),   # lower lumbar — bends the whole back root
+    ("spine_pitch", "Spine1", "spine"),    # upper thoracic — visible mid-back lean
+    ("pelvis_pitch", "Hips", "pelvis"),
 ]
 
 # The rig's canonical joint leaf names (above) are the CC/iClone "Biped_Setup"
@@ -100,7 +104,11 @@ _JOINT_ALIASES: Dict[str, List[str]] = {
     "R_UpArm":  ["RightArm", "mixamorig:RightArm", "RightUpperArm", "upperarm_r", "R_Upperarm", "RightShoulder"],
     "L_LoArm":  ["LeftForeArm", "mixamorig:LeftForeArm", "LeftLowerArm", "lowerarm_l", "L_Forearm", "LeftElbow"],
     "R_LoArm":  ["RightForeArm", "mixamorig:RightForeArm", "RightLowerArm", "lowerarm_r", "R_Forearm", "RightElbow"],
-    "Spine1":   ["Spine", "Spine01", "Spine02", "Spine03", "mixamorig:Spine1", "mixamorig:Spine", "Spine2", "Spine_01", "spine_01", "spine_02", "spine_03"],
+    # Lower lumbar: the first/root spine bone — drives the whole-back lean.
+    "Spine":    ["CC_Base_Spine01", "mixamorig:Spine", "Spine_01", "spine_01", "LowerSpine", "Lumbar"],
+    # Upper thoracic: the second spine bone — adds mid-back contribution.
+    "Spine1":   ["Spine01", "Spine02", "Spine03", "CC_Base_Spine02", "mixamorig:Spine1", "Spine2", "spine_02", "spine_03"],
+    "Hips":     ["Pelvis", "Hip", "pelvis", "hip", "mixamorig:Hips", "CC_Base_Hip", "CC_Base_Pelvis", "Hips01", "Root_Hips"],
 }
 
 # When no standing/idle clip is found, the neutral pose is the bind T-pose (arms

@@ -33,7 +33,6 @@ param(
     # Optional per-step RISE override (m); 0 keeps the preset value. Plumbed to
     # isaac_env --stair-step-height so a run can shorten the risers without a new preset.
     [double]$StairStepHeight = 0,
-    [switch]$FinalScene,
     [switch]$NoParkourWalkMode,
     [switch]$NoSpeedGovernor,
     # Attach the oxygen-concentrator payload (mounting rails + O2 tank) on the Go2's back.
@@ -105,7 +104,6 @@ Write-ConsoleLog "  Climb handoff:       $HandoffClimbBackend (stair-climb backe
 Write-ConsoleLog "  Parkour heading:     $ParkourHeadingMode"
 Write-ConsoleLog "  Parkour person mask: $(-not $NoParkourPersonMask)"
 Write-ConsoleLog "  Parkour mask fill:   $ParkourMaskFill"
-Write-ConsoleLog "  Final scene:         $([bool]$FinalScene)"
 Write-ConsoleLog "  Real-sim env preset: $([bool]$Sim2RealValidationCam)"
 Write-ConsoleLog ""
 
@@ -143,7 +141,6 @@ $locomotionArgs += " --stair-preset $StairPreset"
 # Optional per-step rise override (0 = keep the preset). Lets a run halve/shorten the risers.
 if ($StairStepHeight -gt 0) { $locomotionArgs += " --stair-step-height $StairStepHeight" }
 if ($PatientCharacterUsd) { $locomotionArgs += " --patient-character-usd `"$PatientCharacterUsd`"" }
-if ($FinalScene) { $locomotionArgs += " --final-scene" }
 # Walk mode and speed governor are ON by default in isaac_env.py; pass disable flags for A/B.
 if ($NoParkourWalkMode) { $locomotionArgs += " --no-parkour-walk-mode" }
 if ($NoSpeedGovernor) { $locomotionArgs += " --no-speed-governor" }

@@ -13,10 +13,10 @@ from typing import Any, Dict, Optional
 from core.vision.lidar_fusion import decode_lidar_profile
 from core.hud.hud_primitives import (
     HUD_BG_DARK, HUD_EDGE, HUD_EDGE_DIM, HUD_TEXT, HUD_MUTED, HUD_BLUE,
-    HUD_MINT, HUD_MAGENTA, HUD_ALERT, HUD_CYAN, HUD_GOLD, HUD_RAIL_LIGHT,
-    HUD_RAIL_MUTED, _format_optional_m, _safe_float, _draw_hud_panel,
-    _draw_row_icon, _draw_reference_guides, _draw_center_instrument_bar,
-    _draw_robot_schematic, _draw_actuator_widget, _draw_leg_gauge,
+    HUD_MINT, HUD_MAGENTA, HUD_ALERT, HUD_CYAN, HUD_GOLD, HUD_ORANGE,
+    HUD_RAIL_LIGHT, HUD_RAIL_MUTED, _format_optional_m, _safe_float,
+    _draw_hud_panel, _draw_row_icon, _draw_reference_guides,
+    _draw_actuator_widget, _draw_leg_gauge,
 )
 from core.hud.hud_panels import (
     _draw_stair_boundary_overlay, _draw_stair_vision_panel, _draw_lidar_front_arc_panel,
@@ -65,7 +65,7 @@ class RotationDebugWindow:
         
         # Label for error
         cv2.putText(viz_window, "Rotation Error (deg)", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        cv2.putText(viz_window, f"{rotation_error_deg:.2f}°", (350, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, error_color, 2)
+        cv2.putText(viz_window, f"{rotation_error_deg:.2f}d", (350, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, error_color, 2)
         
         # Draw rotation command bar (-1.0 to +1.0)
         cmd_center_x = 220
@@ -161,22 +161,15 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
     if frame_meta is not None:
         swing_list = [leg.upper() for leg in frame_meta.get("swing_legs", [])]
 
-    _draw_center_instrument_bar(
-        combined,
-        frame_center_x,
-        min(h_f - 142, frame_center_y + 118),
-        debug_info.get("depth_distance_m") if debug_info else None,
-    )
-
     # Draw estimated target crosshair (from YOLO box center)
     center_x = debug_info.get('center_x', None)
     bbox_cx = debug_info.get('bbox_center_x', None)
     cx_int = int(round(center_x)) if center_x is not None else (int(round(bbox_cx)) if bbox_cx is not None else None)
     
     if cx_int is not None:
-        cv2.line(combined, (cx_int - 8, frame_center_y), (cx_int + 8, frame_center_y), HUD_CYAN, 2)
-        cv2.line(combined, (cx_int, frame_center_y - 8), (cx_int, frame_center_y + 8), HUD_CYAN, 2)
-        cv2.circle(combined, (cx_int, frame_center_y), 4, HUD_CYAN, -1)
+        cv2.line(combined, (cx_int - 8, frame_center_y), (cx_int + 8, frame_center_y), HUD_ORANGE, 2)
+        cv2.line(combined, (cx_int, frame_center_y - 8), (cx_int, frame_center_y + 8), HUD_ORANGE, 2)
+        cv2.circle(combined, (cx_int, frame_center_y), 4, HUD_ORANGE, -1)
 
     # -----------------------------------------------------------------------
     # Top Header
@@ -191,71 +184,34 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
         (max(frame_center_x + 190, w_f - 350), 5, 342, 30),
     ]
     for sx, sy, sw, sh in header_segments:
-        cv2.rectangle(combined, (sx, sy), (sx + sw, sy + sh), (24, 38, 57), -1)
+        cv2.rectangle(combined, (sx, sy), (sx + sw, sy + sh), (16, 30, 18), -1)
         cv2.rectangle(combined, (sx, sy), (sx + sw, sy + sh), HUD_EDGE, 1, cv2.LINE_AA)
         for rx in (sx + 7, sx + sw - 7):
-            cv2.circle(combined, (rx, sy + sh // 2), 3, (55, 76, 98), -1, cv2.LINE_AA)
+            cv2.circle(combined, (rx, sy + sh // 2), 3, (46, 80, 50), -1, cv2.LINE_AA)
 
-    cam_ok_header = frame_meta is not None and frame_meta.get("success", True)
-    if debug_info and debug_info.get('matched_visual_lock', False):
-        header_lock = "LOCKED"
-        header_lock_color = HUD_MINT
-    elif reacquire_active:
-        header_lock = "REACQUIRING"
-        header_lock_color = HUD_MAGENTA
-    else:
-        header_lock = "LOST"
-        header_lock_color = HUD_ALERT
-
-    header_title = "SYSTEM ANALYSIS / BIOMETRIC CONTROL"
-    cv2.putText(combined, header_title, (20, 26),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.43, rail_light, 1, cv2.LINE_AA)
-    title_w = cv2.getTextSize(header_title, cv2.FONT_HERSHEY_SIMPLEX, 0.43, 1)[0][0]
-    cv2.putText(combined, "[ LIVE ]" if cam_ok_header else "[ FAULT ]", (28 + title_w, 26),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.40,
-                HUD_MINT if cam_ok_header else HUD_ALERT, 1, cv2.LINE_AA)
     fps_text = f"PROC FPS: {proc_fps:.1f} | VIEW FPS: {view_fps:.1f}"
     cv2.putText(combined, fps_text, (frame_center_x - 146, 26),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.40, rail_muted, 1, cv2.LINE_AA)
-    camera_text = f"{str(camera_mode).upper()} CAMERA [{'ACTIVE' if cam_ok_header else 'FAULT'}]"
-    cv2.putText(combined, camera_text, (w_f - 342, 26),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.38,
-                HUD_MINT if cam_ok_header else HUD_ALERT, 1, cv2.LINE_AA)
-    lock_text = f"TARGET {header_lock}"
-    lock_size = cv2.getTextSize(lock_text, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)[0]
-    cv2.putText(combined, lock_text, (w_f - 20 - lock_size[0], 26),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.38, header_lock_color, 1, cv2.LINE_AA)
                 
     # -----------------------------------------------------------------------
     # Bottom Footer
     # -----------------------------------------------------------------------
     cv2.rectangle(combined, (0, h_f - 30), (w_f, h_f), HUD_BG_DARK, -1)
     cv2.line(combined, (0, h_f - 30), (w_f, h_f - 30), HUD_EDGE, 2)
-    cv2.rectangle(combined, (8, h_f - 25), (360, h_f - 4), (24, 38, 57), -1)
-    cv2.rectangle(combined, (8, h_f - 25), (360, h_f - 4), HUD_EDGE, 1, cv2.LINE_AA)
-    cv2.rectangle(combined, (w_f - 360, h_f - 25), (w_f - 8, h_f - 4), (24, 38, 57), -1)
-    cv2.rectangle(combined, (w_f - 360, h_f - 25), (w_f - 8, h_f - 4), HUD_EDGE, 1, cv2.LINE_AA)
 
     comm_active = (abs(float(trans_x_cmd)) > 1e-4 or abs(float(rotation_cmd)) > 1e-4)
-    if isinstance(robot_data, dict) and robot_data:
-        footer_status = f"BODY: {'FALLEN ' + str(fall_type).upper() if hud_alert else 'UPRIGHT'}"
-    else:
-        footer_status = "BODY: N/A"
-    cv2.putText(combined, footer_status, (20, h_f - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.43, HUD_ALERT if hud_alert else rail_light, 1, cv2.LINE_AA)
-    motion_text = f"MOTION CMD: {'ACTIVE' if comm_active else 'STANDBY'}"
-    motion_size = cv2.getTextSize(motion_text, cv2.FONT_HERSHEY_SIMPLEX, 0.43, 1)[0]
-    cv2.putText(combined, motion_text, (w_f - 20 - motion_size[0], h_f - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.43, active_color if comm_active else rail_muted, 1, cv2.LINE_AA)
+    if hud_alert:
+        cv2.putText(combined, f"FALLEN [{fall_type.upper()}]", (20, h_f - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.43, HUD_ALERT, 1, cv2.LINE_AA)
 
-    margin = 20
-    panel_w = 300
+    margin = 0
+    panel_w = 310
     top_panel_h = 230
     bottom_panel_h = 240
     left_x = margin
     right_x = max(margin, w_f - margin - panel_w)
-    top_y = 60
-    bottom_y = max(top_y + top_panel_h + 16, h_f - 30 - bottom_panel_h - margin)
+    top_y = 42
+    bottom_y = max(top_y + top_panel_h + 14, h_f - 30 - bottom_panel_h)
 
     # -----------------------------------------------------------------------
     # Panel 1 (Top-Left): SYSTEM HEALTH & SENSORS
@@ -305,7 +261,6 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
         ("IMU SYS:", imu_str, active_color if robot_data else HUD_MUTED),
         ("BODY R/P:", roll_pitch_text, active_color if robot_data else HUD_MUTED),
         ("HEIGHT:", _format_optional_m(height_m), HUD_TEXT if height_m is not None else HUD_MUTED),
-        ("COMM LINK:", comm_str, comm_color),
         ("LOCO POLICY:", loco_str, loco_color),
         ("STATUS:", status_str, status_color)
     ]
@@ -417,13 +372,12 @@ def draw_frame_overlays(combined: np.ndarray, debug_info: Dict[str, Any],
         ("ASSIST:", assist_str, assist_color),
     ]
     
-    _draw_robot_schematic(combined, right_x + 12, top_y + 38, 76, 74)
-
     curr_y = top_y + 45
     for label, val, val_color in p3_lines:
-        cv2.putText(combined, label, (right_x + 98, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.35, HUD_TEXT, 1, cv2.LINE_AA)
-        cv2.putText(combined, val, (right_x + 174, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.35, val_color, 1, cv2.LINE_AA)
-        curr_y += 23
+        cv2.putText(combined, label, (right_x + 12, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.39, HUD_TEXT, 1, cv2.LINE_AA)
+        _draw_row_icon(combined, right_x + 104, curr_y - 3, HUD_EDGE_DIM)
+        cv2.putText(combined, val, (right_x + 136, curr_y), cv2.FONT_HERSHEY_SIMPLEX, 0.39, val_color, 1, cv2.LINE_AA)
+        curr_y += 26
 
     # -----------------------------------------------------------------------
     # Panel 4 (Bottom-Right): LEG ACTUATORS & COMMANDS

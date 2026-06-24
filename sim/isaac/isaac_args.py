@@ -97,11 +97,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Write JSONL logs only and suppress pretty console log lines")
     parser.add_argument("--no-view-follow-camera", action="store_true",
                         help="Do not switch the Isaac viewport to the dynamic Go2 follow camera")
-    parser.add_argument("--final-scene", action="store_true",
-                        help="Compose the upgraded hospital demo scene while reusing the existing "
-                             "Go2, patient, cameras, controller, and stair collision pipeline")
-    parser.add_argument("--final-scene-env", type=str, default="hospital",
-                        help="Final-scene backdrop name. Currently only 'hospital' is supported.")
+    parser.add_argument("--final-scene", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--final-scene-env", type=str, default="hospital", help=argparse.SUPPRESS)
     parser.add_argument("--no-hold-motion-until-command", dest="hold_motion_until_command",
                         action="store_false", default=True,
                         help="Let autonomous scene motion start before the Docker/controller command stream is seen")

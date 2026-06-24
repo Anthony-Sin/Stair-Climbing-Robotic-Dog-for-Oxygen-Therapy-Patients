@@ -1764,145 +1764,322 @@ def spawn_obstacles(world: World) -> None:
     except ModuleNotFoundError:
         from isaacsim.core.api.objects import FixedCuboid
     
-    # Download texture if not present
-    texture_url = "https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/brick_diffuse.jpg"
-    assets_dir = os.path.join(os.path.dirname(__file__), "assets")
-    os.makedirs(assets_dir, exist_ok=True)
-    texture_local_path = os.path.join(assets_dir, "concrete.jpg")
-    
-    download_ok = False
-    if not os.path.exists(texture_local_path) or os.path.getsize(texture_local_path) == 0:
-        try:
-            import urllib.request
-            log_event(LOGGER, logging.INFO, "texture_download_start", f"Downloading seamless texture from {texture_url}")
-            urllib.request.urlretrieve(texture_url, texture_local_path)
-            download_ok = True
-            log_event(LOGGER, logging.INFO, "texture_download_complete", f"Saved texture to {texture_local_path}")
-        except Exception as exc:
-            log_event(LOGGER, logging.WARNING, "texture_download_failed", "Failed to download texture, fallback to plain color", error=str(exc))
-    else:
-        download_ok = True
-
     s = get_active_stairs()
+    # 2.5 m landing gives the dog a real runway at the top.
+    # get_terrain_height returns top_height_m for all x >= end_x_m, so only the
+    # physical slab size changes — no control or GT logic is affected.
+    visual_landing_depth_m = 2.5
 
-    # 1. Spawn Stairs: step_count treads from start_x to end_x, width_m along Y,
-    #    step_height_m rise per tread (top of the last tread = top_height_m above
-    #    ground). Geometry comes from the active StairSpec (see --stair-preset).
+    # 1. Physics stair treads — warm oak wood base colour.
     half_depth = s.step_depth_m / 2.0
     for i in range(s.step_count):
-        step_x = s.start_x_m + i * s.step_depth_m + half_depth   # centre of each tread
-        step_height = (i + 1) * s.step_height_m                  # cumulative height of this step
-        step_z = step_height / 2.0                               # centre of the cuboid in Z
+        step_x    = s.start_x_m + i * s.step_depth_m + half_depth
+        step_height = (i + 1) * s.step_height_m
         try:
             world.scene.add(
                 FixedCuboid(
                     prim_path=f"/World/Environment/step_{i}",
                     name=f"step_{i}",
-                    position=np.array([step_x, 0.0, step_z]),
+                    position=np.array([step_x, 0.0, step_height / 2.0]),
                     scale=np.array([s.step_depth_m, s.width_m, step_height]),
-                    color=np.array([0.5, 0.5, 0.5])
+                    color=np.array([0.30, 0.19, 0.08]),
                 )
             )
         except Exception as exc:
             log_event(LOGGER, logging.WARNING, "obstacle_spawn_failed", f"Failed to spawn step_{i}", error=str(exc))
 
-    # 2. Top landing platform (flat slab at full stair height, abutting last tread)
+    # 2. Physics landing — warm polished terrazzo/stone, 2.5 m deep.
     try:
-        landing_x = s.end_x_m + s.landing_depth_m / 2.0
         landing_height = s.top_height_m
         world.scene.add(
             FixedCuboid(
                 prim_path="/World/Environment/top_landing",
                 name="top_landing",
-                position=np.array([landing_x, 0.0, landing_height / 2.0]),
-                scale=np.array([s.landing_depth_m, s.width_m, landing_height]),
-                color=np.array([0.55, 0.55, 0.55])
+                position=np.array([s.end_x_m + visual_landing_depth_m / 2.0, 0.0, landing_height / 2.0]),
+                scale=np.array([visual_landing_depth_m, s.width_m, landing_height]),
+                color=np.array([0.58, 0.42, 0.22]),
             )
         )
     except Exception as exc:
         log_event(LOGGER, logging.WARNING, "obstacle_spawn_failed", "Failed to spawn top landing", error=str(exc))
 
-    # 2b. Optional coarse handrail volumes along both stair edges (preset-driven).
-    #     Modelled as a single thin horizontal bar per side at ~hand height above
-    #     the mid-stair tread line -- enough for occlusion/obstacle realism without
-    #     walling off the depth camera / LiDAR view of the treads.
-    if s.handrail:
-        rail_thickness = 0.06
-        rail_band_height = 0.10
-        hand_height = 0.9
-        run_len = (s.end_x_m + s.landing_depth_m) - s.start_x_m
-        rail_x = s.start_x_m + run_len / 2.0
-        rail_z = 0.5 * s.top_height_m + hand_height
-        for side_name, side_y in (("left", s.half_width_m), ("right", -s.half_width_m)):
-            try:
-                world.scene.add(
-                    FixedCuboid(
-                        prim_path=f"/World/Environment/handrail_{side_name}",
-                        name=f"handrail_{side_name}",
-                        position=np.array([rail_x, side_y, rail_z]),
-                        scale=np.array([run_len, rail_thickness, rail_band_height]),
-                        color=np.array([0.30, 0.30, 0.35])
+    # 3. PBR materials + visual-only white riser panels.
+    #    The dark-tread / white-riser contrast is the defining visual of a clinical
+    #    staircase. Riser panels are plain UsdGeom.Cube (no UsdPhysics APIs) so they
+    #    carry zero collision and cannot interfere with the dog's locomotion.
+    try:
+        import omni.usd
+        from pxr import Gf, UsdGeom, UsdShade, Sdf
+        stage = omni.usd.get_context().get_stage()
+        looks_path = "/World/Environment/Looks"
+        if not stage.GetPrimAtPath(looks_path).IsValid():
+            stage.DefinePrim(looks_path, "Scope")
+
+        def _make_mat(mat_path, r, g, b, roughness=0.65, metallic=0.0):
+            if stage.GetPrimAtPath(mat_path).IsValid():
+                return UsdShade.Material(stage.GetPrimAtPath(mat_path))
+            mat = UsdShade.Material.Define(stage, mat_path)
+            sh  = UsdShade.Shader.Define(stage, f"{mat_path}/Shader")
+            sh.CreateIdAttr("UsdPreviewSurface")
+            sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(r, g, b))
+            sh.CreateInput("roughness",    Sdf.ValueTypeNames.Float).Set(roughness)
+            sh.CreateInput("metallic",     Sdf.ValueTypeNames.Float).Set(metallic)
+            mat.CreateSurfaceOutput().ConnectToSource(sh.ConnectableAPI(), "surface")
+            return mat
+
+        def _bind(prim_path, mat):
+            prim = stage.GetPrimAtPath(prim_path)
+            if prim and prim.IsValid():
+                UsdShade.MaterialBindingAPI(prim).Bind(mat, UsdShade.Tokens.strongerThanDescendants)
+
+        def _visual_cube(prim_path, cx, cy, cz, sx, sy, sz, color):
+            """Collision-free visual geometry (no UsdPhysics APIs attached)."""
+            if stage.GetPrimAtPath(prim_path).IsValid():
+                return
+            cube = UsdGeom.Cube.Define(stage, prim_path)
+            cube.CreateSizeAttr(1.0)
+            cube.GetDisplayColorAttr().Set([Gf.Vec3f(*color)])
+            xf = UsdGeom.Xformable(cube.GetPrim())
+            xf.ClearXformOpOrder()
+            xf.AddTranslateOp().Set(Gf.Vec3d(cx, cy, cz))
+            xf.AddScaleOp().Set(Gf.Vec3d(sx, sy, sz))
+
+        # ---- Unified wood colour scheme ----
+        # Base wood: warm oak (0.58, 0.42, 0.22) — applied to every surface.
+        # Sides/verticals: solid base colour only.
+        # Horizontal tops (treads + landing): wood-grain strips running across
+        # the full width (Y direction), spaced along X, alternating two wood tones
+        # to simulate natural grain variation. Visual-only; no physics collision.
+        WOOD_BASE  = (0.30, 0.19, 0.08)    # dark oak base
+        GRAIN_LITE = (0.38, 0.25, 0.10)   # lighter grain line
+        GRAIN_DARK = (0.20, 0.12, 0.05)   # darker grain line
+
+        tread_mat = _make_mat(f"{looks_path}/TreadMat",   *WOOD_BASE, roughness=0.55)
+        riser_mat = _make_mat(f"{looks_path}/RiserMat",   *WOOD_BASE, roughness=0.55)
+        land_mat  = _make_mat(f"{looks_path}/LandingMat", *WOOD_BASE, roughness=0.55)
+        grain_lite_mat = _make_mat(f"{looks_path}/GrainLite", *GRAIN_LITE, roughness=0.48)
+        grain_dark_mat = _make_mat(f"{looks_path}/GrainDark", *GRAIN_DARK, roughness=0.60)
+
+        for i in range(s.step_count):
+            _bind(f"/World/Environment/step_{i}", tread_mat)
+        _bind("/World/Environment/top_landing", land_mat)
+
+        # Solid-wood riser panels (vertical face of each step) — no grain, just base.
+        riser_thick = 0.014
+        risers_root = "/World/Environment/Risers"
+        if not stage.GetPrimAtPath(risers_root).IsValid():
+            stage.DefinePrim(risers_root, "Xform")
+        for i in range(s.step_count):
+            riser_path = f"{risers_root}/riser_{i}"
+            rx = s.start_x_m + i * s.step_depth_m + riser_thick / 2.0
+            rz = (i + 0.5) * s.step_height_m
+            _visual_cube(riser_path, rx, 0.0, rz,
+                         riser_thick, float(s.width_m), float(s.step_height_m),
+                         WOOD_BASE)
+            _bind(riser_path, riser_mat)
+
+        # Wood-grain strips on every tread top — thin lines running full tread
+        # width (Y), spaced along X (depth direction). Two alternating tones.
+        GRAIN_W   = 0.012   # 12 mm grain-line width (X direction)
+        GRAIN_H   = 0.003   # 3 mm proud of surface (subtle, not chunky)
+        GRAIN_PITCH = 0.038 # 38 mm centre-to-centre spacing
+        grain_root = "/World/Environment/WoodGrain"
+        if not stage.GetPrimAtPath(grain_root).IsValid():
+            stage.DefinePrim(grain_root, "Xform")
+
+        def _grain_strip(path, cx, cy, cz, sx, sy, idx):
+            col = GRAIN_LITE if idx % 2 == 0 else GRAIN_DARK
+            mat = grain_lite_mat if idx % 2 == 0 else grain_dark_mat
+            _visual_cube(path, cx, cy, cz, sx, sy, GRAIN_H, col)
+            _bind(path, mat)
+
+        # Tread grain
+        for i in range(s.step_count):
+            tread_top_z   = (i + 1) * s.step_height_m
+            tread_start_x = s.start_x_m + i * s.step_depth_m
+            n_grain = max(1, int((s.step_depth_m - GRAIN_W) / GRAIN_PITCH))
+            for g in range(n_grain):
+                gx = tread_start_x + GRAIN_PITCH / 2.0 + g * GRAIN_PITCH
+                gz = tread_top_z + GRAIN_H / 2.0
+                _grain_strip(f"{grain_root}/t{i}_g{g}", gx, 0.0, gz,
+                             GRAIN_W, float(s.width_m), g)
+
+        # Landing grain — same pitch and tones, continuous with the tread look.
+        land_top_z = s.top_height_m
+        n_land_grain = max(1, int((visual_landing_depth_m - GRAIN_W) / GRAIN_PITCH))
+        for g in range(n_land_grain):
+            gx = s.end_x_m + GRAIN_PITCH / 2.0 + g * GRAIN_PITCH
+            gz = land_top_z + GRAIN_H / 2.0
+            _grain_strip(f"{grain_root}/land_g{g}", gx, 0.0, gz,
+                         GRAIN_W, float(s.width_m), g)
+
+        # ---- Handrails — dark iron, both sides, visual-only ----
+        RAIL_COLOR   = (0.22, 0.20, 0.18)
+        RAIL_H       = 0.90    # height of rail top above each tread surface
+        POST_W       = 0.042   # square post cross-section (m)
+        RAIL_THICK   = 0.040   # square rail bar cross-section (m)
+        RAIL_Y       = s.half_width_m - POST_W / 2.0   # post outer face flush with stair edge
+        POST_INTERVAL = 3      # one post every N steps
+
+        rail_mat = _make_mat(f"{looks_path}/RailMat", *RAIL_COLOR,
+                             roughness=0.35, metallic=0.65)
+
+        total_run   = s.step_count * s.step_depth_m
+        total_rise  = s.top_height_m
+        slope_angle = math.atan2(total_rise, total_run)
+        rail_len    = math.sqrt(total_run ** 2 + total_rise ** 2)
+
+        rail_root = "/World/Environment/Handrails"
+        if not stage.GetPrimAtPath(rail_root).IsValid():
+            stage.DefinePrim(rail_root, "Xform")
+
+        def _post(path, px, py, pz_base):
+            """Vertical post from pz_base to pz_base + RAIL_H."""
+            cz = pz_base + RAIL_H / 2.0
+            _visual_cube(path, px, py, cz, POST_W, POST_W, RAIL_H, RAIL_COLOR)
+            _bind(path, rail_mat)
+
+        def _angled_box(path, cx, cy, cz, length, w, rot_y_deg):
+            """Rotated box — for the sloped stair rail."""
+            if stage.GetPrimAtPath(path).IsValid():
+                return
+            cube = UsdGeom.Cube.Define(stage, path)
+            cube.CreateSizeAttr(1.0)
+            cube.GetDisplayColorAttr().Set([Gf.Vec3f(*RAIL_COLOR)])
+            xf = UsdGeom.Xformable(cube.GetPrim())
+            xf.ClearXformOpOrder()
+            xf.AddTranslateOp().Set(Gf.Vec3d(cx, cy, cz))
+            xf.AddRotateYOp().Set(rot_y_deg)
+            xf.AddScaleOp().Set(Gf.Vec3d(length, w, w))
+            UsdShade.MaterialBindingAPI(cube.GetPrim()).Bind(
+                rail_mat, UsdShade.Tokens.strongerThanDescendants)
+
+        for side, sy in (("L", RAIL_Y), ("R", -RAIL_Y)):
+            # Sloped rail along the stairs — one rotated bar the full hypotenuse
+            _angled_box(
+                f"{rail_root}/rail_stair_{side}",
+                s.start_x_m + total_run / 2.0, sy,
+                RAIL_H + total_rise / 2.0,
+                rail_len, RAIL_THICK,
+                -math.degrees(slope_angle),
+            )
+            # Flat landing extension rail — horizontal bar above the landing
+            _angled_box(
+                f"{rail_root}/rail_land_{side}",
+                s.end_x_m + visual_landing_depth_m / 2.0, sy,
+                total_rise + RAIL_H,
+                visual_landing_depth_m, RAIL_THICK, 0.0,
+            )
+            # Bottom post at the stair base
+            _post(f"{rail_root}/post_{side}_base", s.start_x_m, sy, 0.0)
+            # Intermediate posts along the stairs
+            pidx = 1
+            for i in range(POST_INTERVAL, s.step_count, POST_INTERVAL):
+                px      = s.start_x_m + i * s.step_depth_m
+                pz_base = i * s.step_height_m
+                _post(f"{rail_root}/post_{side}_{pidx}", px, sy, pz_base)
+                pidx += 1
+            # Top post at stair/landing junction
+            _post(f"{rail_root}/post_{side}_top", s.end_x_m, sy, total_rise)
+            # End post at far end of landing
+            _post(f"{rail_root}/post_{side}_end",
+                  s.end_x_m + visual_landing_depth_m, sy, total_rise)
+
+        log_event(LOGGER, logging.INFO, "stair_wood_materials_applied",
+                  f"Dark-oak staircase with grain texture + iron handrails both sides")
+    except Exception as exc:
+        log_event(LOGGER, logging.WARNING, "clinical_stair_materials_failed",
+                  "Could not apply clinical stair materials", error=str(exc))
+
+    # 4. Floor tiles — vibrant light blue with visible grout grid.
+    #    The base ground plane gets the tile colour; thin dark visual-only strips
+    #    are laid just above Z=0 as grout lines so individual tiles read clearly.
+    #    Physics plane is untouched (all grout prims carry no UsdPhysics APIs).
+    try:
+        import omni.usd
+        from pxr import Gf, UsdGeom, UsdShade, Sdf, Usd
+        stage = omni.usd.get_context().get_stage()
+        looks_path = "/World/Environment/Looks"
+        if not stage.GetPrimAtPath(looks_path).IsValid():
+            stage.DefinePrim(looks_path, "Scope")
+
+        def __make_mat_floor(mat_path, r, g, b, roughness=0.40):
+            if stage.GetPrimAtPath(mat_path).IsValid():
+                return UsdShade.Material(stage.GetPrimAtPath(mat_path))
+            mat = UsdShade.Material.Define(stage, mat_path)
+            sh  = UsdShade.Shader.Define(stage, f"{mat_path}/Shader")
+            sh.CreateIdAttr("UsdPreviewSurface")
+            sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(r, g, b))
+            sh.CreateInput("roughness",    Sdf.ValueTypeNames.Float).Set(roughness)
+            sh.CreateInput("metallic",     Sdf.ValueTypeNames.Float).Set(0.0)
+            mat.CreateSurfaceOutput().ConnectToSource(sh.ConnectableAPI(), "surface")
+            return mat
+
+        # Vibrant light blue — clearly blue, not washed out, coordinates with
+        # the off-white risers (0.94, 0.92, 0.90) and terrazzo stairs (0.72, 0.70, 0.67).
+        floor_mat  = __make_mat_floor(f"{looks_path}/FloorMat",  0.32, 0.60, 0.84, roughness=0.28)
+        floor_color = Gf.Vec3f(0.32, 0.60, 0.84)
+        # Dark grey grout joints between tiles.
+        grout_mat  = __make_mat_floor(f"{looks_path}/GroutMat",  0.20, 0.22, 0.25, roughness=0.85)
+        grout_color = Gf.Vec3f(0.20, 0.22, 0.25)
+
+        # Recolour the ground plane mesh.
+        gp_root = stage.GetPrimAtPath("/World/defaultGroundPlane")
+        if gp_root and gp_root.IsValid():
+            for prim in Usd.PrimRange(gp_root):
+                if prim.IsA(UsdGeom.Mesh):
+                    UsdGeom.Mesh(prim).GetDisplayColorAttr().Set([floor_color])
+                    UsdShade.MaterialBindingAPI(prim).Bind(
+                        floor_mat, UsdShade.Tokens.strongerThanDescendants
                     )
-                )
-            except Exception as exc:
-                log_event(LOGGER, logging.WARNING, "obstacle_spawn_failed", f"Failed to spawn handrail_{side_name}", error=str(exc))
 
-    # Apply texture material to stairs and top landing
-    if download_ok:
-        try:
-            import omni.usd
-            from pxr import UsdShade, Sdf
-            stage = omni.usd.get_context().get_stage()
-            material_path = "/World/Environment/Looks/ConcreteMaterial"
-            
-            # Check if material already exists to avoid recreating it
-            if not stage.GetPrimAtPath(material_path).IsValid():
-                material_prim = UsdShade.Material.Define(stage, material_path)
-                shader = UsdShade.Shader.Define(stage, f"{material_path}/Shader")
-                shader.CreateIdAttr("UsdPreviewSurface")
-                
-                texture = UsdShade.Shader.Define(stage, f"{material_path}/Texture")
-                texture.CreateIdAttr("UsdUVTexture")
-                texture.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(texture_local_path))
-                
-                shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(texture.ConnectableAPI(), "rgb")
-                material_prim.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
-            else:
-                material_prim = UsdShade.Material(stage.GetPrimAtPath(material_path))
-            
-            # Bind material to each step and landing
-            for i in range(s.step_count):
-                step_prim = stage.GetPrimAtPath(f"/World/Environment/step_{i}")
-                if step_prim.IsValid():
-                    material_api = UsdShade.MaterialBindingAPI(step_prim)
-                    material_api.Bind(material_prim, UsdShade.Tokens.strongerThanDescendants)
-            
-            landing_prim = stage.GetPrimAtPath("/World/Environment/top_landing")
-            if landing_prim.IsValid():
-                material_api = UsdShade.MaterialBindingAPI(landing_prim)
-                material_api.Bind(material_prim, UsdShade.Tokens.strongerThanDescendants)
-                
-            log_event(LOGGER, logging.INFO, "texture_binding_complete", "Successfully bound texture material to stairs and top landing")
-        except Exception as exc:
-            log_event(LOGGER, logging.WARNING, "texture_binding_failed", "Failed to bind texture material to stairs", error=str(exc))
+        # Grout grid — visual-only thin strips at Z=0.001 covering the action zone.
+        TILE_SIZE  = 0.60   # tile pitch (m)
+        GROUT_W    = 0.018  # grout joint width (m)
+        GROUT_Z    = 0.001  # just above the ground plane
+        GROUT_T    = 0.003  # visual thickness (m)
+        X0, X1     = -30.0, 30.0   # covers the whole visible floor area
+        Y0, Y1     = -30.0, 30.0
+        x_span     = X1 - X0
+        y_span     = Y1 - Y0
 
-    if args.final_scene:
-        try:
-            from final_scene import hide_stair_collision_visuals
-            hide_stair_collision_visuals(
-                s.step_count,
-                log=lambda level, action, msg, **f: log_event(LOGGER, level, action, msg, **f),
-            )
-        except Exception as exc:
-            log_event(
-                LOGGER,
-                logging.WARNING,
-                "final_scene_collision_visual_hide_failed",
-                "Could not hide default stair-collider visuals",
-                error=str(exc),
+        grout_root = "/World/Environment/TileGrout"
+        if not stage.GetPrimAtPath(grout_root).IsValid():
+            stage.DefinePrim(grout_root, "Xform")
+
+        def _grout_strip(path, cx, cy, sx, sy):
+            if stage.GetPrimAtPath(path).IsValid():
+                return
+            cube = UsdGeom.Cube.Define(stage, path)
+            cube.CreateSizeAttr(1.0)
+            cube.GetDisplayColorAttr().Set([grout_color])
+            xf = UsdGeom.Xformable(cube.GetPrim())
+            xf.ClearXformOpOrder()
+            xf.AddTranslateOp().Set(Gf.Vec3d(cx, cy, GROUT_Z))
+            xf.AddScaleOp().Set(Gf.Vec3d(sx, sy, GROUT_T))
+            UsdShade.MaterialBindingAPI(cube.GetPrim()).Bind(
+                grout_mat, UsdShade.Tokens.strongerThanDescendants
             )
 
-    # 3. Corridor walls spawning has been removed as requested by the user
+        # Lines running along Y (divide X into tile columns).
+        nx = int(math.ceil(x_span / TILE_SIZE)) + 1
+        for i in range(nx):
+            gx = X0 + i * TILE_SIZE
+            _grout_strip(f"{grout_root}/gx_{i}", gx, (Y0 + Y1) / 2.0, GROUT_W, y_span)
+
+        # Lines running along X (divide Y into tile rows).
+        ny = int(math.ceil(y_span / TILE_SIZE)) + 1
+        for j in range(ny):
+            gy = Y0 + j * TILE_SIZE
+            _grout_strip(f"{grout_root}/gy_{j}", (X0 + X1) / 2.0, gy, x_span, GROUT_W)
+
+        log_event(LOGGER, logging.INFO, "floor_tile_color_applied",
+                  f"Floor: vibrant light blue tiles ({nx}x{ny} grid, {TILE_SIZE}m pitch) with dark grout")
+    except Exception as exc:
+        log_event(LOGGER, logging.WARNING, "floor_tile_color_failed",
+                  "Could not apply floor tile colour/grout", error=str(exc))
+
+    # 5. (Corridor walls removed as requested)
     log_event(
         LOGGER,
         logging.INFO,
@@ -2109,7 +2286,7 @@ class PatientLocomotionState:
             (_stairs.start_x_m + (i + 0.5) * _stairs.step_depth_m, 0.0)
             for i in range(_stairs.step_count)
         )
-        self.waypoints.append((_stairs.end_x_m + 0.2, 0.0))  # top landing
+        self.waypoints.append((_stairs.end_x_m + 1.5, 0.0))  # top landing (1.5 m deep)
         self.current_wp_idx = min(1, len(self.waypoints) - 1)
         self.wp_direction = 1
 
@@ -2421,13 +2598,19 @@ PELVIS_STAND_HEIGHT_M = 0.80
 # taken slower still. The distance-synced gait phase scales the leg cadence to these
 # automatically, so a lower speed also slows the visible clip cadence to match.
 PATIENT_WALK_SPEED_FLAT_MPS = 0.50
-# Stairs are taken slowly and carefully. At 0.45 m/s the patient climbed at ~1.48
-# steps/sec (0.68 s/step) -- far too brisk, it "raced" up the flight (run
-# run_sim_20260622_182213). 0.22 m/s gives ~0.72 steps/sec (~1.4 s/step), the
-# measured careful pace of an ambulatory O2-therapy patient, and ~doubles the on-stair
-# time. Safe vs the follow lock: the robot is PhysX-pinned at the stair base (it never
-# climbs -- see project_stair_climb_50pct_limit), so matching its on-stair speed is moot.
-PATIENT_WALK_SPEED_STAIR_MPS = 0.22
+# Stairs are taken slowly and carefully, AND paced to the robot's REAL measured on-stair
+# climb rate so the follower can actually hold the gap. The old 0.22 m/s assumed "the
+# robot is PhysX-pinned at the stair base and never climbs, so matching is moot" -- but
+# the robot now makes slow forward progress UP the flight (~0.13 m/s body_vx, measured
+# run_sim_20260623_002845_986: base x 1.79 -> 5.18 across the stairs). At 0.22 the patient
+# out-climbed it by ~0.09 m/s, so the follow gap blew out from ~1.0 m on flat to ~1.6 m
+# avg / 2.5 m max on the steps. Matching the patient to the robot's ~0.13 m/s ceiling lets
+# the follow controller regulate the gap to its stair target (--stair-target-distance
+# 1.2 m) instead of being hopelessly outrun. The distance-synced foot-planting gait
+# rescales leg cadence to this speed automatically (no skate -- the stance foot stays
+# world-fixed). Nudge toward ~0.11-0.12 to actively reel the gap DOWN to 1.2 m rather than
+# merely hold it.
+PATIENT_WALK_SPEED_STAIR_MPS = 0.13
 
 
 def _patient_stand_height(person) -> float:
@@ -2935,11 +3118,11 @@ def apply_rgb_perception_noise(rgb: np.ndarray, vx: float, vy: float, wz: float)
         return rgb
         
     h, w = rgb.shape[:2]
-    # Remove alpha channel if present (RGBA to BGR)
+    # Isaac returns RGBA (4-ch) or RGB (3-ch); both must become BGR for cv2.
     if rgb.shape[2] == 4:
         rgb_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGBA2BGR)
     else:
-        rgb_bgr = rgb.copy()
+        rgb_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         
     noisy_rgb = rgb_bgr.astype(np.float32)
     
@@ -3115,9 +3298,10 @@ class FramePublisher:
                 small_depth = apply_realsense_depth_noise(small_depth)
                 small_rgb_bgr = apply_rgb_perception_noise(small_rgb, vx, vy, wz)
             else:
-                small_rgb_bgr = (cv2.cvtColor(small_rgb, cv2.COLOR_RGBA2BGR)
-                                 if small_rgb.ndim == 3 and small_rgb.shape[2] == 4
-                                 else small_rgb)
+                if small_rgb.ndim == 3 and small_rgb.shape[2] == 4:
+                    small_rgb_bgr = cv2.cvtColor(small_rgb, cv2.COLOR_RGBA2BGR)
+                else:
+                    small_rgb_bgr = cv2.cvtColor(small_rgb, cv2.COLOR_RGB2BGR)
 
             ok, buf = cv2.imencode('.jpg', small_rgb_bgr, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
             if not ok:

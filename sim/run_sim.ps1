@@ -6,7 +6,6 @@ param(
     [switch]$PauseAfterIsaac,
     [switch]$NoIsaac,
     [switch]$NoDockerRun,
-    [switch]$FinalScene,
     [string]$IsaacSimDir = $(if ($env:ISAACSIM_DIR) { $env:ISAACSIM_DIR } else { "C:\isaac_sim_600" }),
     [string]$Image = "go2-pose-x86:latest",
     [string]$FrameHost = "",
@@ -1167,7 +1166,6 @@ Write-Stage "setup" "start" "Preparing run_sim launch" @{
     headless = [bool]$Headless
     no_docker_run = [bool]$NoDockerRun
     self_test_walk = [bool]$SelfTestWalk
-    final_scene = [bool]$FinalScene
     pause_after_isaac = [bool]$PauseAfterIsaac
     keep_run_logs = [int]$KeepRunLogs
     trt_engine = $TrtEngine
@@ -1310,9 +1308,6 @@ if ($NoIsaac) {
     }
     if ($FastRender) {
         $isaacArgs += "-FastRender"
-    }
-    if ($FinalScene) {
-        $isaacArgs += "-FinalScene"
     }
     if ($PatientPhysics) {
         $isaacArgs += "-PatientPhysics"

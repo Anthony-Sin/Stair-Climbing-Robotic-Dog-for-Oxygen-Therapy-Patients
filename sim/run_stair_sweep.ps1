@@ -49,7 +49,11 @@ param(
     # next height. Default 300 = 5 min. A key press during a sim also skips to the next height.
     [int]$EpisodeTimeoutSec = 300,
     # Show the Isaac window instead of headless (slower; for eyeballing one height).
-    [switch]$Windowed
+    [switch]$Windowed,
+    # Skip building the slide-ready presentation pack (montage + graphs + data section) at the end.
+    [switch]$NoPresentation,
+    # Target length (s) every montage clip is sped/slowed to so they all finish together.
+    [double]$MontageSeconds = 20
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,7 +61,9 @@ $SimDir   = $PSScriptRoot
 $RepoRoot = Split-Path -Parent $SimDir
 $Launcher = Join-Path $SimDir "run_sim.ps1"
 $Analyzer = Join-Path $SimDir "analysis\analyze_climb.py"
+$Presenter = Join-Path $SimDir "analysis\sweep_present.py"
 $LogDir   = Join-Path $RepoRoot "log"
+$SweepStamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $WarmStatusFile  = Join-Path (Join-Path $LogDir "warm_isaac") "warm_status.json"
 $WarmCommandFile = Join-Path (Join-Path $LogDir "warm_isaac") "command.json"
 
@@ -253,7 +259,7 @@ foreach ($h in $Heights) {
         Write-Host "  waiting for warm episode to finish (runs_served > $rs0)..." -ForegroundColor DarkGray
         $epStatus = Wait-WarmEpisode -MinRunsServed ($rs0 + 1) -TimeoutSec $EpisodeTimeoutSec
         if ($epStatus -in @('dead','timeout')) {
-            $results += [pscustomobject]@{ Riser_m=$h; Label=$label; Waypoint="WARM_$($epStatus.ToUpper())"; Verdict="-"; StepsPastBase="-"; End=$epStatus; RunDir="-" }
+            $results += [pscustomobject]@{ Riser_m=$h; Label=$label; Waypoint="WARM_$($epStatus.ToUpper())"; Verdict="-"; StepsPastBase="-"; End=$epStatus; RunDir="-"; RunDirFull="" }
             Write-Host "  ! warm episode failed ($epStatus); falling back to COLD for the rest." -ForegroundColor Red
             $Cold = $true   # degrade gracefully so remaining heights still run
             continue
@@ -265,11 +271,12 @@ foreach ($h in $Heights) {
     $runDir = Get-ChildItem -Path $LogDir -Directory -Filter "run_sim_*" |
               Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if (-not $runDir) {
-        $results += [pscustomobject]@{ Riser_m=$h; Label=$label; Waypoint="NO_RUN_DIR"; Verdict="-"; StepsPastBase="-"; End=$endStatus; RunDir="-" }
+        $results += [pscustomobject]@{ Riser_m=$h; Label=$label; Waypoint="NO_RUN_DIR"; Verdict="-"; StepsPastBase="-"; End=$endStatus; RunDir="-"; RunDirFull="" }
         continue
     }
     $row = Read-HeightResult -H $h -Label $label -RunDirPath $runDir.FullName -Exit $exit
     $row | Add-Member -NotePropertyName End -NotePropertyValue $endStatus
+    $row | Add-Member -NotePropertyName RunDirFull -NotePropertyValue $runDir.FullName
     $results += $row
     Write-Host (" -> {0}  |  {1}  |  ~{2} steps  |  end={3}" -f $row.Waypoint, $row.Verdict, $row.StepsPastBase, $endStatus) -ForegroundColor Yellow
     if ($endStatus -eq 'quit') { $quitSweep = $true; Write-Host "Quit requested -- stopping sweep." -ForegroundColor Yellow; break }
@@ -294,3 +301,44 @@ Write-Host "================ BASELINE STEP-HEIGHT SWEEP SUMMARY ================
 $results | Format-Table -AutoSize Riser_m, Label, Waypoint, StepsPastBase, End, Verdict
 Write-Host "Run dirs under: $LogDir" -ForegroundColor DarkGray
 $results | ForEach-Object { Write-Host ("  {0:N3} m -> {1}" -f $_.Riser_m, $_.RunDir) -ForegroundColor DarkGray }
+
+# --- presentation pack -----------------------------------------------------
+# Bundle every episode's physics log + recorded video into ONE slide-ready folder under
+# log\stair_sweep_<stamp>\presentation\: a 2x3 montage (all clips speed-normalized to finish
+# together), matplotlib graphs, a stats card, and a CSV/JSON data section. Wrapped in try/catch
+# so a presentation hiccup never masks the sweep results printed above. Re-runnable standalone:
+#   python sim\analysis\sweep_present.py --manifest log\stair_sweep_<stamp>\manifest.json
+if (-not $NoPresentation) {
+    try {
+        if (-not (Get-Command python -ErrorAction SilentlyContinue)) { throw "python not found on PATH" }
+        if (-not (Test-Path $Presenter)) { throw "missing presenter: $Presenter" }
+        $SweepDir = Join-Path $LogDir "stair_sweep_$SweepStamp"
+        New-Item -ItemType Directory -Force -Path $SweepDir | Out-Null
+        $episodes = @()
+        foreach ($r in $results) {
+            if ($r.RunDirFull -and (Test-Path -LiteralPath $r.RunDirFull)) {
+                $episodes += [ordered]@{ height = $r.Riser_m; label = "$($r.Label)"; run_dir = $r.RunDirFull; waypoint = "$($r.Waypoint)" }
+            }
+        }
+        if ($episodes.Count -eq 0) { throw "no completed episodes with run dirs to present" }
+        $manifest = [ordered]@{ stamp = $SweepStamp; heights = @($Heights); backend = $ClimbBackend; episodes = @($episodes) }
+        $manifestPath = Join-Path $SweepDir "manifest.json"
+        $json = $manifest | ConvertTo-Json -Depth 6
+        # UTF-8 WITHOUT BOM (Python json.load rejects a BOM -- see CLAUDE.md incident ledger).
+        [System.IO.File]::WriteAllText($manifestPath, $json, (New-Object System.Text.UTF8Encoding $false))
+        $pres = Join-Path $SweepDir "presentation"
+        Write-Host ""
+        Write-Host ("Building presentation pack ({0} episodes) -> {1}" -f $episodes.Count, $pres) -ForegroundColor Green
+        & python $Presenter --manifest $manifestPath --out $pres --montage-seconds $MontageSeconds
+        Write-Host ""
+        Write-Host "Presentation pack (drop these into your slides):" -ForegroundColor Green
+        Write-Host ("  montage : {0}" -f (Join-Path $pres 'stair_sweep_montage.mp4')) -ForegroundColor Cyan
+        Write-Host ("  graphs  : {0}" -f (Join-Path $pres 'graphs')) -ForegroundColor Cyan
+        Write-Host ("  card    : {0}" -f (Join-Path $pres 'stats_card.png')) -ForegroundColor Cyan
+        Write-Host ("  data    : {0}" -f (Join-Path $pres 'sweep_summary.csv')) -ForegroundColor Cyan
+        Write-Host ("  clips   : {0}" -f (Join-Path $pres 'clips')) -ForegroundColor Cyan
+        Write-Host ("  (regen anytime: python sim\analysis\sweep_present.py --manifest `"{0}`")" -f $manifestPath) -ForegroundColor DarkGray
+    } catch {
+        Write-Host "Presentation pack step skipped/failed (sweep results above are unaffected): $_" -ForegroundColor Yellow
+    }
+}

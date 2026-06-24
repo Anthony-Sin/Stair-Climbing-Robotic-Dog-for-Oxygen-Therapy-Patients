@@ -70,8 +70,10 @@ class GaitParams:
     elbow_amp: float = 0.18
     elbow_bias: float = 0.22
 
-    # Spine forward lean (constant for the style; stairs lean more).
+    # Forward lean chain: pelvis → lower spine → upper spine.
+    lumbar_pitch: float = 0.0
     spine_pitch: float = 0.0
+    pelvis_pitch: float = 0.0
 
     # Amplitude floor so a slow walk still moves the limbs (0..1 of full at speed 0).
     min_activation: float = 0.55
@@ -296,7 +298,9 @@ class Gait:
             toe_l=toe_l, toe_r=toe_r,
             shoulder_l=shoulder_l, shoulder_r=shoulder_r,
             elbow_l=elbow_l, elbow_r=elbow_r,
+            lumbar_pitch=self.params.lumbar_pitch,
             spine_pitch=self.params.spine_pitch,
+            pelvis_pitch=self.params.pelvis_pitch,
         )
 
 
@@ -311,7 +315,15 @@ class FlatWalk(Gait):
         *,
         leg_geom: Optional[LegGeometry] = None,
     ) -> None:
-        super().__init__(params or GaitParams(), leg_geom=leg_geom)
+        super().__init__(
+            params or GaitParams(
+                lumbar_pitch=0.08,   # subtle lower-back lean forward while walking
+                spine_pitch=0.12,    # matching upper-back lean
+                shoulder_bias=0.10,  # arms carried slightly forward with the body
+                elbow_bias=0.24,     # natural arm bend for a forward-leaning walk
+            ),
+            leg_geom=leg_geom,
+        )
 
 
 class StairClimb(Gait):
@@ -338,12 +350,12 @@ class StairClimb(Gait):
                 knee_amp=1.5,         # pronounced knee lift to clear the riser
                 knee_bias=0.14,
                 ankle_amp=0.3,
-                shoulder_amp=0.16,    # gentle arm swing. 0.3 pumped the arms ~0.5 rad
-                                      # peak-to-peak on the climb -- a frantic, exaggerated
-                                      # upper body. A careful stair climb barely swings.
-                elbow_bias=0.28,      # arms held softly bent, not clutched up high (0.4)
-                spine_pitch=0.12,     # a gentle lean into the stairs (0.24 read as an
-                                      # over-exaggerated stoop in the climb footage)
+                shoulder_amp=0.16,    # gentle arm swing on the climb
+                shoulder_bias=0.22,   # both arms carried forward to match the body lean
+                elbow_bias=0.32,      # slightly more bend so arms don't dangle behind the lean
+                lumbar_pitch=0.22,    # lower spine bends the whole back root forward
+                spine_pitch=0.50,     # upper thoracic adds mid-back lean
+                pelvis_pitch=0.20,    # pelvis anterior tilt
                 min_activation=0.85,  # stay high-stepping even at slow climb speed
                 # Foot-planting (IK) override. stance_frac is the fraction of the cycle a
                 # foot is PLANTED. 0.5 (no double-support) made BOTH legs bend/lift at the

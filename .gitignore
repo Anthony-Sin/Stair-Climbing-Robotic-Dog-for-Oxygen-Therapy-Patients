@@ -58,3 +58,5 @@ librealsense/
 
 # Temporary files
 *.tmp
+sim/isaac/assets/Biped_Setup_modified_*.usd
+

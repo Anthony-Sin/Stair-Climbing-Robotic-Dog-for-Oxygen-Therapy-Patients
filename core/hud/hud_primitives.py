@@ -6,19 +6,20 @@ import numpy as np
 from typing import Any, Tuple
 
 
-HUD_BG = (42, 36, 25)           # dark blue instrument panel fill (BGR)
-HUD_BG_DARK = (14, 18, 19)      # black title/rail fill
-HUD_EDGE = (50, 106, 156)       # aged copper frame
-HUD_EDGE_DIM = (59, 76, 79)     # oxidized steel linework
+HUD_BG = (28, 30, 22)           # near-black warm instrument fill (BGR)
+HUD_BG_DARK = (12, 16, 14)      # very dark title/rail fill
+HUD_EDGE = (56, 118, 58)        # tactical green panel frame (BGR)
+HUD_EDGE_DIM = (30, 62, 34)     # dim green linework
 HUD_TEXT = (210, 224, 219)      # pale instrument text
 HUD_MUTED = (128, 145, 144)     # dim labels
-HUD_BLUE = (207, 154, 72)       # cool telemetry blue
-HUD_BLUE_DIM = (89, 80, 52)
-HUD_MINT = (92, 206, 105)       # live/ok accent
-HUD_MAGENTA = (76, 104, 220)    # warm alert/orange ink
-HUD_ALERT = (50, 68, 218)
-HUD_CYAN = (220, 236, 96)       # cyan target geometry (BGR)
-HUD_GOLD = (58, 190, 228)       # gold/copper geometry (BGR)
+HUD_BLUE = (72, 160, 80)        # green readout accent (unified, was blue)
+HUD_BLUE_DIM = (36, 80, 40)     # dim version
+HUD_MINT = (92, 206, 105)       # live/ok accent (keep green)
+HUD_MAGENTA = (76, 104, 220)    # warning orange-red (keep for warnings)
+HUD_ALERT = (50, 68, 218)       # red alert (keep)
+HUD_CYAN = (80, 195, 90)        # bright tactical green accent (was yellowish teal)
+HUD_GOLD = (40, 175, 210)       # amber/gold for highlights (keep warmth)
+HUD_ORANGE = (0, 140, 255)      # orange for crosshair target (BGR)
 HUD_INK = (8, 13, 16)
 HUD_RAIL_LIGHT = (208, 222, 217)
 HUD_RAIL_MUTED = (124, 142, 141)
@@ -73,7 +74,7 @@ def _draw_hud_panel(img: np.ndarray, x: int, y: int, w: int, h: int, title: str,
     cv2.polylines(img, [pts], True, (12, 18, 20), 4, cv2.LINE_AA)
     cv2.polylines(img, [pts], True, border_color, 2, cv2.LINE_AA)
     cv2.rectangle(img, (x + 7, y + 7), (x + w - 7, y + h - 7), HUD_EDGE_DIM, 1, cv2.LINE_AA)
-    cv2.line(img, (x + 10, y + 34), (x + w - 12, y + 34), (27, 59, 74), 1, cv2.LINE_AA)
+    cv2.line(img, (x + 10, y + 34), (x + w - 12, y + 34), (22, 54, 26), 1, cv2.LINE_AA)
 
     side_x = x + w - 16
     side_pts = np.array(
@@ -101,7 +102,7 @@ def _draw_hud_panel(img: np.ndarray, x: int, y: int, w: int, h: int, title: str,
     if title:
         title_w = min(w - 32, max(128, 18 + len(title) * 8))
         cv2.rectangle(img, (x + 15, y + 8), (x + 15 + title_w, y + 29), HUD_BG_DARK, -1)
-        cv2.rectangle(img, (x + 15, y + 8), (x + 15 + title_w, y + 29), (53, 91, 98), 1, cv2.LINE_AA)
+        cv2.rectangle(img, (x + 15, y + 8), (x + 15 + title_w, y + 29), (42, 84, 46), 1, cv2.LINE_AA)
         cv2.putText(img, title, (x + 18, y + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.40,
                     HUD_TEXT, 1, cv2.LINE_AA)
 
@@ -173,25 +174,33 @@ def _draw_center_instrument_bar(img: np.ndarray, cx: int, cy: int, target_dist: 
 
 def _draw_robot_schematic(img: np.ndarray, x: int, y: int, w: int, h: int) -> None:
     """Draw a compact quadruped schematic in a panel inset."""
-    cv2.rectangle(img, (x, y), (x + w, y + h), (91, 99, 90), -1)
+    # Dark steel background
+    cv2.rectangle(img, (x, y), (x + w, y + h), (48, 54, 52), -1)
     cv2.rectangle(img, (x, y), (x + w, y + h), HUD_EDGE, 1, cv2.LINE_AA)
+    # Body — bright warm-gray so it reads clearly
     body = np.array(
         [[x + 18, y + 22], [x + 50, y + 16], [x + 64, y + 23], [x + 58, y + 34], [x + 22, y + 36]],
         dtype=np.int32,
     )
     head = np.array([[x + 61, y + 19], [x + 74, y + 22], [x + 75, y + 31], [x + 60, y + 30]], dtype=np.int32)
-    cv2.fillPoly(img, [body, head], (136, 144, 135), cv2.LINE_AA)
-    cv2.polylines(img, [body], True, HUD_INK, 1, cv2.LINE_AA)
-    cv2.polylines(img, [head], True, HUD_INK, 1, cv2.LINE_AA)
+    cv2.fillPoly(img, [body, head], (176, 188, 172), cv2.LINE_AA)
+    cv2.polylines(img, [body], True, (70, 80, 78), 1, cv2.LINE_AA)
+    cv2.polylines(img, [head], True, (70, 80, 78), 1, cv2.LINE_AA)
+    # Legs — bright gold/amber for visibility
+    leg_color = (58, 190, 228)
     for hx, hy, fx, fy in (
         (x + 26, y + 35, x + 20, y + 57),
         (x + 38, y + 34, x + 42, y + 57),
         (x + 52, y + 33, x + 48, y + 55),
         (x + 60, y + 31, x + 68, y + 53),
     ):
-        cv2.line(img, (hx, hy), (fx, fy), HUD_INK, 2, cv2.LINE_AA)
-        cv2.circle(img, (fx, fy), 2, HUD_INK, -1, cv2.LINE_AA)
-    cv2.circle(img, (x + 70, y + 25), 1, HUD_INK, -1)
+        cv2.line(img, (hx, hy), (fx, fy), leg_color, 2, cv2.LINE_AA)
+        cv2.circle(img, (fx, fy), 3, leg_color, -1, cv2.LINE_AA)
+        cv2.circle(img, (fx, fy), 3, (8, 13, 16), 1, cv2.LINE_AA)
+    # Eye dot
+    cv2.circle(img, (x + 70, y + 25), 2, (90, 220, 110), -1)
+    # "TOP" label so orientation is clear
+    cv2.putText(img, "TOP", (x + 2, y + h - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.26, (100, 116, 112), 1, cv2.LINE_AA)
 
 
 def _draw_actuator_widget(

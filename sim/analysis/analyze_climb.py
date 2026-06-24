@@ -5,6 +5,10 @@ that matters for the stair goal: how far the robot climbed, whether it beached/f
 whether the climb policy engaged and where, follow quality, and patient collision.
 
 Usage:  python analyze_climb.py [path/to/run_dir]
+
+`analyze_run(run_dir)` exposes the same parse + honest verdict as a reusable function
+(returns {"rows", "stats"}) so other tooling (e.g. sweep_present.py) can share the
+SINGLE source of truth for the verdict thresholds instead of re-deriving them.
 """
 import json
 import sys
@@ -40,14 +44,12 @@ def latest_run_dir():
     return max(cands, key=os.path.getmtime) if cands else None
 
 
-def main():
-    run_dir = sys.argv[1] if len(sys.argv) > 1 else latest_run_dir()
-    if not run_dir:
-        print("no run dir found")
-        return
+def load_fall_diag_rows(run_dir):
+    """Return the list of per-step `sim` dicts from a run's fall_diag stream (or [])."""
     jl = os.path.join(run_dir, "debug", "isaac_env.jsonl")
-    print(f"run: {run_dir}")
     rows = []
+    if not os.path.exists(jl):
+        return rows
     for line in open(jl, encoding="utf-8"):
         try:
             d = json.loads(line)
@@ -56,9 +58,18 @@ def main():
         ev = d.get("event")
         if isinstance(ev, dict) and ev.get("action") == "fall_diag":
             rows.append(d.get("sim", {}))
+    return rows
+
+
+def analyze_run(run_dir):
+    """Parse a run's fall_diag stream and compute the honest climb verdict + metrics.
+
+    Returns {"rows": [...sim dicts...], "stats": {...} | None}. stats is None when the
+    run has no fall_diag rows. Does NOT print -- use print_report() for the CLI report.
+    """
+    rows = load_fall_diag_rows(run_dir)
     if not rows:
-        print("no fall_diag rows")
-        return
+        return {"rows": rows, "stats": None}
 
     xs = [s.get("x", -99) for s in rows]
     max_x = max(xs)
@@ -82,6 +93,7 @@ def main():
     rolls_on = [abs(s.get("roll", 0)) for s in on]
     mean_pitch_on = (sum(pitches) / len(pitches)) if pitches else None
     min_pitch_on = min(pitches) if pitches else None
+    max_pitch_on = max(pitches) if pitches else None
     max_abs_roll_on = max(rolls_on) if rolls_on else None
     # Peak body tilt over the WHOLE run. A genuine FALL is a large tilt-from-vertical
     # (flip/topple). A stair COLLISION is the opposite: the body stays roughly upright
@@ -102,35 +114,15 @@ def main():
     min_gap = min(gaps) if gaps else None
     steps_climbed = max(0.0, (max_x - STAIR_BASE_X)) / STEP_RUN
 
-    print(f"  rows={len(rows)}  sim_t={final.get('t')}")
-    print(f"  max_x={max_x:.3f}  final_x={final.get('x')}  => ~{steps_climbed:.1f} step-runs past base (x=2.0)")
-    print(f"  final h={final.get('h')}  pitch={final.get('pitch')}  roll={final.get('roll')}")
-    print(f"  stairs_action_active first True at x={eng_x}  (engagements={len(eng)})")
-    if on:
-        print(f"  on-stairs(x>=1.95): min_h={min_h_on:.3f}  "
-              f"pitch[min={min(pitches):.1f}, mean={mean_pitch_on:.1f}, max={max(pitches):.1f}]  "
-              f"|roll|max={max_abs_roll_on:.1f}")
-    print(f"  min gap_m to patient = {min_gap}  (collision floor 0.65; <0.65 = too close)")
-    print(f"  max |y| off-axis = {max_abs_y:.2f} m  (>1.0 = spiralled/wandered)")
-    print(f"  yaw span = {yaw_span:.0f} deg  (>180 = did a loop)")
-    print(f"  mean |yaw| at stair entry (x 1.9-2.25) = {entry_yaw if entry_yaw is None else round(entry_yaw,1)} deg  (0=head-on, >20=crooked)")
-    print(f"  max body tilt over run = {max_tilt:.1f} deg  (>{FALL_TILT_DEG:.0f} = flipped/toppled)")
-    print("  ---")
-    # climb height profile: world z gain (absolute base z) vs x, to see step-by-step ascent
+    # climb height profile: world z gain vs x, to see step-by-step ascent. h is base
+    # height above terrain directly below; on a clean climb it stays ~0.3 while x advances.
     zs = [(s.get("x"), s.get("h")) for s in rows if s.get("x", -9) >= 1.9]
-    if zs:
-        # h is base height above terrain directly below; on a clean climb it stays ~0.3 while x advances
-        # up the steps. Report base height ABSOLUTE via... (h is above-terrain, so use it as stability)
-        hs = [h for _, h in zs if h is not None]
-        if hs:
-            print(f"  on-stairs height-above-terrain: stayed in [{min(hs):.2f},{max(hs):.2f}] "
-                  f"(healthy ~0.30; <{COLLAPSE_H_M} = collapsed/dragging)")
+    hs = [h for _, h in zs if h is not None]
+    hs_min = min(hs) if hs else None
+    hs_max = max(hs) if hs else None
 
     # ---- HONEST verdict: FELL vs COLLIDED vs CLEAN CLIMB ----------------------
-    # The OLD verdict was `climbed = max_x >= base + 0.6` -- a pure forward-distance
-    # check. So a dog that nose-dived into the steps and wedged (upright, never
-    # flipped, never reached the top, carrying the O2 tank) scored CLIMBED=True. The
-    # three outcomes below are physics-distinct and read straight off the fall_diag
+    # The three outcomes below are physics-distinct and read straight off the fall_diag
     # trajectory (x, h, roll, pitch); no synthetic/demo telemetry is trusted.
     reached_stairs = max_x >= STAIR_BASE_X - 0.05
     # genuine flip/topple: body tilt blew past the fall threshold.
@@ -144,8 +136,6 @@ def main():
     dragging = on_stairs and (min_h_on is not None and min_h_on < COLLAPSE_H_M)
     collided = (not fell) and on_stairs and (nose_diving or dragging)
     # final pose: standing upright at a healthy height (not nose-down, not dragging).
-    # Use the singularity-free up-axis tilt when present (Euler roll/pitch gimbal-spin
-    # at steep pitch); fall back to Euler roll/pitch for older logs.
     final_h = float(final.get("h", 0) or 0)
     if "tilt_deg" in final:
         final_upright = (
@@ -187,13 +177,99 @@ def main():
     else:
         verdict = "INCOMPLETE (reached stairs, no clean top-out and no clear fall/collision)"
 
-    print(f"  VERDICT: {verdict}")
-    print(f"    fell(flip)={fell}  collided={collided}  clean_climb={clean_climb}  "
-          f"final_upright_standing={final_upright}  spiralled={spiralled}")
     # collision during the climb only (ignore spawn-instant transient near x=-4.5)
     climb_gaps = [s.get("gap_m") for s in rows if s.get("gap_m") is not None and s.get("x", -99) > -3.5]
     min_climb_gap = min(climb_gaps) if climb_gaps else None
-    print(f"  PATIENT collision risk (gap<0.65, x>-3.5): {bool(min_climb_gap is not None and min_climb_gap < 0.65)}  (min={min_climb_gap})")
+    patient_collision_risk = bool(min_climb_gap is not None and min_climb_gap < 0.65)
+
+    # timing (sim seconds) -- for downstream presentation captions. total_t is the
+    # recorded fall_diag span; climb_time_s is from first reaching the base to the end.
+    ts = [s.get("t") for s in rows if s.get("t") is not None]
+    total_t = (ts[-1] - ts[0]) if len(ts) >= 2 else (ts[-1] if ts else None)
+    on_t = [s.get("t") for s in rows if s.get("x", -99) >= STAIR_BASE_X and s.get("t") is not None]
+    climb_time_s = (ts[-1] - on_t[0]) if (on_t and ts) else None
+
+    stats = {
+        "run_dir": run_dir,
+        "n_rows": len(rows),
+        "sim_t": final.get("t"),
+        "total_t": total_t,
+        "climb_time_s": climb_time_s,
+        "max_x": max_x,
+        "final_x": final.get("x"),
+        "final_h": final.get("h"),
+        "final_pitch": final.get("pitch"),
+        "final_roll": final.get("roll"),
+        "steps_climbed": steps_climbed,
+        "eng_x": eng_x,
+        "eng_count": len(eng),
+        "on_stairs": on_stairs,
+        "min_h_on": min_h_on,
+        "pitch_min_on": min_pitch_on,
+        "pitch_mean_on": mean_pitch_on,
+        "pitch_max_on": max_pitch_on,
+        "max_abs_roll_on": max_abs_roll_on,
+        "min_gap": min_gap,
+        "max_abs_y": max_abs_y,
+        "yaw_span": yaw_span,
+        "entry_yaw": entry_yaw,
+        "max_tilt": max_tilt,
+        "hs_min": hs_min,
+        "hs_max": hs_max,
+        "reached_stairs": reached_stairs,
+        "fell": fell,
+        "collided": collided,
+        "clean_climb": clean_climb,
+        "final_upright": final_upright,
+        "spiralled": spiralled,
+        "min_climb_gap": min_climb_gap,
+        "patient_collision_risk": patient_collision_risk,
+        "verdict": verdict,
+    }
+    return {"rows": rows, "stats": stats}
+
+
+def print_report(run_dir, result):
+    """Reproduce the original analyze_climb stdout from an analyze_run() result.
+
+    NOTE: run_stair_sweep.ps1 greps this stdout for the `VERDICT:` and
+    `~N step-runs past base` lines -- keep these strings stable.
+    """
+    print(f"run: {run_dir}")
+    s = result.get("stats")
+    if s is None:
+        print("no fall_diag rows")
+        return
+    print(f"  rows={s['n_rows']}  sim_t={s['sim_t']}")
+    print(f"  max_x={s['max_x']:.3f}  final_x={s['final_x']}  => ~{s['steps_climbed']:.1f} step-runs past base (x=2.0)")
+    print(f"  final h={s['final_h']}  pitch={s['final_pitch']}  roll={s['final_roll']}")
+    print(f"  stairs_action_active first True at x={s['eng_x']}  (engagements={s['eng_count']})")
+    if s["on_stairs"]:
+        print(f"  on-stairs(x>=1.95): min_h={s['min_h_on']:.3f}  "
+              f"pitch[min={s['pitch_min_on']:.1f}, mean={s['pitch_mean_on']:.1f}, max={s['pitch_max_on']:.1f}]  "
+              f"|roll|max={s['max_abs_roll_on']:.1f}")
+    print(f"  min gap_m to patient = {s['min_gap']}  (collision floor 0.65; <0.65 = too close)")
+    print(f"  max |y| off-axis = {s['max_abs_y']:.2f} m  (>1.0 = spiralled/wandered)")
+    print(f"  yaw span = {s['yaw_span']:.0f} deg  (>180 = did a loop)")
+    print(f"  mean |yaw| at stair entry (x 1.9-2.25) = {s['entry_yaw'] if s['entry_yaw'] is None else round(s['entry_yaw'],1)} deg  (0=head-on, >20=crooked)")
+    print(f"  max body tilt over run = {s['max_tilt']:.1f} deg  (>{FALL_TILT_DEG:.0f} = flipped/toppled)")
+    print("  ---")
+    if s["hs_min"] is not None:
+        print(f"  on-stairs height-above-terrain: stayed in [{s['hs_min']:.2f},{s['hs_max']:.2f}] "
+              f"(healthy ~0.30; <{COLLAPSE_H_M} = collapsed/dragging)")
+    print(f"  VERDICT: {s['verdict']}")
+    print(f"    fell(flip)={s['fell']}  collided={s['collided']}  clean_climb={s['clean_climb']}  "
+          f"final_upright_standing={s['final_upright']}  spiralled={s['spiralled']}")
+    print(f"  PATIENT collision risk (gap<0.65, x>-3.5): {s['patient_collision_risk']}  (min={s['min_climb_gap']})")
+
+
+def main():
+    run_dir = sys.argv[1] if len(sys.argv) > 1 else latest_run_dir()
+    if not run_dir:
+        print("no run dir found")
+        return
+    result = analyze_run(run_dir)
+    print_report(run_dir, result)
 
 
 if __name__ == "__main__":

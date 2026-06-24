@@ -54,7 +54,9 @@ class JointPose:
     elbow_r: float = 0.0
     toe_l: float = 0.0
     toe_r: float = 0.0
-    spine_pitch: float = 0.0
+    lumbar_pitch: float = 0.0  # lower spine forward bend (Spine / CC_Base_Spine01)
+    spine_pitch: float = 0.0  # upper thoracic forward bend (Spine1 / CC_Base_Spine02)
+    pelvis_pitch: float = 0.0  # pelvis anterior tilt (Hips bone)
 
     @classmethod
     def zero(cls) -> "JointPose":
