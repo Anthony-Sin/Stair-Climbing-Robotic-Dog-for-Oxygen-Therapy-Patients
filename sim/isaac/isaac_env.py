@@ -516,6 +516,10 @@ def _cmd_receiver_thread(port: int) -> None:
                     _cmd_vel["last_nonzero_ts"] = _cmd_vel["ts"]
                 active_count = int(_cmd_vel.get("active_count", 0))
             if cmd_count == 1:
+                # First packet from Docker proves the WSL2 port proxy is up — safe to
+                # reconnect the frame TCP link.
+                if _warm_publisher is not None and getattr(_warm_publisher, "_frame_send_gated", False):
+                    _warm_publisher._frame_send_gated = False
                 log_event(
                     LOGGER,
                     logging.INFO,
@@ -3215,6 +3219,10 @@ class FramePublisher:
         self._connected = False
         self._seq  = 0
         self._warning_times = {}
+        # Warm-episode gate: set True on warm reset, cleared False when the first Docker
+        # command arrives (proving the WSL2 port proxy is fully established).  On first
+        # boot this stays False (no warm reset fires before the initial episode).
+        self._frame_send_gated = False
         self._suppressed_warnings = {}
         first_rgb_w, first_rgb_h, first_depth_w, first_depth_h, first_quality = self.PUBLISH_ATTEMPTS[0]
         log_event(
@@ -3366,6 +3374,15 @@ class FramePublisher:
             )
             return
         import struct
+        # Warm-episode gate: do NOT attempt to connect or send until the Docker controller
+        # has sent its first command.  Before that, the WSL2 Desktop port proxy for port
+        # 52002 may not be forwarding to the new container yet — Isaac's TCP connect()
+        # succeeds (proxy ACKs) and sendall() completes (data sits in the OS buffer) but
+        # Docker's accept() never fires, so the frame is silently dropped.  Once Docker's
+        # SimRobotController sends its first packet (proving the proxy is up), the gate is
+        # cleared by the command-receive thread.
+        if self._frame_send_gated:
+            return
         if not self._ensure_connected():
             # Container TCP server not listening yet (or link is down). Drop this frame
             # and retry the connect on the next one. Rate-limited so the brief window
@@ -6688,7 +6705,9 @@ def _warm_retarget_logger(run_dir: str) -> None:
 def _warm_reset_state_for_new_episode() -> None:
     """Reset the module-global state that carries across episodes and open a fresh USD
     stage, so the next main() call composes a clean scene in the same warm Kit. The
-    UDP receiver thread and the FramePublisher are intentionally kept alive."""
+    UDP receiver thread is kept alive. The FramePublisher object is kept alive but its
+    TCP socket is closed so the new Docker container gets a fresh connection (avoiding
+    the stale Docker-Desktop port-forward race that causes 90s frame stalls)."""
     global _go2_locomotion_state, _o2_payload_handle, _final_scene_handle
     global _front_camera_smoothed_position, _using_go2_builtin_camera
     global _camera_mount_update_warned, _final_scene_wall_camera_update_warned
@@ -6701,6 +6720,21 @@ def _warm_reset_state_for_new_episode() -> None:
     _camera_mount_update_warned = False
     _final_scene_wall_camera_update_warned = False
     _distractor_t = 0.0
+    # Close the stale TCP socket so the next episode's Docker container gets a fresh
+    # connection. The FramePublisher object stays alive; _ensure_connected() will
+    # reconnect on the first send of the new episode.
+    if _warm_publisher is not None:
+        try:
+            if _warm_publisher._sock is not None:
+                _warm_publisher._sock.close()
+        except Exception:
+            pass
+        _warm_publisher._sock = None
+        _warm_publisher._connected = False
+        # Gate frame sends until Docker's command socket arrives, proving the WSL2 port
+        # proxy is fully established.  Without this, Isaac reconnects rapidly to a stale
+        # proxy, sendall() silently succeeds (OS buffer), and Docker never receives frames.
+        _warm_publisher._frame_send_gated = True
     if hasattr(update_final_scene_recording_cameras, "_logged_robot_pose"):
         try:
             del update_final_scene_recording_cameras._logged_robot_pose

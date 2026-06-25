@@ -274,8 +274,8 @@ def _plot_approach_time(ax, eps):
         fontsize=8)
     ax.set_ylabel("sim-time to reach stair base (s)")
     ax.set_title(f"Approach time (robot reaches x ≥ {STAIR_BASE_X:.1f} m)")
-    ax.axhline(30, ls=":", color="0.5", lw=1.0)
-    ax.text(len(valid) - 0.5, 31, "30 s guideline", ha="right", color="0.4", fontsize=8)
+    ax.axhline(30, ls=":", color="0.65", lw=1.0)
+    ax.text(len(valid) - 0.5, 31, "30 s guideline", ha="right", color="0.6", fontsize=8)
 
 
 def generate_graphs(eps, rows, graphs_dir):
@@ -287,13 +287,14 @@ def generate_graphs(eps, rows, graphs_dir):
     except Exception as exc:
         log(f"WARNING: matplotlib unavailable ({exc}); skipping graphs")
         return []
+    sweep_present._setup_dark_theme(plt)
     os.makedirs(graphs_dir, exist_ok=True)
     _assign_colors(eps)
     written = []
 
     def _save(fig, name):
         p = os.path.join(graphs_dir, name)
-        fig.savefig(p, dpi=150, bbox_inches="tight", facecolor="white")
+        fig.savefig(p, dpi=150, bbox_inches="tight", transparent=True)
         plt.close(fig)
         written.append(p)
 
@@ -323,7 +324,7 @@ def generate_graphs(eps, rows, graphs_dir):
         _plot_reach(axes[1][1], rows)
         axes[1][2].axis("off")  # empty cell (reserved for future metric)
         fig.suptitle("Person-Follow Sweep — PGTT walk · blind-RL climb · YOLO · +O₂ payload",
-                     fontsize=14, fontweight="bold")
+                     fontsize=14, fontweight="bold", color="#e0e0e0")
         fig.tight_layout(rect=(0, 0, 1, 0.97))
         _save(fig, "g6_dashboard.png")
     except Exception as exc:
@@ -597,7 +598,7 @@ def run(args):
         log(f"wrote {stats_card}")
 
     if not args.no_montage:
-        montage = render_montage(eps, rows, stats_card,
+        montage = render_montage(eps, stats_card,
                                  os.path.join(out_dir, "follow_sweep_montage.mp4"),
                                  args.montage_seconds, args.montage_mode, args.fit)
         if montage:
@@ -621,6 +622,11 @@ def run(args):
         produced["clips"] = made
         log(f"wrote {len(made)} standalone clip(s) to {clips_dir}")
 
+    viewer = generate_html_viewer(eps, rows, os.path.join(out_dir, "viewer.html"))
+    if viewer:
+        produced["viewer"] = viewer
+        log(f"wrote {viewer}")
+
     shutil.rmtree(os.path.join(out_dir, "_montage"), ignore_errors=True)
     log("=" * 60)
     log(f"PRESENTATION PACK READY: {out_dir}")
@@ -630,6 +636,72 @@ def run(args):
         else:
             log(f"  {k}: {os.path.basename(v)}")
     return 0
+
+
+def generate_html_viewer(eps, rows, out_path):
+    """Generate a self-contained HTML page showing all episode videos in one grid."""
+    items = []
+    for ep, row in zip(eps, rows):
+        video = ep.get("video")
+        if not video:
+            continue
+        rel = os.path.relpath(video, os.path.dirname(out_path)).replace("\\", "/")
+        h = ep.get("height")
+        label = f"{h:.3f} m  {ep['label_short']}" if h is not None else ep["label_short"]
+        reach = ep.get("follow_reach", "NO DATA")
+        verdict = ep.get("verdict_short", "")
+        steps = row.get("steps_climbed")
+        steps_s = f"{steps:.1f} / {row.get('step_count', 14)} steps" if steps is not None else ""
+        reach_color = {
+            "REACHED TOP": "#2e7d32", "DID NOT REACH": "#546e7a",
+            "FELL": "#c62828", "INCOMPLETE": "#9e9e9e", "NO DATA": "#bdbdbd",
+        }.get(reach, "#bdbdbd")
+        items.append((rel, label, reach, reach_color, verdict, steps_s))
+
+    cards = ""
+    for rel, label, reach, reach_color, verdict, steps_s in items:
+        cards += f"""
+  <div class="card">
+    <div class="label">{label}</div>
+    <video controls preload="metadata">
+      <source src="{rel}" type="video/mp4">
+    </video>
+    <div class="meta">
+      <span class="pill" style="background:{reach_color}">{reach}</span>
+      <span class="verdict">{verdict}</span>
+      <span class="steps">{steps_s}</span>
+    </div>
+  </div>"""
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Person-Follow Sweep</title>
+<style>
+  body {{ background:#0d1117; color:#e6edf3; font-family:sans-serif; margin:0; padding:16px; }}
+  h1 {{ font-size:1.4em; color:#58a6ff; margin:0 0 4px; }}
+  .subtitle {{ color:#8b949e; font-size:.9em; margin:0 0 16px; }}
+  .grid {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(400px,1fr)); gap:16px; }}
+  .card {{ background:#161b22; border-radius:8px; overflow:hidden; border:1px solid #30363d; }}
+  .label {{ padding:8px 12px; font-weight:bold; font-size:.95em; border-bottom:1px solid #30363d; }}
+  video {{ width:100%; display:block; background:#000; max-height:280px; }}
+  .meta {{ padding:8px 12px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }}
+  .pill {{ padding:3px 10px; border-radius:12px; font-size:.8em; font-weight:bold; color:#fff; }}
+  .verdict {{ color:#8b949e; font-size:.85em; }}
+  .steps {{ color:#8b949e; font-size:.85em; margin-left:auto; }}
+</style>
+</head>
+<body>
+<h1>Person-Follow Sweep</h1>
+<p class="subtitle">PGTT walk &middot; blind-RL climb &middot; YOLO person-follow &middot; +O&sup2; payload</p>
+<div class="grid">{cards}
+</div>
+</body>
+</html>"""
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(html)
+    return out_path
 
 
 def main(argv=None):

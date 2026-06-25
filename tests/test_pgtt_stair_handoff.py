@@ -177,17 +177,20 @@ def test_stair_commit():
     ho = HandoffController(cfg, _FakePgtt(), logger=None)
     D = synth_staircase_depth()
     go2 = object()
+    # riser_dist_ahead=0.55 simulates GT terrain confirming a real step riser is ahead
+    # (our terrain-gate requires this OR state=="climb" to prevent false commits on a
+    # person's body depth at the same range).
     common = dict(go2=go2, depth_hw=D, stairs_action_active=False, base_z=0.30,
                   roll=0.0, pitch=0.0, roll_rate=0.0, pitch_rate=0.0,
-                  height_above_step=0.30, yaw=0.3, y_lateral=1.0)
+                  height_above_step=0.30, yaw=0.3, y_lateral=1.0, riser_dist_ahead=0.55)
 
     # Person VISIBLE near the stairs -> no commit (the normal follow loop steers).
     r = ho.update(now=1.0, dt=0.05, cmd_vx=0.3, body_speed=0.3, body_fwd=0.3,
                   person_detected=True, **common)
     assert not r["committing"] and r["wz_override"] is None, r
 
-    # Person LOST with stairs ahead, robot drifted off-axis (yaw=+0.3, y=+1.0) ->
-    # commit: steer back (wz negative) toward yaw=0 / y=0, and apply the forward floor.
+    # Person LOST with stairs ahead AND GT terrain confirms riser (riser_dist_ahead=0.55),
+    # robot drifted off-axis (yaw=+0.3, y=+1.0) -> commit: steer back toward yaw=0 / y=0.
     r = ho.update(now=2.0, dt=0.05, cmd_vx=0.0, body_speed=0.0, body_fwd=0.0,
                   person_detected=False, **common)
     assert r["committing"], r

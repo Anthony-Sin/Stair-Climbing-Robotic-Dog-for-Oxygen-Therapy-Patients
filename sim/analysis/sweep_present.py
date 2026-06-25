@@ -337,6 +337,25 @@ def pick_hero(eps, mode):
 # ---------------------------------------------------------------------------
 # graphs (matplotlib, Agg)
 # ---------------------------------------------------------------------------
+def _setup_dark_theme(plt) -> None:
+    """Dark rcParams for charts that paste cleanly onto black PowerPoint slides (transparent bg)."""
+    plt.rcParams.update({
+        "figure.facecolor":  "none",
+        "axes.facecolor":    "none",
+        "savefig.facecolor": "none",
+        "text.color":        "#e0e0e0",
+        "axes.labelcolor":   "#e0e0e0",
+        "axes.edgecolor":    "#666666",
+        "xtick.color":       "#cccccc",
+        "ytick.color":       "#cccccc",
+        "grid.color":        "#444444",
+        "axes.titlecolor":   "#e0e0e0",
+        "legend.facecolor":  "#0d0d0d",
+        "legend.edgecolor":  "#666666",
+        "legend.framealpha": 0.6,
+    })
+
+
 def _assign_colors(eps):
     try:
         import matplotlib.cm as cm
@@ -361,10 +380,10 @@ def _plot_climb_profile(ax, eps):
         ax.plot(xs, hs, color=e.get("color"), lw=2.0, label=lab)
         ax.scatter([xs[-1]], [hs[-1]], color=e.get("color"), s=28, zorder=5, edgecolors="white", linewidths=0.6)
         plotted += 1
-    ax.axvline(STAIR_BASE_X, ls="--", color="0.5", lw=1.2)
-    ax.text(STAIR_BASE_X + 0.05, 0.03, "stair base", color="0.4", fontsize=8)
-    ax.axhspan(0.22, 0.6, color="#2e7d32", alpha=0.06)
-    ax.axhline(COLLAPSE_H_M, ls=":", color="#c62828", lw=1.0)
+    ax.axvline(STAIR_BASE_X, ls="--", color="0.65", lw=1.2)
+    ax.text(STAIR_BASE_X + 0.05, 0.03, "stair base", color="0.6", fontsize=8)
+    ax.axhspan(0.22, 0.6, color="#2e7d32", alpha=0.12)
+    ax.axhline(COLLAPSE_H_M, ls=":", color="#e05050", lw=1.0)
     ax.set_xlabel("forward distance  x (m)")
     ax.set_ylabel("body height above terrain (m)")
     ax.set_title("Climb stability: body height vs forward progress")
@@ -387,8 +406,8 @@ def _plot_steps(ax, rows):
     vals = [r.get("steps_climbed") or 0 for r in rows]
     ax.bar(xs, vals, color=_verdict_bar_colors(rows))
     full = rows[0].get("step_count") or DEFAULT_STEP_COUNT
-    ax.axhline(full, ls="--", color="0.5", lw=1.0)
-    ax.text(len(rows) - 0.5, full + 0.2, f"full staircase ({full})", ha="right", color="0.4", fontsize=8)
+    ax.axhline(full, ls="--", color="0.65", lw=1.0)
+    ax.text(len(rows) - 0.5, full + 0.2, f"full staircase ({full})", ha="right", color="0.6", fontsize=8)
     for x, v in zip(xs, vals):
         ax.text(x, v + 0.15, f"{v:.1f}", ha="center", va="bottom", fontsize=9, fontweight="bold")
     ax.set_xticks(list(xs))
@@ -401,10 +420,10 @@ def _plot_stability(ax, rows):
     xs = range(len(rows))
     vals = [r.get("max_tilt_deg") or 0 for r in rows]
     ax.bar(xs, vals, color=_verdict_bar_colors(rows))
-    ax.axhspan(0, 18, color="#2e7d32", alpha=0.08)
-    ax.axhline(FALL_TILT_DEG, ls="--", color="#c62828", lw=1.2)
+    ax.axhspan(0, 18, color="#2e7d32", alpha=0.14)
+    ax.axhline(FALL_TILT_DEG, ls="--", color="#e05050", lw=1.2)
     ax.text(len(rows) - 0.5, FALL_TILT_DEG + 1, f"fall line ({FALL_TILT_DEG:.0f}°)", ha="right",
-            color="#c62828", fontsize=8)
+            color="#e05050", fontsize=8)
     for x, v in zip(xs, vals):
         ax.text(x, v + 0.6, f"{v:.0f}", ha="center", va="bottom", fontsize=9)
     ax.set_xticks(list(xs))
@@ -417,11 +436,11 @@ def _plot_reach(ax, rows):
     xs = range(len(rows))
     vals = [r.get("max_x_m") or 0 for r in rows]
     ax.bar(xs, vals, color=_verdict_bar_colors(rows))
-    ax.axhline(STAIR_BASE_X, ls=":", color="0.5", lw=1.0)
-    ax.text(len(rows) - 0.5, STAIR_BASE_X + 0.05, "stair base", ha="right", color="0.4", fontsize=8)
+    ax.axhline(STAIR_BASE_X, ls=":", color="0.65", lw=1.0)
+    ax.text(len(rows) - 0.5, STAIR_BASE_X + 0.05, "stair base", ha="right", color="0.6", fontsize=8)
     top = rows[0].get("top_edge_x_m") or DEFAULT_TOP_EDGE_X
-    ax.axhline(top, ls="--", color="0.5", lw=1.0)
-    ax.text(len(rows) - 0.5, top + 0.05, "top edge", ha="right", color="0.4", fontsize=8)
+    ax.axhline(top, ls="--", color="0.65", lw=1.0)
+    ax.text(len(rows) - 0.5, top + 0.05, "top edge", ha="right", color="0.6", fontsize=8)
     for x, v in zip(xs, vals):
         ax.text(x, v + 0.05, f"{v:.2f}", ha="center", va="bottom", fontsize=9)
     ax.set_xticks(list(xs))
@@ -439,13 +458,14 @@ def generate_graphs(eps, rows, graphs_dir):
     except Exception as exc:
         log(f"WARNING: matplotlib unavailable ({exc}); skipping graphs")
         return []
+    _setup_dark_theme(plt)
     os.makedirs(graphs_dir, exist_ok=True)
     _assign_colors(eps)
     written = []
 
     def _save(fig, name):
         p = os.path.join(graphs_dir, name)
-        fig.savefig(p, dpi=150, bbox_inches="tight", facecolor="white")
+        fig.savefig(p, dpi=150, bbox_inches="tight", transparent=True)
         plt.close(fig)
         written.append(p)
 
@@ -471,7 +491,7 @@ def generate_graphs(eps, rows, graphs_dir):
         _plot_steps(axes[0][1], rows)
         _plot_stability(axes[1][0], rows)
         _plot_reach(axes[1][1], rows)
-        fig.suptitle("Stair-Climb Sweep — blind-RL climb policy + O2 payload", fontsize=15, fontweight="bold")
+        fig.suptitle("Stair-Climb Sweep — blind-RL climb policy + O2 payload", fontsize=15, fontweight="bold", color="#e0e0e0")
         fig.tight_layout(rect=(0, 0, 1, 0.97))
         _save(fig, "g5_dashboard.png")
     except Exception as exc:

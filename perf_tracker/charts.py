@@ -58,6 +58,25 @@ def _branch_colors(rows: List[Dict]) -> Dict[str, str]:
     return {b: palette[i % len(palette)] for i, b in enumerate(branches)}
 
 
+def _setup_dark_theme(plt) -> None:
+    """Dark rcParams so charts paste cleanly onto black PowerPoint slides (transparent bg)."""
+    plt.rcParams.update({
+        "figure.facecolor":  "none",
+        "axes.facecolor":    "none",
+        "savefig.facecolor": "none",
+        "text.color":        "#e0e0e0",
+        "axes.labelcolor":   "#e0e0e0",
+        "axes.edgecolor":    "#666666",
+        "xtick.color":       "#cccccc",
+        "ytick.color":       "#cccccc",
+        "grid.color":        "#444444",
+        "axes.titlecolor":   "#e0e0e0",
+        "legend.facecolor":  "#0d0d0d",
+        "legend.edgecolor":  "#666666",
+        "legend.framealpha": 0.6,
+    })
+
+
 # ---------------------------------------------------------------------------
 # Chart 1: Progress over time (improved — git SHA annotation, branch line color)
 # ---------------------------------------------------------------------------
@@ -65,6 +84,7 @@ def _branch_colors(rows: List[Dict]) -> Dict[str, str]:
 def chart_progress_over_time(rows: List[Dict], out_path: Path) -> None:
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
+    _setup_dark_theme(plt)
 
     if not rows:
         return
@@ -83,13 +103,13 @@ def chart_progress_over_time(rows: List[Dict], out_path: Path) -> None:
         ax.plot([xs[i], xs[i + 1]], [ys[i], ys[i + 1]],
                 color=branch_colors.get(b, "#bdc3c7"), linewidth=1.5, zorder=1)
 
-    ax.scatter(xs, ys, c=dot_colors, s=90, zorder=2, edgecolors="#555", linewidths=0.4)
+    ax.scatter(xs, ys, c=dot_colors, s=90, zorder=2, edgecolors="#888", linewidths=0.4)
 
     for i, r in enumerate(rows):
         sha = str(r.get("git_commit_sha") or "")[:7]
         if sha:
             ax.annotate(sha, (xs[i], ys[i]), textcoords="offset points",
-                        xytext=(0, -13), fontsize=6, ha="center", color="#444",
+                        xytext=(0, -13), fontsize=6, ha="center", color="#aaaaaa",
                         fontfamily="monospace")
 
     ax.set_xticks(xs)
@@ -110,7 +130,7 @@ def chart_progress_over_time(rows: List[Dict], out_path: Path) -> None:
               ncol=2, framealpha=0.8)
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=120)
+    fig.savefig(out_path, dpi=120, transparent=True)
     plt.close(fig)
 
 
@@ -121,6 +141,7 @@ def chart_progress_over_time(rows: List[Dict], out_path: Path) -> None:
 def chart_outcomes_bar(rows: List[Dict], out_path: Path) -> None:
     import matplotlib.pyplot as plt
     from collections import Counter
+    _setup_dark_theme(plt)
 
     if not rows:
         return
@@ -141,7 +162,7 @@ def chart_outcomes_bar(rows: List[Dict], out_path: Path) -> None:
     ax.set_title(f"Outcome distribution  (n={total})")
     ax.set_xlim(0, max(vals) * 1.45)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=120)
+    fig.savefig(out_path, dpi=120, transparent=True)
     plt.close(fig)
 
 
@@ -151,6 +172,7 @@ def chart_outcomes_bar(rows: List[Dict], out_path: Path) -> None:
 
 def chart_stability_scatter(rows: List[Dict], out_path: Path) -> None:
     import matplotlib.pyplot as plt
+    _setup_dark_theme(plt)
 
     if not rows:
         return
@@ -171,13 +193,13 @@ def chart_stability_scatter(rows: List[Dict], out_path: Path) -> None:
         return
 
     fig, ax = plt.subplots(figsize=(5, 4))
-    ax.scatter(xs, ys, s=sizes, c=colors, alpha=0.7, edgecolors="#555", linewidths=0.5)
+    ax.scatter(xs, ys, s=sizes, c=colors, alpha=0.7, edgecolors="#888", linewidths=0.5)
     ax.set_xlabel("max_x_m (m) — how far the robot got")
     ax.set_ylabel("max pitch excursion (deg) — instability")
     ax.set_title("Stability vs Progress\n(dot size = max action norm; lower-right = better)")
     ax.grid(alpha=0.3)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=120)
+    fig.savefig(out_path, dpi=120, transparent=True)
     plt.close(fig)
 
 
@@ -189,6 +211,7 @@ def chart_config_diff_heatmap(rows: List[Dict], out_path: Path) -> None:
     import matplotlib.pyplot as plt
     import matplotlib.colors as mcolors
     import numpy as np
+    _setup_dark_theme(plt)
 
     if len(rows) < 2:
         return
@@ -233,10 +256,10 @@ def chart_config_diff_heatmap(rows: List[Dict], out_path: Path) -> None:
 
     for i in range(n_rows):
         for j in range(n_cols):
-            bg = "#f39c12" if cell_changed[i][j] else "#ecf0f1"
-            txt_color = "#fff" if cell_changed[i][j] else "#2c3e50"
+            bg = "#c47a00" if cell_changed[i][j] else "#1e2230"
+            txt_color = "#fff" if cell_changed[i][j] else "#cccccc"
             rect = plt.Rectangle((j, n_rows - i - 1), 1, 1,
-                                  facecolor=bg, edgecolor="#bdc3c7", linewidth=0.5)
+                                  facecolor=bg, edgecolor="#444444", linewidth=0.5)
             ax.add_patch(rect)
             val = cell_vals[i][j]
             if len(val) > 10:
@@ -257,20 +280,20 @@ def chart_config_diff_heatmap(rows: List[Dict], out_path: Path) -> None:
     # Column labels
     for j, label in enumerate(col_labels):
         ax.text(j + 0.5, n_rows + 0.1, label,
-                ha="center", va="bottom", fontsize=7.5, fontweight="bold", color="#2c3e50")
+                ha="center", va="bottom", fontsize=7.5, fontweight="bold", color="#e0e0e0")
 
     ax.set_title("Config per run  (amber = changed from prior run)", pad=14, fontsize=9)
 
     import matplotlib.patches as mpatches
     legend = [
-        mpatches.Patch(color="#f39c12", label="changed"),
-        mpatches.Patch(color="#ecf0f1", label="same / null"),
+        mpatches.Patch(color="#c47a00", label="changed"),
+        mpatches.Patch(color="#1e2230", label="same / null"),
     ]
     ax.legend(handles=legend, fontsize=7, loc="lower right",
-              bbox_to_anchor=(1.0, -0.02), framealpha=0.8)
+              bbox_to_anchor=(1.0, -0.02), framealpha=0.6)
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=120, bbox_inches="tight")
+    fig.savefig(out_path, dpi=120, bbox_inches="tight", transparent=True)
     plt.close(fig)
 
 
@@ -280,6 +303,7 @@ def chart_config_diff_heatmap(rows: List[Dict], out_path: Path) -> None:
 
 def chart_stability_timeseries(rows: List[Dict], out_path: Path) -> None:
     import matplotlib.pyplot as plt
+    _setup_dark_theme(plt)
 
     if not rows:
         return
@@ -304,9 +328,9 @@ def chart_stability_timeseries(rows: List[Dict], out_path: Path) -> None:
         valid = [(x, y, c) for x, y, c in zip(xs, ys, dot_colors) if y is not None]
         if valid:
             vx, vy, vc = zip(*valid)
-            ax.plot(list(vx), list(vy), color="#bdc3c7", linewidth=1, zorder=1)
+            ax.plot(list(vx), list(vy), color="#888888", linewidth=1, zorder=1)
             ax.scatter(list(vx), list(vy), c=list(vc), s=60, zorder=2,
-                       edgecolors="#555", linewidths=0.4)
+                       edgecolors="#888", linewidths=0.4)
         if threshold is not None:
             ax.axhline(threshold, color="#e74c3c", linewidth=0.8, linestyle="--",
                        alpha=0.6, label=f"threshold ({threshold}°)")
@@ -319,7 +343,7 @@ def chart_stability_timeseries(rows: List[Dict], out_path: Path) -> None:
     axes[0].set_title("Stability metrics over runs  (dot color = outcome)", fontsize=9)
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=120)
+    fig.savefig(out_path, dpi=120, transparent=True)
     plt.close(fig)
 
 
@@ -330,6 +354,7 @@ def chart_stability_timeseries(rows: List[Dict], out_path: Path) -> None:
 def chart_branch_performance(rows: List[Dict], out_path: Path) -> None:
     import matplotlib.pyplot as plt
     import numpy as np
+    _setup_dark_theme(plt)
 
     if not rows:
         return
@@ -356,17 +381,17 @@ def chart_branch_performance(rows: List[Dict], out_path: Path) -> None:
         # Jitter x for readability
         jitter = (np.random.default_rng(seed=i).random(len(ys)) - 0.5) * 0.3
         ax.scatter(np.full(len(ys), i) + jitter, ys, c=cs, s=70,
-                   edgecolors="#555", linewidths=0.4, zorder=2)
+                   edgecolors="#888", linewidths=0.4, zorder=2)
         # Box summary
         if len(ys) >= 3:
             ax.boxplot(ys, positions=[i], widths=0.4, patch_artist=False,
-                       medianprops={"color": "#2c3e50", "linewidth": 1.5},
-                       whiskerprops={"linewidth": 0.8},
-                       capprops={"linewidth": 0.8},
-                       boxprops={"linewidth": 0.8},
+                       medianprops={"color": "#e0e0e0", "linewidth": 1.5},
+                       whiskerprops={"linewidth": 0.8, "color": "#aaaaaa"},
+                       capprops={"linewidth": 0.8, "color": "#aaaaaa"},
+                       boxprops={"linewidth": 0.8, "color": "#aaaaaa"},
                        flierprops={"marker": ""}, zorder=1)
         ax.text(i, -0.15, f"n={len(ys)}", ha="center", va="top",
-                fontsize=7, color="#555", transform=ax.get_xaxis_transform())
+                fontsize=7, color="#aaaaaa", transform=ax.get_xaxis_transform())
 
     short_branches = [b[-22:] if len(b) > 22 else b for b in branches]
     ax.set_xticks(range(len(branches)))
@@ -381,7 +406,7 @@ def chart_branch_performance(rows: List[Dict], out_path: Path) -> None:
     ax.legend(handles=legend, fontsize=7, loc="upper right")
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=120)
+    fig.savefig(out_path, dpi=120, transparent=True)
     plt.close(fig)
 
 
@@ -391,6 +416,7 @@ def chart_branch_performance(rows: List[Dict], out_path: Path) -> None:
 
 def chart_stair_phase_breakdown(rows: List[Dict], out_path: Path) -> None:
     import matplotlib.pyplot as plt
+    _setup_dark_theme(plt)
 
     valid = [r for r in rows
              if _safe_float(r.get("motion_elapsed_sec")) is not None
@@ -424,7 +450,7 @@ def chart_stair_phase_breakdown(rows: List[Dict], out_path: Path) -> None:
     ax.grid(axis="x", alpha=0.3)
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=120)
+    fig.savefig(out_path, dpi=120, transparent=True)
     plt.close(fig)
 
 
@@ -434,6 +460,7 @@ def chart_stair_phase_breakdown(rows: List[Dict], out_path: Path) -> None:
 
 def chart_controller_perf(rows: List[Dict], out_path: Path) -> None:
     import matplotlib.pyplot as plt
+    _setup_dark_theme(plt)
 
     traced = [r for r in rows if r.get("yolo_total_frames") is not None]
     if len(traced) < 2:
@@ -457,9 +484,9 @@ def chart_controller_perf(rows: List[Dict], out_path: Path) -> None:
         valid = [(x, y, c) for x, y, c in zip(xs, ys, dot_colors) if y is not None]
         if valid:
             vx, vy, vc = zip(*valid)
-            ax.plot(list(vx), list(vy), color=line_color, linewidth=1, alpha=0.5, zorder=1)
+            ax.plot(list(vx), list(vy), color=line_color, linewidth=1, alpha=0.7, zorder=1)
             ax.scatter(list(vx), list(vy), c=list(vc), s=60, zorder=2,
-                       edgecolors="#555", linewidths=0.4)
+                       edgecolors="#888", linewidths=0.4)
         ax.set_ylabel(ylabel, fontsize=8)
         ax.grid(axis="y", alpha=0.25)
 
@@ -468,7 +495,7 @@ def chart_controller_perf(rows: List[Dict], out_path: Path) -> None:
     axes[0].set_title("Controller-side performance  (from vision_main_trace.jsonl)", fontsize=9)
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=120)
+    fig.savefig(out_path, dpi=120, transparent=True)
     plt.close(fig)
 
 

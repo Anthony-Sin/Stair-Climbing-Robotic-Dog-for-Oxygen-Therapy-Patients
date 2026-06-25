@@ -178,6 +178,10 @@ class HandoffConfig:
     # floor while |yaw| exceeds this threshold so the robot spins in place to face forward
     # first, then resumes the commit floor once re-aligned (patient re-detected or yaw small).
     post_climb_yaw_threshold_deg: float = 20.0  # suppress fwd floor while |yaw| > this (deg)
+    # After a successful top-egress handback, cap the stair_commit forward floor to this
+    # window. Without this, the 25 s commit timer keeps driving the robot forward past the
+    # stair top (run_20260625_004009_738: x=9.694 m, 3.4 m overshoot, then fell off edge).
+    post_egress_commit_sec: float = 5.0
 
 
 class StallDetector:
@@ -486,8 +490,18 @@ class HandoffController:
         # up), commit_until expires 25s later, and disengage finds committing=False -- the
         # spin-in-place heading correction never fires (run_20260624_073431_729: timer
         # expired at 11:39:34 but disengage wasn't until 11:40:48, robot stayed at 116° yaw).
+        #
+        # TERRAIN GATE: also require ground-truth riser confirmation (riser_dist_ahead not None,
+        # meaning a real step rise is within ~1.5 m) OR that we are already in the climb state.
+        # Without this, the depth camera sees the PERSON's body at ~0.6 m gap as "6 stairs"
+        # (leading_edge = person gap), fires stair_commit 6.7 m from the real riser after the
+        # 1 s arm delay, and overrides the person-follow wz for the entire flat approach so the
+        # robot never tracks the person's lateral zigzag (run_20260625_004009_738: commit at
+        # t≈1 s, wz≈0 for the full approach, max robot |y| 0.15 m vs person ±1.0 m zigzag).
+        _terrain_confirms = (riser_dist_ahead is not None) or (self.state == "climb")
         if (self.cfg.stair_commit_enabled and commit_armed
-                and (stairs_ahead or self.state == "climb") and not person_detected):
+                and (stairs_ahead or self.state == "climb") and not person_detected
+                and _terrain_confirms):
             self._commit_until = float(now) + float(self.cfg.stair_commit_max_sec)
         committing = (
             bool(self.cfg.stair_commit_enabled)
@@ -763,6 +777,13 @@ class HandoffController:
                     self._climbs_done += 1
                 if done_egress:
                     self._post_climb_reacquire = True
+                    # Cap the remaining commit window to a short re-acquisition budget so the
+                    # 0.22 m/s vx_floor doesn't drive the robot past the stair top for 25 s
+                    # (run_20260625_004009_738: x=9.694 m, 3.4 m overshoot, then fell off edge).
+                    self._commit_until = min(
+                        self._commit_until,
+                        float(now) + float(self.cfg.post_egress_commit_sec),
+                    )
                 log_event(
                     self.logger, logging.INFO, "handoff_disengage",
                     "Stair climber handing back to PGTT walker",

@@ -51,7 +51,11 @@ def _apply_follow_standoff_policy(
     #    NOT make the aggressive (freeze / catch-up) calls -- the startup depth transient is exactly
     #    when the noise is worst and the robot is settling from the drop.
     gap_hist = state.setdefault("gap_hist", [])
-    if gap_m is not None and float(gap_m) > 1e-3:
+    # Clamp outliers: YOLO can report 36–39 m when the person is above the camera frame
+    # (partially visible during a stair climb). Readings above 10 m are never valid follow
+    # distances in this environment and would drive the cruise controller at max speed.
+    _GAP_MAX_VALID_M = 10.0
+    if gap_m is not None and 1e-3 < float(gap_m) < _GAP_MAX_VALID_M:
         gap_hist.append(float(gap_m))
         if len(gap_hist) > 5:
             del gap_hist[0]

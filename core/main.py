@@ -507,7 +507,7 @@ def main():
                     if elapsed >= args.sim_frame_timeout_exit_sec:
                         message = (
                             "Sim camera did not receive Isaac frames for "
-                            f"{elapsed:.1f}s on UDP port {args.frame_port}"
+                            f"{elapsed:.1f}s on TCP port {args.frame_port}"
                         )
                         debug_trace.log(
                             "sim_frame_timeout_exit",
@@ -811,7 +811,9 @@ def main():
             # collision check; the live gap becomes the near riser once the patient leaves view).
             if bool(debug_info.get("person_detected", False)):
                 _pg = debug_info.get("depth_distance_m")
-                if _pg is not None and float(_pg) > 1e-3:
+                # Ignore outlier readings (>10 m) caused by YOLO firing on a partial body
+                # above the camera frame during a stair climb (observed 36–39 m in logs).
+                if _pg is not None and 1e-3 < float(_pg) < 10.0:
                     last_person_gap_m = float(_pg)
             try:
                 _front_near_m, _ = DepthProcessor.central_roi_nearest_depth(

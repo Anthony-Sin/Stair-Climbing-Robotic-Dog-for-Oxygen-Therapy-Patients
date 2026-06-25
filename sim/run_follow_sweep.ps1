@@ -72,6 +72,14 @@ $WarmCommandFile = Join-Path (Join-Path $LogDir "warm_isaac") "command.json"
 
 if (-not (Test-Path $Launcher)) { throw "Missing launcher: $Launcher" }
 
+# Clear previous sweep data so each run starts fresh.
+Write-Host "Clearing previous follow sweep logs..." -ForegroundColor DarkGray
+Get-ChildItem -Path $LogDir -Directory -Filter "follow_sweep_*" -ErrorAction SilentlyContinue |
+    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue; Write-Host "  removed $($_.Name)" -ForegroundColor DarkGray }
+Get-ChildItem -Path $LogDir -Directory -Filter "run_sim_*" -ErrorAction SilentlyContinue |
+    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue; Write-Host "  removed $($_.Name)" -ForegroundColor DarkGray }
+Write-Host "Done clearing." -ForegroundColor DarkGray
+
 $labels = @{
     "0.1"   = "accessible/gentle (~4in)"
     "0.125" = "hospital/accessible (~5in)"
@@ -305,6 +313,7 @@ if (-not $NoPresentation) {
         & python $Presenter --manifest $manifestPath --out $pres --montage-seconds $MontageSeconds
         Write-Host ""
         Write-Host "Presentation pack (drop these into your slides):" -ForegroundColor Magenta
+        Write-Host ("  viewer  : {0}" -f (Join-Path $pres 'viewer.html')) -ForegroundColor Green
         Write-Host ("  montage : {0}" -f (Join-Path $pres 'follow_sweep_montage.mp4')) -ForegroundColor Cyan
         Write-Host ("  graphs  : {0}" -f (Join-Path $pres 'graphs')) -ForegroundColor Cyan
         Write-Host ("  card    : {0}" -f (Join-Path $pres 'stats_card.png')) -ForegroundColor Cyan
