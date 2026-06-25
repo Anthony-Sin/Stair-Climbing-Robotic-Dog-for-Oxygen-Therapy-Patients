@@ -54,8 +54,10 @@ def pointcloud2_to_xyz(msg: Any) -> np.ndarray:
     try:
         from sensor_msgs_py import point_cloud2 as pc2  # type: ignore
 
-        pts = pc2.read_points_numpy(msg, field_names=("x", "y", "z"), skip_nans=True)
-        arr = np.asarray(pts, dtype=np.float32).reshape(-1, 3)
+        # read_points_numpy was added in ROS2 Iron/Humble and does NOT exist on Foxy.
+        # Use read_points (available in all ROS2 releases) instead.
+        gen = pc2.read_points(msg, field_names=("x", "y", "z"), skip_nans=True)
+        arr = np.array(list(gen), dtype=np.float32).reshape(-1, 3)
         return arr[np.isfinite(arr).all(axis=1)]
     except Exception:
         return np.empty((0, 3), dtype=np.float32)

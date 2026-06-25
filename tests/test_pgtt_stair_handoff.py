@@ -172,6 +172,7 @@ def test_stair_commit():
     cfg = HandoffConfig(stair_commit_enabled=True, stair_commit_yaw_kp=2.0,
                         stair_commit_lat_kp=1.2, stair_commit_wz_max=0.6,
                         stair_commit_vx_floor=0.22, stair_commit_max_sec=25.0,
+                        stair_commit_arm_after_secs=0.0,  # disable arm delay for unit test
                         require_controller_stairs=False)
     ho = HandoffController(cfg, _FakePgtt(), logger=None)
     D = synth_staircase_depth()
@@ -203,7 +204,7 @@ def test_stair_commit():
 def test_approach_engage():
     cfg = HandoffConfig(climb_attempt=True, climb_engage_standoff_m=0.65, climb_min_room_m=0.40,
                         stair_commit_enabled=True, require_controller_stairs=False,
-                        stair_commit_max_sec=25.0)
+                        stair_commit_max_sec=25.0, stair_commit_arm_after_secs=0.0)
     ho = HandoffController(cfg, _FakePgtt(), logger=None)
     D = synth_staircase_depth()
     base = dict(go2=object(), depth_hw=D, stairs_action_active=True, base_z=0.30, body_speed=0.2,
@@ -224,7 +225,8 @@ def test_top_egress():
     """Top-of-stairs egress: crest -> walk off the last step -> hand back to PGTT, person-gated."""
     cfg = HandoffConfig(climb_attempt=True, climb_engage_standoff_m=0.65, climb_min_room_m=0.40,
                         stair_commit_enabled=True, require_controller_stairs=False,
-                        stair_commit_max_sec=25.0, climb_backend="blind_rl",
+                        stair_commit_max_sec=25.0, stair_commit_arm_after_secs=0.0,
+                        climb_backend="blind_rl",
                         top_egress_enabled=True, top_clear_debounce_sec=0.1,
                         top_egress_distance_m=0.20, top_egress_vx=0.22,
                         top_egress_standoff_m=0.60, top_egress_max_sec=4.0, climb_max_sec=60.0)
@@ -278,6 +280,7 @@ def test_egress_stops_at_goal():
     """Egress must stop AT a forward goal (waypoint) and not overrun it (no person)."""
     cfg = HandoffConfig(climb_attempt=True, climb_engage_standoff_m=0.65, climb_min_room_m=0.40,
                         stair_commit_enabled=True, require_controller_stairs=False,
+                        stair_commit_arm_after_secs=0.0,
                         climb_backend="blind_rl", climb_max_sec=999.0, climb_stall_timeout_sec=999.0,
                         top_egress_enabled=True, top_clear_debounce_sec=0.1,
                         top_egress_distance_m=0.50, top_egress_goal_stop_m=0.12, climb_progress_min_m=0.05)
@@ -315,6 +318,7 @@ def test_no_false_crest_between_risers():
     """A transient flat depth profile mid-climb (GT still rising) must NOT declare the top."""
     cfg = HandoffConfig(climb_attempt=True, climb_engage_standoff_m=0.65, climb_min_room_m=0.40,
                         stair_commit_enabled=True, require_controller_stairs=False,
+                        stair_commit_arm_after_secs=0.0,
                         climb_backend="blind_rl", top_clear_debounce_sec=0.1,
                         top_egress_distance_m=0.20, climb_max_sec=60.0)
     ho = HandoffController(cfg, _FakePgtt(), logger=None)
@@ -339,6 +343,7 @@ def test_climb_progress_watchdog():
     """A still-RISING climb is not cut off; a wedged (no-height-gain) climb hands back."""
     cfg = HandoffConfig(climb_attempt=True, climb_engage_standoff_m=0.65, climb_min_room_m=0.40,
                         stair_commit_enabled=True, require_controller_stairs=False,
+                        stair_commit_arm_after_secs=0.0,
                         climb_backend="blind_rl", climb_max_sec=999.0,
                         climb_stall_timeout_sec=1.0, climb_progress_min_m=0.05,
                         top_clear_debounce_sec=0.1)
@@ -368,6 +373,70 @@ def test_climb_progress_watchdog():
     print("climb_progress_watchdog OK  (rising climb continues; wedged climb hands back)")
 
 
+def test_post_climb_reacquire():
+    """After top_egress_done, forward floor is suppressed while yaw is large (robot spins
+    in place to re-acquire the patient), then re-enabled once yaw re-aligns."""
+    cfg = HandoffConfig(climb_attempt=True, climb_engage_standoff_m=0.65, climb_min_room_m=0.40,
+                        stair_commit_enabled=True, require_controller_stairs=False,
+                        stair_commit_arm_after_secs=0.0,
+                        climb_backend="blind_rl", climb_max_sec=999.0, climb_stall_timeout_sec=999.0,
+                        top_egress_enabled=True, top_clear_debounce_sec=0.1,
+                        top_egress_distance_m=0.50, top_egress_goal_stop_m=0.12,
+                        climb_progress_min_m=0.05,
+                        post_climb_yaw_threshold_deg=20.0)
+    ho = HandoffController(cfg, _FakePgtt(), logger=None)
+    Dstairs, Dflat = synth_staircase_depth(), synth_flat_depth()
+
+    # 1. Engage the climb.
+    base_climb = dict(go2=object(), stairs_action_active=True, body_speed=0.2,
+                      roll=0.0, pitch=0.0, roll_rate=0.0, pitch_rate=0.0, height_above_step=0.30,
+                      person_detected=False, y_lateral=0.0, body_fwd=0.2, cmd_vx=0.22,
+                      person_gap_m=9.0)
+    ho.update(now=1.0, dt=0.05, depth_hw=Dstairs, riser_dist_ahead=0.50, stairs_ahead_gt=True,
+              base_x=0.0, base_z=0.30, yaw=0.0, **base_climb)
+    assert ho.state == "climb", "should be in climb after engage"
+
+    # 2. Complete the egress (flat depth + GT clear for debounce + travel >= 0.50).
+    t, bx, z = 1.0, 0.0, 0.30
+    handed = False
+    for _ in range(60):
+        t += 0.05; bx += 0.02; z += 0.001
+        r = ho.update(now=t, dt=0.05, depth_hw=Dflat, riser_dist_ahead=None, stairs_ahead_gt=False,
+                      base_x=bx, base_z=z, yaw=0.0, **base_climb)
+        if r["state"] == "walk":
+            handed = True
+            break
+    assert handed, "egress should complete and hand back to walk"
+    assert ho._post_climb_reacquire, "_post_climb_reacquire must be True right after egress handback"
+
+    # 3. Large yaw (simulating robot rotated 80 deg during climb) -> vx_floor must be None.
+    r_large = ho.update(now=t + 0.05, dt=0.05, depth_hw=Dflat, riser_dist_ahead=None,
+                        stairs_ahead_gt=False, base_x=bx, base_z=z,
+                        yaw=math.radians(80.0), **base_climb)
+    assert r_large["state"] == "walk"
+    assert r_large.get("vx_floor") is None, \
+        f"forward floor must be suppressed while yaw=80 deg off-axis; got {r_large.get('vx_floor')}"
+    assert r_large.get("wz_override") is not None, "yaw correction wz must still be emitted"
+
+    # 4. Small yaw (re-aligned) -> vx_floor resumes and flag clears.
+    r_small = ho.update(now=t + 0.10, dt=0.05, depth_hw=Dflat, riser_dist_ahead=None,
+                        stairs_ahead_gt=False, base_x=bx, base_z=z,
+                        yaw=math.radians(5.0), **base_climb)
+    assert r_small.get("vx_floor") is not None and r_small["vx_floor"] > 0.0, \
+        f"forward floor must resume once yaw is small; got {r_small.get('vx_floor')}"
+    assert not ho._post_climb_reacquire, "_post_climb_reacquire must clear once re-aligned"
+
+    # 5. Alternative: person re-detected while still off-axis -> flag clears immediately.
+    ho._post_climb_reacquire = True  # reset for this sub-test
+    base_person = dict(base_climb)
+    base_person["person_detected"] = True
+    r_person = ho.update(now=t + 0.15, dt=0.05, depth_hw=Dflat, riser_dist_ahead=None,
+                         stairs_ahead_gt=False, base_x=bx, base_z=z,
+                         yaw=math.radians(60.0), **base_person)
+    assert not ho._post_climb_reacquire, "_post_climb_reacquire must clear when person re-detected"
+    print("post_climb_reacquire OK  (fwd floor suppressed while off-axis; resumes on re-align or person detect)")
+
+
 if __name__ == "__main__":
     test_detector()
     test_stall()
@@ -378,4 +447,5 @@ if __name__ == "__main__":
     test_egress_stops_at_goal()
     test_no_false_crest_between_risers()
     test_climb_progress_watchdog()
+    test_post_climb_reacquire()
     print("ALL HANDOFF TESTS PASS")

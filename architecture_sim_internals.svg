@@ -1,0 +1,212 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 800" width="1400" height="800" font-family="'Segoe UI',system-ui,-apple-system,sans-serif">
+<rect width="1400" height="800" fill="#FFFFFF"/>
+
+<!-- Title -->
+<rect width="1400" height="64" fill="#1E293B"/>
+<text x="700" y="34" text-anchor="middle" font-size="22" font-weight="700" fill="#FFFFFF">Isaac Sim — World Components</text>
+<text x="700" y="54" text-anchor="middle" font-size="12" fill="#94A3B8">isaac_env.py · Boot sequence · World subpackages · biped_anim · O₂ · Terrain · perf_tracker · Import rules</text>
+
+<!-- Root: isaac_env.py -->
+<rect x="480" y="76" width="440" height="52" rx="8" fill="#EFF6FF" stroke="#2563EB" stroke-width="2"/>
+<text x="700" y="100" text-anchor="middle" font-size="16" font-weight="700" fill="#1D4ED8">isaac_env.py</text>
+<text x="700" y="118" text-anchor="middle" font-size="11" fill="#2563EB">entry point · 50 Hz physics loop · HOST GPU process · do NOT import by name from siblings</text>
+
+<!-- Tree lines from root to 5 columns -->
+<line x1="700" y1="128" x2="700" y2="148" stroke="#CBD5E1" stroke-width="1.5"/>
+<line x1="130" y1="148" x2="1270" y2="148" stroke="#CBD5E1" stroke-width="1.5"/>
+<line x1="130" y1="148" x2="130" y2="164" stroke="#CBD5E1" stroke-width="1.5"/>
+<line x1="390" y1="148" x2="390" y2="164" stroke="#CBD5E1" stroke-width="1.5"/>
+<line x1="700" y1="148" x2="700" y2="164" stroke="#CBD5E1" stroke-width="1.5"/>
+<line x1="1000" y1="148" x2="1000" y2="164" stroke="#CBD5E1" stroke-width="1.5"/>
+<line x1="1270" y1="148" x2="1270" y2="164" stroke="#CBD5E1" stroke-width="1.5"/>
+
+<!-- ─── COL 1: Boot Sequence ─────────────────────────────── -->
+<rect x="20" y="164" width="220" height="28" rx="5" fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1.5"/>
+<text x="130" y="182" text-anchor="middle" font-size="11" font-weight="700" fill="#1D4ED8">Boot Sequence</text>
+
+<rect x="20" y="200" width="220" height="48" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="36" y="218" font-size="12" font-weight="600" fill="#111827">SimulationApp</text>
+<text x="36" y="233" font-size="10" fill="#6B7280">headless / windowed · ~123 s boot</text>
+<text x="36" y="246" font-size="10" fill="#9CA3AF">Kit/RTX initialization</text>
+
+<rect x="20" y="256" width="220" height="48" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="36" y="274" font-size="12" font-weight="600" fill="#111827">configure_stairs()</text>
+<text x="36" y="289" font-size="10" fill="#6B7280">StairSpec preset · riser geometry</text>
+<text x="36" y="302" font-size="10" fill="#DC2626">--stair-preset required or silent OOD</text>
+
+<rect x="20" y="312" width="220" height="48" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="36" y="330" font-size="12" font-weight="600" fill="#111827">build_world(50 Hz)</text>
+<text x="36" y="345" font-size="10" fill="#6B7280">isaacsim.core.api.World</text>
+<text x="36" y="358" font-size="10" fill="#9CA3AF">classic numpy backend</text>
+
+<rect x="20" y="368" width="220" height="48" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="36" y="386" font-size="12" font-weight="600" fill="#111827">load_go2() + O₂</text>
+<text x="36" y="401" font-size="10" fill="#6B7280">URDF Articulation · payload pre-reset</text>
+<text x="36" y="414" font-size="10" fill="#9CA3AF">O₂ attached before world.reset()</text>
+
+<rect x="20" y="424" width="220" height="48" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="36" y="442" font-size="12" font-weight="600" fill="#111827">spawn_sim_person()</text>
+<text x="36" y="457" font-size="10" fill="#6B7280">SimPersonTarget · H1Puppet + Biped</text>
+<text x="36" y="470" font-size="10" fill="#9CA3AF">~22 s per-run (USD cache helps)</text>
+
+<rect x="20" y="480" width="220" height="48" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="36" y="498" font-size="12" font-weight="600" fill="#111827">world.reset()</text>
+<text x="36" y="513" font-size="10" fill="#6B7280">H1Puppet.initialize() → POST_PHYSICS</text>
+<text x="36" y="526" font-size="10" fill="#9CA3AF">guard is_physics_tensor_entity_valid()</text>
+
+<rect x="20" y="536" width="220" height="60" rx="5" fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1.5"/>
+<text x="36" y="554" font-size="12" font-weight="700" fill="#1D4ED8">Physics Loop  50 Hz</text>
+<text x="36" y="570" font-size="10" fill="#374151">read cmd · HandoffController · policy.step()</text>
+<text x="36" y="584" font-size="10" fill="#374151">O₂ monitor · patient patrol · fall watchdog</text>
+<text x="36" y="596" font-size="10" fill="#9CA3AF">STOP_ISAAC sentinel → graceful shutdown</text>
+
+<!-- ─── COL 2: Go2 Articulation ──────────────────────────── -->
+<rect x="256" y="164" width="248" height="28" rx="5" fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1.5"/>
+<text x="380" y="182" text-anchor="middle" font-size="11" font-weight="700" fill="#1D4ED8">Go2 Articulation</text>
+
+<rect x="256" y="200" width="248" height="56" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="272" y="218" font-size="12" font-weight="600" fill="#111827">12-DOF Joints</text>
+<text x="272" y="234" font-size="10" fill="#6B7280">FR  FL  RR  RL  ·  hip · thigh · calf</text>
+<line x1="260" y1="242" x2="496" y2="242" stroke="#F1F5F9" stroke-width="1"/>
+<text x="272" y="256" font-size="10" fill="#9CA3AF">Kp=40 / Kd=1.0 position drive</text>
+
+<rect x="256" y="264" width="248" height="56" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="272" y="282" font-size="12" font-weight="600" fill="#111827">Domain Randomisation</text>
+<text x="272" y="298" font-size="10" fill="#6B7280">friction · PD gains · lighting per episode</text>
+<line x1="260" y1="306" x2="496" y2="306" stroke="#F1F5F9" stroke-width="1"/>
+<text x="272" y="320" font-size="10" fill="#9CA3AF">_DR_RNG seeded per reset</text>
+
+<rect x="256" y="328" width="248" height="56" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="272" y="346" font-size="12" font-weight="600" fill="#111827">Go2LocomotionState</text>
+<text x="272" y="362" font-size="10" fill="#6B7280">gait_time / gait_period → camera shake</text>
+<line x1="260" y1="370" x2="496" y2="370" stroke="#F1F5F9" stroke-width="1"/>
+<text x="272" y="384" font-size="10" fill="#DC2626">⚠ keep gait_time — used by front camera</text>
+
+<rect x="256" y="392" width="248" height="56" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="272" y="410" font-size="12" font-weight="600" fill="#111827">StairSpec Presets</text>
+<text x="272" y="426" font-size="10" fill="#6B7280">demo_gentle 0.08 m · commercial 0.15 m</text>
+<line x1="260" y1="434" x2="496" y2="434" stroke="#F1F5F9" stroke-width="1"/>
+<text x="272" y="448" font-size="10" fill="#9CA3AF">steep 0.20 m · custom --stair-step-height</text>
+
+<rect x="256" y="456" width="248" height="56" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="272" y="474" font-size="12" font-weight="600" fill="#111827">Warm IPC</text>
+<text x="272" y="490" font-size="10" fill="#6B7280">command.json · one Isaac boot</text>
+<line x1="260" y1="498" x2="496" y2="498" stroke="#F1F5F9" stroke-width="1"/>
+<text x="272" y="512" font-size="10" fill="#DC2626">⚠ write UTF-8 no-BOM (PS5 bug)</text>
+
+<!-- ─── COL 3: Patient System ─────────────────────────────── -->
+<rect x="520" y="164" width="360" height="28" rx="5" fill="#FDF4FF" stroke="#E879F9" stroke-width="1.5"/>
+<text x="700" y="182" text-anchor="middle" font-size="11" font-weight="700" fill="#86198F">Patient System</text>
+
+<rect x="520" y="200" width="360" height="56" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="536" y="218" font-size="12" font-weight="600" fill="#111827">H1Puppet  (physics)</text>
+<text x="536" y="234" font-size="10" fill="#6B7280">invisible Unitree H1 · flat-terrain policy</text>
+<line x1="524" y1="242" x2="872" y2="242" stroke="#F1F5F9" stroke-width="1"/>
+<text x="536" y="256" font-size="10" fill="#DC2626">⚠ face-plants any riser — NOT stair-capable</text>
+
+<rect x="520" y="264" width="360" height="56" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="536" y="282" font-size="12" font-weight="600" fill="#111827">BipedMannequin  (visual)</text>
+<text x="536" y="298" font-size="10" fill="#6B7280">UsdSkel Biped_Setup_modified.v2.usd</text>
+<line x1="524" y1="306" x2="872" y2="306" stroke="#F1F5F9" stroke-width="1"/>
+<text x="536" y="320" font-size="10" fill="#9CA3AF">LOCAL asset — not remote CDN (avoids T-pose)</text>
+
+<rect x="520" y="328" width="360" height="28" rx="5" fill="#FDF4FF" stroke="#E879F9" stroke-width="1.5"/>
+<text x="700" y="346" text-anchor="middle" font-size="11" font-weight="700" fill="#86198F">biped_anim/</text>
+
+<rect x="520" y="364" width="172" height="48" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="536" y="382" font-size="11" font-weight="600" fill="#111827">clip_player.py</text>
+<text x="536" y="396" font-size="10" fill="#6B7280">baked mocap walk</text>
+<text x="536" y="410" font-size="10" fill="#9CA3AF">flat terrain default</text>
+
+<rect x="708" y="364" width="172" height="48" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="724" y="382" font-size="11" font-weight="600" fill="#111827">foot_planting.py</text>
+<text x="724" y="396" font-size="10" fill="#6B7280">2-bone IK stair gait</text>
+<text x="724" y="410" font-size="10" fill="#9CA3AF">stance foot world-locked</text>
+
+<rect x="520" y="420" width="172" height="48" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="536" y="438" font-size="11" font-weight="600" fill="#111827">locomotion_ctrl.py</text>
+<text x="536" y="454" font-size="10" fill="#6B7280">distance-driven phase</text>
+<text x="536" y="468" font-size="10" fill="#9CA3AF">no wall-clock skating</text>
+
+<rect x="708" y="420" width="172" height="48" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="724" y="438" font-size="11" font-weight="600" fill="#111827">rig.py</text>
+<text x="724" y="454" font-size="10" fill="#6B7280">channel map · signs</text>
+<text x="724" y="468" font-size="10" fill="#9CA3AF">auto-measure leg geometry</text>
+
+<rect x="520" y="476" width="360" height="40" rx="5" fill="#FFF7ED" stroke="#FED7AA" stroke-width="1.5"/>
+<text x="536" y="494" font-size="10" fill="#9CA3AF">body_z → discrete tread (NOT smooth ramp)</text>
+<text x="536" y="510" font-size="10" fill="#DC2626">ramp-following body = feet float off steps</text>
+
+<!-- ─── COL 4: O₂ + Cameras ──────────────────────────────── -->
+<rect x="896" y="164" width="248" height="28" rx="5" fill="#FEF2F2" stroke="#FCA5A5" stroke-width="1.5"/>
+<text x="1020" y="182" text-anchor="middle" font-size="11" font-weight="700" fill="#991B1B">O₂ Payload + Cameras</text>
+
+<rect x="896" y="200" width="248" height="56" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="912" y="218" font-size="12" font-weight="600" fill="#111827">Rails + Tank</text>
+<text x="912" y="234" font-size="10" fill="#6B7280">child of trunk · 600 N strap</text>
+<line x1="900" y1="242" x2="1136" y2="242" stroke="#F1F5F9" stroke-width="1"/>
+<text x="912" y="256" font-size="10" fill="#9CA3AF">pre-world.reset() · O2PayloadMonitor</text>
+
+<rect x="896" y="264" width="248" height="56" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="912" y="282" font-size="12" font-weight="600" fill="#111827">RGB Camera</text>
+<text x="912" y="298" font-size="10" fill="#6B7280">1280×720 · 69°H × 42.6°V</text>
+<line x1="900" y1="306" x2="1136" y2="306" stroke="#F1F5F9" stroke-width="1"/>
+<text x="912" y="320" font-size="10" fill="#9CA3AF">FRONT_D435_MOUNT (0.24, 0, 0.12)</text>
+
+<rect x="896" y="328" width="248" height="56" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="912" y="346" font-size="12" font-weight="600" fill="#111827">Depth Camera</text>
+<text x="912" y="362" font-size="10" fill="#6B7280">58×87 · 0–2 m · parkour res</text>
+<line x1="900" y1="370" x2="1136" y2="370" stroke="#F1F5F9" stroke-width="1"/>
+<text x="912" y="384" font-size="10" fill="#9CA3AF">person-masked before policy input</text>
+
+<rect x="896" y="392" width="248" height="56" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="912" y="410" font-size="12" font-weight="600" fill="#111827">Recording Cameras</text>
+<text x="912" y="426" font-size="10" fill="#6B7280">overview (autofit) · scene_view (chase)</text>
+<line x1="900" y1="434" x2="1136" y2="434" stroke="#F1F5F9" stroke-width="1"/>
+<text x="912" y="448" font-size="10" fill="#9CA3AF">graceful stop via STOP_ISAAC sentinel</text>
+
+<!-- ─── COL 5: Bench + Rules ──────────────────────────────── -->
+<rect x="1160" y="164" width="220" height="28" rx="5" fill="#F0FDF4" stroke="#BBF7D0" stroke-width="1.5"/>
+<text x="1270" y="182" text-anchor="middle" font-size="11" font-weight="700" fill="#065F46">Bench + perf_tracker</text>
+
+<rect x="1160" y="200" width="220" height="48" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="1176" y="218" font-size="11" font-weight="600" fill="#111827">run_stair_sweep.ps1</text>
+<text x="1176" y="234" font-size="10" fill="#6B7280">warm boot-once riser sweep</text>
+<text x="1176" y="248" font-size="10" fill="#9CA3AF">sweep_present.py → slides</text>
+
+<rect x="1160" y="256" width="220" height="48" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="1176" y="274" font-size="11" font-weight="600" fill="#111827">terrain_bench/</text>
+<text x="1176" y="290" font-size="10" fill="#6B7280">flat / ramps / stairs battery</text>
+<text x="1176" y="304" font-size="10" fill="#9CA3AF">bench rows off CSV leaderboard</text>
+
+<rect x="1160" y="312" width="220" height="48" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="1176" y="330" font-size="11" font-weight="600" fill="#111827">archive.jsonl</text>
+<text x="1176" y="346" font-size="10" fill="#6B7280">full run history · source of truth</text>
+<text x="1176" y="360" font-size="10" fill="#9CA3AF">record_run() / rebuild_table()</text>
+
+<rect x="1160" y="368" width="220" height="48" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="1176" y="386" font-size="11" font-weight="600" fill="#111827">performance_table.csv</text>
+<text x="1176" y="402" font-size="10" fill="#6B7280">lean leaderboard · top actionable</text>
+<text x="1176" y="416" font-size="10" fill="#9CA3AF">unknown/bench excluded by design</text>
+
+<rect x="1160" y="424" width="220" height="28" rx="5" fill="#FFFBEB" stroke="#FDE68A" stroke-width="1.5"/>
+<text x="1270" y="442" text-anchor="middle" font-size="11" font-weight="700" fill="#92400E">Import Rules</text>
+
+<rect x="1160" y="460" width="220" height="48" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="1176" y="478" font-size="11" font-weight="600" fill="#111827">core/ namespace</text>
+<text x="1176" y="494" font-size="10" fill="#6B7280">use vision NOT perception</text>
+<text x="1176" y="508" font-size="10" fill="#DC2626">shadows sim/isaac/ on sys.path</text>
+
+<rect x="1160" y="516" width="220" height="48" rx="5" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="1176" y="534" font-size="11" font-weight="600" fill="#111827">go2_locomotion/</text>
+<text x="1176" y="550" font-size="10" fill="#6B7280">NOT locomotion/</text>
+<text x="1176" y="564" font-size="10" fill="#9CA3AF">shared sim + real/ros2/</text>
+
+<!-- Bottom warning strip -->
+<rect x="20" y="632" width="1360" height="52" rx="6" fill="#FFF7ED" stroke="#FED7AA" stroke-width="1.5"/>
+<rect x="20" y="632" width="4" height="52" fill="#D97706"/>
+<text x="44" y="653" font-size="11" font-weight="700" fill="#92400E">Key Gotchas</text>
+<text x="44" y="669" font-size="11" fill="#78350F">--stair-preset must be passed explicitly or silently uses demo_gentle (0.08 m OOD)  ·  command.json UTF-8 no-BOM (PS 5.1 bug)  ·  judge from log/launcher.log not exit code</text>
+<text x="44" y="684" font-size="11" fill="#78350F">never import isaac_env by name (re-executes __main__)  ·  use getLogger("isaac_env")  ·  do NOT call SimulationManager.set_backend("torch") — breaks classic World pipeline</text>
+</svg>

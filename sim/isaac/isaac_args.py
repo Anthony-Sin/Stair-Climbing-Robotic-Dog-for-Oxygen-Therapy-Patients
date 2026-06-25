@@ -38,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "terrain spec + Docker-free drive command from the warm "
                              "command-file and build/drive THAT terrain. Off by default; "
                              "the one-shot and self-test paths are unaffected.")
-    parser.add_argument("--cmd-port", type=int, default=52001,
+    parser.add_argument("--cmd-port", type=int, default=52100,
                         help="UDP port for incoming velocity commands")
     parser.add_argument("--frame-port", type=int, default=52002,
                         help="UDP port for outgoing camera frames")
@@ -61,16 +61,24 @@ def build_parser() -> argparse.ArgumentParser:
                              "cost GPU wall-clock; physics still steps every frame at --physics-hz.")
     parser.add_argument("--person-x", type=float, default=-3.5,
                         help="Initial X position of the person target. Default -3.5 gives "
-                             "~15 seconds of flat-ground following at 0.35 m/s before the "
-                             "stairs at x≈2.0 (distance: 5.5 m / 0.35 m/s = 15.7 s).")
+                             "~5.5 m of flat-ground approach before the stairs at x≈2.0.")
     parser.add_argument("--person-y", type=float, default=0.0,
                         help="Initial Y position of the person target")
-    parser.add_argument("--go2-x", type=float, default=-4.5,
-                        help="Initial X position of the Go2 robot. Default -4.5 keeps a "
-                             "~1.0 m separation from the person at -3.5, giving the robot "
+    parser.add_argument("--go2-x", type=float, default=-3.0,
+                        help="Initial X position of the Go2 robot. Default -3.0 keeps a "
+                             "~1.0 m separation from the person at -2.0, giving the robot "
                              "room to establish cruise-speed following before the stairs.")
     parser.add_argument("--person-move", action="store_true",
                         help="Make the person walk a simple patrol path")
+    parser.add_argument("--person-approach-turns", type=int, default=0,
+                        help="Number of lateral zigzag turns the person makes on the flat "
+                             "approach before reaching the stair base. 0 = straight line "
+                             "(default). 2 is a good demo value: person steps right, then "
+                             "left, then re-centres at the stair entry -- forces the robot "
+                             "to actively steer rather than just drive straight.")
+    parser.add_argument("--person-approach-amplitude", type=float, default=1.2,
+                        help="Lateral amplitude (m) of each zigzag turn. Default 1.2 m "
+                             "is visible on camera without exceeding the floor width.")
     parser.add_argument("--patient-physics", action="store_true", default=False,
                         help="DEPRECATED / no-op. The dynamic MJCF physics patient was removed "
                              "(its negative-mass hand bodies NaN'd PhysX and crashed the sim). The "
@@ -441,10 +449,12 @@ def build_parser() -> argparse.ArgumentParser:
                              "rolls) while preserving that climb momentum. It does clip some step-up lift, but "
                              "net it climbs FURTHER than uncapped -- the spike-trimming stability outweighs "
                              "the lift loss on this shallow staircase.")
-    parser.add_argument("--with-o2-payload", action="store_true",
+    parser.add_argument("--with-o2-payload", dest="with_o2_payload", action="store_true",
                         help="Attach the 3D-printed rail cradle + P2-E6 oxygen concentrator "
-                             "to the Go2's back. Off by default so the base robot runs clean. "
-                             "Pass this flag to simulate the full therapy payload configuration.")
+                             "to the Go2's back (default: on).")
+    parser.add_argument("--no-o2-payload", dest="with_o2_payload", action="store_false",
+                        help="Detach the O2 payload (overrides the default on).")
+    parser.set_defaults(with_o2_payload=True)
     parser.add_argument("--stair-preset", type=str, default="demo_gentle",
                         choices=("demo_gentle", "residential", "commercial", "steep"),
                         help="Staircase geometry preset (single source of truth in "

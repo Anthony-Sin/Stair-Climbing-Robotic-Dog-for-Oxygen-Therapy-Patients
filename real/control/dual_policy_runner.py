@@ -118,6 +118,9 @@ class DualPolicyRunner:
         vx = max(0.0, float(follow_cmd.vx))
         wz = float(follow_cmd.wz)
 
+        # depth_106x60 is 106×60 (the real D435 output size). The handoff uses it only
+        # for stair detection (any HxW works). If climb_backend were ever changed to
+        # "parkour", the parkour policy expects [58,87] — resize before passing.
         ho = self.handoff.update(
             now=now, dt=dt, go2=articulation, depth_hw=depth_106x60,
             cmd_vx=vx, stairs_action_active=bool(follow_cmd.stairs_action_active),

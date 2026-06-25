@@ -4,13 +4,10 @@ import os
 # Resolve root directory
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Add root, core, and real/bot directories to python path
-sys.path.extend([
-    ROOT_DIR,
-    os.path.join(ROOT_DIR, "core"),
-    os.path.join(ROOT_DIR, "real", "bot"),
-    os.path.join(ROOT_DIR, "sim", "isaac")
-])
+# Add repo root to path so `from core.X import` and `from go2_locomotion.X import` resolve.
+# Do NOT add real/bot (superseded sdk2-DDS controller, causes shadow imports) or
+# sim/isaac (Isaac-specific modules cause import collisions on the real robot).
+sys.path.insert(0, ROOT_DIR)
 
 # Ensure the --sim flag is NOT passed since this is the hardware entrypoint
 if "--sim" in sys.argv:
@@ -27,6 +24,9 @@ if "--trt-engine" not in sys.argv:
     sys.argv.extend(["--trt-engine", "real/models/yolo11n-pose-fp16.trt"])
 
 if "--stairs-model" not in sys.argv:
+    # TODO: convert yolov8s-worldv2.pt to TRT for ~3-5x faster inference on Orin.
+    # Until then, PyTorch inference may run <5 Hz vs >30 Hz for the TRT pose model,
+    # causing stairs_action_active to lag the 50 Hz control loop.
     sys.argv.extend(["--stairs-model", "real/models/yolov8s-worldv2.pt"])
 
 from core.main import main

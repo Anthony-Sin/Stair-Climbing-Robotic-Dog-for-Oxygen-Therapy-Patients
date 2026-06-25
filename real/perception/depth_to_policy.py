@@ -12,10 +12,11 @@ from typing import Optional, Sequence, Tuple
 
 import numpy as np
 
-# Reuse the proven person-mask if it is importable (real/bot or sim/isaac/perception on
-# path); otherwise mask with a plain bbox blank so behavior degrades, never crashes.
+# Reuse the proven person-mask from real/bot; fall back to plain bbox blank so behavior
+# degrades gracefully rather than crashing. Use the full package path so this resolves
+# correctly regardless of sys.path (bare import only worked when real/bot was on path).
 try:  # pragma: no cover - import path depends on deployment
-    from parkour_depth_mask import mask_person_in_parkour_depth  # type: ignore
+    from real.bot.parkour_depth_mask import mask_person_in_parkour_depth  # type: ignore
 except Exception:  # pragma: no cover
     mask_person_in_parkour_depth = None  # type: ignore
 

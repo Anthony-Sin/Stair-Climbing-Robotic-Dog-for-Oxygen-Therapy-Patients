@@ -40,9 +40,14 @@ def check_crc_roundtrip() -> CheckResult:
         words.append(int(f.mode[i]) & 0xFFFFFFFF)
         for v in (f.q[i], f.dq[i], f.kp[i], f.kd[i], f.tau[i]):
             words.append(int(np.float32(v).view(np.uint32)))
-    c1, c2 = crc32_core(words), crc32_core(words)
-    ok = (c1 == c2) and (0 <= c1 <= 0xFFFFFFFF)
-    return CheckResult("crc_roundtrip", ok, f"crc={c1:#010x} (deterministic={c1 == c2})")
+    c1 = crc32_core(words)
+    # Golden vector: empty input must return the CRC seed (0xFFFFFFFF) — verifies
+    # initialization. c1 must be non-zero for a non-trivial input.
+    # TODO: once validated on the robot, add a hardcoded golden vector here:
+    #   assert crc32_core([0x00000001]) == <measured_value>
+    c_seed_ok = crc32_core([]) == 0xFFFFFFFF
+    ok = c_seed_ok and (0 < c1 <= 0xFFFFFFFF)
+    return CheckResult("crc_roundtrip", ok, f"crc={c1:#010x} (seed_ok={c_seed_ok})")
 
 
 def check_joint_limits() -> CheckResult:

@@ -624,10 +624,38 @@ def main():
             # stair_demo phase/locomotion overlay, which is HUD/report decoration
             # computed from ground-truth pose and drives nothing.
             stairs_result = yolo_stairs.get_latest_result()
-            if stairs_result.get("detected", False):
+            _stair_yolo_detected = stairs_result.get("detected", False)
+            _stair_yolo_bbox = stairs_result.get("bbox")
+            # Suppress YOLO stair detection when the person's bbox covers the majority of
+            # the stair bbox -- person legs animate in front of the stairs and their silhouette
+            # triggers YOLO-World ("steps"/"brick stairs") as a false positive.  The depth-based
+            # detector is not suppressed here because it uses geometric profiling and is not
+            # confused by the person's pixel footprint.
+            _stair_person_overlap_ratio = 0.0
+            if _stair_yolo_detected and _stair_yolo_bbox is not None and main_person is not None:
+                _pb = main_person.get("bbox")
+                if _pb is not None and len(_pb) >= 4 and len(_stair_yolo_bbox) >= 4:
+                    sx1, sy1, sx2, sy2 = _stair_yolo_bbox[:4]
+                    px1, py1, px2, py2 = _pb[:4]
+                    ix1 = max(sx1, px1); iy1 = max(sy1, py1)
+                    ix2 = min(sx2, px2); iy2 = min(sy2, py2)
+                    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+                    stair_area = max(1.0, (sx2 - sx1) * (sy2 - sy1))
+                    _stair_person_overlap_ratio = inter / stair_area
+                    if _stair_person_overlap_ratio >= 0.5:
+                        _stair_yolo_detected = False
+                        logger.debug(
+                            "YOLO stair detection suppressed: person bbox covers %.0f%% of stair bbox",
+                            _stair_person_overlap_ratio * 100,
+                        )
+            debug_info["stairs_person_overlap_ratio"] = round(_stair_person_overlap_ratio, 3)
+            debug_info["stairs_person_suppressed"] = (
+                stairs_result.get("detected", False) and not _stair_yolo_detected
+            )
+            if _stair_yolo_detected:
                 stair_latch_counter = int(args.stairs_latch_frames)
-                if stairs_result.get("bbox") is not None:
-                    last_stairs_bbox = list(stairs_result.get("bbox"))
+                if _stair_yolo_bbox is not None:
+                    last_stairs_bbox = list(_stair_yolo_bbox)
                     last_stairs_conf = float(stairs_result.get("conf", 0.0))
 
             # Depth-based near-field stair detection (Rec 2): run the geometric depth
@@ -651,18 +679,18 @@ def main():
             if stair_latch_counter > 0:
                 stair_latch_counter -= 1
 
-            # Widen the follow standoff while on stairs so the dog trails the person
-            # by a comfortable gap instead of parking one step behind and starving
-            # the forward command. Speed-adaptive buffer: expand the standoff by
-            # leader_speed * lookahead so a fast-moving patient doesn't trigger a
-            # collision block mid-climb. Takes effect on the next frame's follower update.
-            _leader_spd = float(debug_info.get("leader_speed_mps", 0.0))
-            _stair_standoff_base = float(args.stair_target_distance) if stairs_detected else float(args.target_distance)
-            _stair_lookahead_sec = 0.5  # tunable: seconds of patient travel added as buffer
+            # Stair close-follow: tighten the standoff while any stair evidence is
+            # present so the dog stays close enough to keep the patient in frame as
+            # they climb.  Enter on YOLO-World detection (far range); MAINTAIN while
+            # YOLO OR depth stair edges are still visible; exit only when BOTH clear.
+            # This prevents the standoff from snapping back to the wide normal value
+            # the instant YOLO-World blanks out at close range (<0.8 m riser face).
+            _depth_stairs_visible = bool(debug_info.get("depth_stair_detected", False))
+            _stair_close_active = stairs_detected or _depth_stairs_visible
+            debug_info["stair_close_active"] = _stair_close_active
             person_follower.config.target_distance = (
-                _stair_standoff_base + _leader_spd * _stair_lookahead_sec
-                if stairs_detected
-                else _stair_standoff_base
+                float(args.stair_target_distance) if _stair_close_active
+                else float(args.target_distance)
             )
 
             stairs_bbox = stairs_result.get("bbox") or last_stairs_bbox
@@ -912,8 +940,6 @@ def main():
                 debug_info["stair_demo"] = frame_meta["stair_demo"]
             if "lidar_profile" in frame_meta:
                 debug_info["lidar_profile"] = frame_meta["lidar_profile"]
-            # Removed hardcoded sim stair gap control override as requested by the user
-            debug_info["trans_x_cmd"] = trans_x_cmd
 
             export_debug_info = debug_info
             target_track_id   = None if main_person is None else main_person.get("track_id")
@@ -1034,7 +1060,6 @@ def main():
                 and not preparation_mode
                 and bool(debug_info.get("stairs_brief_loss_floor", False))
                 and bool(debug_info.get("stairs_action_active", False))
-                and float(trans_x_cmd) > 0.0
             )
             motion_allowed = (
                 live_motion_allowed or recovery_motion_allowed or stair_floor_motion_allowed
@@ -1139,14 +1164,6 @@ def main():
             # BEFORE any override this frame) drives the latch -- no self-refreshing loop -- and
             # YOLO re-detecting the upper steps during the climb keeps refreshing it. Drive is
             # unchanged (the follow/stair-floor command sustains the climb); only heading is held.
-            if bool(getattr(args, "stair_climb_latch", True)):
-                if bool(debug_info.get("stairs_action_active", False)):
-                    stair_climb_latch_until = current_time + float(args.stair_climb_max_sec)
-                if current_time < stair_climb_latch_until:
-                    debug_info["stairs_action_active"] = True
-                    debug_info["stair_climb_latched"] = True
-                else:
-                    debug_info["stair_climb_latched"] = False
 
             # Climb-mode continuity through the CLOSE-RANGE detection dropout ONLY. At the
             # first riser YOLO can no longer frame the staircase (it fills / drops below the

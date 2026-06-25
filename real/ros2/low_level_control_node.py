@@ -31,7 +31,7 @@ from std_msgs.msg import Float32MultiArray, String
 from sensor_msgs.msg import Image
 
 # Native Unitree ROS 2 messages (unitree_ros2 driver).
-from unitree_go.msg import LowState, LowCmd  # noqa: F401  (validated on the robot)
+from unitree_go.msg import LowState, LowCmd
 
 from real.control.lowstate_articulation import LowStateArticulation, GO2_DOF_NAMES
 from real.control.dual_policy_runner import DualPolicyRunner, RobotState

@@ -34,7 +34,7 @@ class LidarHeightscanNode(Node):
         super().__init__("lidar_heightscan")
         lidar_topic = str(self.declare_parameter("lidar_topic", "/livox/lidar").value)
         sku = str(self.declare_parameter("lidar_sku", "mid360").value)
-        mode = str(self.declare_parameter("heightscan_mode", "lidar").value)
+        mode = str(self.declare_parameter("heightscan_mode", "flat").value)
         scale = float(self.declare_parameter("heightscan_scale", 1.0).value)
 
         self._extr = get_extrinsic(sku)

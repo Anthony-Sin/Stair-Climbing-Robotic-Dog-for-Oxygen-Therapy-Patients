@@ -65,6 +65,19 @@ def _apply_follow_standoff_policy(
     # here kept the hold boundary at the short flat-ground gap and let the dog catch the patient
     # before the first riser.
     base_standoff = float(debug_info.get("target_distance", args.target_distance))
+
+    # Dynamic stair tightening: when on stairs and the gap has drifted beyond the base standoff,
+    # shrink the effective standoff so the robot chases harder the further the patient gets.
+    # Without this the old fixed 0.9 m stair standoff let the gap balloon to 1.5 m+ on approach
+    # (run_20260624_075819_043: standoff=0.9 → gap grew 0.9→1.5 m → person lost before climb).
+    if bool(debug_info.get("stair_close_active", False)) and gap_ctrl is not None:
+        _chase_gain = float(getattr(args, "stair_standoff_chase_gain", 0.35))
+        _stair_min = float(getattr(args, "stair_target_distance_min", 0.28))
+        if _chase_gain > 0.0 and gap_ctrl > base_standoff:
+            _tightened = base_standoff - (gap_ctrl - base_standoff) * _chase_gain
+            base_standoff = max(_stair_min, _tightened)
+        debug_info["stair_standoff_dynamic_m"] = round(base_standoff, 3)
+
     # leader_speed_mps is depth-derived and spikes to
     #    absurd values when the gap reading jumps (observed up to ~40 m/s on lock flicker), so clamp
     #    it to a sane walking range before it widens the standoff -- otherwise a single bad frame
@@ -139,9 +152,6 @@ def _apply_follow_standoff_policy(
     #        downstream by the GAP (too-close), NOT here -- see hold gating in the main loop.
     pace_cap_active = False
     pace_hold_active = False
-
-    state["last_time"] = time.perf_counter()
-    state["pace_timer"] = 0.0
 
     trot_kp = float(getattr(args, "follow_trot_speed_kp", 0.0))
     if trot_kp > 0.0 and state["go_state"] and gap_ctrl is not None:

@@ -145,6 +145,11 @@ class HandoffConfig:
     stair_commit_wz_max: float = 0.6     # cap on the commit yaw-rate command (rad/s)
     stair_commit_vx_floor: float = 0.22  # forward floor (m/s) so it keeps approaching/climbing
     stair_commit_max_sec: float = 25.0   # keep committing this long after the last stairs+loss frame
+    # Minimum accumulated sim-time (s) before stair_commit can arm. Prevents the commit
+    # heading-hold from firing while the robot is still settling from spawn (GoX=1.0 puts
+    # the 0.198m riser in detection range from frame 1; the immediate wz correction while
+    # the body is -7° rolled spirals the dog sideways before it reaches the riser).
+    stair_commit_arm_after_secs: float = 1.0
 
     # --- top-of-stairs egress -> PGTT handback ------------------------------------
     # The PRIMARY climb exit. The old exit was the arbitrary `climb_max_sec` timeout, which
@@ -164,6 +169,15 @@ class HandoffConfig:
     top_egress_standoff_m: float = 0.60   # only push forward in egress if the person is >= this away
     top_egress_goal_stop_m: float = 0.12  # stop the egress push once within this of a forward GOAL
                                           # (e.g. the waypoint-test target) so it does not overrun it
+
+    # --- post-climb re-acquisition: spin-in-place before resuming forward follow -------
+    # After a successful top-egress handback, the blind/parkour climb policy may have rotated
+    # the robot off-axis (e.g. 80 deg sideways). The stair-commit wz_override already steers
+    # yaw -> 0, but its 0.22 m/s vx_floor makes the robot ARC sideways while rotating instead
+    # of spinning in place -- the patient is never re-acquired. Solution: suppress the forward
+    # floor while |yaw| exceeds this threshold so the robot spins in place to face forward
+    # first, then resumes the commit floor once re-aligned (patient re-detected or yaw small).
+    post_climb_yaw_threshold_deg: float = 20.0  # suppress fwd floor while |yaw| > this (deg)
 
 
 class StallDetector:
@@ -372,6 +386,7 @@ class HandoffController:
         self._climb_start_z: Optional[float] = None
         self._climb_t0 = 0.0
         self._climb_elapsed = 0.0   # SIM time spent in the current climb (dt-accumulated)
+        self._elapsed_dt = 0.0      # total accumulated sim-time; guards stair_commit arm delay
         self._cooldown_until = 0.0
         self._commit_until = 0.0
         self._committing = False
@@ -390,6 +405,8 @@ class HandoffController:
         # --- vertical-progress watchdog state ---
         self._climb_progress_z: Optional[float] = None  # highest base_z reached this climb
         self._climb_stall_sec = 0.0        # time since the body last gained height
+        # --- post-climb re-acquisition state ---
+        self._post_climb_reacquire: bool = False  # True after top_egress_done until yaw realigned
 
     def reset(self) -> None:
         self.stall.reset()
@@ -398,6 +415,7 @@ class HandoffController:
         self.state = "walk"
         self._climb_start_z = None
         self._climb_elapsed = 0.0
+        self._elapsed_dt = 0.0
         self._cooldown_until = 0.0
         self._commit_until = 0.0
         self._committing = False
@@ -412,6 +430,7 @@ class HandoffController:
         self._crest_logged = False
         self._climb_progress_z = None
         self._climb_stall_sec = 0.0
+        self._post_climb_reacquire = False
 
     def update(
         self,
@@ -440,6 +459,7 @@ class HandoffController:
         stairs_ahead_gt: Optional[bool] = None,
         forward_goal_dist_m: Optional[float] = None,
     ) -> Dict[str, Any]:
+        self._elapsed_dt += max(0.0, float(dt))
         # Throttled depth detection (the parkour cam only refreshes ~10 Hz).
         if depth_hw is not None and (now - self._last_detect_ts) >= float(self.cfg.stair_detect_period_sec):
             self._det = self.detector.detect(depth_hw)
@@ -454,22 +474,55 @@ class HandoffController:
         # NOTE (sim): yaw/y_lateral are the base pose (legit on the real robot from the
         # IMU + the depth-detected stair center); the stairs are assumed along +x here.
         stairs_ahead = bool(det.get("stair_detected", False)) or bool(stairs_action_active)
-        if self.cfg.stair_commit_enabled and stairs_ahead and not person_detected:
+        # Arm delay: stair_commit can't fire until stair_commit_arm_after_secs of sim-time
+        # have elapsed. Prevents the commit heading-hold from engaging while the body is
+        # still settling from spawn (a 7° roll at t=0.075s + immediate wz correction
+        # spirals the robot sideways before it reaches the riser -- seen with 0.198m riser
+        # detectable at 1.074m range from Go2X=1.0 spawn in the waypoint test).
+        commit_armed = self._elapsed_dt >= float(self.cfg.stair_commit_arm_after_secs)
+        # Keep the commit timer alive during the entire climb so it is still active after
+        # disengage (enabling the post_climb_reacquire spin-in-place). Without this, depth
+        # stairs detection goes False once the robot climbs past the riser horizon (~halfway
+        # up), commit_until expires 25s later, and disengage finds committing=False -- the
+        # spin-in-place heading correction never fires (run_20260624_073431_729: timer
+        # expired at 11:39:34 but disengage wasn't until 11:40:48, robot stayed at 116° yaw).
+        if (self.cfg.stair_commit_enabled and commit_armed
+                and (stairs_ahead or self.state == "climb") and not person_detected):
             self._commit_until = float(now) + float(self.cfg.stair_commit_max_sec)
         committing = (
             bool(self.cfg.stair_commit_enabled)
             and (float(now) < self._commit_until)
             and not person_detected
         )
+        # Person re-detected: clear the post-climb re-acquisition flag so normal follow resumes.
+        if person_detected and self._post_climb_reacquire:
+            self._post_climb_reacquire = False
         self._committing = committing
         wz_override: Optional[float] = None
         vx_floor: Optional[float] = None
-        if committing and self.state == "walk":
+        if committing:
+            # Heading lock: drive yaw -> 0 (face up the +x staircase) and steer back toward
+            # the centerline (y -> 0). Applies in BOTH walk and climb states so the blind_rl
+            # backend can use it as a seed when no person bearing history is available (see
+            # isaac_env.py blind_rl path: _ho["wz_override"] fallback). Without this, a climb
+            # entered with person_detected=False had _last_climb_wz=None and wz fell through to
+            # the controller's ~0 value, letting the robot yaw 116° uncorrected during the climb
+            # (run_20260624_073431_729: yaw 1° -> 116° over 130s of blind_rl climb).
             wz_override = float(np.clip(
                 -float(self.cfg.stair_commit_yaw_kp) * float(yaw)
                 - float(self.cfg.stair_commit_lat_kp) * float(y_lateral),
                 -float(self.cfg.stair_commit_wz_max), float(self.cfg.stair_commit_wz_max)))
-            vx_floor = float(self.cfg.stair_commit_vx_floor)
+            if self.state == "walk":
+                # Post-climb re-acquisition: while the robot is still off-axis after the climb,
+                # suppress the forward floor so it spins in place (not arcs sideways) to face
+                # forward again. Clear the flag once yaw is small enough.
+                _yaw_large = abs(float(yaw)) > math.radians(float(self.cfg.post_climb_yaw_threshold_deg))
+                if self._post_climb_reacquire and _yaw_large:
+                    vx_floor = None  # spin in place; no forward push while pointing sideways
+                else:
+                    if self._post_climb_reacquire:
+                        self._post_climb_reacquire = False  # re-aligned; resume normal commit
+                    vx_floor = float(self.cfg.stair_commit_vx_floor)
 
         # Stall = "commanded forward yet not moving forward". Use the EFFECTIVE forward
         # command incl. the stair-commit floor: the dog wedged at the riser IS being driven
@@ -708,6 +761,8 @@ class HandoffController:
                 self._climb_stall_sec = 0.0
                 if done_ik or done_egress:
                     self._climbs_done += 1
+                if done_egress:
+                    self._post_climb_reacquire = True
                 log_event(
                     self.logger, logging.INFO, "handoff_disengage",
                     "Stair climber handing back to PGTT walker",
@@ -749,6 +804,7 @@ class HandoffController:
             "handoff_egress_travel_m": round(float(self._egress_travel), 3),
             "handoff_egress_vx_floor": self._egress_vx_floor,
             "handoff_climb_stall_sec": round(float(self._climb_stall_sec), 3),
+            "post_climb_reacquire": bool(self._post_climb_reacquire),
         }
         t.update(self.stall.telemetry())
         if self.state == "climb":

@@ -10,7 +10,7 @@ param(
     [string]$Image = "go2-pose-x86:latest",
     [string]$FrameHost = "",
     [string]$CmdHost = "",
-    [int]$CmdPort = 52001,
+    [int]$CmdPort = 52100,
     [int]$FramePort = 52002,
     [string]$FollowBackend = "pid",
     [string]$TrtEngine = "/models/yolo/yolo11n-pose-fp16.trt",
@@ -89,6 +89,10 @@ param(
     # Docker controller's first command. Pair with --no-docker-run for a Docker-free
     # patient-locomotion walk_log run.
     [switch]$NoHoldMotion,
+    # Number of lateral zigzag turns the person makes on flat ground before the stairs.
+    # 0 = straight-line (default). 2 = S-curve: right then left then re-centres at stair entry.
+    [int]$PersonApproachTurns = 0,
+    [double]$PersonApproachAmplitude = 1.2,
     [switch]$WarmIsaac,
     [switch]$WarmShutdown,
     [int]$WarmMaxRuns = 10
@@ -1291,9 +1295,7 @@ if ($NoIsaac) {
     if ($NoParkourPersonMask) {
         $isaacArgs += "-NoParkourPersonMask"
     }
-    if ($WithO2Payload) {
-        $isaacArgs += "-WithO2Payload"
-    }
+    $isaacArgs += "-WithO2Payload"
     if ($NoParkourWalkMode) {
         $isaacArgs += "-NoParkourWalkMode"
     }
@@ -1317,6 +1319,10 @@ if ($NoIsaac) {
     }
     if ($NoHoldMotion) {
         $isaacArgs += "-NoHoldMotion"
+    }
+    if ($PersonApproachTurns -gt 0) {
+        $isaacArgs += "-PersonApproachTurns";     $isaacArgs += [string]$PersonApproachTurns
+        $isaacArgs += "-PersonApproachAmplitude"; $isaacArgs += [string]$PersonApproachAmplitude
     }
     if ($SelfTestWalk) {
         $isaacArgs += "-SelfTestWalk"
@@ -1488,7 +1494,7 @@ if ($NoDockerRun) {
         "--trans-x-alpha 0.65",
         "--kp 1.1",
         "--kd 0.15",
-        "--follow-standoff-speed-gain 0.4",
+        "--follow-standoff-speed-gain 0.0",
         "--follow-pace-distance 2.0",
         "--follow-pace-floor-speed 0.5",
         "--follow-standoff-band-out 0.15",
@@ -1503,8 +1509,7 @@ if ($NoDockerRun) {
         # The person leaves the camera the instant the climb starts, so the loss-floor governs most of
         # the ascent -- raised 0.16 -> 0.22 because 0.16 was too weak to mount the step.
         "--stair-forward-floor 0.16",
-        "--stair-loss-forward-floor 0.22",
-        "--stair-target-distance 1.2",
+        "--stair-loss-forward-floor 0.35",
         "--stair-near-distance 0.45",
         "--stair-policy-prepare-distance 1.0",
         "--stair-depth-engage-distance 0.45",

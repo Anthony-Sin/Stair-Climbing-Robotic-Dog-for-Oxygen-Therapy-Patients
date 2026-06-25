@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 680" width="1400" height="680" font-family="'Segoe UI',system-ui,-apple-system,sans-serif">
+<defs>
+  <marker id="arr" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><polygon points="0 0,8 3.5,0 7" fill="#94A3B8"/></marker>
+  <marker id="arrl" markerWidth="8" markerHeight="7" refX="1" refY="3.5" orient="auto"><polygon points="8 0,0 3.5,8 7" fill="#94A3B8"/></marker>
+</defs>
+<rect width="1400" height="680" fill="#FFFFFF"/>
+
+<!-- Title -->
+<rect width="1400" height="64" fill="#1E293B"/>
+<text x="700" y="34" text-anchor="middle" font-size="22" font-weight="700" fill="#FFFFFF">System Architecture Overview</text>
+<text x="700" y="54" text-anchor="middle" font-size="12" fill="#94A3B8">Isaac Sim (GPU · 50 Hz) · UDP 55001/55002 · Docker Controller · go2_locomotion shared policies</text>
+
+<!-- Launcher -->
+<rect x="20" y="72" width="1360" height="52" rx="6" fill="#FFFBEB" stroke="#FDE68A" stroke-width="1.5"/>
+<rect x="20" y="72" width="4" height="52" rx="2" fill="#D97706"/>
+<text x="44" y="95" font-size="13" font-weight="700" fill="#92400E">Launcher</text>
+<text x="150" y="95" font-size="11" fill="#78350F">run_sim.bat / run_sim.ps1 · run_stair_sweep.ps1 · run_bench.bat · StairSpec preset forwarded to Isaac</text>
+<text x="44" y="113" font-size="11" fill="#B45309">Logs → log/  ·  Judge pass/fail from log/launcher.log, NOT exit code (capped run exits non-zero)</text>
+
+<!-- ─── ISAAC SIM ─────────────────────────────────────────── -->
+<rect x="20" y="140" width="616" height="384" rx="8" fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1.5"/>
+<path d="M 28,140 H 628 Q 636,140 636,148 V 184 H 20 V 148 Q 20,140 28,140 Z" fill="#1D4ED8"/>
+<text x="328" y="167" text-anchor="middle" font-size="14" font-weight="700" fill="#FFFFFF">Isaac Sim · NVIDIA GPU Process · 50 Hz physics loop</text>
+
+<!-- Card: Go2 Articulation -->
+<rect x="28" y="192" width="294" height="100" rx="6" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="42" y="213" font-size="14" font-weight="700" fill="#111827">Go2 Articulation</text>
+<text x="42" y="228" font-size="11" fill="#6B7280">12-DOF URDF · position drive 50 Hz</text>
+<line x1="38" y1="236" x2="314" y2="236" stroke="#F1F5F9" stroke-width="1"/>
+<text x="42" y="252" font-size="11" fill="#9CA3AF">Drive</text><text x="106" y="252" font-size="11" fill="#374151">Kp=40 / Kd=1.0 per joint</text>
+<text x="42" y="269" font-size="11" fill="#9CA3AF">DR</text><text x="106" y="269" font-size="11" fill="#374151">friction · PD gains · lighting</text>
+<text x="42" y="286" font-size="11" fill="#9CA3AF">State</text><text x="106" y="286" font-size="11" fill="#374151">body_z · pitch · roll · heading</text>
+
+<!-- Card: Patient System -->
+<rect x="334" y="192" width="294" height="100" rx="6" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="348" y="213" font-size="14" font-weight="700" fill="#111827">Patient System</text>
+<text x="348" y="228" font-size="11" fill="#6B7280">H1 Puppet (physics) + BipedMannequin</text>
+<line x1="344" y1="236" x2="620" y2="236" stroke="#F1F5F9" stroke-width="1"/>
+<text x="348" y="252" font-size="11" fill="#9CA3AF">Physics</text><text x="416" y="252" font-size="11" fill="#374151">invisible H1 · flat-terrain policy</text>
+<text x="348" y="269" font-size="11" fill="#9CA3AF">Visual</text><text x="416" y="269" font-size="11" fill="#374151">UsdSkel gait + mocap clip_player</text>
+<text x="348" y="286" font-size="11" fill="#9CA3AF">Path</text><text x="416" y="286" font-size="11" fill="#374151">scripted waypoint patrol</text>
+
+<!-- Card: Camera System -->
+<rect x="28" y="304" width="294" height="100" rx="6" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="42" y="325" font-size="14" font-weight="700" fill="#111827">Camera System</text>
+<text x="42" y="340" font-size="11" fill="#6B7280">Single D435 · co-located RGB + Depth</text>
+<line x1="38" y1="348" x2="314" y2="348" stroke="#F1F5F9" stroke-width="1"/>
+<text x="42" y="364" font-size="11" fill="#9CA3AF">RGB</text><text x="106" y="364" font-size="11" fill="#374151">1280×720 · 69°H × 42.6°V</text>
+<text x="42" y="381" font-size="11" fill="#9CA3AF">Depth</text><text x="106" y="381" font-size="11" fill="#374151">58×87 · 0–2 m · person-masked</text>
+<text x="42" y="398" font-size="11" fill="#9CA3AF">Mount</text><text x="106" y="398" font-size="11" fill="#374151">(0.24, 0, 0.12) m trunk-forward</text>
+
+<!-- Card: O2 Payload -->
+<rect x="334" y="304" width="294" height="100" rx="6" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="348" y="325" font-size="14" font-weight="700" fill="#111827">O₂ Payload</text>
+<text x="348" y="340" font-size="11" fill="#6B7280">Rails + tank · 600 N breakable strap</text>
+<line x1="344" y1="348" x2="620" y2="348" stroke="#F1F5F9" stroke-width="1"/>
+<text x="348" y="364" font-size="11" fill="#9CA3AF">Attach</text><text x="416" y="364" font-size="11" fill="#374151">pre-world.reset() · trunk child</text>
+<text x="348" y="381" font-size="11" fill="#9CA3AF">Monitor</text><text x="416" y="381" font-size="11" fill="#374151">CoM shift · strap force per step</text>
+<text x="348" y="398" font-size="11" fill="#9CA3AF">Mass</text><text x="416" y="398" font-size="11" fill="#374151">+0.136 kg rail + tank payload</text>
+
+<!-- Card: HandoffController -->
+<rect x="28" y="416" width="294" height="100" rx="6" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="42" y="437" font-size="14" font-weight="700" fill="#111827">HandoffController</text>
+<text x="42" y="452" font-size="11" fill="#6B7280">PGTT walk → climb backend · 50 Hz</text>
+<line x1="38" y1="460" x2="314" y2="460" stroke="#F1F5F9" stroke-width="1"/>
+<text x="42" y="476" font-size="11" fill="#9CA3AF">Stall</text><text x="106" y="476" font-size="11" fill="#374151">body_vx &lt; 0.06 m/s for 0.6 s</text>
+<text x="42" y="493" font-size="11" fill="#9CA3AF">Riser</text><text x="106" y="493" font-size="11" fill="#374151">≥ 2 at &lt; 1.6 m → CLIMB state</text>
+<text x="42" y="510" font-size="11" fill="#9CA3AF">Egress</text><text x="106" y="510" font-size="11" fill="#374151">walk crest-clear before handback</text>
+
+<!-- Card: Fall Diagnostics -->
+<rect x="334" y="416" width="294" height="100" rx="6" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="348" y="437" font-size="14" font-weight="700" fill="#111827">Fall Diagnostics</text>
+<text x="348" y="452" font-size="11" fill="#6B7280">debug/isaac_env.jsonl · authoritative</text>
+<line x1="344" y1="460" x2="620" y2="460" stroke="#F1F5F9" stroke-width="1"/>
+<text x="348" y="476" font-size="11" fill="#9CA3AF">Detect</text><text x="416" y="476" font-size="11" fill="#374151">flipped 1.05 rad / collapsed 0.52</text>
+<text x="348" y="493" font-size="11" fill="#9CA3AF">Verdict</text><text x="416" y="493" font-size="11" fill="#374151">FELL / COLLIDED / CLEAN CLIMB</text>
+<text x="348" y="510" font-size="11" fill="#9CA3AF">Track</text><text x="416" y="510" font-size="11" fill="#374151">perf_tracker archive.jsonl</text>
+
+<!-- ─── UDP ZONE ───────────────────────────────────────────── -->
+<rect x="648" y="216" width="104" height="52" rx="6" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.5"/>
+<text x="700" y="234" text-anchor="middle" font-size="11" font-weight="700" fill="#334155">UDP 55002</text>
+<text x="700" y="249" text-anchor="middle" font-size="10" fill="#64748B">RGB 1280×720</text>
+<text x="700" y="262" text-anchor="middle" font-size="10" fill="#64748B">Depth 58×87</text>
+<line x1="636" y1="242" x2="648" y2="242" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr)"/>
+<line x1="752" y1="242" x2="764" y2="242" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr)"/>
+
+<rect x="648" y="392" width="104" height="52" rx="6" fill="#EEF2FF" stroke="#C7D2FE" stroke-width="1.5"/>
+<text x="700" y="410" text-anchor="middle" font-size="11" font-weight="700" fill="#3730A3">UDP 55001</text>
+<text x="700" y="425" text-anchor="middle" font-size="10" fill="#4338CA">JSON vx · wz</text>
+<text x="700" y="438" text-anchor="middle" font-size="10" fill="#4338CA">yaw_err · hold</text>
+<line x1="764" y1="418" x2="752" y2="418" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arrl)"/>
+<line x1="648" y1="418" x2="636" y2="418" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arrl)"/>
+
+<!-- ─── DOCKER CONTROLLER ──────────────────────────────────── -->
+<rect x="764" y="140" width="616" height="384" rx="8" fill="#F0FDF4" stroke="#BBF7D0" stroke-width="1.5"/>
+<path d="M 772,140 H 1372 Q 1380,140 1380,148 V 184 H 764 V 148 Q 764,140 772,140 Z" fill="#15803D"/>
+<text x="1072" y="167" text-anchor="middle" font-size="14" font-weight="700" fill="#FFFFFF">Docker Controller · Core Process · per-frame perception + control</text>
+
+<!-- Card: YOLOv8-Pose TRT -->
+<rect x="772" y="192" width="294" height="100" rx="6" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="786" y="213" font-size="14" font-weight="700" fill="#111827">YOLOv8-Pose TRT</text>
+<text x="786" y="228" font-size="11" fill="#6B7280">person detection · 17 COCO keypoints</text>
+<line x1="782" y1="236" x2="1058" y2="236" stroke="#F1F5F9" stroke-width="1"/>
+<text x="786" y="252" font-size="11" fill="#9CA3AF">Input</text><text x="846" y="252" font-size="11" fill="#374151">RGB 1280×720 via UDP 55002</text>
+<text x="786" y="269" font-size="11" fill="#9CA3AF">Output</text><text x="846" y="269" font-size="11" fill="#374151">bboxes · confidence · keypoints</text>
+<text x="786" y="286" font-size="11" fill="#9CA3AF">Engine</text><text x="846" y="286" font-size="11" fill="#374151">TensorRT · Jetson Orin</text>
+
+<!-- Card: YOLO-World Stairs -->
+<rect x="1078" y="192" width="294" height="100" rx="6" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="1092" y="213" font-size="14" font-weight="700" fill="#111827">YOLO-World Stairs</text>
+<text x="1092" y="228" font-size="11" fill="#6B7280">open-vocab stair detection · TRT</text>
+<line x1="1088" y1="236" x2="1364" y2="236" stroke="#F1F5F9" stroke-width="1"/>
+<text x="1092" y="252" font-size="11" fill="#9CA3AF">Output</text><text x="1156" y="252" font-size="11" fill="#374151">bbox · confidence · riser count</text>
+<text x="1092" y="269" font-size="11" fill="#9CA3AF">Gate</text><text x="1156" y="269" font-size="11" fill="#374151">≥ 2 risers at &lt; 1.6 m</text>
+<text x="1092" y="286" font-size="11" fill="#9CA3AF">Debounce</text><text x="1156" y="286" font-size="11" fill="#374151">3-frame persistence</text>
+
+<!-- Card: DepthProcessor -->
+<rect x="772" y="304" width="294" height="100" rx="6" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="786" y="325" font-size="14" font-weight="700" fill="#111827">DepthProcessor</text>
+<text x="786" y="340" font-size="11" fill="#6B7280">person gap estimation + LiDAR fusion</text>
+<line x1="782" y1="348" x2="1058" y2="348" stroke="#F1F5F9" stroke-width="1"/>
+<text x="786" y="364" font-size="11" fill="#9CA3AF">Method</text><text x="846" y="364" font-size="11" fill="#374151">foreground bimodal histogram</text>
+<text x="786" y="381" font-size="11" fill="#9CA3AF">Fusion</text><text x="846" y="381" font-size="11" fill="#374151">LiDAR weight = 0.6</text>
+<text x="786" y="398" font-size="11" fill="#9CA3AF">Mask</text><text x="846" y="398" font-size="11" fill="#374151">person bbox → terrain-fill depth</text>
+
+<!-- Card: SinglePersonTracker -->
+<rect x="1078" y="304" width="294" height="100" rx="6" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="1092" y="325" font-size="14" font-weight="700" fill="#111827">SinglePersonTracker</text>
+<text x="1092" y="340" font-size="11" fill="#6B7280">IoU re-ID · occlusion handling</text>
+<line x1="1088" y1="348" x2="1364" y2="348" stroke="#F1F5F9" stroke-width="1"/>
+<text x="1092" y="364" font-size="11" fill="#9CA3AF">Re-ID</text><text x="1156" y="364" font-size="11" fill="#374151">IoU overlap matching per frame</text>
+<text x="1092" y="381" font-size="11" fill="#9CA3AF">Lost</text><text x="1156" y="381" font-size="11" fill="#374151">predict position up to 3.0 s</text>
+<text x="1092" y="398" font-size="11" fill="#9CA3AF">Track</text><text x="1156" y="398" font-size="11" fill="#374151">consistent track_id across frames</text>
+
+<!-- Card: PersonFollower -->
+<rect x="772" y="416" width="294" height="100" rx="6" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="786" y="437" font-size="14" font-weight="700" fill="#111827">PersonFollower</text>
+<text x="786" y="452" font-size="11" fill="#6B7280">3-zone PID · target 0.45 m</text>
+<line x1="782" y1="460" x2="1058" y2="460" stroke="#F1F5F9" stroke-width="1"/>
+<text x="786" y="476" font-size="11" fill="#9CA3AF">Kp</text><text x="846" y="476" font-size="11" fill="#374151">0.8 · cruise → hold → brake</text>
+<text x="786" y="493" font-size="11" fill="#9CA3AF">Bearing</text><text x="846" y="493" font-size="11" fill="#374151">heading PID from bbox center</text>
+<text x="786" y="510" font-size="11" fill="#9CA3AF">File</text><text x="846" y="510" font-size="11" fill="#374151">core/control/follow_shaping.py</text>
+
+<!-- Card: ClimbFSM -->
+<rect x="1078" y="416" width="294" height="100" rx="6" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
+<text x="1092" y="437" font-size="14" font-weight="700" fill="#111827">ClimbFSM</text>
+<text x="1092" y="452" font-size="11" fill="#6B7280">6-state · FLAT_FOLLOW → COMMITTED</text>
+<line x1="1088" y1="460" x2="1364" y2="460" stroke="#F1F5F9" stroke-width="1"/>
+<text x="1092" y="476" font-size="11" fill="#9CA3AF">Climb</text><text x="1156" y="476" font-size="11" fill="#374151">stairs_action_active bypasses gate</text>
+<text x="1092" y="493" font-size="11" fill="#9CA3AF">Output</text><text x="1156" y="493" font-size="11" fill="#374151">vx · wz · yaw_err · hold</text>
+<text x="1092" y="510" font-size="11" fill="#9CA3AF">Sends</text><text x="1156" y="510" font-size="11" fill="#374151">UDP 55001 JSON to Isaac</text>
+
+<!-- ─── go2_locomotion SHARED BAR ──────────────────────────── -->
+<rect x="20" y="540" width="1360" height="72" rx="8" fill="#F5F3FF" stroke="#DDD6FE" stroke-width="1.5"/>
+<path d="M 28,540 H 1372 Q 1380,540 1380,548 V 576 H 20 V 548 Q 20,540 28,540 Z" fill="#7C3AED"/>
+<text x="700" y="563" text-anchor="middle" font-size="14" font-weight="700" fill="#FFFFFF">go2_locomotion/  ·  Shared by Isaac Sim + real/ros2/ ROS2 port  ·  import as go2_locomotion (NOT locomotion)</text>
+<rect x="32" y="580" width="304" height="22" rx="4" fill="#EDE9FE" stroke="#C4B5FD" stroke-width="1"/>
+<text x="184" y="596" text-anchor="middle" font-size="11" font-weight="600" fill="#5B21B6">PGTT MLP · 153-D heightmap · default</text>
+<rect x="348" y="580" width="286" height="22" rx="4" fill="#EDE9FE" stroke="#C4B5FD" stroke-width="1"/>
+<text x="491" y="596" text-anchor="middle" font-size="11" font-weight="600" fill="#5B21B6">Parkour CNN · 114-D + depth GRU</text>
+<rect x="646" y="580" width="260" height="22" rx="4" fill="#EDE9FE" stroke="#C4B5FD" stroke-width="1"/>
+<text x="776" y="596" text-anchor="middle" font-size="11" font-weight="600" fill="#5B21B6">blind-RL · 45-D proprio · climb</text>
+<rect x="918" y="580" width="288" height="22" rx="4" fill="#EDE9FE" stroke="#C4B5FD" stroke-width="1"/>
+<text x="1062" y="596" text-anchor="middle" font-size="11" font-weight="600" fill="#5B21B6">IK Climber · 2-link sagittal · det.</text>
+<rect x="1218" y="580" width="150" height="22" rx="4" fill="#EDE9FE" stroke="#C4B5FD" stroke-width="1"/>
+<text x="1293" y="596" text-anchor="middle" font-size="11" font-weight="600" fill="#5B21B6">fine_tuning/</text>
+
+<!-- ─── REAL ROBOT BAR ─────────────────────────────────────── -->
+<rect x="20" y="624" width="1360" height="44" rx="6" fill="#F9FAFB" stroke="#CBD5E1" stroke-width="1.5" stroke-dasharray="7,3"/>
+<text x="700" y="643" text-anchor="middle" font-size="13" font-weight="600" fill="#64748B">real/  ·  ROS2 Foxy Port  ·  Deferred until sim proven</text>
+<text x="700" y="659" text-anchor="middle" font-size="11" fill="#94A3B8">ros2/ thin rclpy nodes · control/ lowstate adapter · dual_policy_runner · lowcmd_builder + CRC · watchdog</text>
+</svg>

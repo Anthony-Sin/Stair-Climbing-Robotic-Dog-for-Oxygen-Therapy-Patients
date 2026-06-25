@@ -2273,11 +2273,22 @@ class PatientLocomotionState:
             )
         else:
             self.waypoints = [(self.x, self.y)]
-            for waypoint_x in (1.2, 1.8):
+            turns = getattr(args, "person_approach_turns", 0)
+            amp   = getattr(args, "person_approach_amplitude", 1.2)
+            # Flat-approach alignment point: person must be on-axis before the stairs.
+            _ALIGN_X = 1.4
+            if turns > 0 and _ALIGN_X > self.x + 0.5:
+                # Distribute N turns evenly across [start_x, _ALIGN_X], alternating ±amp.
+                span = _ALIGN_X - self.x
+                for i in range(turns):
+                    wx = self.x + span * (i + 1) / (turns + 1)
+                    wy = amp if (i % 2 == 0) else -amp
+                    self.waypoints.append((wx, wy))
+            for waypoint_x in (1.4, 2.0):
                 if waypoint_x > self.x + 0.05:
                     self.waypoints.append((waypoint_x, 0.0))
-            if self.waypoints[-1][0] < 1.8:
-                self.waypoints.append((1.8, 0.0))
+            if self.waypoints[-1][0] < 2.0:
+                self.waypoints.append((2.0, 0.0))
         self.stair_base_wp_idx = len(self.waypoints) - 1
         # One waypoint per tread (tread centre) plus a top-landing target,
         # generated from the active StairSpec so the patient path matches the
@@ -2286,7 +2297,7 @@ class PatientLocomotionState:
             (_stairs.start_x_m + (i + 0.5) * _stairs.step_depth_m, 0.0)
             for i in range(_stairs.step_count)
         )
-        self.waypoints.append((_stairs.end_x_m + 1.5, 0.0))  # top landing (1.5 m deep)
+        self.waypoints.append((_stairs.end_x_m + 0.75, 0.0))  # top landing (0.75 m deep)
         self.current_wp_idx = min(1, len(self.waypoints) - 1)
         self.wp_direction = 1
 
@@ -2597,7 +2608,7 @@ PELVIS_STAND_HEIGHT_M = 0.80
 # at ~0.5), so the gap opened and the follow lock had nothing to hold. Stairs are
 # taken slower still. The distance-synced gait phase scales the leg cadence to these
 # automatically, so a lower speed also slows the visible clip cadence to match.
-PATIENT_WALK_SPEED_FLAT_MPS = 0.50
+PATIENT_WALK_SPEED_FLAT_MPS = 0.35
 # Stairs are taken slowly and carefully, AND paced to the robot's REAL measured on-stair
 # climb rate so the follower can actually hold the gap. The old 0.22 m/s assumed "the
 # robot is PhysX-pinned at the stair base and never climbs, so matching is moot" -- but
@@ -2611,6 +2622,7 @@ PATIENT_WALK_SPEED_FLAT_MPS = 0.50
 # world-fixed). Nudge toward ~0.11-0.12 to actively reel the gap DOWN to 1.2 m rather than
 # merely hold it.
 PATIENT_WALK_SPEED_STAIR_MPS = 0.13
+PATIENT_WALK_SPEED_POST_STAIR_MPS = 0.18
 
 
 def _patient_stand_height(person) -> float:
@@ -2969,7 +2981,7 @@ def update_person_patrol(person, dt: float) -> None:
         elif _stairs.start_x_m <= state.x < _stairs.end_x_m:
             speed = PATIENT_WALK_SPEED_STAIR_MPS
         else:
-            speed = PATIENT_WALK_SPEED_FLAT_MPS
+            speed = PATIENT_WALK_SPEED_POST_STAIR_MPS
 
         if is_stumbling:
             speed *= 0.5
@@ -4392,13 +4404,23 @@ def _step_go2_locomotion(
                         _brmax = float(getattr(args, "stair_rot_max", 0.6))
                         _bwz = float(np.clip(float(yaw_err) * _bscale, -_brmax, _brmax))
                         _PGTT_CLIMB_POLICY._last_climb_wz = _bwz
+                    elif _ho.get("wz_override") is not None:
+                        # Person lost: stair_commit heading lock (yaw->0, live IMU) is the
+                        # primary persistent reference. The old decay-hold (_last_climb_wz *=
+                        # 0.92) reached zero in ~1 s at 28 Hz (0.92^28 ≈ 0.10/s) but never
+                        # became None, so the wz_override branch was permanently blocked and
+                        # wz stayed 0 for the rest of the climb (run 081406_745: yaw 6°->43°,
+                        # robot spiralled off stairs). yaw->0 is always correct on a straight
+                        # staircase and is driven by live IMU, not a stale bearing.
+                        _bwz = float(_ho["wz_override"])
+                        _PGTT_CLIMB_POLICY._last_climb_wz = None  # clear stale bearing
                     elif getattr(_PGTT_CLIMB_POLICY, "_last_climb_wz", None) is not None:
-                        # Person lost mid-follow: hold the last bearing-rate, decaying to straight.
+                        # Fallback only when stair_commit is disabled / waypoint test:
+                        # hold the last bearing-rate, decaying toward zero.
                         _held = float(_PGTT_CLIMB_POLICY._last_climb_wz)
                         _bwz = _held
                         _PGTT_CLIMB_POLICY._last_climb_wz = _held * 0.92
-                    # else: no person ever (e.g. the waypoint test) -> keep the incoming
-                    # heading-hold wz untouched.
+                    # else: no stair_commit + no bearing history (waypoint test) -> keep incoming
                 telemetry = _PGTT_CLIMB_POLICY.step(go2, (_cvx, vy, _bwz), dt)
                 _go2_locomotion_state.leg_summary = _PGTT_CLIMB_POLICY.leg_command_summary()
                 _go2_locomotion_state.policy_name = _PGTT_CLIMB_POLICY.policy_path.name
@@ -5055,17 +5077,12 @@ def main() -> None:
 
     log_event(LOGGER, logging.INFO, "person_spawn_start", "Spawning person target")
     if args.stair_waypoint_test:
-        # Isolated stair-climb test: no person-follow. Park the person far OFF the forward
-        # lane so the open-loop forward drive does not walk into it (the default spawn sits
-        # in the path). Kept ALIVE (not None) so the rest of the pipeline -- animation,
-        # FramePublisher, telemetry, recording -- works unchanged; it is simply ignored.
-        _wp_person_x, _wp_person_y = -8.0, 8.0
-        person = spawn_person(world, x=_wp_person_x, y=_wp_person_y, patient_physics=getattr(args, "patient_physics", False),
-                              character_usd=getattr(args, "patient_character_usd", ""),
-                              anim_mode=getattr(args, "patient_anim_mode", "clip"))
-        log_event(LOGGER, logging.INFO, "person_spawn_offlane",
-                  "Stair waypoint test: person parked off-lane (no follow)",
-                  person_x=_wp_person_x, person_y=_wp_person_y)
+        # Isolated stair-climb test: no person needed. person_move=False (default) means
+        # drive_patient/update_person_patrol are never called. autofit camera tracks robot
+        # only when patient=None. Skipping spawn saves ~20 s of asset load time.
+        person = None
+        log_event(LOGGER, logging.INFO, "person_spawn_skipped",
+                  "Stair waypoint test: person not spawned (no follow, camera tracks robot only)")
     else:
         person = spawn_person(world, x=args.person_x, y=args.person_y, patient_physics=getattr(args, "patient_physics", False),
                               character_usd=getattr(args, "patient_character_usd", ""),
@@ -5875,31 +5892,32 @@ def main() -> None:
 
             # Camera pose update moved to render step below to avoid updating USD pose when frame is not captured
 
-            if args.person_move:
-                if scene_motion_allowed:
-                    update_person_patrol(person, dt)
+            if person is not None:
+                if args.person_move:
+                    if scene_motion_allowed:
+                        update_person_patrol(person, dt)
+                    else:
+                        # Hold the patient at spawn before YOLO/controller starts. The
+                        # position is unchanged each frame, so the procedural gait reads
+                        # ~zero speed and settles into its idle pose automatically.
+                        person.drive_patient(
+                            position=np.array([
+                                args.person_x,
+                                args.person_y,
+                                _get_person_pose_z(args.person_x, args.person_y, smooth=True),
+                            ]),
+                            orientation=np.array([1.0, 0.0, 0.0, 0.0]),
+                            current_time=0.0,
+                        )
                 else:
-                    # Hold the patient at spawn before YOLO/controller starts. The
-                    # position is unchanged each frame, so the procedural gait reads
-                    # ~zero speed and settles into its idle pose automatically.
+                    # Even if the person doesn't move, drive the kinematic patient to its
+                    # idle/standing pose so the gait keeps it posed rather than collapsing.
+                    init_pos = person.last_position if person.last_position is not None else np.array([args.person_x, args.person_y, _get_person_pose_z(args.person_x, args.person_y, smooth=True)])
                     person.drive_patient(
-                        position=np.array([
-                            args.person_x,
-                            args.person_y,
-                            _get_person_pose_z(args.person_x, args.person_y, smooth=True),
-                        ]),
+                        position=init_pos,
                         orientation=np.array([1.0, 0.0, 0.0, 0.0]),
                         current_time=0.0,
                     )
-            else:
-                # Even if the person doesn't move, drive the kinematic patient to its
-                # idle/standing pose so the gait keeps it posed rather than collapsing.
-                init_pos = person.last_position if person.last_position is not None else np.array([args.person_x, args.person_y, _get_person_pose_z(args.person_x, args.person_y, smooth=True)])
-                person.drive_patient(
-                    position=init_pos,
-                    orientation=np.array([1.0, 0.0, 0.0, 0.0]),
-                    current_time=0.0,
-                )
             update_final_scene_recording_cameras(stage)
             update_default_scene_recording_cameras(stage)
 

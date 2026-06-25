@@ -55,11 +55,11 @@ VIDEO_PREFERENCE = ("scene_view.mp4", "topdown.mp4", "follow_view.mp4")
 
 # Short human label per riser (m -> tag). Falls back to inches if unmatched.
 RISER_SHORT = {
-    0.100: "~4in gentle",
-    0.125: "~5in hospital",
-    0.150: "~6in ADA",
-    0.178: "~7in IBC",
-    0.198: "~7.75in max",
+    0.100: '4"  gentle rise',
+    0.125: '5"  hospital std',
+    0.150: '6"  ADA maximum',
+    0.178: '7"  IBC standard',
+    0.198: '7.75"  comm. max',
 }
 
 VERDICT_COLORS = {
@@ -480,50 +480,163 @@ def generate_graphs(eps, rows, graphs_dir):
 
 
 def generate_stats_card(rows, meta, out_path, best_idx=None):
-    """Render the compact leaderboard card (also embedded as montage cell 6)."""
+    """Render the leaderboard stats card (also embedded as montage cell 6)."""
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+        from matplotlib.patches import FancyBboxPatch
     except Exception as exc:
         log(f"WARNING: matplotlib unavailable ({exc}); skipping stats card")
         return None
-    fig, ax = plt.subplots(figsize=(12.8, 4.8))
-    ax.axis("off")
-    ax.set_title("Stair-Climb Sweep — results", fontsize=20, fontweight="bold", loc="left", pad=18)
 
-    headers = ["riser", "code", "verdict", "steps", "time"]
-    body, cell_colors = [], []
+    BG      = "#0d1117"   # near-black canvas
+    HEADER  = "#161b22"   # slightly lighter header panel
+    ROW_ALT = "#0d1117"
+    ROW_EVN = "#101419"
+    GOLD    = "#f0c040"
+    TEXT    = "#e6edf3"
+    MUTED   = "#8b949e"
+    ACCENT  = "#58a6ff"
+
+    n = len(rows)
+    card_h = 3.4 + n * 0.58   # taller for more rows
+    fig = plt.figure(figsize=(12.8, card_h), facecolor=BG)
+    fig.patch.set_facecolor(BG)
+
+    # ── title strip ──────────────────────────────────────────────────────────
+    title_ax = fig.add_axes([0.0, 1 - 0.52 / card_h, 1.0, 0.52 / card_h])
+    title_ax.set_facecolor(HEADER)
+    title_ax.axis("off")
+    title_ax.text(0.022, 0.72, "STAIR-CLIMB SWEEP", color=TEXT,
+                  fontsize=17, fontweight="bold", va="center",
+                  transform=title_ax.transAxes)
+    title_ax.text(0.022, 0.22, "blind-RL policy  ·  commercial stairs  ·  +O₂ payload",
+                  color=MUTED, fontsize=10, va="center",
+                  transform=title_ax.transAxes)
+    branch = meta.get("git_branch", "")
+    commit = meta.get("git_commit", "")
+    ref = f"{branch}@{commit}" if branch and commit else (branch or commit)
+    if ref:
+        title_ax.text(0.978, 0.5, ref, color=MUTED, fontsize=9, va="center",
+                      ha="right", transform=title_ax.transAxes,
+                      fontfamily="monospace")
+
+    # ── column headers ────────────────────────────────────────────────────────
+    COLS_DEF = [
+        ("RISER",   0.060, "left"),
+        ("CODE",    0.175, "left"),
+        ("VERDICT", 0.360, "left"),
+        ("STEPS",   0.590, "center"),
+        ("PROGRESS",0.680, "left"),
+        ("TIME",    0.930, "right"),
+    ]
+    hdr_top  = 1 - 0.52 / card_h
+    hdr_h    = 0.38 / card_h
+    hdr_ax   = fig.add_axes([0.0, hdr_top - hdr_h, 1.0, hdr_h])
+    hdr_ax.set_facecolor("#1c2128")
+    hdr_ax.axis("off")
+    for lbl, xf, ha in COLS_DEF:
+        hdr_ax.text(xf, 0.5, lbl, color=ACCENT, fontsize=8.5, fontweight="bold",
+                    va="center", ha=ha, transform=hdr_ax.transAxes)
+
+    # ── rows ──────────────────────────────────────────────────────────────────
+    row_top = hdr_top - hdr_h
+    row_h   = (row_top - 0.28 / card_h) / max(1, n)
+    step_count = (rows[0].get("step_count") or DEFAULT_STEP_COUNT) if rows else DEFAULT_STEP_COUNT
+
     for i, r in enumerate(rows):
-        mark = "▶ " if (best_idx is not None and i == best_idx) else ""
-        riser = f"{r['riser_m']:.3f} m" if r.get("riser_m") is not None else "-"
-        steps = f"{r['steps_climbed']:.1f}" if r.get("steps_climbed") is not None else "-"
-        t = r.get("real_time_s") or r.get("climb_time_s")
-        body.append([mark + riser, r["label_short"], r["verdict_short"], steps, fmt_time(t)])
-        vc = VERDICT_COLORS.get(r["verdict_short"], "#9e9e9e")
-        cell_colors.append(["white", "white", vc, "white", "white"])
+        is_best  = (best_idx is not None and i == best_idx)
+        row_bg   = ROW_EVN if i % 2 == 0 else ROW_ALT
+        y0 = row_top - (i + 1) * row_h
 
-    tbl = ax.table(cellText=body, colLabels=headers, cellColours=cell_colors,
-                   colLoc="center", cellLoc="center", loc="center")
-    tbl.auto_set_font_size(False)
-    tbl.set_fontsize(13)
-    tbl.scale(1, 1.9)
-    for (rr, cc), cell in tbl.get_celld().items():
-        if rr == 0:
-            cell.set_facecolor("#263238")
-            cell.set_text_props(color="white", fontweight="bold")
-        elif cc == 2:  # verdict cell: white text on the verdict color
-            cell.set_text_props(color="white", fontweight="bold")
+        row_ax = fig.add_axes([0.0, y0, 1.0, row_h])
+        row_ax.set_facecolor(row_bg)
+        row_ax.axis("off")
 
-    speeds = [r["video_dur_s"] / meta["montage_seconds"] for r in rows
-              if r.get("video_dur_s")]
+        # gold left border for best
+        if is_best:
+            row_ax.add_patch(FancyBboxPatch((0, 0), 0.004, 1.0,
+                                            boxstyle="square,pad=0",
+                                            facecolor=GOLD, edgecolor="none",
+                                            transform=row_ax.transAxes, clip_on=False, zorder=5))
+
+        vc_hex  = VERDICT_COLORS.get(r["verdict_short"], "#9e9e9e")
+        riser   = f"{r['riser_m']:.3f} m" if r.get("riser_m") is not None else "-"
+        steps   = r.get("steps_climbed") or 0
+        steps_s = f"{steps:.1f}" if r.get("steps_climbed") is not None else "-"
+        t       = r.get("real_time_s") or r.get("climb_time_s")
+        t_s     = fmt_time(t)
+
+        # riser column
+        mark_col = GOLD if is_best else TEXT
+        row_ax.text(0.060, 0.5, ("▶ " if is_best else "   ") + riser,
+                    color=mark_col, fontsize=11,
+                    fontweight="bold" if is_best else "normal",
+                    va="center", ha="left", transform=row_ax.transAxes)
+
+        # code column
+        row_ax.text(0.175, 0.5, r["label_short"], color=MUTED,
+                    fontsize=9, va="center", ha="left", transform=row_ax.transAxes)
+
+        # verdict pill
+        pill_x, pill_y, pill_w, pill_h = 0.358, 0.18, 0.175, 0.64
+        row_ax.add_patch(FancyBboxPatch((pill_x, pill_y), pill_w, pill_h,
+                                        boxstyle="round,pad=0.01",
+                                        facecolor=vc_hex, edgecolor="none",
+                                        transform=row_ax.transAxes, clip_on=True))
+        row_ax.text(pill_x + pill_w / 2, 0.5, r["verdict_short"],
+                    color="white", fontsize=9.5, fontweight="bold",
+                    va="center", ha="center", transform=row_ax.transAxes)
+
+        # steps number
+        row_ax.text(0.590, 0.5, steps_s, color=TEXT,
+                    fontsize=11, va="center", ha="center",
+                    transform=row_ax.transAxes)
+
+        # progress bar
+        bar_x, bar_w_max = 0.640, 0.26
+        bar_h_f = 0.28
+        bar_y = (1 - bar_h_f) / 2
+        # background track
+        row_ax.add_patch(FancyBboxPatch((bar_x, bar_y), bar_w_max, bar_h_f,
+                                        boxstyle="round,pad=0.005",
+                                        facecolor="#30363d", edgecolor="none",
+                                        transform=row_ax.transAxes, clip_on=True))
+        frac = min(1.0, steps / step_count) if step_count else 0
+        if frac > 0.01:
+            row_ax.add_patch(FancyBboxPatch((bar_x, bar_y), bar_w_max * frac, bar_h_f,
+                                            boxstyle="round,pad=0.005",
+                                            facecolor=vc_hex, edgecolor="none",
+                                            transform=row_ax.transAxes, clip_on=True))
+        row_ax.text(bar_x + bar_w_max + 0.012, 0.5,
+                    f"/{step_count}", color=MUTED, fontsize=8,
+                    va="center", ha="left", transform=row_ax.transAxes)
+
+        # time column
+        row_ax.text(0.965, 0.5, t_s, color=MUTED,
+                    fontsize=10, va="center", ha="right",
+                    transform=row_ax.transAxes)
+
+    # ── footer ────────────────────────────────────────────────────────────────
+    ftr_h = 0.28 / card_h
+    ftr_ax = fig.add_axes([0.0, 0.0, 1.0, ftr_h])
+    ftr_ax.set_facecolor("#161b22")
+    ftr_ax.axis("off")
+    speeds = [r["video_dur_s"] / meta["montage_seconds"] for r in rows if r.get("video_dur_s")]
     avg = (sum(speeds) / len(speeds)) if speeds else None
-    footer = f"playback compressed to ~{meta['montage_seconds']:.0f}s"
+    foot = f"video compressed to ~{meta['montage_seconds']:.0f}s per clip"
     if avg:
-        footer += f"  (≈{avg:.0f}× real-time avg)"
-    footer += f"   •   {meta.get('git_branch', '')}".rstrip()
-    fig.text(0.02, 0.02, footer, fontsize=10, color="0.35")
-    fig.savefig(out_path, dpi=100, bbox_inches="tight", facecolor="white")
+        foot += f"  ·  ≈{avg:.0f}× real-time avg"
+    ftr_ax.text(0.022, 0.5, foot, color=MUTED, fontsize=8.5,
+                va="center", transform=ftr_ax.transAxes)
+    n_pass = sum(1 for r in rows if r.get("verdict_short") == "CLEAN")
+    ftr_ax.text(0.978, 0.5, f"{n_pass}/{n} clean climbs",
+                color=GOLD if n_pass > 0 else MUTED, fontsize=9.5, fontweight="bold",
+                va="center", ha="right", transform=ftr_ax.transAxes)
+
+    fig.savefig(out_path, dpi=100, bbox_inches="tight", facecolor=BG)
     plt.close(fig)
     return out_path
 
@@ -618,7 +731,7 @@ def _compute_speeds(durs, target, mode):
     return ms, pads
 
 
-def render_montage(eps, rows, stats_card, out_path, montage_seconds, mode, fit):
+def render_montage(eps, stats_card, out_path, montage_seconds, mode, fit):
     """Build the 2x3 grid montage with ffmpeg. Returns out_path or None."""
     if not have("ffmpeg"):
         log("WARNING: ffmpeg not found on PATH; skipping montage")
@@ -837,7 +950,7 @@ def run(args):
         log(f"wrote {stats_card}")
 
     if not args.no_montage:
-        montage = render_montage(eps, rows, stats_card,
+        montage = render_montage(eps, stats_card,
                                  os.path.join(out_dir, "stair_sweep_montage.mp4"),
                                  args.montage_seconds, args.montage_mode, args.fit)
         if montage:

@@ -57,7 +57,12 @@ param(
     # Let autonomous scene motion (the patient patrol) start immediately instead of
     # waiting for the Docker controller's first command. Enables a Docker-free
     # patient-locomotion walk_log run.
-    [switch]$NoHoldMotion
+    [switch]$NoHoldMotion,
+    # Number of lateral zigzag turns the person makes on the flat approach before the stairs.
+    # 0 = straight-line patrol (default). 2 = right turn, left turn, re-centre at stair entry.
+    [int]$PersonApproachTurns = 0,
+    # Lateral amplitude (m) per zigzag turn.
+    [double]$PersonApproachAmplitude = 1.2
 )
 
 $ErrorActionPreference = "Stop"
@@ -204,6 +209,9 @@ if ($Bench -or $SelfTestWalk -or $StairWaypointTest) {
     # here so it never patrols into the lane.)
     $personArgs = "--person-x -8.0 --person-y 8.0"
     Write-ConsoleLog "  Person parked off-lane (open-loop bench/self-test/waypoint drive)"
+} elseif ($PersonApproachTurns -gt 0) {
+    $personArgs += " --person-approach-turns $PersonApproachTurns --person-approach-amplitude $PersonApproachAmplitude"
+    Write-ConsoleLog "  Person approach:     zigzag ($PersonApproachTurns turns, ±$PersonApproachAmplitude m) before stair entry"
 }
 
 # Dual-policy handoff CLIMB backend (parkour | blind_rl | ik). Always pass it so the
@@ -221,11 +229,8 @@ if ($StairWaypointTest) {
 
 # Oxygen-concentrator payload (mounting rails + O2 tank) on the Go2's back. isaac_env
 # attaches it in load_go2() and runs the O2PayloadMonitor (mass/CoM, tank-detach watchdog).
-$o2Arg = ""
-if ($WithO2Payload) {
-    $o2Arg = "--with-o2-payload"
-    Write-ConsoleLog "  O2 payload:          ON (oxygen tank + mounting rails attached to the Go2)"
-}
+$o2Arg = "--with-o2-payload"
+Write-ConsoleLog "  O2 payload:          ON (oxygen tank + mounting rails attached to the Go2)"
 
 $patientPhysicsArg = ""
 if ($PatientPhysics) {

@@ -376,10 +376,20 @@ def parse_args():
     parser.add_argument('--stair-yaw-deadband-deg', type=float, default=4.0,
                         help='Zero the yaw command while on stairs when the centering error is within '
                              'this many degrees')
-    parser.add_argument('--stair-target-distance', type=float, default=1.2,
-                        help='Follow standoff (m) used while stairs are detected (default 1.2). '
-                             'Kept below --target-distance so the dog stays close enough to '
-                             'the person to keep climbing without losing the visual lock.')
+    parser.add_argument('--stair-target-distance', type=float, default=0.50,
+                        help='Base follow standoff (m) when stair evidence is active (default 0.50). '
+                             'Reduced from the old 0.9 m: that doubled the flat standoff and let the '
+                             'gap balloon to 1.5 m+ before person loss. The dynamic tightening '
+                             '(--stair-standoff-chase-gain) shrinks this further as the gap opens. '
+                             'The collision floor (--stair-climb-collision-floor) still guards min gap.')
+    parser.add_argument('--stair-target-distance-min', type=float, default=0.28,
+                        help='Floor for the dynamic stair standoff (m, default 0.28). The standoff '
+                             'will not shrink below this even if the gap is far open.')
+    parser.add_argument('--stair-standoff-chase-gain', type=float, default=0.35,
+                        help='Gain for the dynamic stair standoff: for every metre the gap exceeds '
+                             '--stair-target-distance, the effective standoff shrinks by this fraction '
+                             '(default 0.35) down to --stair-target-distance-min. 0 disables dynamic '
+                             'tightening (static standoff = --stair-target-distance).')
     parser.add_argument('--stair-follow-bearing-scale', type=float, default=0.4,
                         help='Scale factor for follow bearing injected in hybrid mode on stairs')
     parser.add_argument('--hold-ramp-sec', type=float, default=0.25,
