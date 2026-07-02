@@ -254,6 +254,7 @@ class SimCameraCapture:
                     "wait_ms":    0.0,
                     "timeout_ms": int(self.timeout_sec * 1000),
                     "error":      None,
+                    "sim_t":      meta.get("sim_t"),
                     "gt_patient": gt_patient,
                     "gt_distractor": gt_distractor,
                     "swing_legs": swing_legs,

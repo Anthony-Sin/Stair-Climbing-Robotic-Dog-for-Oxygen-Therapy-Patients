@@ -203,6 +203,10 @@ Do NOT include directory trees, tech stack summaries, style guides, obvious best
 **LESSON:** They COEXIST without flipping the global backend -- do NOT call `SimulationManager.set_backend("torch")` (it would disturb the frozen Go2/parkour pipeline). Construct the policy before `world.reset()`, lazily `initialize()` it from a `POST_PHYSICS_STEP` callback (guard `is_physics_tensor_entity_valid()`), and read poses via `robot.get_world_poses()[0].numpy()`. Only the physics device is shared. Proven live (`h1_puppet_initialized`) + matches the shipped CPU/numpy H1 unit test.
 **WHY:** Flipping the global backend is unnecessary and risks regressing the working classic-World sim.
 
+**TRIGGER:** Adding a pre-policy phase to the Go2 main loop that must appear in the recorded videos (e.g. `--stand-up-from-ground`).
+**LESSON:** Recorder capture is gated by `topdown_recording_released` (drives `_record_tick`), which only flips on `scene_motion_released` (first controller command) OR `--no-hold-motion`. In the default follow demo motion is HELD until the first YOLO command, so the whole pre-command window is NOT recorded. To record a pre-command phase you must also release recording for it (the stand-up adds `or _standing_up` to that gate). Also: the fall-watchdog (`robot_fallen_now`/`robot_fall_since_sim_sec`) and the motion clock live INSIDE `if scene_motion_allowed:`, so holding `scene_motion_allowed=False` during the phase safely suspends fall-detection + timeouts (and a low-but-upright body wouldn't trip the low-AND-tilted fall test anyway). The stand-up itself runs in the `not scene_motion_allowed` freeze branch via `_Go2StandUp.tick()`; it seats folded (`GO2_FOLDED_POSE`, stiff 800/40 gains), smoothstep-ramps targets to the standing pose, then hands gains to the policy via `_handoff_drive_gains_to_policy`.
+**WHY:** The recorder-release and fall/clock gating are non-obvious couplings; a pre-policy phase silently goes unrecorded in the demo (and could false-trip the fall logic) unless both are accounted for.
+
 ---
 
 ## 9. Testing & Verification

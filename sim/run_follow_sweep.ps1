@@ -51,12 +51,22 @@ param(
     # Target length (s) every montage clip is sped/slowed to so they all finish together.
     [double]$MontageSeconds = 20,
     # Number of lateral zigzag turns the person makes on the flat approach before the stairs.
-    # 2 = person steps +1.2m right, -1.2m left, then re-centres at the stair entry.
-    # Forces the robot to actively steer left/right instead of just driving straight.
-    # Set to 0 to use a straight-line approach (same as the default scene).
-    [int]$PersonApproachTurns = 2,
-    # Lateral amplitude (m) per zigzag turn.
-    [double]$PersonApproachAmplitude = 1.2
+    # 0 (default) = straight-line approach -- IDENTICAL to how run_sim.bat is set up, so the
+    #   sweep reproduces the same follow conditions the user runs by hand.
+    # A non-zero zigzag (e.g. 2 = right then left, re-centre) forces the robot to steer
+    #   left/right. The geometry is now REALISTIC-PATIENT (gentle 0.5 m weave at a 1.0 m follow
+    #   standoff -- see -PersonApproachAmplitude / -TargetDistance), which keeps the patient
+    #   inside the 69 deg RGB/YOLO cone instead of the old aggressive 1.2 m / 0.6 m swing that
+    #   threw the box off-axis for seconds at a time. Combined with the fixed lost-target
+    #   recovery (yaw bridge + LiDAR bearing), the dog tracks the weave instead of freezing.
+    [int]$PersonApproachTurns = 0,
+    # Lateral amplitude (m) per zigzag turn. 0.5 = realistic gentle weave (was 1.2, which pushed
+    # the patient ~40-47 deg off-axis at each apex, past the camera's +/-34.5 deg half-FOV).
+    [double]$PersonApproachAmplitude = 0.5,
+    # Follow standoff (m) the controller holds behind the patient. 1.0 = realistic O2-patient
+    # spacing; wider than run_sim.bat's 0.6 so a weaving patient subtends a smaller bearing and
+    # stays in frame. (run_sim.bat itself is unchanged -- this only affects the sweep.)
+    [double]$TargetDistance = 1.0
 )
 
 $ErrorActionPreference = "Stop"
@@ -232,6 +242,7 @@ foreach ($h in $Heights) {
         KeepRunLogs              = $KeepRunLogs
         PersonApproachTurns      = $PersonApproachTurns
         PersonApproachAmplitude  = $PersonApproachAmplitude
+        TargetDistance           = $TargetDistance
     }
     if (-not $Windowed) { $simArgs.Headless = $true; $simArgs.FastRender = $true }
 

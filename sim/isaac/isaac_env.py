@@ -285,7 +285,7 @@ log_event(
     lidar_dropout_prob=float(args.lidar_dropout_prob),
     dr_lighting_pct=float(args.dr_lighting_pct),
 )
-from go2_locomotion.go2_locomotion_utils import PARKOUR_DEFAULT_POSE, PGTT_DEFAULT_POSE, classify_dof, get_dof_names, quat_to_matrix
+from go2_locomotion.go2_locomotion_utils import PARKOUR_DEFAULT_POSE, PGTT_DEFAULT_POSE, GO2_FOLDED_POSE, classify_dof, get_dof_names, quat_to_matrix
 from world.sim_person_actor import spawn_sim_person
 from perception.sim_lidar_xt16 import Xt16Config, cast_scan, render_preview, profile_from_scan
 
@@ -1541,6 +1541,45 @@ def _pgtt_raycast_height(x: float, y: float, origin_z: float) -> float:
 _PHYSX_QUERY_IFACE = None
 _PHYSX_QUERY_RESOLVED = False
 
+# Prim-path prefixes whose colliders the XT16 raycast must IGNORE. The ray origin sits in the
+# robot trunk frame (mount_x=0, ~0.10 m up), so the robot's own body shell AND the O2 payload
+# (tank + rails) surround/front it. An unfiltered raycast_closest then returns a constant short
+# self-hit (~0.167 m dead ahead, confirmed in run_sim_20260628_110205_860) that hides the real
+# target behind it and pins distance fusion to depth-only (98% "depth_disagree"). The robot is
+# spawned at GO2_USD_PATH and the payload under /World/O2Payload (rails are children of the
+# trunk, i.e. under GO2_USD_PATH), so these two prefixes cover every self collider.
+_LIDAR_SELF_PRIM_PREFIXES = (GO2_USD_PATH, "/World/O2Payload")
+_LIDAR_RAYCAST_MODE_LOGGED = False
+
+
+def _hit_prim_is_self(path) -> bool:
+    """True if a raycast hit's collider/rigid-body prim path is the robot or the O2 payload."""
+    if not path:
+        return False
+    p = str(path)
+    return any(p.startswith(prefix) for prefix in _LIDAR_SELF_PRIM_PREFIXES)
+
+
+def _note_lidar_raycast_mode(mode: str, hits) -> None:
+    """Log ONCE which raycast path the XT16 uses + a sample of hit prim paths.
+
+    Observability so the user can confirm in their Isaac run that the self-filter sees the
+    real prim paths (and thus actually excludes the body/payload) rather than silently
+    no-op'ing because the hit struct exposes no path key on this Isaac build.
+    """
+    global _LIDAR_RAYCAST_MODE_LOGGED
+    if _LIDAR_RAYCAST_MODE_LOGGED:
+        return
+    _LIDAR_RAYCAST_MODE_LOGGED = True
+    try:
+        sample = [str(p) for _, p in (hits or [])][:6]
+    except Exception:
+        sample = []
+    log_event(LOGGER, logging.INFO, "lidar_raycast_self_filter",
+              "XT16 raycast self-filter active",
+              mode=mode, self_prefixes=list(_LIDAR_SELF_PRIM_PREFIXES),
+              sample_hit_prims=sample)
+
 
 def _get_physx_query_iface():
     """Lazily resolve a PhysX scene-query interface usable for raycasts."""
@@ -1564,33 +1603,83 @@ def _get_physx_query_iface():
 
 
 def _physx_raycast_distance(origin, direction, max_dist):
-    """raycast_fn for sim_lidar_xt16: cast one ray, return hit distance or None.
+    """raycast_fn for sim_lidar_xt16: nearest NON-self hit distance, or None.
 
-    Tolerates the different shapes raycast_closest returns across Isaac builds
-    (dict with hit/distance/position, or a (hit_bool, hit_info) tuple).
+    The XT16 ray origin is in the robot trunk frame, so the robot's own body shell and the O2
+    payload colliders surround/front it. raycast_closest alone returns that self-hit (a constant
+    ~0.167 m) and hides the real target behind it, pinning distance fusion to depth-only. So
+    prefer raycast_all and return the nearest hit whose collider is NOT the robot/payload
+    (_hit_prim_is_self); fall back to a self-filtered raycast_closest when raycast_all is absent.
+
+    Tolerates the different shapes the PhysX query returns across Isaac builds (dict with
+    hit/distance/position/rigidBody, or a (hit_bool, hit_info) tuple / struct attributes).
     """
     iface = _get_physx_query_iface()
     if iface is None:
         return None
+
+    o = (float(origin[0]), float(origin[1]), float(origin[2]))
+    d = (float(direction[0]), float(direction[1]), float(direction[2]))
+    md = float(max_dist)
+
+    def _from_position(pos):
+        dx = float(pos[0]) - o[0]
+        dy = float(pos[1]) - o[1]
+        dz = float(pos[2]) - o[2]
+        return math.sqrt(dx * dx + dy * dy + dz * dz)
+
+    # Preferred path: collect ALL hits along the ray and skip self-colliders, so the body /
+    # payload sitting in front of the origin no longer masks the real return behind it.
+    raycast_all = getattr(iface, "raycast_all", None)
+    if raycast_all is not None:
+        hits = []
+
+        def _report(hit):
+            try:
+                dist = getattr(hit, "distance", None)
+                path = getattr(hit, "rigid_body", None) or getattr(hit, "collision", None)
+                if dist is None and isinstance(hit, dict):
+                    dist = hit.get("distance")
+                    path = hit.get("rigidBody") or hit.get("collision")
+                if dist is not None:
+                    hits.append((float(dist), path))
+            except Exception:
+                pass
+            return True  # keep collecting all hits
+
+        try:
+            raycast_all(o, d, md, _report)
+        except Exception:
+            hits = []
+        # Only trust raycast_all when it actually produced usable (distance-bearing) hits.
+        # If it yielded nothing (a genuine miss OR an unexpected callback signature on this
+        # Isaac build), fall through to raycast_closest rather than blanking the whole LiDAR.
+        if hits:
+            _note_lidar_raycast_mode("raycast_all", hits)
+            best = None
+            for dist, path in hits:
+                if _hit_prim_is_self(path):
+                    continue
+                if best is None or dist < best:
+                    best = dist
+            if best is not None:
+                return best
+            # Every hit was self -> the real target (if any) is masked; try closest below as a
+            # self-filtered second opinion (returns None on a pure self-hit).
+
+    # Fallback: closest hit, self-filtered. Returning None on a forward self-hit makes the ray a
+    # clean miss (fusion sees depth_only, not a false 0.167 m depth_disagree).
     try:
-        hit = iface.raycast_closest(
-            (float(origin[0]), float(origin[1]), float(origin[2])),
-            (float(direction[0]), float(direction[1]), float(direction[2])),
-            float(max_dist),
-        )
+        hit = iface.raycast_closest(o, d, md)
     except Exception:
         return None
     if not hit:
         return None
 
-    def _from_position(pos):
-        dx = float(pos[0]) - float(origin[0])
-        dy = float(pos[1]) - float(origin[1])
-        dz = float(pos[2]) - float(origin[2])
-        return math.sqrt(dx * dx + dy * dy + dz * dz)
-
     if isinstance(hit, dict):
         if not hit.get("hit"):
+            return None
+        if _hit_prim_is_self(hit.get("rigidBody") or hit.get("collision")):
             return None
         if hit.get("distance") is not None:
             return float(hit["distance"])
@@ -1601,6 +1690,11 @@ def _physx_raycast_distance(origin, direction, max_dist):
         if not hit[0]:
             return None
         info = hit[1]
+        path = getattr(info, "rigid_body", None) or getattr(info, "collision", None)
+        if path is None and isinstance(info, dict):
+            path = info.get("rigidBody") or info.get("collision")
+        if _hit_prim_is_self(path):
+            return None
         dist = getattr(info, "distance", None)
         if dist is not None:
             return float(dist)
@@ -3296,6 +3390,7 @@ class FramePublisher:
         stair_demo: dict = None,
         swing_legs: list = None,
         lidar_profile: dict = None,
+        sim_t: float = None,
     ) -> None:
         import cv2, base64, zlib
 
@@ -3335,6 +3430,7 @@ class FramePublisher:
             meta = {
                 "seq": seq,
                 "ts": time.time(),
+                "sim_t": (None if sim_t is None else round(float(sim_t), 4)),
                 "w": rgb_w,
                 "h": rgb_h,
                 "rgb_w": rgb_w,
@@ -3811,6 +3907,27 @@ def _go2_standing_joint_targets(go2):
             continue
         standing_rad[idx] = float(pose.get(key, 0.0))
     return standing_rad, dof_names, unmatched
+
+
+def _go2_folded_joint_targets(go2):
+    """Return (folded_rad, dof_names, unmatched): the GO2_FOLDED_POSE lying-down crouch
+    in the articulation's own DOF order, matched BY (leg, joint) NAME.
+
+    The mirror of _go2_standing_joint_targets for the stand-up-from-ground start pose
+    (legs tucked, body on the floor). Same name-match because the Nucleus Go2 reports
+    its DOFs joint-type-major (all hips, then thighs, then calves) -- a positional array
+    would scramble the pose.
+    """
+    dof_names = get_dof_names(go2)
+    folded_rad = np.zeros(len(dof_names), dtype=float)
+    unmatched = []
+    for idx, raw in enumerate(dof_names):
+        key = classify_dof(str(raw))
+        if key is None:
+            unmatched.append(str(raw))
+            continue
+        folded_rad[idx] = float(GO2_FOLDED_POSE.get(key, 0.0))
+    return folded_rad, dof_names, unmatched
 
 
 def _freeze_go2_at_spawn(go2) -> None:
@@ -4638,6 +4755,156 @@ def _step_go2_locomotion(
     )
 
 
+def _handoff_drive_gains_to_policy(go2) -> None:
+    """Install the active policy's runtime drive gains (the spawn-settle handoff).
+
+    PGTT position mode keeps the engine PD running at pgtt_kp/pgtt_kd and the policy
+    writes position TARGETS; torque/parkour zeroes the PhysX drive so the policy's own
+    explicit-PD joint efforts are the sole actuation. --self-test-no-policy keeps the
+    stiff position-hold gains live (no policy runs). Shared by _settle_go2_spawn and the
+    stand-up controller so the gain transition is authored in exactly one place.
+    """
+    if getattr(args, "self_test_no_policy", False):
+        return
+    _is_pgtt_pos = (
+        str(getattr(args, "locomotion_policy", "pgtt")) == "pgtt"
+        and str(getattr(args, "pgtt_drive_mode", "position")) == "position"
+    )
+    if _is_pgtt_pos:
+        _set_go2_drive_gains(go2, float(args.pgtt_kp), float(args.pgtt_kd), 1000.0,
+                             reason="pgtt_position_drive")
+    else:
+        _set_go2_drive_gains(go2, 0.0, 0.0, 40.0,
+                             reason="zeroed_for_explicit_torque_control")
+
+
+class _Go2StandUp:
+    """Physics-based stand-up from a folded/lying spawn, run on camera before the policy.
+
+    Default for every run (--stand-up-from-ground). The robot is seated FOLDED on the
+    ground at main-loop entry (seat_folded); each subsequent control step the ramp moves
+    the joint POSITION TARGETS from the folded crouch toward the active policy's standing
+    default under stiff position-hold gains (Kp 800 / Kd 40), so the legs extend and push
+    the base up off the floor while the recording cameras capture it. The base is NOT
+    pinned during the ramp -- it rises from physics. When the ramp completes, the drive
+    gains are handed to the policy exactly as _settle_go2_spawn does, so the locomotion
+    policy inherits a clean standing pose with no jolt.
+
+    The whole sequence is driven from the main loop's pre-command "frozen" window (scene
+    motion is held until done()), so it works in every mode (follow demo, self-test,
+    bench, waypoint test) and is recorded.
+    """
+
+    def __init__(self, go2, *, ramp_steps: int, floor_hold_steps: int,
+                 top_hold_steps: int, folded_z: float, go2_x: float) -> None:
+        self.go2 = go2
+        self.ramp_steps = max(1, int(ramp_steps))
+        self.floor_hold_steps = max(0, int(floor_hold_steps))
+        self.top_hold_steps = max(0, int(top_hold_steps))
+        self.folded_z = float(folded_z)
+        self.go2_x = float(go2_x)
+        self.folded_rad, self.dof_names, _unf = _go2_folded_joint_targets(go2)
+        self.standing_rad, _names2, _uns = _go2_standing_joint_targets(go2)
+        self.frame = 0
+        self.done = False
+        self.seated = False
+        # Need real joint DOFs + a target-setting API to ramp; otherwise fall back to a
+        # kinematic stand so the robot still ends upright (e.g. the Go2SceneHandle path).
+        self.ok = bool(self.dof_names) and (
+            callable(getattr(go2, "set_joint_position_targets", None))
+            or callable(getattr(go2, "set_joint_positions_to_apply", None))
+            or callable(getattr(go2, "apply_action", None))
+        )
+
+    def _apply_target(self, q) -> None:
+        q = np.asarray(q, dtype=float)
+        for m in ("set_joint_position_targets", "set_joint_positions_to_apply"):
+            f = getattr(self.go2, m, None)
+            if callable(f):
+                try:
+                    f(q)
+                    return
+                except Exception:
+                    pass
+        try:
+            try:
+                from omni.isaac.core.utils.types import ArticulationAction
+            except ModuleNotFoundError:
+                from isaacsim.core.utils.types import ArticulationAction
+            self.go2.apply_action(ArticulationAction(joint_positions=q))
+        except Exception:
+            pass
+
+    def seat_folded(self) -> None:
+        """Kinematically place the robot folded on the floor + install stiff hold gains.
+
+        Called once just before the main loop so the first recorded frame shows the dog
+        lying folded on the ground (it then stands up over the ramp).
+        """
+        _set_go2_drive_gains(self.go2, 800.0, 40.0, 1000.0, reason="standup_hold")
+        if self.ok:
+            try:
+                self.go2.set_joint_positions(self.folded_rad)
+            except Exception:
+                pass
+            try:
+                vz = getattr(self.go2, "set_joint_velocities", None)
+                if callable(vz):
+                    vz(np.zeros(len(self.folded_rad)))
+            except Exception:
+                pass
+        try:
+            if hasattr(self.go2, "set_world_pose"):
+                self.go2.set_world_pose(
+                    position=np.array([self.go2_x, 0.0, self.folded_z]),
+                    orientation=np.array([1.0, 0.0, 0.0, 0.0]),  # (w,x,y,z) identity -> +X
+                )
+            if hasattr(self.go2, "set_linear_velocity"):
+                self.go2.set_linear_velocity(np.zeros(3))
+            if hasattr(self.go2, "set_angular_velocity"):
+                self.go2.set_angular_velocity(np.zeros(3))
+        except Exception:
+            pass
+        if self.ok:
+            self._apply_target(self.folded_rad)
+        self.seated = True
+
+    def tick(self) -> None:
+        """Advance one control step of the stand-up (sets joint targets; no world.step).
+
+        The caller steps the world (and records) after this, so the ramp shows on camera.
+        """
+        if self.done:
+            return
+        if not self.seated:
+            self.seat_folded()
+        if not self.ok:
+            # No joint API -> kinematic stand and finish immediately.
+            _init_go2_standing_pose(self.go2)
+            self._finish()
+            return
+        total = self.floor_hold_steps + self.ramp_steps + self.top_hold_steps
+        f = self.frame
+        if f < self.floor_hold_steps:
+            self._apply_target(self.folded_rad)
+        elif f < self.floor_hold_steps + self.ramp_steps:
+            a = (f - self.floor_hold_steps + 1) / float(self.ramp_steps)
+            s = a * a * (3.0 - 2.0 * a)  # smoothstep ease-in-out for a smooth push-up
+            self._apply_target((1.0 - s) * self.folded_rad + s * self.standing_rad)
+        else:
+            self._apply_target(self.standing_rad)
+        self.frame += 1
+        if self.frame >= total:
+            self._finish()
+
+    def _finish(self) -> None:
+        _handoff_drive_gains_to_policy(self.go2)
+        self.done = True
+        log_event(LOGGER, logging.INFO, "go2_standup_complete",
+                  "Stand-up-from-ground finished; handing the joints to the locomotion policy",
+                  frames=int(self.frame), ramp_steps=int(self.ramp_steps))
+
+
 def _settle_go2_spawn(world: World, go2, rl_policy, steps: int, dt: float, person=None) -> None:
     settle_steps = max(0, int(steps))
     if settle_steps <= 0:
@@ -4650,17 +4917,7 @@ def _settle_go2_spawn(world: World, go2, rl_policy, steps: int, dt: float, perso
     #    joint efforts, so the PhysX drive is zeroed to avoid double control.
     # Until this point the stiff position-hold gains kept the robot standing.
     # Exception: --self-test-no-policy keeps the hold drives live (no policy runs).
-    if not getattr(args, "self_test_no_policy", False):
-        _is_pgtt_pos = (
-            str(getattr(args, "locomotion_policy", "pgtt")) == "pgtt"
-            and str(getattr(args, "pgtt_drive_mode", "position")) == "position"
-        )
-        if _is_pgtt_pos:
-            _set_go2_drive_gains(go2, float(args.pgtt_kp), float(args.pgtt_kd), 1000.0,
-                                 reason="pgtt_position_drive")
-        else:
-            _set_go2_drive_gains(go2, 0.0, 0.0, 40.0,
-                                 reason="zeroed_for_explicit_torque_control")
+    _handoff_drive_gains_to_policy(go2)
     log_event(
         LOGGER,
         logging.INFO,
@@ -4708,6 +4965,67 @@ def _settle_go2_spawn(world: World, go2, rl_policy, steps: int, dt: float, perso
         steps=settle_steps,
         locomotion_mode="parkour",
     )
+
+
+def _log_go2_startup_pose(go2, *, phase: str, step: int) -> None:
+    """Log the robot base pose during the spawn/settle/stand-up window.
+
+    The per-step fall_diag x/y stream is gated behind ``scene_motion_allowed`` (forced
+    False until the dog has stood up), so before this there was NO time-series of the
+    robot position through startup -- only a single ``go2_spawn_frozen`` line. This emits
+    ``go2_startup_pose`` (x/y/z + roll/pitch) so any spawn-time teleport or drift is
+    visible in isaac_env.jsonl across the whole fold -> stand-up sequence.
+    """
+    try:
+        pos, _quat = go2.get_world_pose()
+    except Exception:
+        return
+    try:
+        roll, pitch, _, _ = _body_rp_rates(go2)
+    except Exception:
+        roll = pitch = 0.0
+    log_event(LOGGER, logging.INFO, "go2_startup_pose", "startup robot pose",
+              phase=str(phase), step=int(step),
+              x=round(float(pos[0]), 3), y=round(float(pos[1]), 3), z=round(float(pos[2]), 3),
+              roll_deg=round(math.degrees(float(roll)), 2),
+              pitch_deg=round(math.degrees(float(pitch)), 2))
+
+
+def _build_go2_standup(go2, rl_policy, args):
+    """Construct the stand-up-from-ground controller, or None when disabled / no policy.
+
+    Built BEFORE the world is stepped (it measures the standing joint targets from the
+    pose just authored), so the dog can be seated folded up-front and stand up exactly
+    once -- no stand -> drop-to-folded -> stand teleport.
+    """
+    if not (bool(getattr(args, "stand_up_from_ground", False)) and rl_policy is not None):
+        return None
+    return _Go2StandUp(
+        go2,
+        ramp_steps=int(getattr(args, "stand_up_steps", 240)),
+        floor_hold_steps=int(getattr(args, "stand_up_floor_hold_steps", 40)),
+        top_hold_steps=int(getattr(args, "stand_up_top_hold_steps", 40)),
+        folded_z=float(getattr(args, "stand_up_spawn_z", 0.12)),
+        go2_x=float(args.go2_x),
+    )
+
+
+def _settle_go2_folded(world: World, go2, standup, steps: int) -> None:
+    """Folded settle for the stand-up spawn: step the world holding the FOLDED pose
+    (stiff position hold, NO policy) so the reused warm-PhysX residual velocity is cleared
+    and the contacts settle WITHOUT the robot ever standing first. Replaces the standing
+    ``_settle_go2_spawn`` on the stand-up path so the dog spawns folded and stands up ONCE.
+    """
+    settle_steps = max(0, int(steps))
+    for i in range(settle_steps):
+        if standup is not None and getattr(standup, "ok", False):
+            try:
+                standup._apply_target(standup.folded_rad)
+            except Exception:
+                pass
+        world.step(render=not args.headless)
+        if i % 10 == 0:
+            _log_go2_startup_pose(go2, phase="folded_settle", step=i)
 
 
 def _run_evaluation_and_save_images(
@@ -5200,54 +5518,83 @@ def main() -> None:
     _set_go2_drive_gains(go2, 800.0, 40.0, 1000.0, reason="position_hold_pre_policy")
     rl_policy = _create_locomotion_policy(go2)
 
+    # Stand-up-from-ground: build the controller NOW (it measures the standing joint
+    # targets from the pose just authored by _init_go2_standing_pose) and seat the dog
+    # FOLDED before anything steps the world. This makes the dog spawn folded and stand up
+    # exactly ONCE -- the old order spawned it STANDING (z=0.30), settled it, then
+    # teleported it DOWN to folded (z=0.12) and stood it back up, the unrealistic
+    # stand -> drop-to-folded -> stand the user saw. None on the legacy instant-stand path.
+    _standup = _build_go2_standup(go2, rl_policy, args)
+    if _standup is not None:
+        _standup.seat_folded()
+        _log_go2_startup_pose(go2, phase="folded_seated", step=0)
+
     # Load the person animation BEFORE the settle. ensure_person_animation_loaded
     # may step the world, and the settle hands the joints to the policy (zeroing
     # the position-hold drive) -- so the robot must still be held by the drive
     # while the animation graph loads.
     animation_ready = ensure_person_animation_loaded(world, person, render=not args.headless, attempts=4)
 
-    # Force a deterministic CLEAN spawn before the settle: zero the root linear+angular velocity
-    # and re-assert the identity (+X facing) orientation + standing joints. The warm boot-once
-    # loop reuses the PhysX context across episodes; a prior episode that ended MID-FALL (e.g.
-    # capped on an unclimbable riser) leaked residual root angular velocity into the next spawn --
-    # run ..100955 (0.198 m, the 5th warm episode, right after 0.178 m was capped while tipped on
-    # the stairs) spawned at yaw 3.4 rad SPINNING and walked the wrong way off the back. world.reset()
-    # alone did not clear it; _freeze_go2_at_spawn does (it set the clean state but was only called
-    # later, inside the main loop). Doing it here makes every episode start from an identical pose.
-    _freeze_go2_at_spawn(go2)
-    try:
-        _fp, _fq = go2.get_world_pose()
-        _fyaw = math.atan2(2.0 * (float(_fq[0]) * float(_fq[3]) + float(_fq[1]) * float(_fq[2])),
-                           1.0 - 2.0 * (float(_fq[2]) ** 2 + float(_fq[3]) ** 2))
-        log_event(LOGGER, logging.INFO, "go2_spawn_frozen",
-                  "Asserted clean Go2 spawn pose before settle",
-                  x=round(float(_fp[0]), 3), y=round(float(_fp[1]), 3), yaw_rad=round(float(_fyaw), 3))
-    except Exception:
-        pass
-
-    _settle_go2_spawn(world, go2, rl_policy, args.spawn_settle_steps, 1.0 / max(1, int(args.physics_hz)), person=person)
-    # Warm-context spawn-stability guard: a REUSED warm Kit can leave the PhysX state degraded
-    # enough that the robot spawns tilting and ROLLS OVER on flat ground before it ever reaches the
-    # stairs (run ..134922: 0.198 m, the 5th warm episode -- roll diverged 0->99 deg at x=-4.5,
-    # mistaken for "went sideways / wrong waypoint"). If the settle left the body tilted past the
-    # threshold, re-assert a clean upright stance (+ zero velocities) and settle once more so motion
-    # starts stable. Bounded retries; if it still won't stand, the Kit is too degraded -- log it so
-    # the run is judged correctly (and -Cold / a fresh boot is the clean fallback).
-    for _stab_try in range(int(getattr(args, "spawn_stability_retries", 2))):
+    if _standup is not None:
+        # Stand-up path: settle the dog FOLDED (no standing phase). Clears the reused
+        # warm-PhysX residual velocity + settles contacts while folded; the main loop then
+        # ramps it up once on camera. No standing freeze/settle and no stability guard
+        # (a folded dog on the floor cannot topple).
+        _settle_go2_folded(world, go2, _standup, args.spawn_settle_steps)
         try:
-            _sr, _sp, _, _ = _body_rp_rates(go2)
+            _fp, _fq = go2.get_world_pose()
+            _fyaw = math.atan2(2.0 * (float(_fq[0]) * float(_fq[3]) + float(_fq[1]) * float(_fq[2])),
+                               1.0 - 2.0 * (float(_fq[2]) ** 2 + float(_fq[3]) ** 2))
+            log_event(LOGGER, logging.INFO, "go2_spawn_frozen",
+                      "Asserted clean FOLDED Go2 spawn pose before stand-up",
+                      x=round(float(_fp[0]), 3), y=round(float(_fp[1]), 3),
+                      z=round(float(_fp[2]), 3), yaw_rad=round(float(_fyaw), 3))
         except Exception:
-            break
-        _stilt = max(abs(float(_sr)), abs(float(_sp)))
-        if _stilt <= math.radians(float(getattr(args, "spawn_stability_max_tilt_deg", 8.0))):
-            break
-        log_event(LOGGER, logging.WARNING, "go2_spawn_unstable",
-                  "Spawn settle left the robot tilted (likely warm PhysX degradation); "
-                  "re-freezing to a clean upright stance and re-settling",
-                  tilt_deg=round(math.degrees(_stilt), 1), attempt=int(_stab_try + 1))
+            pass
+    else:
+        # Legacy instant-stand spawn (stand-up disabled): freeze STANDING, then settle.
+        # Force a deterministic CLEAN spawn before the settle: zero the root linear+angular
+        # velocity and re-assert the identity (+X facing) orientation + standing joints. The
+        # warm boot-once loop reuses the PhysX context across episodes; a prior episode that
+        # ended MID-FALL (e.g. capped on an unclimbable riser) leaked residual root angular
+        # velocity into the next spawn -- run ..100955 (0.198 m, the 5th warm episode, right
+        # after 0.178 m was capped while tipped on the stairs) spawned at yaw 3.4 rad SPINNING
+        # and walked the wrong way off the back. world.reset() alone did not clear it;
+        # _freeze_go2_at_spawn does. Doing it here makes every episode start identical.
         _freeze_go2_at_spawn(go2)
-        _settle_go2_spawn(world, go2, rl_policy, max(20, int(args.spawn_settle_steps)),
-                          1.0 / max(1, int(args.physics_hz)), person=person)
+        try:
+            _fp, _fq = go2.get_world_pose()
+            _fyaw = math.atan2(2.0 * (float(_fq[0]) * float(_fq[3]) + float(_fq[1]) * float(_fq[2])),
+                               1.0 - 2.0 * (float(_fq[2]) ** 2 + float(_fq[3]) ** 2))
+            log_event(LOGGER, logging.INFO, "go2_spawn_frozen",
+                      "Asserted clean Go2 spawn pose before settle",
+                      x=round(float(_fp[0]), 3), y=round(float(_fp[1]), 3), yaw_rad=round(float(_fyaw), 3))
+        except Exception:
+            pass
+
+        _settle_go2_spawn(world, go2, rl_policy, args.spawn_settle_steps, 1.0 / max(1, int(args.physics_hz)), person=person)
+        # Warm-context spawn-stability guard: a REUSED warm Kit can leave the PhysX state degraded
+        # enough that the robot spawns tilting and ROLLS OVER on flat ground before it ever reaches the
+        # stairs (run ..134922: 0.198 m, the 5th warm episode -- roll diverged 0->99 deg at x=-4.5,
+        # mistaken for "went sideways / wrong waypoint"). If the settle left the body tilted past the
+        # threshold, re-assert a clean upright stance (+ zero velocities) and settle once more so motion
+        # starts stable. Bounded retries; if it still won't stand, the Kit is too degraded -- log it so
+        # the run is judged correctly (and -Cold / a fresh boot is the clean fallback).
+        for _stab_try in range(int(getattr(args, "spawn_stability_retries", 2))):
+            try:
+                _sr, _sp, _, _ = _body_rp_rates(go2)
+            except Exception:
+                break
+            _stilt = max(abs(float(_sr)), abs(float(_sp)))
+            if _stilt <= math.radians(float(getattr(args, "spawn_stability_max_tilt_deg", 8.0))):
+                break
+            log_event(LOGGER, logging.WARNING, "go2_spawn_unstable",
+                      "Spawn settle left the robot tilted (likely warm PhysX degradation); "
+                      "re-freezing to a clean upright stance and re-settling",
+                      tilt_deg=round(math.degrees(_stilt), 1), attempt=int(_stab_try + 1))
+            _freeze_go2_at_spawn(go2)
+            _settle_go2_spawn(world, go2, rl_policy, max(20, int(args.spawn_settle_steps)),
+                              1.0 / max(1, int(args.physics_hz)), person=person)
     # Clear the depth GRU hidden state + proprio history accumulated during the
     # zero-command settle so the recurrent policy starts each run clean.
     rl_policy.reset()
@@ -5503,6 +5850,12 @@ def main() -> None:
     _wp_quality_warned = False
     motion_start_time = None
     motion_elapsed_sim_sec = 0.0
+    # Continuous sim clock (advances EVERY loop step, unlike motion_elapsed_sim_sec which is
+    # gated off until the dog stands up). Stamped onto each published frame as "sim_t" so the
+    # controller can retime opencv_preview.mp4 to SIM-time playback -- the headless sim renders
+    # at ~12% realtime, so a wall-clock-paced preview plays in slow motion and desyncs from the
+    # Isaac scene_view.mp4 (which already records at sim-realtime record_fps).
+    sim_clock_sec = 0.0
     # Domain-randomization push schedule (first push after one interval of motion).
     _dr_next_push_sec = float(args.dr_push_interval_sec)
     robot_stair_phase_sim_sec = 0.0
@@ -5529,6 +5882,20 @@ def main() -> None:
     # entry so it CANNOT be frozen by the scene-motion gate (unlike motion_elapsed_sim_sec).
     _episode_wall_start = time.monotonic()
 
+    # Stand-up-from-ground (default ON): the dog was ALREADY seated folded up-front (above,
+    # before the world was stepped) so the spawn is a single clean fold -> stand with no
+    # stand/drop/stand teleport. The main loop ramps it up to standing before any policy
+    # command (scene motion is held until it finishes). _standup is None on the legacy
+    # instant-standing path. Re-assert the folded seat here only if it was never seated.
+    if _standup is not None:
+        if not getattr(_standup, "seated", False):
+            _standup.seat_folded()
+        log_event(LOGGER, logging.INFO, "go2_standup_armed",
+                  "Go2 seated folded on the ground; it will stand up before the policy drives",
+                  ramp_steps=_standup.ramp_steps, floor_hold=_standup.floor_hold_steps,
+                  top_hold=_standup.top_hold_steps, folded_z=round(_standup.folded_z, 3),
+                  joint_ramp=bool(_standup.ok))
+
     try:
         while simulation_app.is_running():
             if stage is not None:
@@ -5540,6 +5907,7 @@ def main() -> None:
             # not have to draw 200 fps. The camera frame block below uses the same
             # cadence, so a fresh render is available exactly when it reads RGB.
             step_count += 1
+            sim_clock_sec += 1.0 / max(1, int(args.physics_hz))  # continuous sim time (for frame sim_t)
             # Graceful stop (launcher max-run cap / Ctrl-C): break the render loop so the
             # finally block RELEASES the video writers (writes the mp4 moov atom) instead
             # of being taskkill /F'd mid-recording, which leaves scene_view/topdown
@@ -5734,6 +6102,16 @@ def main() -> None:
             controller_ready = controller_stream_seen and command_fresh
             scene_motion_released = (active_count > 0)
             scene_motion_allowed = (not args.hold_motion_until_command) or scene_motion_released
+            # Stand-up-from-ground: HOLD all scene motion (and route every mode through the
+            # freeze/stand-up branch below) until the robot has physically stood up. Applies
+            # to the follow demo AND the open-loop modes (self-test/bench/waypoint) which
+            # otherwise release motion immediately -- so the dog always stands up first.
+            # The ramp runs immediately at loop entry (proven-stable); it is NOT gated on the
+            # Docker controller -- gating it on the controller (lying folded until the first
+            # command) regressed Isaac into an early shutdown, so we keep the immediate ramp.
+            _standing_up = _standup is not None and not _standup.done
+            if _standing_up:
+                scene_motion_allowed = False
             if args.hold_motion_until_command and not scene_motion_released and not motion_wait_logged:
                 motion_wait_logged = True
                 log_event(
@@ -5826,15 +6204,25 @@ def main() -> None:
 
             _loco_ts = time.monotonic()
             if not scene_motion_allowed:
-                # Demo has not started yet (waiting for the first controller command).
-                # FREEZE the robot at its spawn pose facing the person (+X) instead of
-                # running the policy. A free policy stand has no absolute position/yaw
-                # feedback, so at zero command it slowly drifts and yaws -- which turns
-                # the robot's forward camera off the person, so YOLO never detects the
-                # person, never sends a command, and the motion gate never releases
-                # (deadlock). Freezing keeps the person centred in frame until the
-                # controller sends the first command, then the policy takes over.
-                _freeze_go2_at_spawn(go2)
+                # Two reasons to be here, handled in order:
+                #  1) Standing up from the ground -- advance one step of the stand-up ramp
+                #     (folded -> standing) under the stiff hold gains. This runs on camera
+                #     (the recorders capture this branch) and finishes before any command.
+                #  2) Demo gated waiting for the first controller command -- FREEZE the
+                #     robot at its spawn pose facing the person (+X). A free policy stand has
+                #     no absolute position/yaw feedback, so at zero command it slowly drifts
+                #     and yaws -- turning the forward camera off the person, so YOLO never
+                #     detects it, never sends a command, and the gate never releases
+                #     (deadlock). Freezing keeps the person centred until the first command.
+                if _standing_up:
+                    _standup.tick()
+                    # Startup pose time-series through the stand-up ramp (every ~20 control
+                    # steps) so the fold -> stand motion is verifiable in isaac_env.jsonl
+                    # without a video (the fall_diag x/y stream is still gated off here).
+                    if int(getattr(_standup, "frame", 0)) % 20 == 0:
+                        _log_go2_startup_pose(go2, phase="standup", step=int(getattr(_standup, "frame", 0)))
+                else:
+                    _freeze_go2_at_spawn(go2)
                 record_go2_telemetry(
                     go2, _go2_locomotion_state, base_link_name=BASE_LINK_NAME,
                     logger=LOGGER, vx=0.0, vy=0.0, wz=0.0,
@@ -6332,8 +6720,12 @@ def main() -> None:
 
             # Release top-down recording when scene motion starts, OR immediately when
             # hold_motion_until_command is disabled (no Docker/UDP controller expected,
-            # so active_count never increments and scene_motion_released stays False).
-            if (scene_motion_released or not args.hold_motion_until_command) and not topdown_recording_released:
+            # so active_count never increments and scene_motion_released stays False), OR
+            # while the robot is standing up from the ground (so the stand-up is recorded
+            # in the default follow demo, where motion is otherwise held until the first
+            # controller command -- well after the stand-up has finished). Once released it
+            # stays released, so the rest of the run records normally.
+            if (scene_motion_released or not args.hold_motion_until_command or _standing_up) and not topdown_recording_released:
                 topdown_recording_released = True
 
             # Publish camera frame at reduced rate
@@ -6458,7 +6850,8 @@ def main() -> None:
 
                         # Depth noise is applied inside publisher.send after downsampling
                         publisher.send(rgb_data, depth_mm, vx, vy, wz, gt_patient, gt_distractor,
-                                       stair_demo, swing_legs, lidar_profile_latest)
+                                       stair_demo, swing_legs, lidar_profile_latest,
+                                       sim_t=sim_clock_sec)
                         # Frame-transport diagnostic: count actual TCP sends and report the
                         # link state so we can tell "Isaac never sent" (render starved) from
                         # "link not connected" (container TCP server not up / forwarding down).

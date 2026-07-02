@@ -14,9 +14,27 @@ from core.control.rotation_geometry import (
 from core.vision.lidar_fusion import (
     decode_lidar_profile,
     person_bearing_rad,
+    person_bearing_from_profile,
     lidar_range_at_bearing,
     fuse_distance,
 )
+
+# How long the LiDAR-bearing bridge may keep turning the dog toward a patient the 69 deg RGB
+# camera has lost but the 360 deg LiDAR still tracks. Bounded so a lock onto a moving
+# distractor cannot spin the dog forever; YOLO normally re-acquires well within this.
+_LIDAR_BRIDGE_MAX_SEC = 12.0
+# Proportional yaw gain (rad/s per rad of bearing) used while the LiDAR bridge tracks a live
+# bearing: a 20 deg off-axis patient -> ~0.35 rad/s, a 45 deg -> ~0.79 rad/s, capped at the
+# tracking yaw limit. Far more responsive than the slow fixed blind-search speed.
+_LIDAR_BRIDGE_YAW_GAIN = 1.0
+# When the last bbox glimpse was within this bearing of the axis but lateral MOTION points the
+# other way, the patient was crossing/reversing (a zigzag apex) -- trust the motion (where they
+# are heading), not the stale last-seen side.
+_REVERSAL_BEARING_DEG = 20.0
+# Seconds to sweep ONE +/- arc leg of the in-place re-acquire scan. The scan rate is derived
+# from this and lost_search_arc_deg so the scan is brisk (reaches the arc in ~this long) rather
+# than the slow fixed lost_search_yaw_speed used for a one-frame-glimpse correction.
+_LOST_SCAN_LEG_SEC = 2.5
 
 
 @dataclass
@@ -66,9 +84,19 @@ class PersonFollowingConfig:
     enable_prediction: bool = False
     prediction_time_limit: float = 3.0  # seconds to predict after losing track
     min_tracking_time: float = 4.0  # minimum time tracking before enabling prediction
-    lost_search_yaw_speed: float = 0.25
-    lost_search_timeout_sec: float = 2.5
+    lost_search_yaw_speed: float = 0.125
+    # How long to keep rotating toward the last-known bearing to RE-ACQUIRE a target that left
+    # the FOV before giving up and stopping. Raised from 2.5 s: with the close, off-axis patient
+    # the dog needs longer to turn back onto a target that cut hard laterally (a zigzag turn)
+    # rather than freezing a second after losing it.
+    lost_search_timeout_sec: float = 4.0
     lost_search_min_error_deg: float = 3.0
+    # Bounded in-place re-acquire scan: the dog turns up to +/- this half-angle toward the
+    # last-known side, sweeps across centre to the same angle on the OTHER side, then back --
+    # never a full 180. 90 deg so the "toward" leg covers a patient who cut hard off-axis at a
+    # zigzag apex (well past the camera's ~35 deg half-FOV) before the scan sweeps the other way.
+    lost_search_arc_deg: float = 90.0
+    lost_search_max_sec: float = 20.0
     rotation_velocity_ff_gain: float = 0.01
 
     # Rotation error penalties (bbox-based)
@@ -126,7 +154,17 @@ class PersonFollower:
         self.tracking_start_time = None
         self.is_tracking = False
         self.last_rotation_error_deg = 0.0
-        
+        # Last trustworthy patient range (m), kept across a YOLO dropout so the LiDAR-bearing
+        # bridge can reject far returns (walls/stairs) while re-acquiring.
+        self.last_person_range_m = None
+        # Last bearing the LiDAR bridge tracked the patient to (rad, CCW/+left). Used as the
+        # search prior on the next lost frame so the window FOLLOWS the patient across a sweep.
+        self.last_profile_bearing_rad = None
+        # Wall time the in-place re-acquire scan FIRST engaged for the current loss. The scan
+        # phase is measured from this (NOT raw lost_age) so it always begins by turning TOWARD
+        # the last-seen side, never mid-sweep. Reset to None on every re-detection.
+        self.lost_search_start_time = None
+
         # Store reference to the YoloPoseInference instance for keypoint-based depth measurement
         self.yolo_pose = yolo_pose_inference
         
@@ -238,6 +276,11 @@ class PersonFollower:
                     self.last_person_center = current_center
                     self.last_detection_time = current_time
                 self.last_lost_time = None
+                # Re-detected: the next loss starts a fresh scan from the 'toward' leg.
+                self.lost_search_start_time = None
+                # Fresh YOLO box -> the LiDAR-bridge prior is stale; drop it so the next loss
+                # re-seeds the search window from this detection.
+                self.last_profile_bearing_rad = None
         else:
             # Person is lost
             if self.is_tracking and self.last_lost_time is None:
@@ -284,6 +327,98 @@ class PersonFollower:
         )
         return float(rotation_error)
 
+    def _resolve_lost_search_direction(
+        self,
+        frame_shape: Tuple[int, int],
+        lidar_profile: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[float, float, str]:
+        """Decide which way to turn to re-acquire a target that just left the FOV.
+
+        Returns ``(search_sign, last_seen_bearing_deg, cue)`` where ``search_sign`` is
+        +1 (person is/was on the RIGHT), -1 (LEFT), or 0 (direction unknown -> do not
+        spin). ``last_seen_bearing_deg`` is in the rotation-error convention (+ = right).
+        The single ``search_sign`` drives both the yaw command and the HUD label, so they
+        cannot disagree, and there is no hard-coded default side: an ambiguous loss holds
+        rather than guessing left.
+
+        Three cues, highest-confidence first:
+
+        0. LiDAR BRIDGE (primary when available): the 360 deg LiDAR still sees the patient
+           after they leave the narrow 69 deg RGB frame. Track the nearest foreground return
+           near the last-known direction -- this points at where the patient IS NOW, which is
+           the correct way to turn after a hard zigzag reversal (the last bbox side is the
+           OPPOSITE of where a reversing patient went). The tracked bearing is stored as the
+           prior so the window follows the patient across the sweep.
+        1. POSITION: ``self.last_person_center`` -- which side of the principal point the last
+           YOLO box sat on. Decisive when |bearing| >= the search threshold.
+        2. MOTION: ``self.person_velocity[0]`` -- lateral pixel velocity. Used when position is
+           ambiguous (near centre), AND to OVERRIDE a near-centre position cue when the patient
+           was clearly crossing the other way (a zigzag apex reversal).
+        """
+        last_seen_bearing_deg = 0.0
+        search_sign = 0.0
+        cue = 'none'
+
+        # 0) LiDAR bearing bridge.
+        if (self.config.lidar_fusion_enabled and lidar_profile is not None
+                and self.last_person_center is not None):
+            decoded = decode_lidar_profile(lidar_profile)
+            if decoded is not None:
+                if self.last_profile_bearing_rad is not None:
+                    prior_b = self.last_profile_bearing_rad
+                else:
+                    prior_b = person_bearing_rad(
+                        float(self.last_person_center[0]),
+                        self.config.camera_cx,
+                        self.config.camera_fx,
+                        self.config.lidar_yaw_offset_rad,
+                    )
+                if prior_b is not None:
+                    pb = person_bearing_from_profile(
+                        decoded, prior_b, self.last_person_range_m
+                    )
+                    if pb is not None:
+                        self.last_profile_bearing_rad = pb
+                        # LiDAR bearing is CCW/+left; rotation-error is +right -> negate.
+                        bridge_bearing_deg = -math.degrees(pb)
+                        if abs(bridge_bearing_deg) >= self.config.lost_search_min_error_deg:
+                            return (math.copysign(1.0, bridge_bearing_deg),
+                                    float(bridge_bearing_deg), 'lidar')
+
+        if self.last_person_center is not None:
+            last_seen_bearing_deg, _, _ = rotation_error_from_center(
+                self.config,
+                float(self.last_person_center[0]),
+                frame_shape,
+                use_camera_intrinsics=True,
+            )
+            # Use the SIDE the patient was last on (sign of the last bearing) even when the
+            # bearing is small: the dog should always scan toward where it last saw them rather
+            # than hold. A tiny 0.5 deg floor keeps pure dead-centre noise from picking a side
+            # (the motion cue below resolves that case).
+            if abs(last_seen_bearing_deg) >= 0.5:
+                search_sign = math.copysign(1.0, last_seen_bearing_deg)
+                cue = 'position'
+
+        # Motion: resolve an ambiguous (near-centre) loss, OR override a near-centre position
+        # cue when the patient was crossing the OTHER way (zigzag apex reversal). Gate on a
+        # clear drift (> 2% of frame width per second) so bbox jitter never spins the dog.
+        if self.person_velocity is not None:
+            vx_px = float(self.person_velocity[0])
+            frame_width = float(frame_shape[1]) if frame_shape[1] > 0 else 0.0
+            motion_gate = max(5.0, 0.02 * frame_width)  # px/s
+            if abs(vx_px) > motion_gate:
+                motion_sign = math.copysign(1.0, vx_px)  # +vx == moving right == +right
+                if search_sign == 0.0:
+                    search_sign = motion_sign
+                    cue = 'motion'
+                elif (motion_sign != search_sign
+                      and abs(last_seen_bearing_deg) < _REVERSAL_BEARING_DEG):
+                    search_sign = motion_sign
+                    cue = 'motion_reversal'
+
+        return search_sign, float(last_seen_bearing_deg), cue
+
     def reset(self):
         """Reset the follower state"""
         self.trans_x_pid_controller.reset()
@@ -296,7 +431,10 @@ class PersonFollower:
         self.tracking_start_time = None
         self.is_tracking = False
         self.last_rotation_error_deg = 0.0
-    
+        self.last_person_range_m = None
+        self.last_profile_bearing_rad = None
+        self.lost_search_start_time = None
+
     def update(self, main_person: Optional[Union[Dict[str, Any], Sequence[float]]], depth_image: np.ndarray,
                frame_shape: Tuple[int, int], depth_mapper: Optional[Any] = None,
                lidar_profile: Optional[Dict[str, Any]] = None,
@@ -469,6 +607,11 @@ class PersonFollower:
             if depth_m is not None and depth_m >= 65.0:
                 depth_m = None
 
+            # Remember the patient's range while visible so the LiDAR-bearing bridge can reject
+            # far returns (walls/stairs) when re-acquiring after a YOLO dropout.
+            if depth_m is not None and depth_m > 1e-3:
+                self.last_person_range_m = float(depth_m)
+
         # Update GaitEstimator
         cam_cx = self.config.camera_cx if self.config.camera_cx > 0 else (frame_shape[1] / 2.0)
         cam_fx = self.config.camera_fx if self.config.camera_fx > 0 else (frame_shape[1] * 0.8)
@@ -494,47 +637,117 @@ class PersonFollower:
         if main_person is None:
             if self.last_lost_time is not None:
                 debug_info['lost_age_sec'] = current_time - self.last_lost_time
-
-            predicted_center = self._predict_person_position(current_time, frame_shape)
-            if predicted_center is not None:
-                rotation_error = self._calculate_predicted_rotation_error(predicted_center, frame_shape)
-                rotation_cmd_raw = self.rotation_pid_controller.update(rotation_error, 0.0)
-                rotation_cmd = -rotation_cmd_raw
-                debug_info.update({
-                    'reason': 'Target temporarily lost - using predicted bearing',
-                    'rotation_cmd': rotation_cmd,
-                    'rotation_error_deg': rotation_error,
-                    'using_prediction': True,
-                    'predicted_position': predicted_center,
-                    'recovery_cmd_active': abs(rotation_cmd) > 1e-4,
-                    'trans_x_pid_state': self.trans_x_pid_controller.get_state(),
-                    'rotation_pid_state': self.rotation_pid_controller.get_state(),
-                })
-                return 0.0, rotation_cmd, debug_info
-
             lost_age = debug_info.get('lost_age_sec')
-            if (
-                lost_age is not None
-                and lost_age <= self.config.lost_search_timeout_sec
-                and abs(self.last_rotation_error_deg) >= self.config.lost_search_min_error_deg
-                and self.config.lost_search_yaw_speed > 0.0
-            ):
-                rotation_cmd = -math.copysign(
-                    min(self.config.max_rotation_speed, self.config.lost_search_yaw_speed),
-                    self.last_rotation_error_deg,
-                )
-                debug_info.update({
-                    'reason': 'Target lost - searching toward last-known bearing',
-                    'rotation_cmd': rotation_cmd,
-                    'rotation_error_deg': self.last_rotation_error_deg,
-                    'lost_search_active': True,
-                    'lost_search_direction': 'right' if self.last_rotation_error_deg > 0 else 'left',
-                    'recovery_cmd_active': True,
-                    'trans_x_pid_state': self.trans_x_pid_controller.get_state(),
-                    'rotation_pid_state': self.rotation_pid_controller.get_state(),
-                })
-                return 0.0, rotation_cmd, debug_info
 
+            # Resolve the re-acquire DIRECTION first so EVERY recovery path -- prediction,
+            # yaw-search, and the main-loop flat-loss-glide turn-guard -- shares one consistent
+            # last-known bearing (the glide guard reads debug_info['last_seen_bearing_deg']).
+            search_sign, last_seen_bearing_deg, search_cue = self._resolve_lost_search_direction(
+                frame_shape, lidar_profile=lidar_profile
+            )
+            debug_info['last_seen_bearing_deg'] = round(float(last_seen_bearing_deg), 3)
+            debug_info['lost_search_cue'] = search_cue
+
+            # 1) BOUNDED SCAN toward the last-seen side -- the PRIMARY recovery. The scan phase is
+            #    measured from when the scan FIRST engaged (lost_search_start_time), NOT raw
+            #    lost_age, so it ALWAYS begins by turning TOWARD the side the patient was last seen
+            #    on, then sweeps across to the other side, bounded +/- lost_search_arc_deg. A LIVE
+            #    LiDAR bearing (cue 'lidar') instead tracks proportionally toward where the patient
+            #    IS (not bounded). Short-horizon prediction is DEMOTED to a fallback below (only
+            #    when no side is known) because its motion-extrapolation overshoots on a hard
+            #    zigzag -- it spun the dog ~170 deg chasing a stale bearing then never re-acquired.
+            if search_sign != 0.0 and self.config.lost_search_yaw_speed > 0.0:
+                if self.lost_search_start_time is None:
+                    self.lost_search_start_time = current_time
+                scan_elapsed = current_time - self.lost_search_start_time
+                if search_cue == 'lidar':
+                    # LIVE bearing -> turn PROPORTIONALLY toward it (capped at the tracking yaw
+                    # limit) so the dog can keep up with a patient crossing the frame, instead of
+                    # the slow fixed blind-search speed used when we are only guessing a side.
+                    yaw_mag = min(
+                        self.config.max_rotation_speed,
+                        max(self.config.lost_search_yaw_speed,
+                            abs(math.radians(last_seen_bearing_deg)) * _LIDAR_BRIDGE_YAW_GAIN),
+                    )
+                else:
+                    yaw_mag = min(self.config.max_rotation_speed, self.config.lost_search_yaw_speed)
+                # LiDAR live-bearing bridge keeps proportionally tracking the patient through a
+                # long RGB outage -- it points at where the patient IS, so it is NOT bounded to the
+                # blind +/- arc scan.
+                within_bridge = (search_cue == 'lidar' and lost_age is not None
+                                 and lost_age <= _LIDAR_BRIDGE_MAX_SEC)
+                rotation_cmd = None
+                scan_phase = None
+                if search_cue == 'lidar' and within_bridge:
+                    # search_sign: +1 == RIGHT. A right target is a negative yaw command.
+                    rotation_cmd = -search_sign * yaw_mag
+                    scan_phase = 'lidar'
+                elif scan_elapsed <= float(self.config.lost_search_max_sec):
+                    # BOUNDED +/- arc in-place scan. Phase in units of T = time to sweep one arc leg,
+                    # measured from scan start so it ALWAYS opens toward the last-seen side:
+                    #   A (0..1)  centre -> +arc   toward the last-known side
+                    #   B,C (1..3) +arc -> -arc    sweep across centre to the OTHER side
+                    #   D (3..4)  -arc -> centre   return; then the cycle repeats (ping-pong)
+                    # so the heading never leaves [-arc, +arc] -- never a full 180.
+                    # "toward last side" == -search_sign*scan_rate (RIGHT -> -yaw).
+                    arc_rad = math.radians(max(1.0, float(self.config.lost_search_arc_deg)))
+                    # Brisk scan rate: reach the arc in ~_LOST_SCAN_LEG_SEC (so a full +/- sweep
+                    # is responsive), but never below the configured search speed or above the
+                    # tracking yaw cap.
+                    scan_rate = min(float(self.config.max_rotation_speed),
+                                    max(float(self.config.lost_search_yaw_speed),
+                                        arc_rad / _LOST_SCAN_LEG_SEC))
+                    leg_sec = arc_rad / max(1e-3, scan_rate)  # time to traverse one arc leg
+                    cycle_pos = (float(scan_elapsed) / leg_sec) % 4.0
+                    if cycle_pos < 1.0 or cycle_pos >= 3.0:
+                        rotation_cmd = -search_sign * scan_rate      # toward the last-known side
+                        scan_phase = 'toward'
+                    else:
+                        rotation_cmd = +search_sign * scan_rate      # across to the other side
+                        scan_phase = 'across'
+                if rotation_cmd is not None:
+                    if scan_phase == 'lidar':
+                        reason = 'Target lost - LiDAR-bearing bridge'
+                    elif scan_phase == 'across':
+                        reason = 'Target lost - scanning opposite side'
+                    else:
+                        reason = 'Target lost - scanning toward last-known bearing'
+                    debug_info.update({
+                        'reason': reason,
+                        'rotation_cmd': rotation_cmd,
+                        'rotation_error_deg': last_seen_bearing_deg,
+                        'lost_search_active': True,
+                        'lost_search_phase': scan_phase,
+                        'lost_search_direction': 'right' if rotation_cmd < 0 else 'left',
+                        'recovery_cmd_active': True,
+                        'trans_x_pid_state': self.trans_x_pid_controller.get_state(),
+                        'rotation_pid_state': self.rotation_pid_controller.get_state(),
+                    })
+                    return 0.0, rotation_cmd, debug_info
+
+            # 2) FALLBACK: short-horizon prediction, only when NO side is known (search_sign == 0,
+            #    i.e. the patient was lost dead-centre with no motion cue, so the bounded scan above
+            #    had no direction to open toward). Linear pixel extrapolation; the downstream
+            #    rotation limiter keeps it bounded.
+            if search_cue != 'lidar':
+                predicted_center = self._predict_person_position(current_time, frame_shape)
+                if predicted_center is not None:
+                    rotation_error = self._calculate_predicted_rotation_error(predicted_center, frame_shape)
+                    rotation_cmd_raw = self.rotation_pid_controller.update(rotation_error, 0.0)
+                    rotation_cmd = -rotation_cmd_raw
+                    debug_info.update({
+                        'reason': 'Target temporarily lost - using predicted bearing',
+                        'rotation_cmd': rotation_cmd,
+                        'rotation_error_deg': rotation_error,
+                        'using_prediction': True,
+                        'predicted_position': predicted_center,
+                        'recovery_cmd_active': abs(rotation_cmd) > 1e-4,
+                        'trans_x_pid_state': self.trans_x_pid_controller.get_state(),
+                        'rotation_pid_state': self.rotation_pid_controller.get_state(),
+                    })
+                    return 0.0, rotation_cmd, debug_info
+
+            # 3) Give up.
             if lost_age is not None and lost_age > self.config.lost_search_timeout_sec:
                 debug_info['reason'] = 'Target lost - recovery timeout, stopped'
             else:

@@ -35,6 +35,10 @@ param(
     [double]$StairStepHeight = 0,
     [switch]$NoParkourWalkMode,
     [switch]$NoSpeedGovernor,
+    # Stand-up-from-ground is ON by default in isaac_env.py (the robot spawns folded and
+    # stands up on camera before the policy drives). Pass this through to restore the
+    # legacy instant-standing spawn.
+    [switch]$NoStandUpFromGround,
     # Attach the oxygen-concentrator payload (mounting rails + O2 tank) on the Go2's back.
     # run_sim.ps1 forwards -WithO2Payload here; without this param it errored the launch.
     [switch]$WithO2Payload,
@@ -149,6 +153,8 @@ if ($PatientCharacterUsd) { $locomotionArgs += " --patient-character-usd `"$Pati
 # Walk mode and speed governor are ON by default in isaac_env.py; pass disable flags for A/B.
 if ($NoParkourWalkMode) { $locomotionArgs += " --no-parkour-walk-mode" }
 if ($NoSpeedGovernor) { $locomotionArgs += " --no-speed-governor" }
+# Stand-up-from-ground is ON by default in isaac_env.py; pass the opt-out through.
+if ($NoStandUpFromGround) { $locomotionArgs += " --no-stand-up-from-ground" }
 # Faster test iteration: run Isaac without the GUI window and/or with the lighter
 # RaytracedLighting renderer. Both off by default (live window, full-fidelity render).
 if ($Headless) { $locomotionArgs += " --headless" }

@@ -22,12 +22,19 @@ States (mutually exclusive, the "dispatch mode"):
   COMMITTED_CLIMB     stair_climb_committed; forward drive bypasses follow gates
   STAIR_LOSS_FLOOR    person lost mid-climb (stair latch active); modest forward floor
   STAIR_APPROACH_COMMIT stair seen + person lost + riser in depth range; creep straight
-  FLAT_LOSS_GLIDE     person briefly lost on flat, clear path ahead; gentle straight glide
+  FLAT_LOSS_GLIDE     person briefly lost on flat, clear path ahead, AND was last seen
+                      roughly straight ahead; gentle straight glide. Yields to the
+                      follower's recovery yaw when the patient turned off-axis.
   STOP                catch-all; controller.stop()
 """
 
 import time
 from typing import Optional
+
+# Flat-loss glide only engages when the patient was last seen within this bearing of
+# dead-ahead. Beyond it the patient clearly turned, so the straight glide is wrong and
+# would suppress the recovery yaw -- fall through to the turn-to-re-acquire path instead.
+GLIDE_MAX_BEARING_DEG = 8.0
 
 
 class ClimbFSM:
@@ -94,6 +101,8 @@ class ClimbFSM:
         standoff_gap_ctrl_m: Optional[float],
         lost_age_sec: Optional[float],
         motion_allowed: bool,
+        last_seen_bearing_deg: Optional[float] = None,
+        recovery_yaw_active: bool = False,
         stair_climb_committed_in: Optional[bool] = None,  # external override (unused normally)
     ) -> dict:
         """Update all latch variables and derive the new state.
@@ -179,6 +188,18 @@ class ClimbFSM:
         )
 
         # --- flat-loss glide ---
+        # The straight glide is ONLY correct when the patient was lost heading roughly
+        # straight ahead (a brief YOLO blink on the forward axis). When the patient TURNED
+        # off-axis (a zigzag apex), gliding straight drives away from them AND -- because the
+        # dispatch hard-zeroes yaw during the glide -- it actively SUPPRESSES the recovery
+        # turn. So yield to the recovery yaw: skip the glide when the follower is already
+        # turning to re-acquire (recovery_yaw_active) or when the last-seen bearing was
+        # clearly off-centre. last_seen_bearing_deg is None pre-loss / when unknown -> glide
+        # stays available for the straight-loss case it was built for.
+        _glide_heading_ok = (
+            last_seen_bearing_deg is None
+            or abs(float(last_seen_bearing_deg)) <= GLIDE_MAX_BEARING_DEG
+        )
         flat_loss_glide = (
             not person_detected
             and not stairs_now
@@ -186,6 +207,8 @@ class ClimbFSM:
             and lost_age_sec is not None
             and float(lost_age_sec) <= float(getattr(args, "follow_loss_glide_sec", 4.0))
             and front_near_m is not None and float(front_near_m) > 0.9
+            and _glide_heading_ok
+            and not recovery_yaw_active
         )
 
         # --- derive FSM state ---

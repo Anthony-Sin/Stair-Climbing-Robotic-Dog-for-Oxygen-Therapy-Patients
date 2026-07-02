@@ -486,6 +486,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--spawn-stability-retries", type=int, default=2,
                         help="Max re-freeze+re-settle attempts to get a stable upright spawn before "
                              "giving up (warm-Kit degradation guard). 0 disables the guard.")
+    # Stand-up-from-ground: instead of the robot appearing already standing, seat it
+    # FOLDED on the floor at loop entry and physically ramp it up to the standing pose
+    # (on camera, before the locomotion policy drives). ON by default for every run;
+    # --no-stand-up-from-ground restores the legacy instant-standing spawn.
+    parser.add_argument("--stand-up-from-ground", dest="stand_up_from_ground",
+                        action="store_true", default=True,
+                        help="Start the Go2 folded on the ground and stand it up before the policy "
+                             "drives (recorded). Default ON. --no-stand-up-from-ground to disable.")
+    parser.add_argument("--no-stand-up-from-ground", dest="stand_up_from_ground",
+                        action="store_false",
+                        help="Disable the stand-up; spawn the robot already standing (legacy).")
+    parser.add_argument("--stand-up-steps", type=int, default=240,
+                        help="Control steps over which the stand-up ramps the joint targets from the "
+                             "folded crouch to the standing pose (at --physics-hz; 240 ~ 1.2 s @200Hz).")
+    parser.add_argument("--stand-up-floor-hold-steps", type=int, default=40,
+                        help="Steps the robot rests folded on the floor before the stand-up ramp "
+                             "begins (lets the folded pose settle so the push-up starts stable).")
+    parser.add_argument("--stand-up-top-hold-steps", type=int, default=40,
+                        help="Steps the robot holds the standing pose at the top of the stand-up ramp "
+                             "before the locomotion policy takes over.")
+    parser.add_argument("--stand-up-spawn-z", type=float, default=0.12,
+                        help="Folded base Z (m) the robot is seated at before standing up. Lower it if "
+                             "the belly clips the floor; raise it if the folded body pops/drops.")
     # Sim-to-real realism overrides (parkour locomotion policy). All off / nominal by
     # default (the "perfect env"); the --sim2real-validation-cam preset turns the whole
     # suite on, and each flag below still overrides the preset. The parkour PD gains

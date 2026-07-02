@@ -55,6 +55,53 @@ def test_profile_roundtrip_and_bearing():
     assert lf.person_bearing_rad(300, 640, 900) > 0
 
 
+def _world_person_at(az_deg, rng=1.5, wall=5.0):
+    """Injected raycast: a single near return at azimuth az_deg (CCW/+left), walls elsewhere."""
+    target = math.radians(az_deg)
+
+    def raycast(origin, direction, max_dist):
+        a = math.atan2(direction[1], direction[0])
+        da = abs((a - target + math.pi) % (2.0 * math.pi) - math.pi)
+        if da < math.radians(4.0):
+            return rng
+        return wall if wall <= max_dist else None
+    return raycast
+
+
+def test_person_bearing_from_profile_recovers_offaxis_side():
+    cfg = Xt16Config(azimuth_step_deg=3.0, max_range_m=50.0)
+    # Patient ~20 deg to the LEFT (+ in CCW convention) at 1.5 m; walls beyond.
+    scan = cast_scan(cfg, (0.0, 0.0, 0.3), 0.0, _world_person_at(20.0, 1.5, 5.0))
+    decoded = lf.decode_lidar_profile(profile_from_scan(scan, view_range_m=6.0))
+
+    # Prior near centre, prior range ~1.5 -> recover the +20 deg (left) foreground return.
+    b = lf.person_bearing_from_profile(decoded, prior_bearing_rad=0.0, prior_range_m=1.5)
+    assert b is not None and abs(math.degrees(b) - 20.0) <= 4.0
+
+    # Patient to the RIGHT (negative bearing in the +left convention).
+    scan_r = cast_scan(cfg, (0.0, 0.0, 0.3), 0.0, _world_person_at(-20.0, 1.5, 5.0))
+    decoded_r = lf.decode_lidar_profile(profile_from_scan(scan_r, view_range_m=6.0))
+    br = lf.person_bearing_from_profile(decoded_r, prior_bearing_rad=0.0, prior_range_m=1.5)
+    assert br is not None and math.degrees(br) < 0.0
+
+
+def test_person_bearing_from_profile_rejects_far_and_out_of_window():
+    cfg = Xt16Config(azimuth_step_deg=3.0, max_range_m=50.0)
+    scan = cast_scan(cfg, (0.0, 0.0, 0.3), 0.0, _world_person_at(20.0, 1.5, 5.0))
+    decoded = lf.decode_lidar_profile(profile_from_scan(scan, view_range_m=6.0))
+
+    # The patient (20 deg) is outside a window centred on 120 deg -> only far walls there -> None.
+    assert lf.person_bearing_from_profile(
+        decoded, prior_bearing_rad=math.radians(120.0), prior_range_m=1.0, window_deg=20.0
+    ) is None
+    # A tight range gate rejects the 5 m walls when no near return sits near the prior bearing.
+    scan_walls = cast_scan(cfg, (0.0, 0.0, 0.3), 0.0, _world_person_at(20.0, 5.0, 5.0))
+    decoded_walls = lf.decode_lidar_profile(profile_from_scan(scan_walls, view_range_m=6.0))
+    assert lf.person_bearing_from_profile(
+        decoded_walls, prior_bearing_rad=0.0, prior_range_m=1.0
+    ) is None
+
+
 def test_decode_handles_empty():
     assert lf.decode_lidar_profile(None) is None
     assert lf.decode_lidar_profile({}) is None

@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>blind-RL climb policy</title>
+<style>
+  body { margin: 0; padding: 20px; font-family: system-ui, -apple-system, sans-serif; background: #f8f8f6; }
+  svg text { font-family: system-ui, -apple-system, sans-serif; }
+  h1 { font-size: 15px; font-weight: 500; color: #555; margin: 0 0 12px; }
+</style>
+</head>
+<body>
+<h1>blind-RL climb policy — proprioceptive rl_sar MLP · how it works &amp; was built</h1>
+<svg width="100%" viewBox="0 0 860 520" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="bl" markerUnits="userSpaceOnUse" markerWidth="13" markerHeight="13" viewBox="0 0 13 13" refX="11.5" refY="6.5" orient="auto">
+      <path d="M2 2 L11.5 6.5 L2 11 Z" fill="#185FA5"/>
+    </marker>
+    <marker id="pr" markerUnits="userSpaceOnUse" markerWidth="13" markerHeight="13" viewBox="0 0 13 13" refX="11.5" refY="6.5" orient="auto">
+      <path d="M2 2 L11.5 6.5 L2 11 Z" fill="#534AB7"/>
+    </marker>
+    <marker id="gn" markerUnits="userSpaceOnUse" markerWidth="13" markerHeight="13" viewBox="0 0 13 13" refX="11.5" refY="6.5" orient="auto">
+      <path d="M2 2 L11.5 6.5 L2 11 Z" fill="#0F6E56"/>
+    </marker>
+  </defs>
+
+  <!-- ════ OBSERVATION (45-D) ════ -->
+  <rect x="20" y="24" width="300" height="320" rx="12" fill="#EAF3FC" stroke="#185FA5" stroke-width="1" stroke-dasharray="5 3"/>
+  <text x="170" y="46" text-anchor="middle" font-size="13" font-weight="600" fill="#042C53">Observation · 45-D · proprioception only</text>
+
+  <!-- BLIND banner -->
+  <rect x="32" y="54" width="276" height="24" rx="5" fill="#44464d"/>
+  <text x="170" y="70" text-anchor="middle" font-size="11" font-weight="600" fill="#fff">✗ no camera · no depth — terrain is felt, not seen</text>
+
+  <g font-size="11">
+    <rect x="32" y="86" width="276" height="26" rx="5" fill="#DCEBFB" stroke="#185FA5" stroke-width="0.5"/>
+    <text x="42" y="103"><tspan font-weight="700" fill="#042C53">base ang vel (3)</tspan><tspan fill="#185FA5"> ×0.25 — IMU gyro</tspan></text>
+    <rect x="32" y="118" width="276" height="26" rx="5" fill="#DCEBFB" stroke="#185FA5" stroke-width="0.5"/>
+    <text x="42" y="135"><tspan font-weight="700" fill="#042C53">projected gravity (3)</tspan><tspan fill="#185FA5"> — tilt, body frame</tspan></text>
+    <rect x="32" y="150" width="276" height="26" rx="5" fill="#DCEBFB" stroke="#185FA5" stroke-width="0.5"/>
+    <text x="42" y="167"><tspan font-weight="700" fill="#042C53">commands (3)</tspan><tspan fill="#185FA5"> — vx, vy, wz</tspan></text>
+    <rect x="32" y="182" width="276" height="26" rx="5" fill="#C3DDF7" stroke="#185FA5" stroke-width="1"/>
+    <text x="42" y="199"><tspan font-weight="700" fill="#042C53">joint pos − default (12)</tspan><tspan fill="#185FA5"> — 12 leg encoders</tspan></text>
+    <rect x="32" y="214" width="276" height="26" rx="5" fill="#C3DDF7" stroke="#185FA5" stroke-width="1"/>
+    <text x="42" y="231"><tspan font-weight="700" fill="#042C53">joint vel (12)</tspan><tspan fill="#185FA5"> — 12 leg encoders (speed)</tspan></text>
+    <rect x="32" y="246" width="276" height="26" rx="5" fill="#DCEBFB" stroke="#185FA5" stroke-width="0.5"/>
+    <text x="42" y="263"><tspan font-weight="700" fill="#042C53">prev action (12)</tspan><tspan fill="#185FA5"> — feedback</tspan></text>
+  </g>
+
+  <rect x="32" y="282" width="276" height="32" rx="6" fill="#185FA5" stroke="#042C53" stroke-width="0.5"/>
+  <text x="170" y="302" text-anchor="middle" font-size="12" font-weight="600" fill="#fff">concatenate → 45-D vector</text>
+  <text x="170" y="332" text-anchor="middle" font-size="10" fill="#5887b3">the highlighted rows are the leg state — how a blind policy reads each riser</text>
+
+  <!-- ════ NETWORK + ACTION + DRIVE pipeline ════ -->
+  <rect x="400" y="40" width="250" height="92" rx="10" fill="#E7E5FB" stroke="#534AB7" stroke-width="1"/>
+  <text x="525" y="64" text-anchor="middle" font-size="13" font-weight="600" fill="#26215C">Actor MLP</text>
+  <text x="525" y="86" text-anchor="middle" font-size="11" fill="#534AB7">rl_sar robot_lab (legged_gym)</text>
+  <text x="525" y="106" text-anchor="middle" font-size="11" fill="#534AB7">TorchScript · feed-forward</text>
+
+  <line x1="525" y1="132" x2="525" y2="164" stroke="#534AB7" stroke-width="1.6" marker-end="url(#pr)"/>
+  <text x="533" y="153" font-size="10" fill="#534AB7">12 residuals · clip ±100</text>
+
+  <rect x="400" y="164" width="250" height="84" rx="10" fill="#DEF3EB" stroke="#0F6E56" stroke-width="1"/>
+  <text x="525" y="186" text-anchor="middle" font-size="13" font-weight="600" fill="#04342C">Action (12 joints)</text>
+  <text x="525" y="207" text-anchor="middle" font-size="11" fill="#0F6E56">target = default + action × scale</text>
+  <text x="525" y="227" text-anchor="middle" font-size="10.5" fill="#0F6E56">scale hip .125 / thigh,calf .25 · default 0 / 0.8 / −1.5</text>
+
+  <line x1="525" y1="248" x2="525" y2="280" stroke="#0F6E56" stroke-width="1.6" marker-end="url(#gn)"/>
+
+  <rect x="400" y="280" width="250" height="92" rx="10" fill="#DEF3EB" stroke="#0F6E56" stroke-width="1"/>
+  <text x="525" y="304" text-anchor="middle" font-size="13" font-weight="600" fill="#04342C">Explicit PD torque drive</text>
+  <text x="525" y="326" text-anchor="middle" font-size="11" fill="#0F6E56">τ = Kp·(target − q) − Kd·q̇</text>
+  <text x="525" y="346" text-anchor="middle" font-size="10.5" fill="#0F6E56">Kp 20 · Kd 0.5 · clip ±23.5 Nm · 50 Hz</text>
+  <text x="525" y="364" text-anchor="middle" font-size="11" fill="#0F6E56">→ Unitree Go2</text>
+
+  <!-- OBS → MLP (routed up the gutter) -->
+  <path d="M320 298 L362 298 L362 86 L400 86" fill="none" stroke="#534AB7" stroke-width="1.6" marker-end="url(#pr)"/>
+  <text x="367" y="200" font-size="10" fill="#534AB7" transform="rotate(-90 367 200)">45-D obs</text>
+
+  <!-- ════ BUILD / TRAINING ════ -->
+  <rect x="20" y="392" width="820" height="112" rx="10" fill="#FAEEDA" stroke="#854F0B" stroke-width="1" stroke-dasharray="5 3"/>
+  <text x="32" y="414" font-size="12.5" font-weight="600" fill="#633806">How blind-RL was built / trained</text>
+  <g font-size="11.5" fill="#5b3a0a">
+    <text x="32" y="436">• Source — fan-ziqi / rl_sar "go2 robot_lab" policy · trained with PPO in IsaacLab / legged_gym</text>
+    <text x="32" y="457">• Purely proprioceptive "blind" walker — terrain sensed only via 12 leg encoders + IMU (no camera, no depth)</text>
+    <text x="32" y="478">• Domain-randomized in training; exported as a TorchScript .pt actor · weights frozen (no retraining here)</text>
+    <text x="32" y="499">• Reused as the handoff CLIMB backend — feels each riser through leg load + IMU; ascent is best-effort, not stair-trained</text>
+  </g>
+</svg>
+</body>
+</html>

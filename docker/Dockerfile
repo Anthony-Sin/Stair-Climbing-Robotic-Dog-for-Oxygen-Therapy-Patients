@@ -80,6 +80,7 @@ RUN rm -rf /opt/opencv /opt/opencv_contrib
 RUN pip3 install --no-cache-dir \
     numpy \
     matplotlib \
+    pillow \
     scipy \
     tqdm \
     onnx onnxruntime \
@@ -176,6 +177,27 @@ ENV PYTHONPATH="/opt/unitree_sdk2_python:${PYTHONPATH}"
 
 RUN pip install --no-cache-dir kornia kornia-rs --no-deps
 RUN pip install --no-cache-dir ecs-logging
+
+# ----------------------
+# On-frame HUD (core/hud): real GPU-rendered overlay via arcv (ModernGL vector/
+# text batches + HDR bloom). Container already has --gpus all --runtime nvidia
+# (docker_run.sh) so a standalone moderngl context should have EGL/GL access;
+# NOT YET VERIFIED on real Jetson Orin hardware -- check for a moderngl context
+# creation error on first boot after this image change.
+#
+# arcv's own pyproject.toml has a packaging bug: `packages = ["arcv"]` already
+# bundles arcv/shaders + arcv/resources by default, and the extra
+# [tool.hatch.build.targets.wheel.force-include] block re-adds the same paths,
+# so `pip install git+https://...` fails wheel-building on a duplicate archive
+# entry (confirmed). Strip that redundant trailing block before building --
+# the shader/font assets still end up in the wheel via the default packages
+# inclusion (verified: 84 files incl. all .frag/.vert/.ttf).
+# ----------------------
+RUN pip install --no-cache-dir "moderngl>=5.10" \
+    && git clone --depth 1 https://github.com/Anthony-Sin/arcv.git /opt/arcv_build \
+    && sed -i '/\[tool\.hatch\.build\.targets\.wheel\.force-include\]/,$d' /opt/arcv_build/pyproject.toml \
+    && pip install --no-cache-dir --no-deps /opt/arcv_build \
+    && rm -rf /opt/arcv_build
 
 # Clean up torch wheel and pip cache (safe final cleanup)
 RUN rm -rf /root/.cache/pip

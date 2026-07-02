@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Isaac Sim Internals</title>
+<style>
+  body { margin: 0; padding: 20px; font-family: system-ui, -apple-system, sans-serif; background: #f8f8f6; }
+  svg text { font-family: system-ui, -apple-system, sans-serif; }
+  h1 { font-size: 15px; font-weight: 500; color: #555; margin: 0 0 12px; }
+</style>
+</head>
+<body>
+<h1>Isaac Sim — boot sequence, patient system, benchmarking</h1>
+<svg width="100%" viewBox="0 0 860 530" xmlns="http://www.w3.org/2000/svg">
+  <!-- Solid filled-triangle arrowheads, explicit colour per flow, no context-stroke. -->
+  <defs>
+    <marker id="gy" markerUnits="userSpaceOnUse" markerWidth="13" markerHeight="13" viewBox="0 0 13 13" refX="11.5" refY="6.5" orient="auto">
+      <path d="M2 2 L11.5 6.5 L2 11 Z" fill="#888"/>
+    </marker>
+    <marker id="gn" markerUnits="userSpaceOnUse" markerWidth="13" markerHeight="13" viewBox="0 0 13 13" refX="11.5" refY="6.5" orient="auto">
+      <path d="M2 2 L11.5 6.5 L2 11 Z" fill="#0F6E56"/>
+    </marker>
+    <marker id="bn" markerUnits="userSpaceOnUse" markerWidth="13" markerHeight="13" viewBox="0 0 13 13" refX="11.5" refY="6.5" orient="auto">
+      <path d="M2 2 L11.5 6.5 L2 11 Z" fill="#854F0B"/>
+    </marker>
+  </defs>
+
+  <!-- ══ COL 1: Boot sequence ══ -->
+  <rect x="20" y="20" width="270" height="456" rx="12" fill="#F1EFE8" stroke="#888" stroke-width="1" stroke-dasharray="5 3"/>
+  <text x="155" y="44" text-anchor="middle" font-size="13" font-weight="600" fill="#444">Boot sequence · ~167 s</text>
+
+  <rect x="40" y="56" width="230" height="52" rx="6" fill="#D3D1C7" stroke="#888" stroke-width="0.5"/>
+  <text x="155" y="76" text-anchor="middle" font-size="13" font-weight="600" fill="#2C2C2A">SimulationApp</text>
+  <text x="155" y="96" text-anchor="middle" font-size="11" fill="#5F5E5A">Kit / RTX boot · ~123 s</text>
+
+  <line x1="155" y1="108" x2="155" y2="118" stroke="#888" stroke-width="1.4" marker-end="url(#gy)"/>
+
+  <rect x="40" y="120" width="230" height="52" rx="6" fill="#D3D1C7" stroke="#888" stroke-width="0.5"/>
+  <text x="155" y="140" text-anchor="middle" font-size="13" font-weight="600" fill="#2C2C2A">configure_stairs</text>
+  <text x="155" y="160" text-anchor="middle" font-size="11" fill="#5F5E5A">StairSpec preset</text>
+
+  <line x1="155" y1="172" x2="155" y2="182" stroke="#888" stroke-width="1.4" marker-end="url(#gy)"/>
+
+  <rect x="40" y="184" width="230" height="52" rx="6" fill="#D3D1C7" stroke="#888" stroke-width="0.5"/>
+  <text x="155" y="204" text-anchor="middle" font-size="13" font-weight="600" fill="#2C2C2A">build_world</text>
+  <text x="155" y="224" text-anchor="middle" font-size="11" fill="#5F5E5A">50 Hz · numpy backend</text>
+
+  <line x1="155" y1="236" x2="155" y2="246" stroke="#888" stroke-width="1.4" marker-end="url(#gy)"/>
+
+  <rect x="40" y="248" width="230" height="52" rx="6" fill="#D3D1C7" stroke="#888" stroke-width="0.5"/>
+  <text x="155" y="268" text-anchor="middle" font-size="13" font-weight="600" fill="#2C2C2A">load_go2 + O₂</text>
+  <text x="155" y="288" text-anchor="middle" font-size="11" fill="#5F5E5A">URDF + payload physics attach</text>
+
+  <line x1="155" y1="300" x2="155" y2="310" stroke="#888" stroke-width="1.4" marker-end="url(#gy)"/>
+
+  <rect x="40" y="312" width="230" height="52" rx="6" fill="#D3D1C7" stroke="#888" stroke-width="0.5"/>
+  <text x="155" y="332" text-anchor="middle" font-size="13" font-weight="600" fill="#2C2C2A">spawn_sim_person</text>
+  <text x="155" y="352" text-anchor="middle" font-size="11" fill="#5F5E5A">H1Puppet + BipedMannequin</text>
+
+  <line x1="155" y1="364" x2="155" y2="374" stroke="#888" stroke-width="1.4" marker-end="url(#gy)"/>
+
+  <!-- Physics loop — highlighted -->
+  <rect x="40" y="376" width="230" height="60" rx="6" fill="#888780" stroke="#444441" stroke-width="1"/>
+  <text x="155" y="398" text-anchor="middle" font-size="13" font-weight="600" fill="#F1EFE8">Physics loop · 50 Hz</text>
+  <text x="155" y="418" text-anchor="middle" font-size="11" fill="#D3D1C7">cmd · policy · monitor · watchdog</text>
+  <text x="155" y="434" text-anchor="middle" font-size="10" fill="#B4B2A9">drives patient · records bench</text>
+
+  <!-- ══ COL 2: Patient system ══ -->
+  <rect x="310" y="20" width="250" height="300" rx="12" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1" stroke-dasharray="5 3"/>
+  <text x="435" y="44" text-anchor="middle" font-size="13" font-weight="600" fill="#085041">Patient system · biped_anim/</text>
+
+  <rect x="330" y="58" width="210" height="52" rx="6" fill="#9FE1CB" stroke="#0F6E56" stroke-width="0.5"/>
+  <text x="435" y="78" text-anchor="middle" font-size="13" font-weight="600" fill="#04342C">H1 Puppet</text>
+  <text x="435" y="98" text-anchor="middle" font-size="11" fill="#085041">Invisible physics driver</text>
+
+  <line x1="435" y1="110" x2="435" y2="126" stroke="#0F6E56" stroke-width="1.4" marker-end="url(#gn)"/>
+
+  <rect x="330" y="128" width="210" height="52" rx="6" fill="#9FE1CB" stroke="#0F6E56" stroke-width="0.5"/>
+  <text x="435" y="148" text-anchor="middle" font-size="13" font-weight="600" fill="#04342C">BipedMannequin</text>
+  <text x="435" y="168" text-anchor="middle" font-size="11" fill="#085041">Visual UsdSkel mesh</text>
+
+  <line x1="435" y1="180" x2="435" y2="196" stroke="#0F6E56" stroke-width="1.4" marker-end="url(#gn)"/>
+
+  <rect x="330" y="198" width="210" height="52" rx="6" fill="#9FE1CB" stroke="#0F6E56" stroke-width="0.5"/>
+  <text x="435" y="218" text-anchor="middle" font-size="13" font-weight="600" fill="#04342C">clip_player</text>
+  <text x="435" y="238" text-anchor="middle" font-size="11" fill="#085041">Mocap walk · flat terrain</text>
+
+  <line x1="435" y1="250" x2="435" y2="266" stroke="#0F6E56" stroke-width="1.4" marker-end="url(#gn)"/>
+
+  <rect x="330" y="268" width="210" height="34" rx="6" fill="#9FE1CB" stroke="#0F6E56" stroke-width="0.5"/>
+  <text x="435" y="281" text-anchor="middle" font-size="13" font-weight="600" fill="#04342C">foot_planting</text>
+  <text x="435" y="297" text-anchor="middle" font-size="11" fill="#085041">Stance lock on stairs · no foot skate</text>
+
+  <!-- ══ COL 3: Benchmarking ══ -->
+  <rect x="590" y="20" width="250" height="436" rx="12" fill="#FAEEDA" stroke="#854F0B" stroke-width="1" stroke-dasharray="5 3"/>
+  <text x="715" y="44" text-anchor="middle" font-size="13" font-weight="600" fill="#633806">Benchmarking + tracking</text>
+
+  <rect x="610" y="58" width="210" height="52" rx="6" fill="#FAC775" stroke="#854F0B" stroke-width="0.5"/>
+  <text x="715" y="78" text-anchor="middle" font-size="13" font-weight="600" fill="#412402">run_stair_sweep</text>
+  <text x="715" y="98" text-anchor="middle" font-size="11" fill="#633806">Waypoint climb · riser sweep</text>
+
+  <rect x="610" y="130" width="210" height="52" rx="6" fill="#FAC775" stroke="#854F0B" stroke-width="0.5"/>
+  <text x="715" y="150" text-anchor="middle" font-size="13" font-weight="600" fill="#412402">run_follow_sweep</text>
+  <text x="715" y="170" text-anchor="middle" font-size="11" fill="#633806">Full follow + climb · riser sweep</text>
+
+  <rect x="610" y="250" width="210" height="52" rx="6" fill="#FAC775" stroke="#854F0B" stroke-width="0.5"/>
+  <text x="715" y="270" text-anchor="middle" font-size="13" font-weight="600" fill="#412402">archive.jsonl</text>
+  <text x="715" y="290" text-anchor="middle" font-size="11" fill="#633806">Full run history · source of truth</text>
+
+  <line x1="715" y1="302" x2="715" y2="328" stroke="#854F0B" stroke-width="1.4" marker-end="url(#bn)"/>
+
+  <rect x="610" y="330" width="210" height="52" rx="6" fill="#FAC775" stroke="#854F0B" stroke-width="0.5"/>
+  <text x="715" y="350" text-anchor="middle" font-size="13" font-weight="600" fill="#412402">performance_table.csv</text>
+  <text x="715" y="370" text-anchor="middle" font-size="11" fill="#633806">Actionable leaderboard</text>
+
+  <!-- run_follow_sweep → archive -->
+  <path d="M715 182 L715 210 L735 210 L735 248" fill="none" stroke="#854F0B" stroke-width="1.3" marker-end="url(#bn)"/>
+  <text x="738" y="228" font-size="10" fill="#854F0B">rows</text>
+
+  <!-- run_stair_sweep → archive (left route) -->
+  <path d="M610 84 L572 84 L572 264 L610 264" fill="none" stroke="#854F0B" stroke-width="1.3" stroke-dasharray="3 3" marker-end="url(#bn)"/>
+  <text x="558" y="175" font-size="10" fill="#854F0B" transform="rotate(-90 558 175)">rows</text>
+
+  <!-- ── CROSS-COLUMN ARROWS ── -->
+  <!-- Physics loop → Patient system -->
+  <path d="M270 400 L295 400 L295 154 L330 154" fill="none" stroke="#888" stroke-width="1.5" marker-end="url(#gy)"/>
+  <text x="282" y="280" font-size="10" fill="#888" transform="rotate(-90 282 280)">drives</text>
+
+  <!-- Physics loop → Benchmarking archive -->
+  <path d="M270 424 L560 424 L560 286 L610 286" fill="none" stroke="#888" stroke-width="1.5" marker-end="url(#gy)"/>
+  <text x="408" y="418" font-size="10" fill="#888">records each run</text>
+</svg>
+</body>
+</html>

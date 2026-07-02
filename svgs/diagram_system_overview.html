@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>System Overview — Robotic Dog</title>
+<style>
+  body { margin: 0; padding: 20px; font-family: system-ui, -apple-system, sans-serif; background: #f8f8f6; }
+  svg text { font-family: system-ui, -apple-system, sans-serif; }
+  .node { cursor: pointer; }
+  .node:hover rect { opacity: 0.85; }
+  h1 { font-size: 15px; font-weight: 500; color: #555; margin: 0 0 12px; }
+</style>
+</head>
+<body>
+<h1>System overview — stair-climbing robotic dog · live <code>run_sim.bat</code> path</h1>
+<svg width="100%" viewBox="0 0 860 560" xmlns="http://www.w3.org/2000/svg">
+  <!-- Solid filled-triangle arrowheads, explicit colour per flow, no context-stroke.
+       markerUnits=userSpaceOnUse -> fixed size in every renderer (browser / librsvg / resvg / PNG export). -->
+  <defs>
+    <marker id="gy" markerUnits="userSpaceOnUse" markerWidth="14" markerHeight="14" viewBox="0 0 14 14" refX="12.5" refY="7" orient="auto">
+      <path d="M2 2.5 L12.5 7 L2 11.5 Z" fill="#888"/>
+    </marker>
+    <marker id="gc" markerUnits="userSpaceOnUse" markerWidth="14" markerHeight="14" viewBox="0 0 14 14" refX="12.5" refY="7" orient="auto">
+      <path d="M2 2.5 L12.5 7 L2 11.5 Z" fill="#1D9E75"/>
+    </marker>
+    <marker id="pr" markerUnits="userSpaceOnUse" markerWidth="14" markerHeight="14" viewBox="0 0 14 14" refX="12.5" refY="7" orient="auto">
+      <path d="M2 2.5 L12.5 7 L2 11.5 Z" fill="#534AB7"/>
+    </marker>
+  </defs>
+
+  <!-- ── COL 1: Isaac Sim  x=20..270 ── -->
+  <rect x="20" y="20" width="250" height="390" rx="12" fill="#EEEDFE" stroke="#534AB7" stroke-width="1" stroke-dasharray="5 3"/>
+  <text x="145" y="46" text-anchor="middle" font-size="13" font-weight="600" fill="#3C3489">Isaac Sim · GPU host · 50 Hz</text>
+
+  <!-- Unitree Go2 -->
+  <g class="node">
+    <rect x="40" y="58" width="210" height="46" rx="6" fill="#CECBF6" stroke="#534AB7" stroke-width="0.5"/>
+    <text x="145" y="77" text-anchor="middle" font-size="13" font-weight="600" fill="#26215C">Unitree Go2</text>
+    <text x="145" y="94" text-anchor="middle" font-size="11" fill="#534AB7">Robot body</text>
+  </g>
+  <!-- Patient + O2 -->
+  <g class="node">
+    <rect x="40" y="118" width="210" height="46" rx="6" fill="#CECBF6" stroke="#534AB7" stroke-width="0.5"/>
+    <text x="145" y="137" text-anchor="middle" font-size="13" font-weight="600" fill="#26215C">Patient + O₂</text>
+    <text x="145" y="154" text-anchor="middle" font-size="11" fill="#534AB7">Payload physics · 600 N strap</text>
+  </g>
+  <!-- HandoffController -->
+  <g class="node">
+    <rect x="40" y="178" width="210" height="46" rx="6" fill="#CECBF6" stroke="#534AB7" stroke-width="0.5"/>
+    <text x="145" y="197" text-anchor="middle" font-size="13" font-weight="600" fill="#26215C">HandoffController</text>
+    <text x="145" y="214" text-anchor="middle" font-size="11" fill="#534AB7">PGTT ⇄ blind-RL · 50 Hz</text>
+  </g>
+  <!-- Fall Diagnostics -->
+  <g class="node">
+    <rect x="40" y="238" width="210" height="46" rx="6" fill="#CECBF6" stroke="#534AB7" stroke-width="0.5"/>
+    <text x="145" y="257" text-anchor="middle" font-size="13" font-weight="600" fill="#26215C">Fall Diagnostics</text>
+    <text x="145" y="274" text-anchor="middle" font-size="11" fill="#534AB7">FELL · COLLIDED · CLEAN</text>
+  </g>
+  <!-- UDP boxes -->
+  <rect x="40" y="298" width="96" height="92" rx="6" fill="#fff" stroke="#b0aed0" stroke-width="0.5"/>
+  <text x="88" y="320" text-anchor="middle" font-size="11" font-weight="600" fill="#534AB7">UDP :55002</text>
+  <text x="88" y="337" text-anchor="middle" font-size="11" fill="#534AB7">Frames out</text>
+  <text x="88" y="354" text-anchor="middle" font-size="10" fill="#888">→ Docker</text>
+  <text x="88" y="380" text-anchor="middle" font-size="10" fill="#aaa">RGB + Depth</text>
+
+  <rect x="154" y="298" width="96" height="92" rx="6" fill="#fff" stroke="#b0aed0" stroke-width="0.5"/>
+  <text x="202" y="320" text-anchor="middle" font-size="11" font-weight="600" fill="#534AB7">UDP :55001</text>
+  <text x="202" y="337" text-anchor="middle" font-size="11" fill="#534AB7">Commands in</text>
+  <text x="202" y="354" text-anchor="middle" font-size="10" fill="#888">← Docker</text>
+  <text x="202" y="380" text-anchor="middle" font-size="10" fill="#aaa">vel + yaw</text>
+
+  <!-- ── COL 2: Docker Controller  x=310..560 ── -->
+  <rect x="310" y="20" width="250" height="390" rx="12" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1" stroke-dasharray="5 3"/>
+  <text x="435" y="46" text-anchor="middle" font-size="13" font-weight="600" fill="#085041">Docker controller · Jetson Orin</text>
+
+  <g class="node">
+    <rect x="330" y="58" width="210" height="46" rx="6" fill="#9FE1CB" stroke="#0F6E56" stroke-width="0.5"/>
+    <text x="435" y="77" text-anchor="middle" font-size="13" font-weight="600" fill="#04342C">YOLOv8-Pose</text>
+    <text x="435" y="94" text-anchor="middle" font-size="11" fill="#085041">Person detection · TRT</text>
+  </g>
+  <g class="node">
+    <rect x="330" y="118" width="210" height="46" rx="6" fill="#9FE1CB" stroke="#0F6E56" stroke-width="0.5"/>
+    <text x="435" y="137" text-anchor="middle" font-size="13" font-weight="600" fill="#04342C">YOLO-World stairs</text>
+    <text x="435" y="154" text-anchor="middle" font-size="11" fill="#085041">≥2 risers at &lt;1.6 m → handoff</text>
+  </g>
+  <g class="node">
+    <rect x="330" y="178" width="210" height="46" rx="6" fill="#9FE1CB" stroke="#0F6E56" stroke-width="0.5"/>
+    <text x="435" y="197" text-anchor="middle" font-size="13" font-weight="600" fill="#04342C">Depth + LiDAR fusion</text>
+    <text x="435" y="214" text-anchor="middle" font-size="11" fill="#085041">0.6 weight blend</text>
+  </g>
+  <g class="node">
+    <rect x="330" y="238" width="210" height="46" rx="6" fill="#9FE1CB" stroke="#0F6E56" stroke-width="0.5"/>
+    <text x="435" y="257" text-anchor="middle" font-size="13" font-weight="600" fill="#04342C">Person tracker</text>
+    <text x="435" y="274" text-anchor="middle" font-size="11" fill="#085041">IoU re-ID · 3 s occlusion hold</text>
+  </g>
+  <!-- Person follower + Climb FSM side by side -->
+  <g class="node">
+    <rect x="330" y="298" width="96" height="92" rx="6" fill="#9FE1CB" stroke="#0F6E56" stroke-width="0.5"/>
+    <text x="378" y="322" text-anchor="middle" font-size="13" font-weight="600" fill="#04342C">Person</text>
+    <text x="378" y="340" text-anchor="middle" font-size="13" font-weight="600" fill="#04342C">follower</text>
+    <text x="378" y="358" text-anchor="middle" font-size="11" fill="#085041">3-zone PID</text>
+    <text x="378" y="380" text-anchor="middle" font-size="10" fill="#0F6E56">0.45 m standoff</text>
+  </g>
+  <g class="node">
+    <rect x="444" y="298" width="96" height="92" rx="6" fill="#9FE1CB" stroke="#0F6E56" stroke-width="0.5"/>
+    <text x="492" y="322" text-anchor="middle" font-size="13" font-weight="600" fill="#04342C">Climb FSM</text>
+    <text x="492" y="340" text-anchor="middle" font-size="13" font-weight="600" fill="#04342C">+ governor</text>
+    <text x="492" y="358" text-anchor="middle" font-size="11" fill="#085041">vx · wz · yaw</text>
+    <text x="492" y="380" text-anchor="middle" font-size="10" fill="#0F6E56">climb_fsm.py</text>
+  </g>
+
+  <!-- ── COL 3: Policies  x=600..840 — LIVE contract: PGTT walk → blind-RL climb ── -->
+  <rect x="600" y="20" width="240" height="390" rx="12" fill="#FAECE7" stroke="#993C1D" stroke-width="1" stroke-dasharray="5 3"/>
+  <text x="720" y="46" text-anchor="middle" font-size="13" font-weight="600" fill="#712B13">go2_locomotion/ · shared policies</text>
+
+  <!-- PGTT (default walk) -->
+  <g class="node">
+    <rect x="618" y="70" width="204" height="56" rx="6" fill="#F5C4B3" stroke="#993C1D" stroke-width="0.5"/>
+    <text x="720" y="92" text-anchor="middle" font-size="13" font-weight="600" fill="#4A1B0C">PGTT MLP</text>
+    <text x="720" y="109" text-anchor="middle" font-size="11" fill="#712B13">Default walk · 153-D heightmap</text>
+    <text x="720" y="123" text-anchor="middle" font-size="10" fill="#993C1D">--locomotion-policy pgtt</text>
+  </g>
+
+  <!-- handoff arrow down (label offset to the right of the line, not on it) -->
+  <line x1="720" y1="126" x2="720" y2="168" stroke="#993C1D" stroke-width="1.5" marker-end="url(#pr)"/>
+  <text x="730" y="151" font-size="10" fill="#712B13">stall + ≥2 risers</text>
+
+  <!-- blind-RL (climb) -->
+  <g class="node">
+    <rect x="618" y="168" width="204" height="56" rx="6" fill="#F5C4B3" stroke="#993C1D" stroke-width="1.5"/>
+    <text x="720" y="190" text-anchor="middle" font-size="13" font-weight="600" fill="#4A1B0C">blind-RL</text>
+    <text x="720" y="207" text-anchor="middle" font-size="11" fill="#712B13">Proprioceptive · stair climb</text>
+    <text x="720" y="221" text-anchor="middle" font-size="10" fill="#993C1D">--handoff-climb-backend blind_rl</text>
+  </g>
+
+  <!-- joint targets arrow down (label offset to the right of the line, not on it) -->
+  <line x1="720" y1="224" x2="720" y2="262" stroke="#993C1D" stroke-width="1.5" marker-end="url(#pr)"/>
+  <text x="730" y="247" font-size="10" fill="#712B13">joint targets · 12 DOF</text>
+
+  <text x="720" y="284" text-anchor="middle" font-size="13" font-weight="600" fill="#4A1B0C">Go2 robot</text>
+  <text x="720" y="318" text-anchor="middle" font-size="10.5" fill="#993C1D">↩ blind-RL hands back to PGTT after top egress</text>
+  <text x="720" y="372" text-anchor="middle" font-size="11" fill="#bbb">shared: sim + real ROS2 · one frozen copy</text>
+
+  <!-- ── CROSS-COLUMN ARROWS ── all L-bend, no diagonal crossings -->
+
+  <!-- UDP :55002 frames (right edge x=270, y=344) → Docker top node (x=330, y=81) -->
+  <path d="M270 344 L290 344 L290 81 L330 81" fill="none" stroke="#888" stroke-width="1.6" stroke-dasharray="5 3" marker-end="url(#gy)"/>
+
+  <!-- Docker Climb FSM (bottom x=492, y=390) → Isaac UDP:55001 (x=202, y=390) -->
+  <path d="M492 390 L492 430 L202 430 L202 390" fill="none" stroke="#1D9E75" stroke-width="1.6" stroke-dasharray="5 3" marker-end="url(#gc)"/>
+
+  <!-- HandoffController (right x=250, y=201) → Policies column (PGTT box, x=618, y=99).
+       Routed up the col1/col2 gutter then across the Docker box-gap at y=110 so it never
+       crosses a Docker box. Label omitted (the legend describes this flow). -->
+  <path d="M250 201 L290 201 L290 110 L584 110 L584 99 L618 99" fill="none" stroke="#534AB7" stroke-width="1.6" marker-end="url(#pr)"/>
+
+  <!-- ── LEGEND  y=450 ── -->
+  <rect x="20" y="450" width="820" height="90" rx="8" fill="#fff" stroke="#ddd" stroke-width="0.5"/>
+  <text x="40" y="472" font-size="12" font-weight="600" fill="#333">Legend</text>
+
+  <line x1="40" y1="495" x2="100" y2="495" stroke="#888" stroke-width="1.6" stroke-dasharray="5 3" marker-end="url(#gy)"/>
+  <text x="112" y="499" font-size="11" fill="#555">Camera + depth frames (UDP :55002, Isaac → Docker)</text>
+
+  <line x1="40" y1="520" x2="100" y2="520" stroke="#1D9E75" stroke-width="1.6" stroke-dasharray="5 3" marker-end="url(#gc)"/>
+  <text x="112" y="524" font-size="11" fill="#555">Velocity + yaw commands (UDP :55001, Docker → Isaac)</text>
+
+  <line x1="430" y1="495" x2="490" y2="495" stroke="#534AB7" stroke-width="1.6" marker-end="url(#pr)"/>
+  <text x="502" y="499" font-size="11" fill="#555">Policy select + handoff (PGTT walk ⇄ blind-RL climb)</text>
+</svg>
+</body>
+</html>

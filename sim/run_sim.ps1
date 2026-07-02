@@ -79,6 +79,10 @@ param(
     [switch]$WithO2Payload,
     [switch]$NoParkourWalkMode,
     [switch]$NoSpeedGovernor,
+    # Stand-up-from-ground (default ON in isaac_env.py): the robot spawns folded on the
+    # floor and stands up on camera before the policy drives, on EVERY run. Pass
+    # -NoStandUpFromGround to restore the legacy instant-standing spawn.
+    [switch]$NoStandUpFromGround,
     [double]$SimLatencyMs = 0.0,
     [double]$SimLatencyJitterMs = 0.0,
     [switch]$Headless,
@@ -93,9 +97,16 @@ param(
     # 0 = straight-line (default). 2 = S-curve: right then left then re-centres at stair entry.
     [int]$PersonApproachTurns = 0,
     [double]$PersonApproachAmplitude = 1.2,
+    # Follow standoff (m) the controller holds behind the patient. Default 0.6 keeps run_sim.bat
+    # unchanged; the follow sweep widens it for a realistic-patient zigzag (a wider standoff keeps
+    # a gently-weaving patient inside the narrow 69 deg RGB/YOLO cone).
+    [double]$TargetDistance = 0.6,
     [switch]$WarmIsaac,
     [switch]$WarmShutdown,
-    [int]$WarmMaxRuns = 10
+    [int]$WarmMaxRuns = 10,
+    # Disable the btop-style ANSI color/box console styling (also honored via
+    # $env:NO_COLOR). File logs are ALWAYS plain regardless of this switch.
+    [switch]$NoColor
 )
 
 $ErrorActionPreference = "Stop"
@@ -121,6 +132,150 @@ if ($StairWaypointTest) {
     $NoModelPreflight = $true
     Write-Host "Stair waypoint test: PGTT walks up + '$HandoffClimbBackend' climbs to ($StairWaypointX, $StairWaypointY); Docker controller disabled."
 }
+
+# ===========================================================================
+# btop-style console styling (DESIGN.md). Mirrors core/telemetry/term_ui.py so
+# the PowerShell launcher matches the Python controller banner + the launcher
+# TUI. IMPORTANT: color is applied ONLY to Write-Host (the interactive console).
+# Every Add-Content to a log file stays plain text, and when stdout is redirected
+# (the launcher captures it) color is disabled so the parsed status lines keep
+# their exact "[HH:mm:ss] stage state message" shape.
+# ===========================================================================
+$script:ESC = [char]27
+$script:UseColor = $true
+if ($NoColor -or $env:NO_COLOR) { $script:UseColor = $false }
+try { if ([Console]::IsOutputRedirected) { $script:UseColor = $false } } catch {}
+$script:UseUnicode = $true
+# Box-drawing glyphs need a UTF-8 console; set it best-effort and fall back to
+# ASCII corners if the host refuses.
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { $script:UseUnicode = $false }
+# Best-effort: enable VT/ANSI processing for legacy conhost (Windows Terminal
+# already has it). Harmless if it fails.
+if ($script:UseColor) {
+    try {
+        if (-not ([System.Management.Automation.PSTypeName]'Go2Vt.Native').Type) {
+            Add-Type -Namespace Go2Vt -Name Native -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError=true)]
+public static extern System.IntPtr GetStdHandle(int nStdHandle);
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError=true)]
+public static extern bool GetConsoleMode(System.IntPtr hConsoleHandle, out uint lpMode);
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError=true)]
+public static extern bool SetConsoleMode(System.IntPtr hConsoleHandle, uint dwMode);
+'@
+        }
+        $vtHandle = [Go2Vt.Native]::GetStdHandle(-11)
+        $vtMode = [uint32]0
+        if ([Go2Vt.Native]::GetConsoleMode($vtHandle, [ref]$vtMode)) {
+            [void][Go2Vt.Native]::SetConsoleMode($vtHandle, $vtMode -bor 0x0004)
+        }
+    } catch {}
+}
+
+# DESIGN.md palette (role -> r;g;b)
+$script:Pal = @{
+    fg      = "204;204;204"; primary = "238;238;238"; muted = "85;85;85"
+    green   = "119;202;155"; yellow  = "203;192;108";  red   = "220;76;76"
+    blue    = "72;151;212";  cpu     = "85;109;89";     net   = "92;88;141"
+    proc    = "128;82;82";   mem     = "108;108;75"
+}
+
+function Use-Paint {
+    param([string]$Text, [string]$Rgb = "", [switch]$Bold)
+    if (-not $script:UseColor) { return $Text }
+    $codes = @()
+    if ($Bold) { $codes += "1" }
+    if ($Rgb)  { $codes += "38;2;$Rgb" }
+    if ($codes.Count -eq 0) { return $Text }
+    return "$($script:ESC)[$([string]::Join(';', $codes))m$Text$($script:ESC)[0m"
+}
+
+function Get-VisibleLength {
+    param([string]$Text)
+    return ($Text -replace "$($script:ESC)\[[0-9;?]*[A-Za-z]", "").Length
+}
+
+function Format-VisPad {
+    param([string]$Text, [int]$Width, [string]$Align = "left")
+    $vis = Get-VisibleLength $Text
+    if ($vis -gt $Width) {
+        # Safety net: never let an over-long value break a box border. Strip ANSI
+        # (so we never cut mid-escape) and truncate with an ellipsis.
+        $plain = ($Text -replace "$($script:ESC)\[[0-9;?]*[A-Za-z]", "")
+        if ($Width -le 1) { return "" }
+        $ell = if ($script:UseUnicode) { [char]0x2026 } else { "~" }
+        return ($plain.Substring(0, $Width - 1) + $ell)
+    }
+    if ($vis -eq $Width) { return $Text }
+    $space = " " * ($Width - $vis)
+    if ($Align -eq "right") { return "$space$Text" }
+    return "$Text$space"
+}
+
+function Write-BtopBox {
+    param(
+        [string]$Title,
+        [string[]]$Lines,
+        [int]$Width = 60,
+        [string]$Accent = "cpu",
+        [string]$Footer = ""
+    )
+    if ($script:UseUnicode) {
+        $tl = [char]0x256D; $tr = [char]0x256E; $bl = [char]0x2570; $br = [char]0x256F
+        $h = [char]0x2500; $v = [char]0x2502; $nl = [char]0x2510; $nr = [char]0x250C
+    } else {
+        $tl = "+"; $tr = "+"; $bl = "+"; $br = "+"; $h = "-"; $v = "|"; $nl = "]"; $nr = "["
+    }
+    $acc = $script:Pal[$Accent]
+    $inner = $Width - 2
+    $titleTxt = Use-Paint (" $Title ") $script:Pal.primary -Bold
+    $leftVis = 3 + (Get-VisibleLength $titleTxt)
+    $fill = [Math]::Max(0, $Width - $leftVis - 2)
+    $top = (Use-Paint ("$tl$h$nl") $acc) + $titleTxt + (Use-Paint ("$nr$($h.ToString() * $fill)$tr") $acc)
+    Write-Host $top
+    foreach ($ln in $Lines) {
+        $body = Format-VisPad (" $ln") $inner
+        Write-Host ((Use-Paint $v $acc) + $body + (Use-Paint $v $acc))
+    }
+    if ($Footer) {
+        $footTxt = Use-Paint (" $Footer ") $script:Pal.muted
+        $ffill = [Math]::Max(0, $Width - 3 - (Get-VisibleLength $footTxt) - 2)
+        Write-Host ((Use-Paint ("$bl$($h.ToString() * $ffill)$nl") $acc) + $footTxt + (Use-Paint ("$nr$h$br") $acc))
+    } else {
+        Write-Host (Use-Paint ("$bl$($h.ToString() * $inner)$br") $acc)
+    }
+}
+
+function Format-KvRow {
+    param([string]$Label, [string]$Value, [int]$LabelWidth = 12, [string]$ValueColor = "primary", [switch]$Bold)
+    $lbl = Use-Paint (Format-VisPad $Label $LabelWidth) $script:Pal.muted
+    if ($Bold) { $val = Use-Paint $Value $script:Pal[$ValueColor] -Bold }
+    else       { $val = Use-Paint $Value $script:Pal[$ValueColor] }
+    return "$lbl$val"
+}
+
+function Get-StateGlyph {
+    param([string]$State)
+    $map = @{
+        start = @("Run", "blue"); running = @("Run", "blue"); notice = @("...", "yellow")
+        warning = @("!", "yellow"); ready = @("OK", "green"); complete = @("OK", "green")
+        cleanup = @("-", "muted"); pruned = @("-", "muted"); skipped = @("-", "muted")
+        "dry-run" = @("-", "muted"); failed = @("X", "red"); error = @("X", "red")
+    }
+    $entry = $map[$State]
+    if (-not $entry) { $entry = @("*", "fg") }
+    return Use-Paint (Format-VisPad $entry[0] 3) $script:Pal[$entry[1]] -Bold
+}
+
+function Format-StageConsole {
+    param([datetime]$Now, [string]$Stage, [string]$State, [string]$Message)
+    $ts = Use-Paint ("[{0:HH:mm:ss}]" -f $Now) $script:Pal.muted
+    $gl = Get-StateGlyph $State
+    $stg = Use-Paint (Format-VisPad $Stage 12) $script:Pal.green -Bold
+    $msgColor = if ($State -in @("failed", "error")) { $script:Pal.red } else { $script:Pal.fg }
+    $msg = Use-Paint $Message $msgColor
+    return "$ts $gl $stg $msg"
+}
+
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $Stamp = Get-Date -Format "yyyyMMdd_HHmmss_fff"
 $RunLogDir = Join-Path $RepoRoot ("log\run_sim_" + $Stamp)
@@ -193,6 +348,14 @@ if ($WarmShutdown) {
     Write-Host "Warm Isaac shutdown requested (seq=$seq); the warm Kit process will close."
     exit 0
 }
+
+# btop-style startup banner (console only; logs already capture the same facts).
+$bannerW = 64
+Write-BtopBox -Title "go2 sim - stair climb" -Width $bannerW -Accent "cpu" -Lines @(
+    (Use-Paint "stair-climbing robotic dog - oxygen-therapy patients" $script:Pal.muted),
+    (Format-KvRow "run" $Stamp 6 "primary"),
+    (Format-KvRow "tip" "launcher.py for an interactive start screen" 6 "blue")
+)
 
 # Clear stale simulation runs (Docker containers and local processes) to release file locks
 Write-Host "Cleaning up stale Docker containers and Isaac processes..."
@@ -367,7 +530,14 @@ function Write-Stage {
     $row | ConvertTo-Json -Compress | Add-Content -LiteralPath $StatusLog -Encoding UTF8
 
     $line = "[{0:HH:mm:ss}] {1,-12} {2,-9} {3}" -f $now, $Stage, $State, $Message
-    Write-Host $line
+    # Colorized form to the interactive console only; the plain $line goes to the
+    # log files and is what a redirected/captured stdout still sees (so the
+    # launcher dashboard's status parser keeps matching).
+    if ($script:UseColor) {
+        Write-Host (Format-StageConsole $now $Stage $State $Message)
+    } else {
+        Write-Host $line
+    }
     Add-Content -LiteralPath $LauncherLog -Encoding UTF8 -Value $line
 
     $summaryPairs = @()
@@ -1179,6 +1349,29 @@ Write-Stage "setup" "start" "Preparing run_sim launch" @{
     parkour_mask_fill = $ParkourMaskFill
     sim2real_validation_cam = [bool]$Sim2RealValidationCam
 }
+
+# btop-style CONFIG panel: show the selected flags as a dense dashboard so the
+# operator can see exactly what this run does at a glance.
+$renderMode = if ($Headless) { "headless" } elseif ($FastRender) { "fast-render" } else { "gui" }
+if ($VisionPreview) { $renderMode = "$renderMode  +vision-preview" }
+$dockerMode = if ($NoDockerRun) { "off (Isaac only)" } elseif ($SkipBuild) { "on (skip-build)" } elseif ($ForceBuild) { "on (force-build)" } else { "on" }
+$locoLine = if ($LocomotionPolicy -eq "pgtt") { "pgtt $PgttLevel  action $PgttActionScale  hscan $PgttHeightscanScale" } else { "parkour  heading $ParkourHeadingMode" }
+$presetFlags = @()
+if ($StairWaypointTest) { $presetFlags += "waypoint-test" }
+if ($SelfTestWalk)      { $presetFlags += "self-test-walk" }
+if ($WithO2Payload)     { $presetFlags += "o2-payload" }
+if ($WarmIsaac)         { $presetFlags += "warm-isaac" }
+$presetLine = if ($presetFlags.Count) { [string]::Join("  ", $presetFlags) } else { "follow demo (default)" }
+Write-BtopBox -Title "config" -Width $bannerW -Accent "net" -Footer "log\run_sim_$Stamp" -Lines @(
+    (Format-KvRow "mode"       "sim - Isaac"                              11 "green" -Bold),
+    (Format-KvRow "render"     $renderMode                                11 "primary"),
+    (Format-KvRow "locomotion" $locoLine                                  11 "primary"),
+    (Format-KvRow "climb"      "$HandoffClimbBackend  mask $ParkourMaskFill" 11 "primary"),
+    (Format-KvRow "docker"     $dockerMode                                11 "primary"),
+    (Format-KvRow "preset"     $presetLine                                11 "yellow"),
+    (Format-KvRow "limits"     "max ${MaxRunTimeSec}s   keep $KeepRunLogs run(s)" 11 "primary")
+)
+
 Write-Host "Read first: $SummaryLog"
 Prune-OldRunLogs -KeepCount $KeepRunLogs
 
@@ -1301,6 +1494,9 @@ if ($NoIsaac) {
     }
     if ($NoSpeedGovernor) {
         $isaacArgs += "-NoSpeedGovernor"
+    }
+    if ($NoStandUpFromGround) {
+        $isaacArgs += "-NoStandUpFromGround"
     }
     if ($StairStepHeight -gt 0) {
         $isaacArgs += "-StairStepHeight"; $isaacArgs += [string]$StairStepHeight
@@ -1486,7 +1682,7 @@ if ($NoDockerRun) {
         "--sim-latency-jitter-ms $effLatencyJitterMs",
         # Exact follow/PID shape from recorded top-landing run run_sim_20260618_222324_391.
         # The repaired stair collision gate below retains a separate no-contact floor.
-        "--target-distance 0.45",
+        "--target-distance $TargetDistance",
         # Three-zone cruise/brake: cruise when far, hold within ±tolerance of target, brake when
         # too close (forward-only; the parkour policy floors at ~0.5 m/s and ignores small commands).
         "--trans-x-max 0.85",
@@ -1653,11 +1849,15 @@ Invoke-PerfTracker
 
 Write-Stage "summary" "complete" "run_sim completed" @{ run_log_dir = $RunLogDir }
 Write-Host ""
-Write-Host "Logs for this run:"
-Write-Host "  $RunLogDir"
-Write-Host "Read first:"
-Write-Host "  $SummaryLog"
-Write-Host "Status file:"
-Write-Host "  $StatusLog"
-Write-Host "Performance table:"
-Write-Host "  $(Join-Path $RepoRoot 'perf_tracker\data\performance_table.csv')"
+# Small btop header, then the full (copyable) paths unboxed -- absolute paths are
+# longer than any sane box width, so boxing them would just clip the bit you need.
+Write-BtopBox -Title "done" -Width $bannerW -Accent "cpu" -Lines @(
+    (Format-KvRow "result" "run_sim completed" 9 "green" -Bold)
+)
+function Write-DonePath { param([string]$Label, [string]$Path, [string]$Color = "primary")
+    Write-Host ((Use-Paint ("  " + (Format-VisPad $Label 9)) $script:Pal.muted) + (Use-Paint $Path $script:Pal[$Color]))
+}
+Write-DonePath "logs"    $RunLogDir "primary"
+Write-DonePath "read me" $SummaryLog "blue"
+Write-DonePath "status"  $StatusLog "muted"
+Write-DonePath "perf"    (Join-Path $RepoRoot 'perf_tracker\data\performance_table.csv') "muted"

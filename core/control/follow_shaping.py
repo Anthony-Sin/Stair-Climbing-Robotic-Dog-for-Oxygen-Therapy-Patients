@@ -183,7 +183,30 @@ def _apply_follow_standoff_policy(
         # intrinsic creep; never command forward. trans_x_cmd is already zero in the hold case.
         state["pace_state"] = "creep"
         trans_x_cmd = 0.0
-        
+
+    # 5. RAW-GAP DECELERATION CAP (anti-overrun safety). The trot above feeds the leader's
+    #    closing speed forward against the LAGGED median gap_ctrl, so on a hard zigzag-apex cut
+    #    the dog commanded ~0.85 m/s straight INTO the patient while the real gap was already
+    #    ~0.2 m -- the median only caught up a few frames later, by which point the patient
+    #    filled the frame and YOLO dropped the detection (the apex losses). Throttle the forward
+    #    command on the LIVE (raw) gap instead of the lagged one: full speed beyond the standoff
+    #    band, ramping smoothly to ZERO at the lower bound, so the dog decelerates into the
+    #    standoff and never closes to the range where the patient stops being detectable. PGTT
+    #    stands on vx=0, so a brief cap just halts the over-approach; the gap reopens and the trot
+    #    resumes. Skipped during the settle warmup (the startup depth transient reads a spurious
+    #    sustained-close gap that would freeze the initial approach).
+    if (not warmup_active) and gap_m is not None and 1e-3 < float(gap_m) and trans_x_cmd > 0.0:
+        _band = max(0.05, float(upper_bound) - float(lower_bound))
+        _raw_cap = float(np.clip((float(gap_m) - float(lower_bound)) / _band, 0.0, 1.0)) * float(args.trans_x_max)
+        if trans_x_cmd > _raw_cap:
+            debug_info["raw_gap_decel_cap_m"] = round(_raw_cap, 3)
+            debug_info["raw_gap_decel_active"] = True
+            trans_x_cmd = _raw_cap
+        else:
+            debug_info["raw_gap_decel_active"] = False
+    else:
+        debug_info["raw_gap_decel_active"] = False
+
     # Populate debug info
     debug_info["fused_gap_m"] = float(gap_m)
     debug_info["follow_standoff_gate_active"] = not state["go_state"]

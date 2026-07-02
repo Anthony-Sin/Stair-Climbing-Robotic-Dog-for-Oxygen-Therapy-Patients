@@ -1,231 +1,124 @@
-"""HUD panels: stair-boundary overlay, stair-vision panel, and the LiDAR front-arc panel."""
+"""HUD sub-views: depth thumbnail, in-frame stair marker, the LiDAR radar signal
+graph, and the per-leg phase sliders.
+
+All follow the ARCV/MUTEK theme: single signal-red accent, straight lines / open
+brackets, near-black fills, text deferred to the shared :class:`TextLayer`.
+"""
 import math
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
-from collections import deque
-from typing import Any, Dict, Optional, Tuple
 
 from core.vision.lidar_fusion import decode_lidar_profile
 from core.hud.hud_primitives import (
-    HUD_BG_DARK, HUD_EDGE, HUD_EDGE_DIM, HUD_MUTED, HUD_MINT, HUD_MAGENTA,
-    HUD_ALERT, HUD_CYAN, HUD_GOLD, HUD_ORANGE, HUD_INK, HUD_TEXT, _draw_hud_panel,
+    TextLayer, bgr, dim,
+    ACCENT, ACCENT_DK, ALERT, TEXT, DIM, HAIRLINE,
+    group_title, leg_row, radar_graph,
 )
 
-_yolo_conf_history = deque(maxlen=30)
 
-
-def _draw_stair_boundary_overlay(
-    combined: np.ndarray,
-    debug_info: Dict[str, Any],
-    source_frame: Optional[np.ndarray] = None,
-) -> None:
-    if not debug_info:
+# ───────────────────────────── Depth vision thumbnail ─────────────────────────
+def draw_depth_view(frame: np.ndarray, layer: TextLayer, x: int, y: int, w: int, h: int,
+                    depth_img: Optional[np.ndarray], stairs_bbox: Optional[Any],
+                    stairs_det: bool, conf: float) -> None:
+    """Small colour-mapped depth preview so stair EDGES read clearly (near = warm,
+    far = cool, COLORMAP_TURBO).  Crops to the detected stair region (else centre);
+    robust to mm- or metre-scaled depth.
+    """
+    # Caption ("DEPTH // D435" + STAIRS badge) is now drawn by the arcv tactical
+    # panel header in hud_layout._depth_frame; this raster path only blits the tile.
+    cv2.rectangle(frame, (x, y), (x + w, y + h), bgr(HAIRLINE), 1, cv2.LINE_AA)
+    ix0, iy0, ix1, iy1 = x + 1, y + 1, x + w - 1, y + h - 1
+    iw, ih = ix1 - ix0, iy1 - iy0
+    if depth_img is None or getattr(depth_img, "size", 0) == 0 or iw <= 2 or ih <= 2:
+        layer.add(x + w // 2, y + h // 2, "NO DEPTH", DIM, size=12, anchor="mm")
         return
 
-    stairs_detected = debug_info.get("stairs_detected", False)
+    try:
+        d = np.asarray(depth_img)
+        if d.ndim == 3:
+            d = d[..., 0]
+        d = d.astype(np.float32)
+        img_h, img_w = d.shape[:2]
+        if stairs_det and stairs_bbox is not None and len(stairs_bbox) >= 4:
+            fh, fw = frame.shape[:2]
+            sx1 = int(np.clip(stairs_bbox[0] * img_w / fw, 0, img_w - 1))
+            sy1 = int(np.clip(stairs_bbox[1] * img_h / fh, 0, img_h - 1))
+            sx2 = int(np.clip(stairs_bbox[2] * img_w / fw, 0, img_w - 1))
+            sy2 = int(np.clip(stairs_bbox[3] * img_h / fh, 0, img_h - 1))
+        else:
+            sx1, sx2 = int(img_w * 0.22), int(img_w * 0.78)
+            sy1, sy2 = int(img_h * 0.15), int(img_h * 0.92)
+        if sx2 - sx1 < 4 or sy2 - sy1 < 4:
+            sx1, sy1, sx2, sy2 = 0, 0, img_w, img_h
+        crop = d[sy1:sy2, sx1:sx2]
+        finite = crop[np.isfinite(crop) & (crop > 0)]
+        if finite.size and float(np.median(finite)) > 50.0:   # mm → m
+            crop = crop * 0.001
+        near, far = 0.3, 3.5
+        valid = np.isfinite(crop) & (crop > 0.15) & (crop < 6.0)
+        norm = np.clip((crop - near) / (far - near), 0.0, 1.0)
+        prox = (1.0 - norm)                                    # near = 1 (hot), far = 0
+        # Red mono ramp: far→near-black, near→deep signal-red, a small white-hot core
+        # only at the very closest edge.  Fits the single red-accent palette.
+        r = np.clip(prox * 1.25, 0.0, 1.0)
+        g = np.clip(prox ** 2.4 * 0.95 - 0.06, 0.0, 1.0)       # stays red, not orange
+        b = np.clip(prox ** 2.6 * 0.7 - 0.06, 0.0, 1.0)
+        colored = (np.dstack([b, g, r]) * 235.0).astype(np.uint8)   # BGR for OpenCV
+        colored[~valid] = bgr(dim(HAIRLINE, 0.5))
+        tile = cv2.resize(colored, (iw, ih), interpolation=cv2.INTER_AREA)
+        frame[iy0:iy1, ix0:ix1] = tile
+    except Exception:
+        layer.add(x + w // 2, y + h // 2, "DEPTH ERR", DIM, size=11, anchor="mm")
+
+
+# ───────────────────────────── In-frame stair marker ──────────────────────────
+def draw_stair_boundary_overlay(frame: np.ndarray, layer: TextLayer,
+                                debug_info: Dict[str, Any]) -> None:
+    """Faint dimmed-accent corner brackets marking *where* the stairs sit in frame.
+
+    Deliberately subtle (1px, dimmed): a location reference only.  The headline
+    stair readout is the centred ``STAIRS`` focal tag, so this carries no caption
+    and never competes for a corner."""
+    _ = layer
+    if not debug_info or not debug_info.get("stairs_detected", False):
+        return
     bbox = debug_info.get("stairs_bbox")
-    conf = debug_info.get("stairs_conf", 0.0)
-
-    if not stairs_detected or bbox is None:
+    if bbox is None or len(bbox) < 4:
         return
 
-    h, w = combined.shape[:2]
-    x1, y1, x2, y2 = [int(v) for v in bbox]
+    h, w = frame.shape[:2]
+    x1, y1, x2, y2 = [int(v) for v in bbox[:4]]
     x1, y1 = max(0, x1), max(0, y1)
     x2, y2 = min(w - 1, x2), min(h - 1, y2)
-
-    STAIR_COLOR = HUD_MAGENTA
-    blen = min(22, max(14, (x2 - x1) // 6))
-    # Faint full-box hint
-    cv2.rectangle(combined, (x1, y1), (x2, y2),
-                  (STAIR_COLOR[0] // 6, STAIR_COLOR[1] // 6, STAIR_COLOR[2] // 6), 1)
-    # Corner brackets
-    for bx, by, sx, sy in [(x1, y1, 1, 1), (x2, y1, -1, 1), (x1, y2, 1, -1), (x2, y2, -1, -1)]:
-        cv2.line(combined, (bx, by), (bx + sx * blen, by), STAIR_COLOR, 2, cv2.LINE_AA)
-        cv2.line(combined, (bx, by), (bx, by + sy * blen), STAIR_COLOR, 2, cv2.LINE_AA)
-    # Badge
-    badge = f"STAIRS  {conf * 100:.0f}%"
-    bw_est = cv2.getTextSize(badge, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)[0][0]
-    by_badge = max(0, y1 - 18)
-    cv2.rectangle(combined, (x1, by_badge), (x1 + bw_est + 10, y1), HUD_BG_DARK, -1)
-    cv2.rectangle(combined, (x1, by_badge), (x1 + bw_est + 10, y1), STAIR_COLOR, 1)
-    cv2.putText(combined, badge, (x1 + 4, max(13, y1 - 4)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.38, STAIR_COLOR, 1, cv2.LINE_AA)
-
-
-
-def _draw_stair_vision_panel(combined: np.ndarray, debug_info: Dict[str, Any],
-                             active_color: Tuple[int, int, int], alert: bool = False) -> None:
-    """Wide center-spanning panel: target lock | depth preview | leg states."""
-    h, w = combined.shape[:2]
-    right_panel_x = w - 310
-    panel_w = right_panel_x - 310        # full center gap
-    panel_h = 130
-    x = 310                               # flush to left column right edge
-    y = h - 30 - panel_h - 8
-
-    _draw_hud_panel(combined, x, y, panel_w, panel_h, "TARGET | DEPTH | LEGS", active_color, alert=alert)
-
-    if not debug_info:
-        cv2.putText(combined, "NO DATA", (x + 12, y + 68),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, HUD_MUTED, 1, cv2.LINE_AA)
+    if x2 <= x1 or y2 <= y1:
         return
 
-    locked    = bool(debug_info.get('matched_visual_lock', False))
-    dist      = debug_info.get('depth_distance_m')
-    bear      = debug_info.get('rotation_error_deg')
-    e_vel     = debug_info.get('est_lin_vel_mps')
-    stair_det = bool(debug_info.get('stairs_detected', False))
-    conf      = float(debug_info.get('stairs_conf', 0.0))
-    depth_img = debug_info.get('depth_img')
-    stairs_bbox = debug_info.get('stairs_bbox')
-    stair_demo  = debug_info.get("stair_demo") or {}
-    leg_cmds    = (stair_demo.get("locomotion") or {}).get("leg_commands") or {}
-
-    col_w = max(120, panel_w // 3)
-    c0 = x + 10          # left col start
-    c1 = x + col_w + 8  # center col start
-    c2 = x + col_w * 2  # right col start
-
-    # ──── LEFT: Target tracking ────
-    lock_col = HUD_MINT if locked else HUD_MAGENTA
-    lock_lbl = "LOCKED" if locked else "SEARCHING"
-    bx0, by0 = c0, y + 40
-    bx1, by1 = c0 + 116, y + 62
-    cv2.rectangle(combined, (bx0, by0), (bx1, by1), lock_col, -1)
-    cv2.rectangle(combined, (bx0, by0), (bx1, by1), HUD_INK, 1)
-    lw = cv2.getTextSize(lock_lbl, cv2.FONT_HERSHEY_SIMPLEX, 0.40, 1)[0][0]
-    cv2.putText(combined, lock_lbl, (bx0 + (116 - lw) // 2, by0 + 15),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.40, HUD_INK, 1, cv2.LINE_AA)
-    for lbl, val in [
-        ("DIST", f"{dist:.2f} m"      if dist  is not None else "--"),
-        ("BEAR", f"{bear:+.1f}d" if bear  is not None else "--"),
-        ("SPD",  f"{e_vel:.2f} m/s"   if e_vel is not None else "--"),
-    ]:
-        by1 += 16
-        cv2.putText(combined, lbl, (c0, by1),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.32, HUD_MUTED, 1, cv2.LINE_AA)
-        cv2.putText(combined, val, (c0 + 34, by1),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.32, HUD_CYAN, 1, cv2.LINE_AA)
-
-    cv2.line(combined, (c1 - 4, y + 40), (c1 - 4, y + panel_h - 8), HUD_EDGE_DIM, 1, cv2.LINE_AA)
-
-    # ──── CENTER: Depth preview ────
-    dw = col_w - 14
-    dh = panel_h - 46
-    dy0 = y + 38
-    badge_col = HUD_MINT if stair_det else HUD_MUTED
-    badge_txt = f"STAIRS  {conf * 100:.0f}%" if stair_det else "SCANNING"
-    cv2.putText(combined, badge_txt, (c1, dy0 - 4),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.30, badge_col, 1, cv2.LINE_AA)
-    cv2.rectangle(combined, (c1, dy0), (c1 + dw, dy0 + dh), HUD_EDGE_DIM, 1, cv2.LINE_AA)
-    depth_ok = False
-    if depth_img is not None:
-        try:
-            img_h, img_w = depth_img.shape[:2]
-            if stair_det and stairs_bbox is not None and len(stairs_bbox) >= 4:
-                fh, fw = combined.shape[:2]
-                r1, r2, r3, r4 = stairs_bbox
-                sx1 = int(np.clip(r1 * img_w / fw, 0, img_w - 1))
-                sy1 = int(np.clip(r2 * img_h / fh, 0, img_h - 1))
-                sx2 = int(np.clip(r3 * img_w / fw, 0, img_w - 1))
-                sy2 = int(np.clip(r4 * img_h / fh, 0, img_h - 1))
-            else:
-                sx1, sx2 = int(img_w * 0.25), int(img_w * 0.75)
-                sy1, sy2 = int(img_h * 0.20), int(img_h * 0.90)
-            if sx2 > sx1 and sy2 > sy1:
-                crop = depth_img[sy1:sy2, sx1:sx2].astype(np.float32) * 0.001
-                valid = (crop > 0.1) & (crop < 5.0)
-                if np.any(valid):
-                    norm = np.clip((crop - 0.5) / 2.5, 0.0, 1.0)
-                    gray = (norm * 255.0).astype(np.uint8)
-                    colored = cv2.applyColorMap(255 - gray, cv2.COLORMAP_JET)
-                    colored[~valid] = 0
-                else:
-                    colored = np.zeros((sy2 - sy1, sx2 - sx1, 3), dtype=np.uint8)
-                tile = cv2.resize(colored, (dw, dh), interpolation=cv2.INTER_AREA)
-                combined[dy0:dy0 + dh, c1:c1 + dw] = tile
-                depth_ok = True
-        except Exception:
-            pass
-    if not depth_ok:
-        cv2.putText(combined, "DEPTH N/A",
-                    (c1 + dw // 2 - 28, dy0 + dh // 2 + 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.34, HUD_MUTED, 1, cv2.LINE_AA)
-
-    cv2.line(combined, (c2 - 4, y + 40), (c2 - 4, y + panel_h - 8), HUD_EDGE_DIM, 1, cv2.LINE_AA)
-
-    # ──── RIGHT: 2×2 leg grid ────
-    cv2.putText(combined, "LEGS", (c2 + 6, y + 37),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.30, HUD_MUTED, 1, cv2.LINE_AA)
-    for row_i, (lA, lB) in enumerate([("FL", "FR"), ("RL", "RR")]):
-        for col_i, leg in enumerate([lA, lB]):
-            cxl = c2 + 6 + col_i * 80
-            cyl = y + 44 + row_i * 40
-            state     = str(leg_cmds.get(leg, "")).upper()
-            is_swing  = "SWING" in state
-            dot_col   = HUD_MINT if is_swing else HUD_EDGE
-            state_col = HUD_MINT if is_swing else HUD_MUTED
-            cv2.putText(combined, leg, (cxl, cyl + 13),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.34, HUD_TEXT, 1, cv2.LINE_AA)
-            cv2.circle(combined, (cxl + 28, cyl + 9), 7, dot_col, -1, cv2.LINE_AA)
-            cv2.circle(combined, (cxl + 28, cyl + 9), 7, HUD_INK, 1, cv2.LINE_AA)
-            cv2.putText(combined, "SW" if is_swing else "ST", (cxl + 40, cyl + 13),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.30, state_col, 1, cv2.LINE_AA)
+    blen = min(20, max(10, (x2 - x1) // 7))
+    c = bgr(ACCENT_DK)
+    for bx, by, sx, sy in ((x1, y1, 1, 1), (x2, y1, -1, 1), (x1, y2, 1, -1), (x2, y2, -1, -1)):
+        cv2.line(frame, (bx, by), (bx + sx * blen, by), c, 1, cv2.LINE_AA)
+        cv2.line(frame, (bx, by), (bx, by + sy * blen), c, 1, cv2.LINE_AA)
 
 
-def _draw_lidar_front_arc_panel(combined: np.ndarray, x: int, y: int, w: int, h: int,
-                          profile: Optional[Dict[str, Any]],
-                          active_color: Tuple[int, int, int], *,
-                          alert: bool = False,
-                          person_bearing_rad: Optional[float] = None,
-                          lidar_m: Optional[float] = None,
-                          depth_m: Optional[float] = None,
-                          confidence: Optional[float] = None,
-                          disagreement: bool = False) -> None:
-    """7-sector named signal bars: one row per azimuth band, bar length = obstacle distance."""
-    accent = HUD_ALERT if alert else active_color
-    _draw_hud_panel(combined, x, y, w, h, "XT16 LIDAR — SECTORS", accent, alert=alert)
+# ──────────────────────────── LiDAR radar signal graph ────────────────────────
+_SECTOR_DEFS = [
+    ("L90", -math.pi / 2,        -math.pi * 7 / 18),
+    ("L60", -math.pi * 7 / 18,   -math.pi / 4),
+    ("L30", -math.pi / 4,        -math.pi / 12),
+    ("FWD", -math.pi / 12,        math.pi / 12),
+    ("R30",  math.pi / 12,        math.pi / 4),
+    ("R60",  math.pi / 4,         math.pi * 7 / 18),
+    ("R90",  math.pi * 7 / 18,    math.pi / 2),
+]
 
-    pad = 8
-    readout_h = 28
-    ax0, ay0 = x + pad, y + 36
-    ax1, ay1 = x + w - pad, y + h - pad - readout_h
-    if ax1 <= ax0 + 10 or ay1 <= ay0 + 10:
-        return
 
-    bw = ax1 - ax0
-    bh = ay1 - ay0
-
-    cv2.rectangle(combined, (ax0, ay0), (ax1, ay1), (8, 14, 10), -1)
-
-    decoded = decode_lidar_profile(profile)
-    if decoded is None:
-        cv2.putText(combined, "NO LIDAR DATA", (ax0 + 10, (ay0 + ay1) // 2),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, HUD_MUTED, 1, cv2.LINE_AA)
-        cv2.putText(combined, "XT16 OFFLINE", (ax0 + 2, y + h - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.34, HUD_MUTED, 1, cv2.LINE_AA)
-        return
-
+def _sector_minima(decoded: Dict[str, Any]) -> Tuple[List[Optional[float]], float]:
     view_range = max(0.5, float(decoded.get("view_range_m", 6.0)))
     ranges = np.asarray(decoded.get("ranges_m", []), dtype=np.float32)
     n = int(ranges.size)
-    hit_count = int(decoded.get("hit_count", 0))
-    ray_count = int(decoded.get("ray_count", 0))
-
-    # 7 named azimuth sectors across -90d to +90d
-    sector_defs = [
-        ("L90",  -math.pi / 2,        -math.pi * 7 / 18),
-        ("L60",  -math.pi * 7 / 18,   -math.pi / 4),
-        ("L30",  -math.pi / 4,        -math.pi / 12),
-        ("FWD",  -math.pi / 12,        math.pi / 12),
-        ("R30",   math.pi / 12,        math.pi / 4),
-        ("R60",   math.pi / 4,         math.pi * 7 / 18),
-        ("R90",   math.pi * 7 / 18,    math.pi / 2),
-    ]
-    N_S = len(sector_defs)
-    sector_min = [None] * N_S
+    mins: List[Optional[float]] = [None] * len(_SECTOR_DEFS)
     if n > 0:
         ang_step = 2.0 * math.pi / max(1, n)
         for i in range(n):
@@ -234,92 +127,84 @@ def _draw_lidar_front_arc_panel(combined: np.ndarray, x: int, y: int, w: int, h:
             rng = float(ranges[i])
             if rng <= 0.0 or abs(ang_w) > math.pi / 2:
                 continue
-            for s_idx, (_, s_lo, s_hi) in enumerate(sector_defs):
-                if s_lo <= ang_w < s_hi:
-                    if sector_min[s_idx] is None or rng < sector_min[s_idx]:
-                        sector_min[s_idx] = rng
+            for s_idx, (_, lo, hi) in enumerate(_SECTOR_DEFS):
+                if lo <= ang_w < hi:
+                    if mins[s_idx] is None or rng < mins[s_idx]:
+                        mins[s_idx] = rng
                     break
+    return mins, view_range
 
-    row_h   = max(8, bh // N_S)
-    label_w = 38
-    bar_x0  = ax0 + label_w + 4
-    bar_max_w = bw - label_w - 52
 
-    for i, (lbl, _, _) in enumerate(sector_defs):
-        ry_top  = ay0 + i * row_h
-        ry_bot  = ry_top + row_h
-        ry_mid  = ry_top + row_h // 2
-        ry_text = ry_mid + 4
+def draw_lidar_radar(frame: np.ndarray, layer: TextLayer, cx: int, cy: int, radius: int,
+                     profile: Optional[Dict[str, Any]], *,
+                     person_bearing_rad: Optional[float] = None,
+                     disagreement: bool = False, danger_m: float = 0.8) -> int:
+    """Forward-180° polar obstacle radar (§2.4 signal graph) built from the XT16
+    sector minima.  Returns the y below the graph for a caption."""
+    decoded = decode_lidar_profile(profile)
+    if decoded is None:
+        layer.add(cx, cy, "LIDAR OFFLINE", DIM, size=12, anchor="mm")
+        return cy + 16
 
-        rng    = sector_min[i]
-        is_fwd = (lbl == "FWD")
+    mins, view_range = _sector_minima(decoded)
+    angles = [0.5 * (lo + hi) for _, lo, hi in _SECTOR_DEFS]
+    fracs = [None if m is None else min(m, view_range) / view_range for m in mins]
+    danger = [m is not None and m < danger_m for m in mins]
+    radar_graph(frame, layer, cx, cy, radius, angles, fracs, danger_flags=danger,
+                marker_rad=person_bearing_rad, marker_alert=disagreement)
 
-        if is_fwd:
-            cv2.rectangle(combined, (ax0, ry_top), (ax1, ry_bot), (16, 30, 18), -1)
-
-        if rng is None:
-            bar_col = (28, 52, 34)
-            val_str = f">{view_range:.0f}m"
-        elif rng < 0.8:
-            bar_col = (50, 36, 210)
-            val_str = f"{rng:.2f}m"
-        elif rng < 1.5:
-            bar_col = (28, 116, 212)
-            val_str = f"{rng:.2f}m"
-        elif rng < 3.0:
-            bar_col = (30, 168, 96)
-            val_str = f"{rng:.2f}m"
-        else:
-            bar_col = (44, 156, 58)
-            val_str = f"{rng:.2f}m"
-
-        bar_y0 = ry_mid - 4
-        bar_y1 = ry_mid + 4
-        cv2.rectangle(combined, (bar_x0, bar_y0), (ax1 - 46, bar_y1), (18, 28, 20), -1)
-
-        fill_rng = rng if rng is not None else view_range
-        fill_w = int(min(fill_rng, view_range) / view_range * bar_max_w)
-        if fill_w > 0:
-            cv2.rectangle(combined, (bar_x0, bar_y0), (bar_x0 + fill_w, bar_y1), bar_col, -1)
-        cv2.rectangle(combined, (bar_x0, bar_y0), (ax1 - 46, bar_y1), (26, 42, 28), 1)
-
-        lbl_col = HUD_GOLD if is_fwd else HUD_MUTED
-        cv2.putText(combined, lbl, (ax0 + 2, ry_text),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.29, lbl_col, 1, cv2.LINE_AA)
-        cv2.putText(combined, val_str, (ax1 - 44, ry_text),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.28, bar_col, 1, cv2.LINE_AA)
-
-        if i < N_S - 1:
-            cv2.line(combined, (ax0, ry_bot), (ax1, ry_bot), (20, 32, 22), 1, cv2.LINE_AA)
-
-    # Person bearing: dot on right-edge track (azimuth mapped L=top → R=bottom)
-    cv2.line(combined, (ax1 - 6, ay0), (ax1 - 6, ay1), (26, 42, 28), 1)
-    if person_bearing_rad is not None:
-        norm_b = (person_bearing_rad + math.pi / 2) / math.pi
-        py_b = ay0 + int(np.clip(norm_b, 0.0, 1.0) * bh)
-        tgt_c = HUD_ALERT if disagreement else HUD_ORANGE
-        cv2.circle(combined, (ax1 - 6, py_b), 5, tgt_c, -1, cv2.LINE_AA)
-        cv2.circle(combined, (ax1 - 6, py_b), 5, HUD_INK, 1, cv2.LINE_AA)
-
-    cv2.rectangle(combined, (ax0, ay0), (ax1, ay1), (32, 58, 36), 1, cv2.LINE_AA)
-
-    # Readout strip
-    ry_rd = y + h - 22
-    fwd_rng = sector_min[3]
-    if fwd_rng is not None:
-        if fwd_rng < 0.8:
-            fc, fl = (50, 36, 210), "DANGER"
-        elif fwd_rng < 1.5:
-            fc, fl = (28, 116, 212), "CAUTION"
-        else:
-            fc, fl = (44, 210, 80), "CLEAR"
-        cv2.putText(combined, f"FWD {fwd_rng:.2f}m  [{fl}]",
-                    (ax0, ry_rd), cv2.FONT_HERSHEY_SIMPLEX, 0.36, fc, 1, cv2.LINE_AA)
+    hit_count = int(decoded.get("hit_count", 0))
+    ray_count = int(decoded.get("ray_count", 0))
+    fwd = mins[3]
+    ry = cy + 8
+    if fwd is None:
+        layer.add(cx, ry, "FWD --  [NO RETURN]", DIM, size=12, anchor="mt")
     else:
-        cv2.putText(combined, "FWD --  [NO RETURN]",
-                    (ax0, ry_rd), cv2.FONT_HERSHEY_SIMPLEX, 0.36, HUD_MUTED, 1, cv2.LINE_AA)
-    st = "DISAGREE" if disagreement else f"{hit_count}/{ray_count}"
-    sc = HUD_ALERT if disagreement else (HUD_MINT if hit_count > 0 else HUD_MUTED)
-    sw = cv2.getTextSize(st, cv2.FONT_HERSHEY_SIMPLEX, 0.29, 1)[0][0]
-    cv2.putText(combined, st, (max(ax0, ax1 - sw), ry_rd),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.29, sc, 1, cv2.LINE_AA)
+        if fwd < danger_m:
+            fc, fl = ALERT, "DANGER"
+        elif fwd < 1.5:
+            fc, fl = ACCENT, "CAUTION"
+        else:
+            fc, fl = ACCENT, "CLEAR"
+        layer.add(cx, ry, f"FWD {fwd:.2f}m", TEXT, size=12, anchor="mt")
+        layer.add(cx, ry + 16, f"[{fl}]", fc, size=11, bold=True, anchor="mt")
+    badge = "[DISAGREE]" if disagreement else f"{hit_count}/{ray_count}"
+    layer.add(cx + radius, ry, badge, ALERT if disagreement else DIM, size=11, anchor="rt")
+    return ry + 34
+
+
+# ───────────────────────────── Leg-state indicators ───────────────────────────
+def _leg_state(locomotion: Dict[str, Any], leg: str, swing_list: List[str]):
+    leg_commands = locomotion.get("leg_commands", {}) if isinstance(locomotion, dict) else {}
+    cmd = leg_commands.get(leg, {}) if isinstance(leg_commands, dict) else {}
+    has_cmd = bool(cmd)
+    state = str(cmd.get("state", "")).lower()
+    swing = state == "swing" or leg in swing_list
+    if has_cmd:
+        action = str(cmd.get("action", state.upper() if state else "")).upper()
+        lift = cmd.get("foot_lift_m")
+    elif leg in swing_list:
+        action, lift = "SWING", None
+    else:
+        action, lift = "STANCE" if not swing else "SWING", None
+    try:
+        lift_v = None if lift is None else max(0.0, float(lift))
+    except Exception:
+        lift_v = None
+    if lift_v is not None:
+        frac = min(lift_v / 0.12, 1.0)
+    else:
+        frac = 0.5 if swing else 0.04
+    word = (action or ("SWING" if swing else "STANCE"))[:7] or ("SWING" if swing else "STANCE")
+    return frac, swing, word, has_cmd or (leg in swing_list)
+
+
+def draw_leg_indicators(frame: np.ndarray, layer: TextLayer, x: int, y: int, w: int,
+                        locomotion: Dict[str, Any], swing_list: List[str]) -> None:
+    """Four dot-and-track phase sliders, one per leg (FL/FR/RL/RR)."""
+    group_title(frame, layer, x + w, y, "LEGS", right=True)
+    y0 = y + 26
+    for i, leg in enumerate(("FL", "FR", "RL", "RR")):
+        ry = y0 + i * 22
+        frac, swing, word, active = _leg_state(locomotion or {}, leg, swing_list)
+        leg_row(frame, layer, x, ry, w, f"LEG {leg}", frac, swing, word, active=active)

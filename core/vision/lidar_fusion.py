@@ -98,6 +98,48 @@ def lidar_range_at_bearing(
     return float(np.min(ranges[sel]))
 
 
+def person_bearing_from_profile(
+    decoded: Dict[str, Any],
+    prior_bearing_rad: float,
+    prior_range_m: Optional[float] = None,
+    *,
+    window_deg: float = 60.0,
+    range_margin_m: float = 1.0,
+    min_range_m: float = 0.2,
+) -> Optional[float]:
+    """Recover the followed person's bearing from the LiDAR profile when YOLO has no box.
+
+    The 69 deg RGB camera (YOLO) is narrower than the 360 deg LiDAR, so a patient that
+    turns hard at a close standoff leaves the RGB frame while still being the nearest
+    object on the LiDAR. When the bbox is gone we still know roughly WHERE the patient was
+    (``prior_bearing_rad``) and roughly HOW FAR (``prior_range_m``). Within +/-window_deg of
+    that prior bearing, pick the nearest FOREGROUND return (closest range, optionally capped
+    at ``prior_range + range_margin`` so a far wall/stair is rejected) and return its bearing.
+
+    Returns the bearing in radians (CCW from forward, +left -- the same convention as
+    ``person_bearing_rad`` / ``cast_scan``), or None when no consistent foreground return
+    exists in the window. Pure function -- unit-testable, no Isaac/OpenCV deps.
+    """
+    ranges = decoded.get("ranges_m")
+    if ranges is None or ranges.shape[0] == 0:
+        return None
+    n = ranges.shape[0]
+    bin_deg = np.arange(n) * (360.0 / n)
+    prior_deg = math.degrees(float(prior_bearing_rad)) % 360.0
+    # Circular angular distance from each bin to the prior bearing.
+    delta = np.abs((bin_deg - prior_deg + 180.0) % 360.0 - 180.0)
+    sel = (delta <= float(window_deg)) & (ranges > float(min_range_m))
+    if prior_range_m is not None and float(prior_range_m) > 0.0:
+        sel = sel & (ranges <= float(prior_range_m) + float(range_margin_m))
+    if not np.any(sel):
+        return None
+    idx = np.where(sel)[0]
+    j = int(idx[int(np.argmin(ranges[idx]))])
+    # Signed bearing in (-180, 180], CCW/+left.
+    signed_deg = ((float(bin_deg[j]) + 180.0) % 360.0) - 180.0
+    return math.radians(signed_deg)
+
+
 def fuse_distance(
     depth_m: Optional[float],
     lidar_m: Optional[float],

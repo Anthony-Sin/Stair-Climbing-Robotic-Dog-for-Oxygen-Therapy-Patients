@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Perception Pipeline</title>
+<style>
+  body { margin: 0; padding: 20px; font-family: system-ui, -apple-system, sans-serif; background: #f8f8f6; }
+  svg text { font-family: system-ui, -apple-system, sans-serif; }
+  h1 { font-size: 15px; font-weight: 500; color: #555; margin: 0 0 12px; }
+</style>
+</head>
+<body>
+<h1>Perception pipeline — D435 → detection → follow + stair handoff</h1>
+<svg width="100%" viewBox="0 0 860 520" xmlns="http://www.w3.org/2000/svg">
+  <!-- Solid filled-triangle arrowheads, explicit colour per flow, no context-stroke. -->
+  <defs>
+    <marker id="bl" markerUnits="userSpaceOnUse" markerWidth="13" markerHeight="13" viewBox="0 0 13 13" refX="11.5" refY="6.5" orient="auto">
+      <path d="M2 2 L11.5 6.5 L2 11 Z" fill="#185FA5"/>
+    </marker>
+    <marker id="bn" markerUnits="userSpaceOnUse" markerWidth="13" markerHeight="13" viewBox="0 0 13 13" refX="11.5" refY="6.5" orient="auto">
+      <path d="M2 2 L11.5 6.5 L2 11 Z" fill="#854F0B"/>
+    </marker>
+    <marker id="g3" markerUnits="userSpaceOnUse" markerWidth="13" markerHeight="13" viewBox="0 0 13 13" refX="11.5" refY="6.5" orient="auto">
+      <path d="M2 2 L11.5 6.5 L2 11 Z" fill="#bbb"/>
+    </marker>
+  </defs>
+
+  <!-- ── CAMERA SOURCE ── -->
+  <rect x="300" y="20" width="260" height="48" rx="8" fill="#E8E8E4" stroke="#888" stroke-width="0.5"/>
+  <text x="430" y="39" text-anchor="middle" font-size="13" font-weight="600" fill="#333">D435 RealSense</text>
+  <text x="430" y="57" text-anchor="middle" font-size="11" fill="#666">Co-located RGB 1280×720 · Depth 58×87</text>
+
+  <!-- Column header labels -->
+  <text x="130" y="92" text-anchor="middle" font-size="11" fill="#999">RGB · pose</text>
+  <text x="390" y="92" text-anchor="middle" font-size="11" fill="#999">RGB · stairs</text>
+  <text x="680" y="92" text-anchor="middle" font-size="11" fill="#999">Depth stream</text>
+
+  <!-- Fan arrows: camera → 3 columns. Each enters its box OFF-CENTRE (x=175/445/725) so the
+       vertical drop never runs through the centred "RGB · pose / RGB · stairs / Depth stream" label. -->
+  <path d="M300 44 L175 44 L175 98" fill="none" stroke="#bbb" stroke-width="1.3" marker-end="url(#g3)"/>
+  <path d="M445 68 L445 98" fill="none" stroke="#bbb" stroke-width="1.3" marker-end="url(#g3)"/>
+  <path d="M560 44 L725 44 L725 98" fill="none" stroke="#bbb" stroke-width="1.3" marker-end="url(#g3)"/>
+
+  <!-- ══ COL 1: YOLOv8-Pose → Tracker ══ -->
+  <rect x="30" y="100" width="200" height="48" rx="6" fill="#B5D4F4" stroke="#185FA5" stroke-width="0.5"/>
+  <text x="130" y="120" text-anchor="middle" font-size="13" font-weight="600" fill="#042C53">YOLOv8-Pose</text>
+  <text x="130" y="138" text-anchor="middle" font-size="11" fill="#185FA5">Bboxes + keypoints · TRT</text>
+
+  <line x1="130" y1="148" x2="130" y2="170" stroke="#185FA5" stroke-width="1.4" marker-end="url(#bl)"/>
+
+  <rect x="30" y="172" width="200" height="48" rx="6" fill="#B5D4F4" stroke="#185FA5" stroke-width="0.5"/>
+  <text x="130" y="192" text-anchor="middle" font-size="13" font-weight="600" fill="#042C53">Person tracker</text>
+  <text x="130" y="210" text-anchor="middle" font-size="11" fill="#185FA5">IoU re-ID · 3 s occlusion hold</text>
+
+  <!-- ══ COL 2: YOLO-World stairs ══ -->
+  <rect x="290" y="100" width="200" height="48" rx="6" fill="#B5D4F4" stroke="#185FA5" stroke-width="0.5"/>
+  <text x="390" y="120" text-anchor="middle" font-size="13" font-weight="600" fill="#042C53">YOLO-World stairs</text>
+  <text x="390" y="138" text-anchor="middle" font-size="11" fill="#185FA5">Open-vocab · riser count</text>
+
+  <!-- ══ COL 3: Depth chain ══ -->
+  <rect x="560" y="100" width="240" height="48" rx="6" fill="#FAC775" stroke="#854F0B" stroke-width="0.5"/>
+  <text x="680" y="120" text-anchor="middle" font-size="13" font-weight="600" fill="#412402">Depth processor</text>
+  <text x="680" y="138" text-anchor="middle" font-size="11" fill="#633806">Person gap + stair depth</text>
+
+  <line x1="680" y1="148" x2="680" y2="170" stroke="#854F0B" stroke-width="1.4" marker-end="url(#bn)"/>
+
+  <rect x="560" y="172" width="240" height="48" rx="6" fill="#FAC775" stroke="#854F0B" stroke-width="0.5"/>
+  <text x="680" y="192" text-anchor="middle" font-size="13" font-weight="600" fill="#412402">LiDAR fusion</text>
+  <text x="680" y="210" text-anchor="middle" font-size="11" fill="#633806">Hesai XT16 · 0.6 weight blend</text>
+
+  <!-- ── ROUTING CHANNEL  y=330 ── -->
+  <line x1="20" y1="330" x2="820" y2="330" stroke="#ddd" stroke-width="0.5" stroke-dasharray="2 4"/>
+  <text x="430" y="320" text-anchor="middle" font-size="10" fill="#bbb">routing channel</text>
+
+  <!-- ══ OUTPUT ROW  y=348 ══ -->
+  <rect x="20" y="348" width="200" height="48" rx="6" fill="#9FE1CB" stroke="#0F6E56" stroke-width="0.5"/>
+  <text x="120" y="368" text-anchor="middle" font-size="13" font-weight="600" fill="#04342C">Person follower</text>
+  <text x="120" y="386" text-anchor="middle" font-size="11" fill="#085041">3-zone PID · 0.45 m standoff</text>
+
+  <rect x="290" y="348" width="200" height="48" rx="6" fill="#9FE1CB" stroke="#0F6E56" stroke-width="0.5"/>
+  <text x="390" y="368" text-anchor="middle" font-size="13" font-weight="600" fill="#04342C">Climb FSM → handoff</text>
+  <text x="390" y="386" text-anchor="middle" font-size="11" fill="#085041">vx · wz · yaw_err → Isaac</text>
+
+  <!-- ══ ARROWS: processing → outputs via routing channel ══ -->
+
+  <!-- Tracker → Person follower -->
+  <path d="M130 220 L130 330 L120 330 L120 346" fill="none" stroke="#185FA5" stroke-width="1.4" marker-end="url(#bl)"/>
+
+  <!-- LiDAR fusion (gap) → Person follower -->
+  <path d="M560 196 L245 196 L245 330 L120 330 L120 346" fill="none" stroke="#854F0B" stroke-width="1.4" marker-end="url(#bn)"/>
+
+  <!-- YOLO-World stairs (riser count) → Climb FSM -->
+  <path d="M390 148 L390 346" fill="none" stroke="#185FA5" stroke-width="1.4" marker-end="url(#bl)"/>
+
+  <!-- Tracker bearing+distance → Climb FSM -->
+  <path d="M230 196 L265 196 L265 330 L350 330 L350 346" fill="none" stroke="#185FA5" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#bl)"/>
+
+  <!-- Depth (stair range) → Climb FSM -->
+  <path d="M680 220 L680 330 L430 330 L430 346" fill="none" stroke="#854F0B" stroke-width="1.4" marker-end="url(#bn)"/>
+
+  <!-- ── NOTE ── -->
+  <rect x="20" y="420" width="820" height="40" rx="6" fill="#fff" stroke="#eee" stroke-width="0.5"/>
+  <text x="430" y="437" text-anchor="middle" font-size="11" fill="#888">Stair trigger is sensor-derived: ≥2 risers (YOLO-World) confirmed within range (stairs_depth_m &lt; 1.6 m)</text>
+  <text x="430" y="452" text-anchor="middle" font-size="11" fill="#888">hands the live PGTT walk policy off to the blind-RL climb policy — no depth-CNN parkour obs in this path</text>
+</svg>
+</body>
+</html>

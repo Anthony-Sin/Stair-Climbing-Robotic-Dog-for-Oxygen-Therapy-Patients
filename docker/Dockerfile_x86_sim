@@ -65,5 +65,22 @@ RUN pip3 install --no-cache-dir \
 # Standard Python server for PyCUDA
 RUN pip3 install --no-cache-dir pycuda
 
+# ----------------------
+# On-frame HUD (core/hud): real GPU-rendered overlay via arcv (ModernGL vector/
+# text batches + HDR bloom). arcv's own pyproject.toml has a packaging bug --
+# `packages = ["arcv"]` already bundles arcv/shaders + arcv/resources by
+# default, and the extra [tool.hatch.build.targets.wheel.force-include] block
+# re-adds the same paths, so a plain `pip install git+https://...` fails
+# wheel-building on a duplicate archive entry (confirmed). Strip that
+# redundant trailing block before building -- the shader/font assets still
+# end up in the wheel via the default packages inclusion (verified: 84 files
+# incl. all .frag/.vert/.ttf survive).
+# ----------------------
+RUN pip3 install --no-cache-dir "moderngl>=5.10" \
+    && git clone --depth 1 https://github.com/Anthony-Sin/arcv.git /opt/arcv_build \
+    && sed -i '/\[tool\.hatch\.build\.targets\.wheel\.force-include\]/,$d' /opt/arcv_build/pyproject.toml \
+    && pip3 install --no-cache-dir --no-deps /opt/arcv_build \
+    && rm -rf /opt/arcv_build
+
 WORKDIR /workspace
 CMD ["bash"]

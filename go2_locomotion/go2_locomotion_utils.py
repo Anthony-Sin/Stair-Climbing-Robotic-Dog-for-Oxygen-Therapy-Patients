@@ -69,6 +69,23 @@ PGTT_DEFAULT_POSE: Dict[Tuple[str, str], float] = {
     ("rl", "hip"): 0.0, ("rl", "thigh"): 0.9, ("rl", "calf"): -1.8,
 }
 
+# "Lying down" / folded crouch pose (radians) keyed by (leg, joint): legs tucked
+# tightly under the body so the base rests near the ground (~0.10-0.12 m). This is the
+# START keyframe for the optional stand-up-from-ground sequence (--stand-up-from-ground):
+# the robot is seated folded on the floor and the setup ramps the joint targets from
+# this pose up to the active policy's standing default before the policy takes over.
+# Hips neutral; thighs folded forward and calves bent back near their joint limits, so
+# each leg RETRACTS (shorter hip->foot extension via leg_extension_m) and the body sinks
+# to the floor. NOT a trained pose -- a kinematic getup keyframe. The calf goes more
+# negative than standing (-1.8 -> -2.6) = more knee bend = shorter leg = lower body; the
+# stand-up ramp reverses this so the legs extend and push the base up.
+GO2_FOLDED_POSE: Dict[Tuple[str, str], float] = {
+    ("fr", "hip"): 0.0, ("fr", "thigh"): 1.4, ("fr", "calf"): -2.6,
+    ("fl", "hip"): 0.0, ("fl", "thigh"): 1.4, ("fl", "calf"): -2.6,
+    ("rr", "hip"): 0.0, ("rr", "thigh"): 1.4, ("rr", "calf"): -2.6,
+    ("rl", "hip"): 0.0, ("rl", "thigh"): 1.4, ("rl", "calf"): -2.6,
+}
+
 
 # ---------------------------------------------------------------------------
 # Articulation helpers

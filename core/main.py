@@ -12,6 +12,7 @@ Sim mode:
 """
 
 import cv2
+import math
 import numpy as np
 import os
 import shutil
@@ -39,9 +40,9 @@ from core.control.follow_shaping import (
     _apply_no_reverse_follow_policy,
     _update_carrot_heading,
 )
-from core.hud.preview_recorder import _AsyncPreviewWorker
+from core.hud.preview_recorder import _AsyncPreviewWorker, _AsyncPreviewRecorder
 from go2_locomotion.pgtt_stair_handoff import DepthStairDetector, HandoffConfig
-from core.control.climb_fsm import ClimbFSM
+from core.control.climb_fsm import ClimbFSM, GLIDE_MAX_BEARING_DEG as _GLIDE_MAX_BEARING_DEG
 
 
 def _parse_enabled_log_components(raw_value: str) -> Set[str]:
@@ -127,6 +128,56 @@ def _build_robot_controller(args):
 # elsewhere only as logged evaluation references, never as control inputs.
 
 
+def _print_startup_banner(args) -> None:
+    """Print a btop-style startup banner + config panel (DESIGN.md aesthetic).
+
+    Shared by BOTH the sim shim and the real ROS2 entrypoint (both route through
+    here), so the same controller summary shows on either target. Color is only
+    emitted to an interactive TTY; when stdout is piped (Docker run logs, the
+    launcher dashboard) term_ui degrades to plain ASCII, so nothing pollutes the
+    captured logs.
+    """
+    try:
+        from core.telemetry import term_ui as tu
+    except Exception:
+        return
+
+    theme = tu.Theme.detect()
+    if getattr(args, "sim", False):
+        mode = "sim · Isaac"
+    elif getattr(args, "ros2", False):
+        mode = "real · ROS2 Go2 EDU"
+    else:
+        mode = "real · unitree sdk2"
+
+    follow = "off"
+    if getattr(args, "follow", False):
+        follow = (f"{getattr(args, 'follow_backend', 'pid')}  "
+                  f"target {getattr(args, 'target_distance', 0.0):.2f} m  "
+                  f"kp {getattr(args, 'kp', 0.0):g}")
+
+    if getattr(args, "sim", False):
+        io = (f"frame :{getattr(args, 'frame_port', '?')}  "
+              f"cmd {getattr(args, 'cmd_host', '?')}:{getattr(args, 'cmd_port', '?')}")
+    elif getattr(args, "ros2", False):
+        io = "rclpy /lowstate -> /lowcmd (native ROS2)"
+    else:
+        io = f"iface {getattr(args, 'network_interface', '?')}"
+
+    width = 62
+    lines = tu.panel("go2 controller", [
+        tu.kv("mode", mode, theme, 9, "secondary"),
+        tu.kv("follow", follow, theme, 9, "success" if follow != "off" else "muted"),
+    ], width, accent="cpu", theme=theme)
+    lines += tu.panel("perception / io", [
+        tu.kv("pose", getattr(args, "trt_engine", "?"), theme, 9, "primary", bold_value=False),
+        tu.kv("stairs", getattr(args, "stairs_model", "?"), theme, 9, "primary", bold_value=False),
+        tu.kv("io", io, theme, 9, "blue"),
+    ], width, accent="net", theme=theme,
+        footer="headless" if getattr(args, "headless", False) else None)
+    print("\n".join(lines), flush=True)
+
+
 def main():
     """Controller entry point and per-frame loop.
 
@@ -136,6 +187,7 @@ def main():
     until Isaac stops sending frames or the run time limit is reached.
     """
     args = parse_args()
+    _print_startup_banner(args)
 
     debug_trace = DebugTraceLogger(
         trace_dir=args.debug_trace_dir,
@@ -252,6 +304,8 @@ def main():
         lost_search_yaw_speed=args.lost_search_yaw_speed,
         lost_search_timeout_sec=args.lost_search_timeout_sec,
         lost_search_min_error_deg=args.lost_search_min_error_deg,
+        lost_search_arc_deg=args.lost_search_arc_deg,
+        lost_search_max_sec=args.lost_search_max_sec,
         rotation_velocity_ff_gain=args.rot_velocity_ff,
         edge_penalty_k=args.edge_penalty_k,
         size_penalty_k=args.size_penalty_k,
@@ -269,8 +323,17 @@ def main():
     motion_start_ts      = None
     motion_slow_duration_sec = 3.0
     motion_slow_factor   = 0.5
-    visual_lock_hold_sec = 0.75 if args.sim else 0.35
+    # How long to COAST on the last good detection through YOLO dropouts before treating the
+    # target as lost. The close, turning patient at the 0.45 m follow distance overflows / leaves
+    # the narrow front-camera FOV and drops out of YOLO for up to ~1.3 s at a time (run 111200:
+    # det rate 27%, dropout streaks to 1.35 s). 1.6 s in sim bridges those so the dog keeps a
+    # continuous bearing instead of stuttering to a stop on every miss; 0.35 s on real hardware.
+    visual_lock_hold_sec = 1.6 if args.sim else 0.35
     last_matched_visual_ts: Optional[float] = None
+    # Last non-None tracker output, kept so we can coast through EMPTY-detection frames (where
+    # the tracker returns main_person=None outright -- the visual lock above only bridges frames
+    # that still carry an unmatched track, never a frame with zero detections).
+    last_seen_person: Optional[dict] = None
     target_publish_hold_sec = 0.6
     last_valid_target_ts: Optional[float] = None
     last_valid_target_track_id: Optional[int] = None
@@ -384,6 +447,22 @@ def main():
         else float(args.preview_fps)
     )
     preview_period        = 1.0 / max(1e-3, preview_rate_hz)
+    # In HEADLESS runs the preview MP4 is the only preview output, and doing the HUD
+    # draw + encode synchronously on the control loop cost ~69 ms/frame (~28% of a 250 ms
+    # loop), pinning the controller to ~4 FPS -- too slow to track a patient turning at a
+    # close standoff. Offload draw+encode to a background thread so the control loop only
+    # pays a shallow snapshot. Opt-out via --no-async-preview (keeps the synchronous path).
+    async_preview_recorder = None
+    if (bool(args.headless) and preview_output_enabled
+            and bool(getattr(args, "async_preview", True))):
+        async_preview_recorder = _AsyncPreviewRecorder(
+            video_path=preview_video_path,
+            fps=max(1.0, preview_rate_hz),
+            draw_detections_fn=yolo.draw_detections,
+            draw_overlays_fn=draw_frame_overlays,
+            save_images_dir=(args.preview_save_dir if preview_save_images else None),
+        )
+        async_preview_recorder.start()
     last_preview_render_ts = 0.0
     preview_fps           = 0.0
     preview_save_count    = 0
@@ -595,10 +674,25 @@ def main():
                 and last_matched_visual_ts is not None
                 and (time.perf_counter() - last_matched_visual_ts) <= visual_lock_hold_sec
             )
+            # Time-based lock hold: True while we matched the target within the hold window,
+            # EVEN on an empty-detection frame (recent_visual_lock can't span those -- it requires
+            # a live main_person). This bridges the zigzag edge-flicker for the motion gate below
+            # AND the follower coast further down, so a YOLO blink no longer counts as "lost".
+            lock_held = bool(
+                args.follow
+                and last_matched_visual_ts is not None
+                and (time.perf_counter() - last_matched_visual_ts) <= visual_lock_hold_sec
+            )
 
             if matched_visual_lock:
                 motion_lock_streak += 1
-            elif not recent_visual_lock:
+            elif not lock_held:
+                # Only zero the streak on a GENUINE loss (no match within the hold window). A brief
+                # dropout no longer re-locks motion: the 10-frame anti-spurious gate still has to be
+                # earned ONCE, but after that the zigzag flicker keeps the streak alive instead of
+                # resetting it every few frames and pinning the dog in a turn-in-place (run 115009:
+                # streak reset to 0 on each edge-flicker, never re-reached 10, so vx stayed 0 through
+                # every lateral turn while the patient walked on).
                 motion_lock_streak = 0
             motion_lock_ready = motion_lock_streak >= motion_lock_frames
 
@@ -609,9 +703,19 @@ def main():
             prev_time      = current_time
 
             follow_start_ts = time.perf_counter()
-            follow_input_person = (
-                main_person if (matched_visual_lock or recent_visual_lock) else None
-            )
+            if main_person is not None:
+                last_seen_person = main_person
+            # Feed the follower a continuous target: the live track when present, otherwise COAST
+            # on the last good detection for up to visual_lock_hold_sec. This bridges empty-detection
+            # frames (tracker returned None) so a ~1 s YOLO dropout no longer zeroes the follow
+            # command -- the dog keeps driving toward the last-known bearing/gap instead of freezing
+            # (run 111200: followed the zigzag well, then sat still for 10 s after one dropout).
+            if matched_visual_lock or recent_visual_lock:
+                follow_input_person = main_person
+            elif lock_held and last_seen_person is not None:
+                follow_input_person = last_seen_person
+            else:
+                follow_input_person = None
             trans_x_cmd, rotation_cmd, debug_info = person_follower.update(
                 follow_input_person, depth_img, (img.shape[0], img.shape[1]),
                 lidar_profile=frame_meta.get("lidar_profile"),
@@ -873,13 +977,26 @@ def main():
                 # so this preserves the balancing gait instead of stance-locking on the incline.
                 _coll_block = (last_person_gap_m is not None
                                and float(last_person_gap_m) < float(args.stair_climb_collision_floor))
-                if _coll_block:
+                # Blind-climb safety backstop: the latch shoves the dog forward at the climb floor
+                # even with the patient out of view (so it keeps stepping up an undetected riser).
+                # But if the patient has been GONE far longer than the timeout, the climb has
+                # effectively failed (frozen-policy limit -- the dog drags instead of ascending) and
+                # a persistent blind shove walks it straight off the top of the stairs and topples it
+                # (follow_sweep 0.10 m: drove to x=8.4, 2 m past the x=6.27 top edge, then flipped at
+                # tilt 145 deg). Once detection is this stale, hold on the stairs instead of overrunning
+                # the landing -- the balancing gait still runs (hold=False), the dog just stops shoving.
+                _det_age = ((time.perf_counter() - last_matched_visual_ts)
+                            if last_matched_visual_ts is not None else 1e9)
+                _blind_timeout = _det_age > float(args.stair_blind_climb_timeout_sec)
+                if _coll_block or _blind_timeout:
                     trans_x_cmd = 0.0
                 else:
                     trans_x_cmd = max(float(trans_x_cmd), _climb_floor)
                     if _climb_cap > 0.0:
                         trans_x_cmd = min(float(trans_x_cmd), _climb_cap)
                 debug_info["stair_climb_latch_collision_block"] = bool(_coll_block)
+                debug_info["stair_climb_latch_blind_timeout"] = bool(_blind_timeout)
+                debug_info["stair_climb_latch_det_age_sec"] = round(float(_det_age), 2)
                 debug_info["stair_climb_latch_speed_cap_mps"] = float(_climb_cap)
 
             trans_x_cmd = _apply_front_obstacle_gate(
@@ -889,11 +1006,88 @@ def main():
                 args, trans_x_cmd, debug_info, source="post_follow_shaping"
             )
 
-            # Enforce zero-movement policy (linear and rotational) when the target person is not detected,
-            # both on ground and on stairs.
+            # Enforce zero-movement policy when the target person is not detected, both on ground
+            # and on stairs -- but PRESERVE the follower's lost-search yaw so the dog can rotate
+            # back toward the last-known bearing and RE-ACQUIRE a target that stepped off-axis (a
+            # turning / zigzag patient). Only the FORWARD command is always zeroed (collision
+            # safety: never drive blind toward an undetected person). The in-place search-spin is
+            # suppressed on the stairs, where heading-hold owns yaw and a spin would risk toppling
+            # on the incline. Without this the dog froze facing forward and could never recover a
+            # target that left the camera FOV laterally -- it just stopped dead until timeout
+            # (follow_sweep: lost the patient at the base, then sat motionless for the whole run).
+            debug_info["follow_pursuit_active"] = False
             if not bool(debug_info.get("person_detected", False)):
-                trans_x_cmd = 0.0
-                rotation_cmd = 0.0
+                # Preserve the follower's RECOVERY yaw so the dog can rotate back toward a
+                # target that stepped off-axis (a turning / zigzag patient). The follower has
+                # THREE recovery paths -- lost-search spin, short-horizon prediction, and the
+                # LiDAR-bearing bridge -- and ALL of them set recovery_cmd_active; only the
+                # lost-search path also sets lost_search_active. Honour either flag (not just
+                # lost_search_active) so the prediction / LiDAR-bridge yaw is not silently
+                # zeroed here. The in-place search-spin is suppressed on the stairs, where
+                # heading-hold owns yaw and a spin would risk toppling on the incline.
+                _recovery_yaw_pending = (
+                    bool(debug_info.get("lost_search_active", False))
+                    or bool(debug_info.get("recovery_cmd_active", False))
+                )
+                _on_stairs = bool(debug_info.get("stairs_action_active", False))
+                # FORWARD PURSUIT: a followed patient who walks AHEAD (e.g. on toward the stairs)
+                # and slips out of the narrow 69 deg RGB frame must be CHASED, not abandoned. The
+                # old policy hard-zeroed forward on every loss (collision safety) so the dog froze
+                # while the patient walked away -- it could only turn in place, never advance, and
+                # a patient who left forward never re-entered the FOV. Instead keep a BOUNDED
+                # forward when the path AHEAD is clearly open (the patient is not in front of the
+                # robot -- they walked off), re-gated on the live front depth EVERY frame so we
+                # never drive blind into a close/undetected person. Suppressed on the stairs
+                # (the stair floor / heading-hold own motion there). The recovery yaw (below)
+                # arcs the pursuit toward the last-known bearing.
+                _front = debug_info.get("front_near_m")
+                _lost_age = debug_info.get("lost_age_sec")
+                _loss_mode = str(getattr(args, "follow_loss_mode", "stop_search"))
+                # When may the dog drive FORWARD on a flat loss?
+                #   'pursue' (legacy): the whole loss window (up to --follow-pursuit-max-sec) --
+                #       chases a patient who walked straight ahead out of frame.
+                #   'stop_search' (default): ONLY a brief grace right after the loss
+                #       (--follow-loss-pursuit-grace-sec) to BRIDGE a YOLO blink without losing
+                #       pace (a normally-tracked patient flickers in/out for ~1 s when turning
+                #       close). Past the grace it STOPS forward and turns in place to re-acquire.
+                # This is the fix for two opposite failures: 'pursue' drove ~3.6 m blind for 11 s
+                # while the patient cut sideways (2nd zigzag); a hard stop on every blink broke the
+                # smooth 1st-zigzag follow. The grace bridges blinks but caps blind forward to ~the
+                # grace window. Stair approach/climb floors live on other paths and are unaffected.
+                if _loss_mode == "pursue":
+                    _pursue_window = (_lost_age is None
+                                      or float(_lost_age) <= float(args.follow_pursuit_max_sec))
+                else:
+                    _pursue_window = (_lost_age is not None
+                                      and float(_lost_age) <= float(args.follow_loss_pursuit_grace_sec))
+                _pursue = (
+                    not _on_stairs
+                    and _front is not None
+                    and float(_front) > float(args.follow_pursuit_front_clear_m)
+                    and _pursue_window
+                )
+                if _pursue:
+                    trans_x_cmd = float(args.follow_pace_floor_speed) * 0.5
+                    debug_info["follow_pursuit_active"] = True
+                else:
+                    trans_x_cmd = 0.0
+                _search_yaw_ok = (_recovery_yaw_pending and not _on_stairs)
+                if not _search_yaw_ok:
+                    rotation_cmd = 0.0
+                # While pursuing with NO active recovery yaw (the lost-search/sweep window has
+                # expired but we keep chasing), still ARC GENTLY toward the last-known bearing so
+                # we steer toward where the patient went instead of gliding straight past them
+                # (the patient was last off to one side at the apex). Bounded small so it can never
+                # spiral; suppressed on the stairs.
+                if (_pursue and not _on_stairs and abs(float(rotation_cmd)) < 1e-4):
+                    _b = debug_info.get("last_seen_bearing_deg")
+                    if _b is not None and abs(float(_b)) >= float(args.lost_search_min_error_deg):
+                        _arc = min(float(args.follow_pursuit_arc_yaw_max),
+                                   abs(math.radians(float(_b))) * float(args.follow_pursuit_arc_yaw_gain))
+                        # +bearing == patient on the RIGHT -> negative yaw (turn right), matching
+                        # the follower's -search_sign*mag convention.
+                        rotation_cmd = -math.copysign(_arc, float(_b))
+                        debug_info["follow_pursuit_arc_yaw"] = round(float(rotation_cmd), 3)
 
             debug_info["trans_x_cmd"] = float(trans_x_cmd)
             debug_info["rotation_cmd"] = float(rotation_cmd)
@@ -1039,7 +1233,7 @@ def main():
                 and robot_controller is not None
                 and robot_controller.is_ready()
                 and not preparation_mode
-                and (matched_visual_lock or recent_visual_lock)
+                and (matched_visual_lock or recent_visual_lock or lock_held)
                 and motion_lock_ready
             )
             recovery_motion_allowed = (
@@ -1063,8 +1257,21 @@ def main():
                 and bool(debug_info.get("stairs_brief_loss_floor", False))
                 and bool(debug_info.get("stairs_action_active", False))
             )
+            # Forward-pursuit of a patient who walked AHEAD and slipped out of frame: the loss gate
+            # set a bounded forward command (front-clear gated) -- authorise motion so it actually
+            # reaches controller.move (the normal motion branch sends BOTH the forward pursuit and
+            # the recovery yaw). recovery_motion_allowed alone requires a nonzero yaw, so a patient
+            # lost dead-ahead would otherwise never be chased.
+            pursuit_motion_allowed = (
+                args.follow
+                and robot_controller is not None
+                and robot_controller.is_ready()
+                and not preparation_mode
+                and bool(debug_info.get("follow_pursuit_active", False))
+            )
             motion_allowed = (
-                live_motion_allowed or recovery_motion_allowed or stair_floor_motion_allowed
+                live_motion_allowed or recovery_motion_allowed
+                or stair_floor_motion_allowed or pursuit_motion_allowed
             )
             # Hold (stance-lock) gating -- LEAN-ON-CREEP. The frozen policy floor-creeps forward
             # (~0.5 m/s) even at vx=0, and we USE that creep to follow the patient, so a stance-lock
@@ -1147,13 +1354,30 @@ def main():
             # (yaw_err=0) so the dog keeps its heading toward where the patient went instead of looping.
             # A blocked front (something close ahead) falls through to the normal stop -- no blind drive.
             _glide_lost_age = debug_info.get("lost_age_sec")
+            # Mirror of the ClimbFSM flat_loss_glide gate (this local copy drives the command
+            # DISPATCH below). Keep the two in sync: glide straight ONLY when the patient was
+            # lost roughly dead-ahead and the follower is not already turning to re-acquire,
+            # so a zigzag-apex (off-axis) loss falls through to the recovery yaw instead of
+            # being hard-zeroed to a straight glide. See core/control/climb_fsm.py.
+            _glide_last_bearing = debug_info.get("last_seen_bearing_deg")
+            _glide_heading_ok = (
+                _glide_last_bearing is None
+                or abs(float(_glide_last_bearing)) <= _GLIDE_MAX_BEARING_DEG
+            )
+            _glide_recovery_yaw = (
+                bool(debug_info.get("lost_search_active", False))
+                or bool(debug_info.get("recovery_cmd_active", False))
+            )
             _flat_loss_glide = (
-                not bool(debug_info.get("person_detected", False))
+                str(getattr(args, "follow_loss_mode", "stop_search")) == "pursue"
+                and not bool(debug_info.get("person_detected", False))
                 and not _stairs_now
                 and not _stair_approach_commit
                 and _glide_lost_age is not None
                 and float(_glide_lost_age) <= float(getattr(args, "follow_loss_glide_sec", 4.0))
                 and _front_near_m is not None and float(_front_near_m) > 0.9
+                and _glide_heading_ok
+                and not _glide_recovery_yaw
             )
             debug_info["flat_loss_glide_eligible"] = bool(_flat_loss_glide)
 
@@ -1215,6 +1439,13 @@ def main():
                 standoff_gap_ctrl_m=debug_info.get("standoff_gap_ctrl_m"),
                 lost_age_sec=debug_info.get("lost_age_sec"),
                 motion_allowed=motion_allowed,
+                # Let the FSM yield the straight glide to the follower's recovery turn when
+                # the patient was lost off-axis (zigzag apex) instead of dead ahead.
+                last_seen_bearing_deg=debug_info.get("last_seen_bearing_deg"),
+                recovery_yaw_active=(
+                    bool(debug_info.get("lost_search_active", False))
+                    or bool(debug_info.get("recovery_cmd_active", False))
+                ),
             )
             debug_info.update(_fsm_debug)
             # Sync FSM-owned latch state back to local variables used by dispatch below
@@ -1631,7 +1862,39 @@ def main():
                 (current_time - last_preview_render_ts) >= preview_period
             )
             render_start_ts = time.perf_counter()
-            if preview_due:
+            if preview_due and async_preview_recorder is not None:
+                # Headless fast path: hand a SNAPSHOT of the draw inputs to the background
+                # recorder and continue immediately (the draw + MP4 encode happen off the
+                # control loop). Shallow-copy the per-frame dicts and the raw image so the
+                # next iteration cannot mutate them mid-draw.
+                if last_preview_render_ts > 0.0:
+                    preview_fps = 1.0 / max(1e-6, current_time - last_preview_render_ts)
+                last_preview_render_ts = current_time
+                _raw = img.copy()
+                async_preview_recorder.submit({
+                    "frame_idx": int(frame_idx),
+                    "sim_t": frame_meta.get("sim_t") if isinstance(frame_meta, dict) else None,
+                    "detections_kwargs": dict(
+                        image=_raw, detections=trt_dets_scaled,
+                        r=1.0, pad_left=0, pad_top=0, orig_shape=_raw.shape[:2],
+                        tracked_dets=tracked_dets, main_person=main_person,
+                        main_annotation=dict(export_debug_info)
+                        if isinstance(export_debug_info, dict) else export_debug_info,
+                    ),
+                    "overlays_kwargs": dict(
+                        debug_info=dict(debug_info), preparation_mode=preparation_mode,
+                        reacquire_active=reacquire_active, camera_mode=args.camera_mode,
+                        is_stitched=is_stitched,
+                        frame_meta=dict(frame_meta) if isinstance(frame_meta, dict) else frame_meta,
+                        trans_x_cmd=trans_x_cmd if motion_allowed else 0.0,
+                        rotation_cmd=rotation_cmd if motion_allowed else 0.0,
+                        source_frame=_raw, proc_fps=processing_fps, view_fps=preview_fps,
+                    ),
+                })
+                _first = async_preview_recorder.take_first_event()
+                if _first is not None:
+                    debug_trace.log("opencv_preview_video_started", **_first)
+            elif preview_due:
                 if last_preview_render_ts > 0.0:
                     preview_fps = 1.0 / max(
                         1e-6, current_time - last_preview_render_ts
@@ -1773,6 +2036,32 @@ def main():
                 except Exception:
                     pass
 
+            # Consolidated forward-command source for the per-frame trace: makes "moves
+            # forward on its own" diagnosable at a glance without cross-referencing five flags.
+            #   live          following a detected person
+            #   stair_*       a stair forward floor (approach / committed climb on loss)
+            #   pursuit/glide legacy flat-loss forward (only in --follow-loss-mode pursue)
+            #   creep         vx==0 but the frozen policy may still floor-creep (hold=False)
+            #   hold          stopped (controller.stop / stance-lock)
+            _fwd = float(debug_info.get("command_trans_x_limited", 0.0) or 0.0)
+            if debug_info.get("person_detected", False) and _fwd > 1e-3:
+                _fwd_src = "live"
+            elif debug_info.get("stairs_committed_climb_on_loss", False):
+                _fwd_src = "stair_climb_loss"
+            elif debug_info.get("stair_approach_commit_active", False):
+                _fwd_src = "stair_approach"
+            elif debug_info.get("follow_pursuit_active", False):
+                _fwd_src = "pursuit"
+            elif debug_info.get("flat_loss_glide_active", False):
+                _fwd_src = "glide"
+            elif _fwd > 1e-3:
+                _fwd_src = "live"
+            elif bool(debug_info.get("hold_request", False)):
+                _fwd_src = "hold"
+            else:
+                _fwd_src = "creep" if not debug_info.get("person_detected", False) else "hold"
+            debug_info["forward_cmd_source"] = _fwd_src
+
             total_loop_ms   = (time.perf_counter() - loop_start_ts) * 1000.0
             stage_ms["total_loop"] = total_loop_ms
             emit_trace_frame = (frame_idx % int(args.debug_trace_every_n_frames)) == 0
@@ -1802,6 +2091,13 @@ def main():
     finally:
         yolo_stairs.stop()
         preview_worker.stop()
+        if async_preview_recorder is not None:
+            async_preview_recorder.stop()
+            debug_trace.log(
+                "async_preview_recorder_stopped",
+                written=async_preview_recorder.written,
+                dropped=async_preview_recorder.dropped,
+            )
         if preview_video_writer is not None:
             preview_video_writer.release()
         if raw_video_writer is not None:

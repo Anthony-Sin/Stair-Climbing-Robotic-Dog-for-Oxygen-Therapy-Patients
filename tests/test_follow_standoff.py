@@ -183,6 +183,41 @@ class TestFollowStandoff(unittest.TestCase):
         self.assertEqual(cmd, 0.0)
         self.assertFalse(state["go_state"])
 
+    def test_raw_gap_decel_cap_prevents_overrun(self):
+        # The trot pace-matcher (PGTT) feeds the leader's closing speed forward against the LAGGED
+        # median gap, so on a fast approach it commanded ~max forward INTO the patient until the
+        # median caught up -- closing to a range where the patient fills the frame and YOLO drops
+        # (the zigzag-apex losses). The raw-gap deceleration cap throttles the forward command on
+        # the LIVE gap so it ramps to ~0 at the standoff lower bound instead of overrunning.
+        from core.control.follow_shaping import _apply_follow_standoff_policy
+        args = MockArgs()
+        args.trans_x_max = 0.85
+        args.follow_trot_speed_kp = 2.0          # PGTT trot path (commands forward inside the band)
+        args.follow_standoff_speed_gain = 0.0    # matches the sim launcher; keep standoff fixed at target
+        args.target_distance = 0.6               # standoff 0.6 -> lower 0.45, upper 0.75
+
+        def feed(gap):
+            state = {"go_state": True, "pace_state": "trot",
+                     "first_ctrl_ts": time.perf_counter() - 5.0,  # past the settle warmup
+                     "last_time": time.perf_counter()}
+            dbg = {}
+            cmd = 0.0
+            for _ in range(5):  # warm the median to this gap, moving leader (feedforward on)
+                cmd = _apply_follow_standoff_policy(
+                    args, trans_x_cmd=0.85, gap_m=gap, leader_speed_mps=0.6,
+                    is_walking=True, debug_info=dbg, state=state)
+            return cmd, dbg
+
+        # Raw gap 0.5 m (just inside the standoff band): the trot wants ~0.4 m/s, but the cap
+        # throttles it toward zero so the dog decelerates instead of driving into the patient.
+        cmd_close, dbg_close = feed(0.5)
+        self.assertTrue(dbg_close.get("raw_gap_decel_active"))
+        self.assertLess(cmd_close, 0.2)
+        # A far gap (well past the standoff band) is NOT capped -- normal pace-matching is intact.
+        cmd_far, dbg_far = feed(1.2)
+        self.assertFalse(dbg_far.get("raw_gap_decel_active", False))
+        self.assertGreater(cmd_far, 0.5)
+
     def test_far_regime_continuous_advance(self):
         # FAR (gap > follow_pace_distance): catch up continuously -- no duty-cycle settle phase,
         # so a leader who walks away is never lost to the idle fraction. (Method 2 inverted the
@@ -384,6 +419,245 @@ class TestFollowStandoff(unittest.TestCase):
             
         self.assertEqual(tx, 0.0)
         self.assertEqual(rot, 0.0)
+
+
+class TestLostSearchDirection(unittest.TestCase):
+    """The lost-search must turn toward the LAST YOLO sighting (last_person_center),
+    not a stale full-success-path bearing -- even a single 1-frame glimpse whose depth
+    measurement failed. Regression for the dog spinning RIGHT toward an old fix while
+    the patient's final detected frame was on the LEFT."""
+
+    def _make_follower(self):
+        from core.control.person_follower import PersonFollower, PersonFollowingConfig
+        cfg = PersonFollowingConfig()
+        cfg.camera_fx = 600.0
+        cfg.camera_cx = 320.0           # 640-wide frame, principal point centred
+        cfg.max_rotation_speed = 0.5
+        cfg.lost_search_yaw_speed = 0.25
+        cfg.lost_search_timeout_sec = 4.0
+        cfg.lost_search_min_error_deg = 3.0
+        return PersonFollower(cfg)
+
+    def test_searches_toward_last_yolo_glimpse_left(self):
+        f = self._make_follower()
+        frame_shape = (480, 640)
+        depth = np.zeros((480, 640), dtype=np.float32)
+
+        # Stale state: the success path last fired with the person far to the RIGHT.
+        f.last_rotation_error_deg = 25.0          # positive == right
+        f.is_tracking = True
+        f.tracking_start_time = time.time() - 5.0
+
+        # Final 1-frame YOLO glimpse: person on the far LEFT (x well left of cx=320),
+        # the kind of edge frame whose depth typically fails. last_person_center is
+        # refreshed by _update_person_tracking regardless of depth.
+        f.last_person_center = (60, 240)
+        f.last_lost_time = time.time() - 1.0      # within the search timeout
+
+        _, rotation_cmd, dbg = f.update(None, depth, frame_shape)
+
+        # Must search LEFT (toward the last glimpse), NOT right toward the stale fix.
+        self.assertTrue(dbg.get("lost_search_active"))
+        self.assertEqual(dbg.get("lost_search_direction"), "left")
+        self.assertLess(dbg.get("last_seen_bearing_deg"), 0.0)
+        # In this convention a left target yields a POSITIVE yaw command.
+        self.assertGreater(rotation_cmd, 0.0)
+
+    def test_searches_toward_last_yolo_glimpse_right(self):
+        f = self._make_follower()
+        frame_shape = (480, 640)
+        depth = np.zeros((480, 640), dtype=np.float32)
+
+        f.last_rotation_error_deg = -25.0         # stale LEFT fix
+        f.is_tracking = True
+        f.tracking_start_time = time.time() - 5.0
+        f.last_person_center = (600, 240)         # final glimpse far RIGHT
+        f.last_lost_time = time.time() - 1.0
+
+        _, rotation_cmd, dbg = f.update(None, depth, frame_shape)
+
+        self.assertTrue(dbg.get("lost_search_active"))
+        self.assertEqual(dbg.get("lost_search_direction"), "right")
+        self.assertGreater(dbg.get("last_seen_bearing_deg"), 0.0)
+        self.assertLess(rotation_cmd, 0.0)
+
+    def test_centered_last_glimpse_does_not_spin(self):
+        # Person basically centred when lost AND no lateral motion -> no spurious search
+        # spin even if the stale success-path value was large. The direction is "unknown"
+        # so the dog HOLDS rather than guessing a side.
+        f = self._make_follower()
+        frame_shape = (480, 640)
+        depth = np.zeros((480, 640), dtype=np.float32)
+
+        f.last_rotation_error_deg = 25.0          # stale large value
+        f.is_tracking = True
+        f.tracking_start_time = time.time() - 5.0
+        f.last_person_center = (322, 240)         # ~centred (<3 deg)
+        f.person_velocity = None                  # no motion cue
+        f.last_lost_time = time.time() - 1.0
+
+        _, rotation_cmd, dbg = f.update(None, depth, frame_shape)
+
+        self.assertFalse(dbg.get("lost_search_active"))
+        self.assertEqual(rotation_cmd, 0.0)
+        self.assertEqual(dbg.get("lost_search_cue"), "none")
+
+    def test_centered_glimpse_uses_motion_tiebreak(self):
+        # Final glimpse near centre but the box was sliding LEFT fast -> the patient turned
+        # and stepped laterally out of frame; search toward the motion direction (left).
+        f = self._make_follower()
+        frame_shape = (480, 640)
+        depth = np.zeros((480, 640), dtype=np.float32)
+
+        f.last_rotation_error_deg = 0.0
+        f.is_tracking = True
+        f.tracking_start_time = time.time() - 5.0
+        f.last_person_center = (322, 240)         # ~centred (<3 deg) -> position ambiguous
+        f.person_velocity = (-300.0, 0.0)         # px/s, moving LEFT well past the gate
+        f.last_lost_time = time.time() - 1.0
+
+        _, rotation_cmd, dbg = f.update(None, depth, frame_shape)
+
+        self.assertTrue(dbg.get("lost_search_active"))
+        self.assertEqual(dbg.get("lost_search_direction"), "left")
+        self.assertEqual(dbg.get("lost_search_cue"), "motion")
+        self.assertGreater(rotation_cmd, 0.0)     # left target -> positive yaw
+
+    @staticmethod
+    def _encode_profile(ranges_m, step_deg=3.0):
+        import zlib, base64
+        arr = np.clip(np.asarray(ranges_m, dtype=np.float64) * 1000.0, 0, 65535).astype(np.uint16)
+        blob = base64.b64encode(zlib.compress(arr.tobytes())).decode("ascii")
+        return {
+            "ranges_mm": blob,
+            "n_azimuth": int(arr.shape[0]),
+            "azimuth_step_deg": step_deg,
+            "view_range_m": 6.0,
+            "min_range_m": 0.05,
+        }
+
+    def test_reversal_motion_overrides_stale_side(self):
+        # Zigzag apex: last bbox was just RIGHT of centre but the box was sliding LEFT fast
+        # (the patient reversed). Trust where they are HEADING, not the stale last-seen side.
+        f = self._make_follower()
+        frame_shape = (480, 640)
+        depth = np.zeros((480, 640), dtype=np.float32)
+        f.is_tracking = True
+        f.tracking_start_time = time.time() - 5.0
+        f.last_person_center = (370, 240)         # ~+4.8 deg right, within the reversal band
+        f.person_velocity = (-400.0, 0.0)         # sliding LEFT, well past the gate
+        f.last_lost_time = time.time() - 1.0
+
+        _, rotation_cmd, dbg = f.update(None, depth, frame_shape)
+
+        self.assertEqual(dbg.get("lost_search_cue"), "motion_reversal")
+        self.assertEqual(dbg.get("lost_search_direction"), "left")
+        self.assertGreater(rotation_cmd, 0.0)     # left target -> positive yaw
+
+    def test_lidar_bridge_tracks_offaxis_past_timeout(self):
+        # The whole 47 s-freeze fix: a live LiDAR bearing keeps the dog turning toward the
+        # patient EVEN PAST the lost-search timeout, so a long YOLO outage no longer freezes it.
+        f = self._make_follower()
+        f.config.lidar_fusion_enabled = True
+        frame_shape = (480, 640)
+        depth = np.zeros((480, 640), dtype=np.float32)
+        f.is_tracking = True
+        f.tracking_start_time = time.time() - 8.0
+        f.last_person_center = (322, 240)          # ~centred prior (position cue ambiguous)
+        f.last_person_range_m = 1.5
+        f.last_lost_time = time.time() - 6.0       # 6 s > timeout 4 s: only the bridge can act
+
+        ranges = np.full(120, 5.0)                 # walls everywhere...
+        b = int(round((360.0 - 20.0) / 3.0)) % 120  # ...except a 1.5 m return ~20 deg to the RIGHT
+        for k in (b - 1, b, b + 1):
+            ranges[k % 120] = 1.5
+        prof = self._encode_profile(ranges)
+
+        _, rotation_cmd, dbg = f.update(None, depth, frame_shape, lidar_profile=prof)
+
+        self.assertEqual(dbg.get("lost_search_cue"), "lidar")
+        self.assertTrue(dbg.get("lost_search_active"))
+        self.assertEqual(dbg.get("lost_search_direction"), "right")
+        self.assertLess(rotation_cmd, 0.0)         # right target -> negative yaw
+
+    def test_bounded_arc_scan_pingpongs(self):
+        # No LiDAR: the in-place re-acquire is a BOUNDED +/- arc scan -- first toward the
+        # last-known side, then sweeping ACROSS centre to the other side, then back, ping-ponging
+        # within +/- lost_search_arc_deg (never a full 180). One arc leg takes
+        # radians(arc)/yaw_speed seconds.
+        import math as _math
+        f = self._make_follower()
+        frame_shape = (480, 640)
+        depth = np.zeros((480, 640), dtype=np.float32)
+        f.is_tracking = True
+        f.tracking_start_time = time.time() - 10.0
+        f.last_person_center = (600, 240)          # last seen RIGHT (search_sign +1)
+        from core.control.person_follower import _LOST_SCAN_LEG_SEC
+        arc_rad = _math.radians(f.config.lost_search_arc_deg)
+        scan_rate = min(f.config.max_rotation_speed,
+                        max(f.config.lost_search_yaw_speed, arc_rad / _LOST_SCAN_LEG_SEC))
+        leg_sec = arc_rad / scan_rate
+
+        # The scan phase is measured from when the scan ENGAGED (lost_search_start_time), not raw
+        # lost_age, so it always opens toward the last-seen side regardless of how long was lost.
+        # Early (within the first leg): scan TOWARD the last-known side (right -> negative yaw).
+        f.last_lost_time = time.time() - 0.3 * leg_sec
+        f.lost_search_start_time = time.time() - 0.3 * leg_sec
+        _, rot_toward, dbg_toward = f.update(None, depth, frame_shape)
+        self.assertTrue(dbg_toward.get("lost_search_active"))
+        self.assertEqual(dbg_toward.get("lost_search_phase"), "toward")
+        self.assertEqual(dbg_toward.get("lost_search_direction"), "right")
+        self.assertLess(rot_toward, 0.0)
+
+        # Mid-scan (the across leg, ~1.5 legs in): swing to the OPPOSITE side (left -> positive yaw).
+        f.last_lost_time = time.time() - 1.5 * leg_sec
+        f.lost_search_start_time = time.time() - 1.5 * leg_sec
+        _, rot_across, dbg_across = f.update(None, depth, frame_shape)
+        self.assertTrue(dbg_across.get("lost_search_active"))
+        self.assertEqual(dbg_across.get("lost_search_phase"), "across")
+        self.assertEqual(dbg_across.get("reason"), "Target lost - scanning opposite side")
+        self.assertGreater(rot_across, 0.0)
+
+        # The yaw magnitude is the bounded scan rate (a scan, not a runaway spin).
+        self.assertAlmostEqual(abs(rot_toward), scan_rate, places=6)
+        self.assertAlmostEqual(abs(rot_across), scan_rate, places=6)
+        self.assertLessEqual(scan_rate, f.config.max_rotation_speed + 1e-9)
+
+    def test_scan_gives_up_after_max_sec(self):
+        # Past lost_search_max_sec the scan stops (hold) instead of scanning forever.
+        f = self._make_follower()
+        frame_shape = (480, 640)
+        depth = np.zeros((480, 640), dtype=np.float32)
+        f.is_tracking = True
+        f.tracking_start_time = time.time() - 30.0
+        f.last_person_center = (600, 240)
+        f.last_lost_time = time.time() - (f.config.lost_search_max_sec + 2.0)
+        # Scan has been running (and ping-ponging) longer than the max -> give up and hold.
+        f.lost_search_start_time = time.time() - (f.config.lost_search_max_sec + 2.0)
+
+        trans, rotation_cmd, dbg = f.update(None, depth, frame_shape)
+
+        self.assertEqual(trans, 0.0)
+        self.assertEqual(rotation_cmd, 0.0)
+        self.assertFalse(dbg.get("lost_search_active"))
+
+    def test_command_and_label_agree(self):
+        # The yaw command sign and the HUD label come from the SAME search_sign, so a
+        # right-side glimpse always pairs a negative command with the "right" label.
+        f = self._make_follower()
+        frame_shape = (480, 640)
+        depth = np.zeros((480, 640), dtype=np.float32)
+        f.is_tracking = True
+        f.tracking_start_time = time.time() - 5.0
+        f.last_lost_time = time.time() - 1.0
+
+        for center_x, label, cmd_positive in [((600, 240), "right", False),
+                                              ((40, 240), "left", True)]:
+            f.last_person_center = center_x
+            _, rotation_cmd, dbg = f.update(None, depth, frame_shape)
+            self.assertEqual(dbg.get("lost_search_direction"), label)
+            self.assertEqual(rotation_cmd > 0.0, cmd_positive)
+
 
 if __name__ == "__main__":
     unittest.main()

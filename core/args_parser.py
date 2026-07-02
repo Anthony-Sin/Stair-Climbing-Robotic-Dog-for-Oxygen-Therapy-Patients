@@ -139,6 +139,12 @@ def parse_args():
                         help='Also save individual OpenCV preview JPEG frames')
     parser.add_argument('--preview-video-path', type=str, default='',
                         help='MP4 path for saved OpenCV preview video; empty uses preview-save-dir/opencv_preview.mp4')
+    parser.add_argument('--no-async-preview', dest='async_preview',
+                        action='store_false', default=True,
+                        help='Disable the background HUD-draw/MP4-encode thread (headless). The '
+                             'async recorder keeps the ~69 ms/frame preview render off the control '
+                             'loop (~4 -> ~5.5 FPS); pass this to fall back to synchronous in-loop '
+                             'rendering if the preview video shows issues.')
     parser.add_argument('--headless', action='store_true',
                         help='Disable OpenCV preview windows')
     parser.add_argument('--rotation-debug', action='store_true',
@@ -192,12 +198,44 @@ def parse_args():
                         help='Maximum seconds to use predicted target position after track loss')
     parser.add_argument('--min-tracking-time', type=float, default=4.0,
                         help='Seconds of stable tracking required before prediction is trusted')
-    parser.add_argument('--lost-search-yaw-speed', type=float, default=0.25,
-                        help='Bounded yaw speed used to search toward the last-known target side')
-    parser.add_argument('--lost-search-timeout-sec', type=float, default=2.5,
-                        help='Maximum seconds to yaw-search after the target leaves frame')
+    parser.add_argument('--lost-search-yaw-speed', type=float, default=0.125,
+                        help='Bounded yaw speed used to search toward the last-known target side. '
+                             'Halved from 0.25: the one-frame-glimpse-driven search correction '
+                             'turned the dog back too hard and overshot the re-acquire.')
+    parser.add_argument('--lost-search-timeout-sec', type=float, default=4.0,
+                        help='Maximum seconds to yaw-search after the target leaves frame. '
+                             '4.0 (raised from 2.5) so a hard lateral zigzag turn does not '
+                             'time out the search BEFORE prediction (prediction-time-limit 3.0) '
+                             'hands off to it -- a 2.5 s window closed before the 3.0 s '
+                             'prediction expired, leaving a dead gap where neither recovered.')
     parser.add_argument('--lost-search-min-error-deg', type=float, default=3.0,
                         help='Minimum last-known bearing error before yaw-search is issued')
+    parser.add_argument('--lost-search-arc-deg', type=float, default=90.0,
+                        help='Half-angle (deg) of the in-place re-acquire scan after the target '
+                             'leaves frame. The dog turns up to this much toward the last-seen '
+                             'side (left/right from the last frame), then sweeps back through '
+                             'centre to the SAME angle on the other side, then back -- a bounded '
+                             '~+/-90 deg scan, never a full 180. The scan phase starts when the '
+                             'scan engages, so it ALWAYS opens toward the last-seen side.')
+    parser.add_argument('--lost-search-max-sec', type=float, default=20.0,
+                        help='Maximum seconds to keep the in-place re-acquire scan running before '
+                             'giving up and holding (stop). The scan ping-pongs within '
+                             '+/- --lost-search-arc-deg for this long.')
+    parser.add_argument('--follow-loss-pursuit-grace-sec', type=float, default=1.5,
+                        help="In 'stop_search' mode, how long to keep a bounded forward pursuit "
+                             "right after the person leaves frame, to BRIDGE brief YOLO blinks "
+                             "without losing pace (a normally-tracked patient flickers in/out for "
+                             "up to ~1.3 s when turning at close range). Past this the dog stops "
+                             "forward and turns in place to re-acquire. 0 disables the bridge "
+                             "(immediate stop+scan on any loss).")
+    parser.add_argument('--follow-loss-mode', choices=('stop_search', 'pursue'),
+                        default='stop_search',
+                        help="What the dog does when the followed person leaves frame on FLAT "
+                             "ground. 'stop_search' (default): stop forward motion and turn in "
+                             "place to re-acquire (bounded +/- --lost-search-arc-deg scan). "
+                             "'pursue' (legacy): keep a bounded forward pursuit + glide toward "
+                             "where the patient went (used to chase a patient walking straight "
+                             "ahead). Stair approach/climb forward floors are unaffected by either.")
     parser.add_argument('--max-trans-x-accel', type=float, default=0.7,
                         help='Maximum forward command slew in m/s^2; 0 disables')
     parser.add_argument('--max-rot-accel', type=float, default=1.5,
@@ -265,11 +303,34 @@ def parse_args():
                              '(the stop/start cycling in run_20260620_172239: gap 1.7 m, cmd 0, body '
                              '0.04 m/s). Set 0 to restore the creep for the parkour policy (which '
                              'over-runs forward commands).')
-    parser.add_argument('--follow-loss-glide-sec', type=float, default=4.0,
-                        help='On a brief person-tracking loss on flat ground with a clear path ahead, '
+    parser.add_argument('--follow-loss-glide-sec', type=float, default=10.0,
+                        help='On a person-tracking loss on flat ground with a clear path ahead, '
                              'glide straight (holding the last heading) for up to this long before '
-                             'stopping, so a momentary loss does not freeze the dog. Configurable '
-                             'recovery window (was a hardcoded 4 s).')
+                             'stopping, so a loss does not freeze the dog. Raised from 4 s: the patient '
+                             'keeps walking at ~0.35 m/s after the dog loses the box on the final turn, '
+                             'so a 4 s glide quit ~2.5 m short of the stairs and the dog froze on the '
+                             'flat (run 112606: stuck at x=-0.5, stairs base x~2.0). The glide is '
+                             'front-depth gated (>0.9 m), so it still auto-stops at any obstacle.')
+    parser.add_argument('--follow-pursuit-front-clear-m', type=float, default=1.0,
+                        help='Forward-pursuit on a person-tracking loss: keep a bounded forward '
+                             'command (chase a patient who walked AHEAD, e.g. on to the stairs) '
+                             'only while the live front depth is clear beyond this distance. '
+                             'Re-checked every frame, so the dog auto-stops if anything (incl. the '
+                             'patient) is closer than this -- never drives blind into a close body.')
+    parser.add_argument('--follow-pursuit-max-sec', type=float, default=45.0,
+                        help='Maximum seconds to forward-pursue a lost patient before holding. '
+                             'Long enough to chase a patient who walked the length of the flat to '
+                             'the stairs (~50 s at 0.35 m/s) before re-acquiring; bounded so a truly '
+                             'gone patient does not walk the dog indefinitely (also front-clear '
+                             'gated every frame, and ends on stair detection / re-acquire).')
+    parser.add_argument('--follow-pursuit-arc-yaw-gain', type=float, default=1.0,
+                        help='Gentle steering gain (rad/s per rad of last-known bearing) applied '
+                             'while forward-pursuing a lost patient with no active recovery yaw, so '
+                             'the dog arcs toward where the patient was last seen instead of gliding '
+                             'straight past them.')
+    parser.add_argument('--follow-pursuit-arc-yaw-max', type=float, default=0.35,
+                        help='Cap (rad/s) on the forward-pursuit arc yaw -- bounded small so the '
+                             'gentle steer can never become a spin.')
     parser.add_argument('--follow-pace-advance-time', type=float, default=2.0,
                         help='Duration (seconds) of the advance phase during pacing')
     parser.add_argument('--follow-pace-settle-time', type=float, default=1.5,
@@ -463,6 +524,13 @@ def parse_args():
                              'the patient drops below this, zero the forward drive (no stance-lock) so the '
                              'dog never climbs into the person. Below the normal standoff so it only fires '
                              'on a genuine imminent contact, not the cruise gap.')
+    parser.add_argument('--stair-blind-climb-timeout-sec', type=float, default=8.0,
+                        help='Safety backstop for the blind climb forward-floor: while the stair-climb '
+                             'latch shoves the dog forward with no live patient detection (the patient '
+                             'climbed out of view), stop the blind shove once detection has been stale '
+                             'longer than this. Prevents a failed/dragging climb from walking the dog '
+                             'straight off the top landing and toppling it (observed overshoot to x=8.4, '
+                             '2 m past the x=6.27 top edge). Set very large to disable the backstop.')
     parser.add_argument('--raw-video-path', type=str, default='',
                         help='MP4 path for raw camera frame recording (no overlays); empty disables')
     parser.add_argument('--no-raw-video', action='store_true',
