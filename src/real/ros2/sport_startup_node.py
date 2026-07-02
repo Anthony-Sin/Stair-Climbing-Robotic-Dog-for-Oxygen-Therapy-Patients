@@ -23,7 +23,6 @@ import time
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSHistoryPolicy, QoSReliabilityPolicy
 from std_msgs.msg import String
 
 # unitree_sdk2py: the only SDK import in the whole port.
@@ -31,13 +30,9 @@ from unitree_sdk2py.core.channel import ChannelFactoryInitialize
 from unitree_sdk2py.go2.sport.sport_client import SportClient
 from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
 
-
-def _latched_qos() -> QoSProfile:
-    return QoSProfile(
-        history=QoSHistoryPolicy.KEEP_LAST, depth=1,
-        reliability=QoSReliabilityPolicy.RELIABLE,
-        durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
-    )
+# Shared latched profile -- the low-level control node subscribes with the SAME profile
+# so a late/restarted control node still receives the "released" gate (see qos.py).
+from real.ros2.qos import latched_qos
 
 
 class SportStartupNode(Node):
@@ -47,7 +42,7 @@ class SportStartupNode(Node):
         self._release_on_start = bool(self.declare_parameter("release_on_start", True).value)
         self._timeout = float(self.declare_parameter("sdk_timeout_sec", 10.0).value)
 
-        self._state_pub = self.create_publisher(String, "/go2/sport_state", _latched_qos())
+        self._state_pub = self.create_publisher(String, "/go2/sport_state", latched_qos())
         self._publish_state("init")
 
         ChannelFactoryInitialize(0, self._iface)

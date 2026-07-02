@@ -14,7 +14,7 @@ from typing import Any, Callable, List, Optional
 
 from core.telemetry import term_ui as tu
 
-from launcher_lib.paths import REPO_ROOT
+from launcher_lib.paths import SRC_ROOT
 
 _STAGE_RE = re.compile(r"^\[(\d{2}:\d{2}:\d{2})\]\s+(\S+)\s+(\S+)\s+(.*)$")
 
@@ -155,11 +155,11 @@ def build_command(cfg: Config):
                 flags += opt.to_flags()
             else:
                 flags += opt.to_flags()
-        bat = os.path.join(REPO_ROOT, "sim", "run_sim.bat")
+        bat = os.path.join(SRC_ROOT, "sim", "run_sim.bat")
         display = "sim\\run_sim.bat " + " ".join(flags) if flags else "sim\\run_sim.bat"
         env["NO_PAUSE"] = "1"
         argv = ["cmd", "/c", bat] + flags
-        return display, argv, os.path.join(REPO_ROOT, "sim"), env, (os.name == "nt")
+        return display, argv, os.path.join(SRC_ROOT, "sim"), env, (os.name == "nt")
     # real
     flags = []
     hs = cfg.get("heightscan")
@@ -167,7 +167,7 @@ def build_command(cfg: Config):
         flags.append("--lidar")
     if cfg.get("record").value:
         flags.append("--record")
-    script = os.path.join(REPO_ROOT, "real", "run_real.sh")
+    script = os.path.join(SRC_ROOT, "real", "run_real.sh")
     display = "./real/run_real.sh " + " ".join(flags) if flags else "./real/run_real.sh"
     argv = ["bash", script] + flags
-    return display, argv, REPO_ROOT, env, (os.name != "nt")
+    return display, argv, SRC_ROOT, env, (os.name != "nt")

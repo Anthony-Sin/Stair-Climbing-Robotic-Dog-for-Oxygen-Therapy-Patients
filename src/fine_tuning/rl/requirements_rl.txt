@@ -1,0 +1,8 @@
+# Pure-python deps for the blind-RL stair training env (IsaacLab + robot_lab, py3.11).
+# Isaac Sim, IsaacLab, isaaclab_tasks and rsl_rl are installed SEPARATELY by
+# runpod_setup_rl.sh (pip isaacsim + ./isaaclab.sh --install) -- do NOT add them here,
+# their versions must match the Isaac Sim build and are pinned by that script.
+wandb
+tqdm
+python-dotenv
+runpod

@@ -1,13 +1,13 @@
-# btop — TUI Design System
+# Claude Code — TUI Design System
 
-> Resource monitor that shows usage and stats for processor, memory, disks, network and processes. Based on [btop++](https://github.com/aristocratos/btop) — the beautiful system monitor with 22k+ stars.
+> The AI coding agent that lives in your terminal. Based on [Claude Code](https://claude.ai/claude-code) by Anthropic — warm, playful, and content-forward with a signature terracotta accent.
 
 ## 1. Theme Overview
 
-- **Mood**: Data-dense, gradient-rich, dashboard-style
-- **Density**: Very dense — maximize metrics and graphs in every pixel
-- **Target**: System monitors, resource dashboards, real-time data displays, IoT panels
-- **Terminal**: TrueColor required for gradients, 256-color minimum
+- **Mood**: Warm, playful, content-forward
+- **Density**: Balanced — clean conversation flow, minimal chrome
+- **Target**: AI coding agents, conversational terminal interfaces, developer tools
+- **Terminal**: TrueColor recommended for shimmer effects, 256-color acceptable
 
 ## 2. Color Palette
 
@@ -15,307 +15,300 @@
 
 | Role | Hex | ANSI 256 | ANSI 16 | Usage |
 |------|-----|----------|---------|-------|
-| Background | `#000000` | `0` | `black` | Pure black bg |
-| Foreground | `#cccccc` | `251` | `white` | Default text |
-| Primary | `#eeeeee` | `255` | `bright white` | Titles, headers |
-| Secondary | `#77ca9b` | `115` | `green` | CPU accent, healthy |
-| Accent | `#dc4c4c` | `167` | `red` | High usage, alerts |
-| Success | `#77ca9b` | `115` | `green` | Low usage, healthy |
-| Warning | `#cbc06c` | `185` | `yellow` | Medium usage |
-| Error | `#dc4c4c` | `167` | `red` | High usage, critical |
-| Muted | `#555555` | `240` | `bright black` | Borders, labels |
-| Surface | `#111111` | `233` | `black` | Panel interior |
+| Background | `#1a1a1a` | `234` | `black` | Terminal default dark bg |
+| Foreground | `#ffffff` | `15` | `bright white` | Default text, AI responses |
+| Primary | `#d77757` | `173` | `yellow` | Terracotta — Anthropic brand accent |
+| Secondary | `#fd5db1` | `206` | `bright magenta` | Hot pink — bash/tool borders |
+| Accent | `#b1b9f9` | `147` | `bright blue` | Lavender — permission dialogs |
+| Success | `#4eba65` | `71` | `green` | Green — completion |
+| Warning | `#ffc107` | `220` | `yellow` | Amber/gold — caution |
+| Error | `#ff6b80` | `204` | `red` | Soft red-pink — errors |
+| Muted | `#888888` | `245` | `bright black` | Gray — input borders, inactive |
+| Surface | `#373737` | `237` | `black` | User message background |
 
-### Box-Specific Accents
+### Claude-Specific Colors
 
-| Box | Accent | Hex | Usage |
-|-----|--------|-----|-------|
-| CPU | Muted green | `#556d59` | CPU panel header/border |
-| Memory | Olive | `#6c6c4b` | Memory panel header/border |
-| Network | Muted purple | `#5c588d` | Network panel header/border |
-| Process | Muted red | `#805252` | Process panel header/border |
-
-### Gradient Ramps (Key Feature)
-
-```
-CPU Usage:    #77ca9b → #cbc06c → #dc4c4c  (green → yellow → red)
-Temperature:  #4897d4 → #ff40b6            (blue → pink)
-Memory Used:  #dc4c4c ramp                 (red shades)
-Memory Cache: #4897d4 ramp                 (cyan/blue shades)
-Memory Free:  #77ca9b ramp                 (green shades)
-```
+| Name | Hex | Usage |
+|------|-----|-------|
+| Claude shimmer | `#eb9f7f` | Lighter terracotta for shimmer animation |
+| Bash border | `#fd5db1` | Hot pink tool execution borders |
+| Permission | `#b1b9f9` | Lavender-blue permission dialogs |
+| Auto-accept | `#af87ff` | Purple — YOLO/auto-accept mode |
+| Inactive | `#999999` | Gray — disabled elements |
+| Subtle | `#505050` | Dark gray — separators |
+| Diff added bg | `#225c2b` | Green tint for added lines |
+| Diff removed bg | `#7a2936` | Red tint for removed lines |
 
 ## 3. Typography & ASCII Art
 
-- **Header font**: None — box titles in panel borders
-- **Body text**: plain terminal font, compact
-- **Emphasis**: `bold` for titles, values
-- **Code/values**: bold + accent color per box
+- **Header font**: None — Claude Code doesn't use figlet; clean text only
+- **Body text**: plain terminal font, monospaced
+- **Emphasis**: `bold` for headers, `dim` for metadata
+- **Code/values**: syntax-highlighted in response
 
 ### Text Hierarchy
 
 | Level | Style | Example Usage |
 |-------|-------|---------------|
-| Box title | BOLD + box accent color | `cpu`, `mem`, `net`, `proc` |
-| Metric value | BOLD + gradient color | `45%`, `2.4 GiB` |
-| Metric label | Muted | `cpu0`, `used`, `tx` |
-| Process name | Foreground | `firefox`, `node` |
-| Highlighted | BOLD + Error red bg | Selected process |
+| H1 | BOLD + Primary (terracotta) | Session header |
+| Body | Foreground (white) | AI response text |
+| Code | Syntax highlighted | Code blocks |
+| User input | `>` prefix on Surface bg | User messages |
+| Caption | Muted + dim | Token counts, timestamps |
+| Thinking | Primary (terracotta) + shimmer | Thinking verb |
 
 ## 4. Borders & Box Drawing
 
-### Primary Border
+### Input Box (Dashed ASCII — Signature Style)
 
 ```
-╭── cpu ─────────────────────────────╮
-│                                     │
-│  ▁▂▃▅▇█▇▅▃▂▁▁▂▄▆█▇▅▃  45%        │
-│                                     │
-╰─────────────────────────────────────╯
+- - - - - - - - - - - - - - - -
+| > your message here_          |
+- - - - - - - - - - - - - - - -
 ```
 
-Rounded corners. Each box border colored by its accent.
+**No Unicode box-drawing for input** — plain ASCII dashed lines (`-` horizontal, `|` vertical). Border is Muted gray with shimmer between `#888` and `#A6A6A6`. This is a deliberate design choice — casual, not corporate.
+
+### Tool Call Border (Hot Pink)
+
+```
+┌─ Bash ─────────────────────────┐
+│ $ npm test                      │
+│                                 │
+│ PASS  src/app.test.ts           │
+│   ✓ handles input (12ms)       │
+└─────────────────────────────────┘
+```
+
+Tool/bash output uses box-drawing with hot pink (`#fd5db1`) borders.
+
+### Permission Dialog (Lavender)
+
+```
+┌─ Allow Edit to src/app.ts? ────┐
+│                                 │
+│  [Y]es  [N]o  [A]lways         │
+│                                 │
+└─────────────────────────────────┘
+```
+
+Permission prompts use lavender (`#b1b9f9`) borders.
 
 ### Parts Table
 
-| Part | Character | Usage |
-|------|-----------|-------|
-| top_left | `╭` | Box corners |
-| top_right | `╮` | |
-| bottom_left | `╰` | |
-| bottom_right | `╯` | |
-| horizontal | `─` | |
-| vertical | `│` | |
-| cross | `┼` | |
-| tee_down | `┬` | |
-| tee_up | `┴` | |
-| tee_right | `├` | |
-| tee_left | `┤` | |
-
-### Title Bracket Style (Signature Detail)
-
-btop uses **inverted corners** for box titles — this is unique to btop:
-
-```
-╭─┐cpu┌──────────────────────╮
-│                              │
-╰────────��─────────────────────╯
-```
-
-- Top title: `┐` before title, `┌` after title (inverted!)
-- Bottom title (if used): `┘` before, `└` after
-- This creates a "notch" effect that makes titles feel embedded in the border
+| Part | Character | Color | Usage |
+|------|-----------|-------|-------|
+| Input horizontal | `-` (dashed) | Muted gray | Input box |
+| Input vertical | `\|` | Muted gray | Input box sides |
+| Tool top_left | `┌` | Hot pink | Tool call blocks |
+| Tool horizontal | `─` | Hot pink | Tool call blocks |
+| Tool vertical | `│` | Hot pink | Tool call blocks |
+| Tool bottom_left | `└` | Hot pink | Tool call blocks |
+| Permission border | `┌─┐│└─┘` | Lavender | Permission dialogs |
 
 ### Dividers
 
-- Inside boxes: `╎` (dotted vertical, U+254E) for column separation
-- No horizontal dividers inside boxes — data is packed tight
-- Boxes can share edges when adjacent (zero gap)
+- Between messages: subtle thin line in `#505050`
+- No heavy separators — content flows naturally
 
 ## 5. Components
 
-### CPU Box
+### User Prompt
 
 ```
-╭─┐cpu┌────────────────────────────────────╮
-│                                           │
-│  ▁▃▅▇█▇▅▃▂▁▂▃▅▇█▇▅▃▂▁  45%  2.4 GHz    │
-│                                           │
-│  cpu0 ██████████░░░░░░░░░  52%            │
-│  cpu1 ████████░░░░░░░░░░░  41%            │
-│  cpu2 ████████████████░░░  87%            │
-│  cpu3 ██████░░░░░░░░░░░░░  32%            │
-│                                           │
-╰───────────────────────────────────────────╯
+- - - - - - - - - - - - - - - - -
+|  > What does this function do?  |
+- - - - - - - - - - - - - - - - -
 ```
 
-- Braille graph at top (⣿⣷⣧⡇ characters)
-- Per-core bars: gradient green → yellow → red based on usage
-- Percentage values right-aligned in bold
+- Dashed ASCII border in Muted gray (shimmering)
+- `>` prefix
+- Background: Surface (`#373737`)
 
-### Memory Box
-
-```
-╭─┐mem┌──────────────────────╮
-│                              │
-│  Used: ████████████░░  4.2G  │
-│  Cache: ██████░░░░░░░  2.1G  │
-│  Free:  ██░░░░░░░░░░░  0.8G  │
-│  Swap:  █░░░░░░░░░░░░  0.2G  │
-│                              │
-│  Total: 7.3G / 16.0G        │
-│                              │
-╰──────────────────────────────╯
-```
-
-- Used: red gradient bars
-- Cache: blue/cyan bars
-- Free: green bars
-- Values right-aligned
-
-### Network Box
+### Thinking Indicator (Signature Feature)
 
 ```
-╭─┐net┌──────────────────────╮
-│                              │
-│  ▁▂▃▅▇▅▃▂▁▁▂▅▇█▅▃  Upload  │
-│  ▁▁▂▃▃▂▁▁▁▂▃▅▇▇▅▃  Down    │
-│                              │
-│  ▲ 12.4 MB/s  ▼ 45.2 MB/s   │
-│                              │
-╰──────────────────────────────╯
+  ✳ Percolating...
 ```
 
-- Braille graphs for upload/download
-- `▲` upload, `▼` download with speed values
+- Spinner cycles through 6 symbols: `· ✢ ✳ ✶ ✻ ✽` then reverses
+- 120ms interval per frame
+- Rendered in Primary terracotta with shimmer to `#eb9f7f`
+- Paired with a random whimsical verb from ~184 options:
+  "Cogitating...", "Percolating...", "Shenaniganing...", "Moonwalking...", "Ruminating..."
 
-### Process Table
-
-```
-╭─┐proc┌─────────────────────────────────╮
-│ PID    Name         CPU%  MEM%  Status  │
-│ 1234   firefox      12.3  4.5%  R       │
-│ 5678   node         8.1   2.1%  S       │
-│ 9012   postgres     3.2   6.8%  S       │
-│ 3456   python3      2.1   1.2%  R       │
-╰─────────────────────────────────────────╯
-```
-
-- Selected row: bold on Error red bg
-- CPU/MEM values colored by gradient
-- Status: R(unning) green, S(leeping) muted
-
-### Graphs (3 Render Modes)
-
-btop supports three graph rendering modes with increasing fidelity:
-
-**Braille mode (default, highest resolution):**
-```
-  ⣿⣷⣧⡇⣿⣷⣧⡇⡇⣧⣷⣿⣿⣷⣧⡇⡇⣧⣷⣿
-```
-- Characters: `⣿ ⣷ ⣧ ⡇ ⡏ ⠟ ⠛ ⠉` etc. (2x4 dot matrix per cell)
-- Each character cell = 8 individually addressable dots
-- Effective resolution: 2× width, 4× height of character grid
-
-**Block mode (medium resolution):**
-```
-  █▟▙▄█▀▟▙▄█▀▀█▟▙▄█▀▟
-```
-- Characters: `▄ █ ▟ ▙ ▀ ▐ ▌`
-- Half-block rendering (2 rows per character height)
-
-**TTY mode (basic, maximum compatibility):**
-```
-  █▓▒░█▓▒░░▒▓██▓▒░░▒▓█
-```
-- Characters: `░ ▒ ▓ █`
-- 4 density levels per cell
-
-All modes are gradient-colored: green (`#77ca9b`) → yellow (`#cbc06c`) → red (`#dc4c4c`) based on utilization value.
-
-### Meters
+### AI Response
 
 ```
-  cpu0  [■■■■■■■■■■■■■■■░░░░░]  72%
+  This function parses the configuration file and returns
+  a structured object. Here's what each part does:
+
+  ...
 ```
 
-- `■` for filled, `░` for empty
-- Gradient colored by value
+- White text on terminal default background
+- Markdown rendered with syntax highlighting
+- No border, no prefix — clean content-forward
+
+### Tool Call Block
+
+```
+  ┌─ Read: src/config.ts ─────────────────┐
+  │                                         │
+  │  1 │ export function parseConfig() {    │
+  │  2 │   const raw = readFileSync(path);  │
+  │  3 │   return JSON.parse(raw);          │
+  │                                         │
+  └─────────────────────────────────────────┘
+```
+
+- Hot pink (`#fd5db1`) border — visually distinct from text
+- Tool name and file path in border header
+- Code with syntax highlighting inside
+- Background: `rgb(65,60,65)` for bash output
+
+### Diff View
+
+```
+  ┌─ Edit: src/app.ts ─────────────────────┐
+  │                                         │
+  │  - const old = getValue();              │
+  │  + const result = getNewValue();        │
+  │  + logger.info('Updated');              │
+  │                                         │
+  └─────────────────────────────────────────┘
+```
+
+- Added lines: `+` prefix, `#225c2b` background tint
+- Removed lines: `-` prefix, `#7a2936` background tint
+- Hot pink border (same as tool calls)
+
+### Permission Prompt
+
+```
+  ┌─ Allow Bash: npm test? ──────────────┐
+  │                                       │
+  │  [Y]es  [N]o  [A]lways               │
+  │                                       │
+  └───────────────────────────────────────┘
+```
+
+- Lavender (`#b1b9f9`) border
+- Options with key highlighted in bold
+
+### Status Bar (Bottom)
+
+```
+  Opus · 12.4K tokens · $0.04 · 3.2s · normal
+```
+
+- Persistent bottom line
+- Token count, cost, elapsed time, effort level
+- Muted color
+
+### Subagent Indicators
+
+Each subagent gets a unique color from a palette:
+red, blue, green, yellow, purple, orange, pink, cyan
 
 ## 6. Layout & Spacing
 
 - **Min terminal width**: `80`
-- **Ideal terminal width**: `120+`
-- **Padding inside boxes**: 0-1 lines, minimal
-- **Gap between boxes**: 0 (boxes share borders or are adjacent)
-- **Indent level**: 1 space
+- **Ideal terminal width**: `120`
+- **Padding inside tool blocks**: 1 line top/bottom, 1 char left/right
+- **Gap between messages**: 1 line with subtle separator
+- **Indent level**: 2 spaces
 
 ### Alignment Principles
 
-- CPU box: top, full width or left half
-- MEM + NET: middle row, side by side
-- PROC: bottom or right side, full width
-- Layout adapts via presets — multiple arrangements available
-- Zero wasted space — every character matters
+- Left-align all conversation content
+- Tool call blocks are indented slightly
+- Status bar persistent at bottom
+- No centering except startup logo
+- Conversation flows top-to-bottom
 
 ## 7. Icons & Indicators
 
 | Purpose | Icon | Fallback (ASCII) |
 |---------|------|-------------------|
-| Upload | `▲` | `UP` |
-| Download | `▼` | `DN` |
-| Meter filled | `■` | `#` |
-| Meter empty | `░` | `.` |
-| Graph braille | `⣿⣷⣧⡇` | `█▓▒░` |
-| Graph block | `▄█▟▙` | `#.` |
-| Running | `R` | `R` |
-| Sleeping | `S` | `S` |
-| Superscript | `⁰¹²³⁴⁵⁶⁷⁸⁹` | `0-9` |
-| Battery | `🔋` | `BAT` |
-| Selected | reverse bg | reverse |
-| Column sep | `╎` (dotted vert) | `\|` |
-| Title left | `┐` (inverted) | `]` |
-| Title right | `┌` (inverted) | `[` |
+| Success | `✓` | `+` |
+| Error | `✗` | `x` |
+| Warning | `⚠` | `!` |
+| Thinking | `· ✢ ✳ ✶ ✻ ✽` | `*` |
+| Prompt | `>` | `>` |
+| Running | `▸` | `>` |
+| Bullet | `•` | `-` |
 
 ## 8. Animation & Motion
 
-### Spinners
+### Thinking Spinner (Signature)
 
-- No traditional spinners — data updates in real-time
+```
+Frames: · → ✢ → ✳ → ✶ → ✻ → ✽ → ✻ → ✶ → ✳ → ✢ → · ...
+```
+
+- 120ms per frame
+- Primary terracotta color with shimmer to lighter terracotta
+- Reverse-mirror cycle (goes up then back down)
+- Random whimsical verb: "Cogitating...", "Percolating...", "Moonwalking..."
+
+### Input Border Shimmer
+
+- Dashed input border shimmers between `#888888` and `#A6A6A6`
+- Subtle, gentle animation
 
 ### Transitions
 
-- Graph scrolls left as new data arrives
-- Values update in-place
-- No animated transitions between views
+- No animated transitions between states
+- Streaming text appears as received from API
+- Tool blocks appear with distinct hot pink border
 
-### Progress / Meters
+### Progress
 
-```
-  [■■■■■■■■■■■■░░░░░░░░]  62%
-```
-
-- Gradient colored: green (<50%) → yellow (50-80%) → red (>80%)
-- Updates in real-time
-- Multiple graph styles: braille, block, tty
+- Counter-based: "Reading files... (3/12)"
+- No progress bars
+- Spinner + verb for indeterminate waits
 
 ## 9. Agent Prompt Guide
 
 ### Quick Reference
 
 ```
-Background: #000000  (pure black)
-Foreground: #cccccc  (light gray)
-Titles:     #eeeeee  (bright white)
-CPU green:  #77ca9b  (healthy/low)
-Warning:    #cbc06c  (medium usage)
-Alert red:  #dc4c4c  (high/critical)
-Cool blue:  #4897d4  (temperature/cache)
-Hot pink:   #ff40b6  (high temperature)
-Border:     ╭─╮│╰─╯  (rounded, colored per box)
-Style:      dense dashboard, gradient-heavy, braille graphs, black bg, jewel-tone accents
+Background: terminal default (dark)
+Foreground: #ffffff  (white)
+Terracotta: #d77757  (brand primary — thinking, accents)
+Hot pink:   #fd5db1  (tool/bash call borders)
+Lavender:   #b1b9f9  (permission dialogs)
+Green:      #4eba65  (success)
+Red-pink:   #ff6b80  (errors)
+Amber:      #ffc107  (warnings)
+Purple:     #af87ff  (auto-accept mode)
+Gray:       #888888  (input borders, muted)
+Input:      - - | -  (dashed ASCII, NOT Unicode box-drawing)
+Tool:       ┌─┐│└─┘  (single line, hot pink)
+Style:      warm terracotta accent, dashed input, hot pink tools, whimsical thinking verbs
 ```
 
 ### Example Prompts
 
-- "Build a system monitor: btop style, pure black bg, rounded bordered boxes with colored headers, braille graphs colored green→yellow→red by usage, per-core CPU bars"
-- "Create a resource dashboard: btop aesthetic, dense packed boxes, gradient colored meters (■░), real-time updating values, braille sparklines"
-- "Design a server monitoring TUI: btop layout (CPU top, MEM+NET middle, PROC bottom), box-specific accent colors, gradient coloring by severity, zero wasted space"
+- "Build an AI chat CLI: Claude Code style, dashed ASCII input border, hot pink bordered tool call blocks, terracotta thinking spinner with random verbs, white response text"
+- "Create a coding agent TUI: warm terracotta accent, lavender permission dialogs, hot pink for tool execution, whimsical spinner (· ✢ ✳ ✶ ✻ ✽), status bar with token count"
+- "Design a conversational CLI: Claude Code aesthetic, minimal chrome, dashed input box, colored tool borders (pink=bash, lavender=permission), shimmer animations"
 
 ## Do's and Don'ts
 
 ### Do
 
-- Use gradient coloring — it's btop's signature (green=ok → yellow=warn → red=critical)
-- Use braille characters for graphs — highest resolution in terminal
-- Use rounded borders with box-specific accent colors
-- Pack information as densely as possible
-- Color every metric by its severity/value
+- Use terracotta (`#d77757`) as the primary brand accent — it's warm and distinctive
+- Use dashed ASCII borders for input — NOT Unicode box-drawing (this is deliberate)
+- Use hot pink for tool call borders — makes them visually pop
+- Use whimsical, playful language for loading states
+- Keep response text pure white — readability is paramount
 
 ### Don't
 
-- Don't use flat colors for meters — gradients are essential
-- Don't waste space with padding — btop is maximally dense
-- Don't use light backgrounds — btop is pure black only
-- Don't use single accent color — each box has its own hue
-- Don't skip the graphs — sparklines and braille graphs are the visual identity
+- Don't use cold/corporate blues as primary accent — Claude Code is warm
+- Don't use Unicode box-drawing for the input area — dashed ASCII is the signature
+- Don't over-border — most content should flow without frames
+- Don't use generic "Loading..." — the random verbs are part of the personality
+- Don't colorize AI response body text — white for trust and readability

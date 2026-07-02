@@ -16,7 +16,7 @@ TARGET_EXPORT_HOST="${TARGET_EXPORT_HOST:-0.0.0.0}"
 TARGET_EXPORT_PORT="${TARGET_EXPORT_PORT:-41234}"
 ROTATE="${ROTATE:-270}"
 CAMERA_MODE="${CAMERA_MODE:-single}"
-TRT_ENGINE="${TRT_ENGINE:-models/yolo11n-pose-fp16.trt}"
+TRT_ENGINE="${TRT_ENGINE:-src/real/models/yolo11n-pose-fp16.trt}"
 NETWORK_INTERFACE="${NETWORK_INTERFACE:-eth0}"
 FOLLOW_TOLERANCE_M="${FOLLOW_TOLERANCE_M:-0.4}"
 ROS_DOMAIN_ID_VALUE="${ROS_DOMAIN_ID:-1}"
@@ -200,9 +200,13 @@ start_vision() {
     --label arch="$ARCH"
   )
 
-  if [[ "$ARCH" == "x86_64" ]]; then
+  # x86 sim-dev only: optionally mount a host TensorRT tree (the x86 sim image expects the
+  # libs under /workspace/TensorRT-8.5.1.7). Set HOST_TENSORRT_DIR to your local path; empty
+  # (default) skips the mount so the repo is NOT pinned to one developer's home directory
+  # (the old hard-coded /home/juanwil/... broke on every other machine -- review §5).
+  if [[ "$ARCH" == "x86_64" && -n "${HOST_TENSORRT_DIR:-}" ]]; then
     docker_args+=(
-      -v /home/juanwil/Projects/USF/GO2/TensorRT-8.5.1.7:/workspace/TensorRT-8.5.1.7:ro
+      -v "${HOST_TENSORRT_DIR}:/workspace/TensorRT-8.5.1.7:ro"
       -e LD_LIBRARY_PATH="/workspace/TensorRT-8.5.1.7/lib:${LD_LIBRARY_PATH:-}"
     )
   fi

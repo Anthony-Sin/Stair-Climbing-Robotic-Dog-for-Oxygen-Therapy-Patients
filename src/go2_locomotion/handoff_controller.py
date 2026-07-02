@@ -27,6 +27,11 @@ except Exception:  # pragma: no cover - logging helper is optional
             logger.log(level, "%s %s", message, fields)
 
 
+def _wrap_pi(a: float) -> float:
+    """Wrap an angle (rad) to [-pi, pi] so a heading error is the shortest signed turn."""
+    return float((float(a) + math.pi) % (2.0 * math.pi) - math.pi)
+
+
 class HandoffController:
     """Task 2c: WALK(PGTT) <-> CLIMB(ClosedLoopStairClimber) state machine.
 
@@ -70,6 +75,9 @@ class HandoffController:
         # --- vertical-progress watchdog state ---
         self._climb_progress_z: Optional[float] = None  # highest base_z reached this climb
         self._climb_stall_sec = 0.0        # time since the body last gained height
+        # Heading captured the instant stair-commit begins; the commit heading-lock holds
+        # THIS (not absolute yaw 0, which is "up +x" in sim but "power-on pose" on the robot).
+        self._commit_yaw0: Optional[float] = None
         # --- post-climb re-acquisition state ---
         self._post_climb_reacquire: bool = False  # True after top_egress_done until yaw realigned
 
@@ -95,6 +103,7 @@ class HandoffController:
         self._crest_logged = False
         self._climb_progress_z = None
         self._climb_stall_sec = 0.0
+        self._commit_yaw0 = None
         self._post_climb_reacquire = False
 
     def update(
@@ -106,8 +115,8 @@ class HandoffController:
         depth_hw: Any,
         cmd_vx: float,
         stairs_action_active: bool,
-        base_z: float,
-        body_speed: Optional[float],
+        base_z: Optional[float] = None,   # None == no vertical odometry (real w/o base-height)
+        body_speed: Optional[float] = None,
         roll: float,
         pitch: float,
         roll_rate: float,
@@ -173,25 +182,39 @@ class HandoffController:
         if person_detected and self._post_climb_reacquire:
             self._post_climb_reacquire = False
         self._committing = committing
+        # Capture the heading the INSTANT commitment begins and hold THAT. In sim, yaw 0 ==
+        # up the +x staircase so commit_yaw0 ~ 0 and the behaviour is ~unchanged; on the real
+        # robot absolute yaw 0 is "wherever it booted", so driving yaw -> 0 would steer toward
+        # the power-on orientation instead of up the stairs. Holding the commit-time heading
+        # (the shortest-turn error to it) fixes that on hardware and is a no-op in sim.
+        if committing:
+            if self._commit_yaw0 is None:
+                self._commit_yaw0 = float(yaw)
+        else:
+            self._commit_yaw0 = None
+        _commit_yaw_err = (
+            _wrap_pi(float(yaw) - float(self._commit_yaw0))
+            if self._commit_yaw0 is not None else 0.0
+        )
         wz_override: Optional[float] = None
         vx_floor: Optional[float] = None
         if committing:
-            # Heading lock: drive yaw -> 0 (face up the +x staircase) and steer back toward
-            # the centerline (y -> 0). Applies in BOTH walk and climb states so the blind_rl
+            # Heading lock: hold the commit-time heading (err -> 0) and steer back toward the
+            # centerline (y -> 0). Applies in BOTH walk and climb states so the blind_rl
             # backend can use it as a seed when no person bearing history is available (see
             # isaac_env.py blind_rl path: _ho["wz_override"] fallback). Without this, a climb
             # entered with person_detected=False had _last_climb_wz=None and wz fell through to
             # the controller's ~0 value, letting the robot yaw 116° uncorrected during the climb
             # (run_20260624_073431_729: yaw 1° -> 116° over 130s of blind_rl climb).
             wz_override = float(np.clip(
-                -float(self.cfg.stair_commit_yaw_kp) * float(yaw)
+                -float(self.cfg.stair_commit_yaw_kp) * _commit_yaw_err
                 - float(self.cfg.stair_commit_lat_kp) * float(y_lateral),
                 -float(self.cfg.stair_commit_wz_max), float(self.cfg.stair_commit_wz_max)))
             if self.state == "walk":
                 # Post-climb re-acquisition: while the robot is still off-axis after the climb,
                 # suppress the forward floor so it spins in place (not arcs sideways) to face
-                # forward again. Clear the flag once yaw is small enough.
-                _yaw_large = abs(float(yaw)) > math.radians(float(self.cfg.post_climb_yaw_threshold_deg))
+                # forward again. Clear the flag once the heading error is small enough.
+                _yaw_large = abs(_commit_yaw_err) > math.radians(float(self.cfg.post_climb_yaw_threshold_deg))
                 if self._post_climb_reacquire and _yaw_large:
                     vx_floor = None  # spin in place; no forward push while pointing sideways
                 else:
@@ -267,10 +290,10 @@ class HandoffController:
                         riser_dist_ahead_m=riser_dist_ahead, leading_edge_m=le)
                 else:
                     self.state = "climb"
-                    self._climb_start_z = float(base_z)
+                    self._climb_start_z = float(base_z) if base_z is not None else None
                     self._climb_t0 = float(now)
                     self._climb_elapsed = 0.0
-                    self._climb_progress_z = float(base_z)
+                    self._climb_progress_z = float(base_z) if base_z is not None else None
                     self._climb_stall_sec = 0.0
                     if backend not in ("parkour", "blind_rl"):
                         self.climber.reset()
@@ -320,7 +343,10 @@ class HandoffController:
                     body_speed=body_speed,
                     advance=advance,
                 )
-            gained = (float(base_z) - self._climb_start_z) if self._climb_start_z is not None else 0.0
+            gained = (
+                (float(base_z) - self._climb_start_z)
+                if (base_z is not None and self._climb_start_z is not None) else 0.0
+            )
             tilt = max(abs(float(roll)), abs(float(pitch)))
             # SIM-time elapsed (dt-accumulated), NOT wall clock: `now` is wall time and the
             # sim runs ~6x slower, so a wall-time window timed out the climb after only ~3s
@@ -399,12 +425,21 @@ class HandoffController:
             # timeout as the "give up" signal so a slow-but-progressing climb is NOT cut off a
             # step short of the top. NOT counted during egress (the top is flat, base_z plateaus
             # there by design -- egress_done governs that exit instead).
-            if self._climb_progress_z is None or float(base_z) > self._climb_progress_z + float(self.cfg.climb_progress_min_m):
+            if base_z is None:
+                # No vertical odometry (real robot without a base-height source): the
+                # progress watchdog CANNOT measure a wedge, so disable it EXPLICITLY. A
+                # pinned base_z=0 would otherwise read as "no progress" and force-abort
+                # every real climb after climb_stall_timeout_sec -> hand back to PGTT mid-
+                # staircase -> flip. tilt-abort + climb_max_sec remain the real backstops.
+                climb_stuck = False
+            elif self._climb_progress_z is None or float(base_z) > self._climb_progress_z + float(self.cfg.climb_progress_min_m):
                 self._climb_progress_z = float(base_z)
                 self._climb_stall_sec = 0.0
-            elif not self._egress:
-                self._climb_stall_sec += float(dt)
-            climb_stuck = (not self._egress) and (self._climb_stall_sec >= float(self.cfg.climb_stall_timeout_sec))
+                climb_stuck = False
+            else:
+                if not self._egress:
+                    self._climb_stall_sec += float(dt)
+                climb_stuck = (not self._egress) and (self._climb_stall_sec >= float(self.cfg.climb_stall_timeout_sec))
 
             # --- exit decision -------------------------------------------------------------
             # Policy backends (parkour / blind RL) exit on a COMPLETED egress (the primary path)

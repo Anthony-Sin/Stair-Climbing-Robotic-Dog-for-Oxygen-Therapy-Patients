@@ -44,8 +44,15 @@ class StallDetector:
         self._last_disp = 0.0
 
     def update(self, dt: float, cmd_vx: float, body_fwd: Optional[float]) -> bool:
+        if body_fwd is None:
+            # No velocity odometry: the detector CANNOT measure movement, so it must NOT
+            # declare a stall. Coercing None->0 would read "wedged" every step and fire a
+            # false climb hand-off / egress-hold on a robot that is walking fine (the real
+            # port leaves body_fwd/body_speed None until SportModeState velocity is wired).
+            self.reset()
+            return False
         cmd = max(0.0, float(cmd_vx))
-        fwd = float(body_fwd) if body_fwd is not None else 0.0
+        fwd = float(body_fwd)
         dt = max(0.0, float(dt))
         # Only a STALL while we are actually commanding forward (a deliberate hold
         # commands ~0 and must not register). Resetting here also means a stall must

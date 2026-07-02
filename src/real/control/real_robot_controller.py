@@ -110,7 +110,12 @@ class RealRobotController:
             gap_m=kwargs.get("gap_m"),
             person_bbox=kwargs.get("person_bbox"),
         )
-        self._cmd_pub.publish(Float32MultiArray(data=cmd.pack()))
+        # Stamp at publish with THIS node's clock (system time on real HW, use_sim_time
+        # off) so the 50 Hz consumer can age-gate: a dead vision process stops refreshing
+        # the stamp and the control node stops executing the last command. See
+        # follow_command wire layout + low_level_control_node staleness gate.
+        stamp = self._node.get_clock().now().nanoseconds * 1e-9
+        self._cmd_pub.publish(Float32MultiArray(data=cmd.pack(stamp=stamp)))
 
         depth_img = kwargs.get("depth_img")
         if depth_img is not None:

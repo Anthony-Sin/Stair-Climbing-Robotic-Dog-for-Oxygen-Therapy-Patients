@@ -48,6 +48,11 @@ docker/*.deb
 *.jpg
 *.png
 *.txt
+# ...but NEVER ignore dependency manifests. The global *.txt above had silently left
+# fine_tuning/requirements.txt + rl/requirements_rl.txt untracked -- the only copies lived
+# on one machine (review §9, a live data-loss risk). Keep requirements*.txt tracked.
+!requirements*.txt
+!**/requirements*.txt
 robot-dog-thing/src/person_following/src/xfeat_output/
 
 # Local dependency trees
@@ -58,5 +63,6 @@ librealsense/
 
 # Temporary files
 *.tmp
-sim/isaac/assets/Biped_Setup_modified_*.usd
+src/sim/isaac/assets/Biped_Setup_modified_*.usd
+
 

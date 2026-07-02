@@ -1,12 +1,17 @@
-"""Repo-root bootstrap shared by the launcher's extracted modules.
+"""Root bootstrap shared by the launcher's extracted modules.
 
-``REPO_ROOT`` and the ``sys.path`` insertion were originally at the top of
-``launcher.py`` (right before ``from core.telemetry import term_ui``). They are
-hoisted here so every submodule can import a single canonical ``REPO_ROOT`` and
-so importing any launcher submodule sets up ``sys.path`` before
-``core.telemetry.term_ui`` is imported. The value is identical to the original
-(this file sits one directory below the repo root, hence the extra
-``os.path.dirname`` — matching the repo's convention for nested modules).
+Two distinct roots, because this file lives at ``<repo>/src/launcher_lib/paths.py``:
+  * ``SRC_ROOT``  = ``<repo>/src`` — the import root (``core.*``, ``real.*`` live under
+                    it) and where the ``sim/`` / ``real/`` launch scripts sit. Added to
+                    ``sys.path`` so importing any launcher submodule resolves ``core.*``
+                    before ``core.telemetry.term_ui`` is imported.
+  * ``REPO_ROOT`` = ``<repo>`` (parent of ``src``) — the TRUE repo root, where the
+                    gitignored ``log/`` / ``run_logs/`` live. Log lookups MUST use this.
+
+Before the ``src/`` refactor these were the same directory, so one ``REPO_ROOT``
+sufficed. After it, conflating them made the telemetry dashboard look for
+``src/log/latest_run.txt`` (which does not exist) and silently show nothing — so the
+two roots are kept separate here and each consumer imports the one it means.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ from __future__ import annotations
 import os
 import sys
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if REPO_ROOT not in sys.path:
-    sys.path.insert(0, REPO_ROOT)
+SRC_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # <repo>/src
+REPO_ROOT = os.path.dirname(SRC_ROOT)                                   # <repo> (true root)
+if SRC_ROOT not in sys.path:
+    sys.path.insert(0, SRC_ROOT)

@@ -6,9 +6,91 @@ that scales the forward command near obstacles. Pure functions driven by the
 per-frame ``debug_info``/``args`` passed in by the main loop.
 """
 import numpy as np
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from core.vision.depth_processor import DepthProcessor
+
+# A stair riser reads "near" in the forward ROI just like a body does; it is told apart
+# by a strong row-to-row depth gradient (near riser face at the top rows, open tread/
+# ground receding toward the bottom rows). Same threshold the front-obstacle gate uses.
+_RISER_GRADIENT_MM_PER_ROW = 20.0
+
+
+@dataclass
+class DepthStairGate:
+    """Result of the depth-based near-field stair gate (see evaluate_depth_stair_gate)."""
+    result: Dict[str, Any]     # raw DepthStairDetector.detect() output (leading_edge etc.)
+    confirmed: bool            # stair_detected AND stair_count >= min_count
+    person_masked: bool        # the followed person's bbox was zeroed before detect()
+
+
+def evaluate_depth_stair_gate(
+    depth_img_mm: np.ndarray,
+    person_bbox: Optional[Sequence[float]],
+    detector: Any,
+    *,
+    min_count: int,
+) -> DepthStairGate:
+    """Run the geometric depth stair detector, fixing two field bugs BY CONSTRUCTION.
+
+    Extracted verbatim from the main control loop so the exact code of both incident-8.3
+    defects is unit-testable off-robot (the loop had zero tests over it):
+
+      * UNITS (P2-2): ``DepthStairDetector.detect`` treats its grid as METRES (it filters
+        ``0.06 < d < ~2.2`` m and derives world heights), but the D435 depth is uint16
+        MILLIMETRES everywhere else in the pipeline. Feeding mm made every pixel exceed
+        the range gate, the valid-row filter emptied, and the detector fired on 0 frames
+        (silently dead). We convert mm -> m here.
+      * PERSON FALSE-STAIR (incident 8.3): a patient standing ~0.6 m ahead fills the
+        detector's central column band; their body (feet->head at ~constant forward
+        distance) back-projects into a stack of rising height LEVELS the clusterer reads
+        as a multi-riser staircase (observed 8 fake risers at the follow standoff),
+        latching stairs_detected from frame 1 and forcing stair mode on flat ground. We
+        zero the followed person's bbox in the grid BEFORE detect() so only real terrain
+        drives it. (RESIDUAL, per the incident ledger: masking can leave band-edge slivers
+        that still occasionally confirm; the full fix additionally gates the depth-only
+        latch on recent YOLO stair evidence -- not done here.)
+
+    The input ``depth_img_mm`` is never mutated (the ``* 0.001`` produces a fresh array).
+    """
+    grid = np.asarray(depth_img_mm, dtype=np.float32) * 0.001   # mm -> m (units fix)
+    person_masked = False
+    if person_bbox is not None and len(person_bbox) >= 4:
+        h, w = grid.shape[:2]
+        x1 = max(0, int(round(float(person_bbox[0]))))
+        y1 = max(0, int(round(float(person_bbox[1]))))
+        x2 = min(w, int(round(float(person_bbox[2]))))
+        y2 = min(h, int(round(float(person_bbox[3]))))
+        if x2 > x1 and y2 > y1:
+            grid[y1:y2, x1:x2] = 0.0
+            person_masked = True
+    result = detector.detect(grid)
+    confirmed = (
+        bool(result.get("stair_detected", False))
+        and int(result.get("stair_count", 0)) >= int(min_count)
+    )
+    return DepthStairGate(result=result, confirmed=confirmed, person_masked=person_masked)
+
+
+def depth_stair_latch_allowed(
+    *,
+    depth_confirmed: bool,
+    now: float,
+    last_yolo_stair_ts: float,
+    persist_sec: float,
+) -> bool:
+    """Whether a DEPTH stair confirmation may (re)latch stair mode this frame.
+
+    Only when YOLO-World has corroborated stairs within ``persist_sec`` (the design intent:
+    YOLO detects the staircase from AFAR, depth carries it at close range where YOLO blanks).
+    This blocks near-floor / person-edge depth false-positives -- which confirm >=2 fake risers
+    on FLAT ground -- from latching stair mode and killing plain-follow (incident 8.3 residual).
+    YOLO itself latches independently; this only governs the DEPTH-only path.
+    """
+    if not depth_confirmed:
+        return False
+    return (float(now) - float(last_yolo_stair_ts)) <= float(persist_sec)
 
 
 def _depth_from_bbox(depth_img: np.ndarray, bbox: Optional[List[float]]) -> Optional[float]:
@@ -293,3 +375,68 @@ def _apply_front_obstacle_gate(
     debug_info["front_obstacle_scale"] = float(scale)
     debug_info["front_obstacle_trans_x_before"] = original_cmd
     return float(trans_x_cmd)
+
+
+def _roi_depth_row_gradient(depth_img: np.ndarray, roi) -> Optional[float]:
+    """Mean row-to-row change (mm/row) of the nearest depth down an ROI, or None.
+
+    ``roi`` is the ``(x1, y1, x2, y2)`` tuple ``central_roi_nearest_depth`` returns
+    (x = columns, y = rows), so the crop is ``depth_img[y1:y2, x1:x2]``. A POSITIVE
+    result means depth increases toward the bottom rows -- the profile of a stair riser
+    (near face above, open tread/ground below), not a flat body/wall.
+    """
+    try:
+        if roi is None:
+            return None
+        x1, y1, x2, y2 = int(roi[0]), int(roi[1]), int(roi[2]), int(roi[3])
+        crop = depth_img[y1:y2, x1:x2]
+        if crop.size == 0:
+            return None
+        row_min = np.array(
+            [crop[r][crop[r] > 0].min() if np.any(crop[r] > 0) else 0
+             for r in range(crop.shape[0])],
+            dtype=np.float32,
+        )
+        valid = row_min[row_min > 0]
+        if len(valid) < 4:
+            return None
+        return float(np.mean(np.diff(valid)))
+    except Exception:
+        return None
+
+
+def _stair_loss_forward_block(args, depth_img, debug_info: Dict[str, Any]) -> bool:
+    """LIVE near-field guard for the person-loss stair forward drive (returns True => block).
+
+    The STAIR_LOSS_FLOOR path drives a modest forward floor UP the stairs when the patient
+    lock is lost mid-climb, gated ONLY on the last-known patient gap -- which goes stale
+    exactly when it matters: the patient stops on the step just ahead and detection drops,
+    so the remembered gap still reads "far" while a body now fills the near field. This adds
+    the missing check: read the nearest lower-center depth THIS frame and block the drive
+    when something is close ahead that is NOT a stair riser (a body/wall). A real riser reads
+    "near" too, so it is distinguished by the row-wise depth gradient and is NOT blocked
+    (blocking on every riser would freeze the climb at the base).
+    """
+    if depth_img is None:
+        return False
+    try:
+        nearest_m, roi_info = DepthProcessor.central_roi_nearest_depth(
+            depth_img,
+            width_ratio=float(args.obstacle_roi_width_ratio),
+            height_ratio=float(args.obstacle_roi_height_ratio),
+        )
+    except Exception:
+        return False
+    debug_info["stairs_loss_nearfield_depth_m"] = (
+        None if nearest_m is None else round(float(nearest_m), 3))
+    if nearest_m is None or float(nearest_m) > float(args.obstacle_stop_distance):
+        debug_info["stairs_loss_nearfield_block"] = False
+        return False
+    grad = _roi_depth_row_gradient(depth_img, roi_info.get("roi"))
+    if grad is not None:
+        debug_info["stairs_loss_nearfield_gradient"] = round(float(grad), 1)
+    is_riser = grad is not None and grad > _RISER_GRADIENT_MM_PER_ROW
+    debug_info["stairs_loss_nearfield_riser"] = bool(is_riser)
+    blocked = not is_riser
+    debug_info["stairs_loss_nearfield_block"] = bool(blocked)
+    return blocked

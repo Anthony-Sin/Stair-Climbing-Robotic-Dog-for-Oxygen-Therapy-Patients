@@ -32,15 +32,22 @@ LOGGER = logging.getLogger("cable.real.dual_policy_runner")
 
 @dataclass
 class RobotState:
-    """Live base state the handoff + policies need, sourced from LowState/SportModeState."""
+    """Live base state the handoff + policies need, sourced from LowState/SportModeState.
+
+    Fields default to a sentinel (None) when their real source is not yet wired, and the
+    handoff treats "absent" as "disable the guard that needs it" rather than evaluating on a
+    fake 0.0 (which silently inverts the guard into a hazard on hardware -- see handoff
+    controller: base_z=0 force-aborts every climb, body_*=None false-stalls). Wire each from
+    SportModeState / IMU / the stair detector as it becomes available.
+    """
 
     roll: float = 0.0
     pitch: float = 0.0
     roll_rate: float = 0.0
     pitch_rate: float = 0.0
-    yaw: float = 0.0
-    base_z: float = 0.0
-    body_speed: Optional[float] = None       # planar speed (SportModeState), None if unknown
+    yaw: float = 0.0                          # IMU yaw (wired by the control node from LowState)
+    base_z: Optional[float] = None            # trunk height (SportModeState.position[2]); None => watchdog off
+    body_speed: Optional[float] = None        # planar speed (SportModeState), None if unknown
     body_fwd: Optional[float] = None          # heading-frame forward speed, None if unknown
     y_lateral: float = 0.0                    # lateral offset from stair centerline
     height_above_step: Optional[float] = None
@@ -126,7 +133,7 @@ class DualPolicyRunner:
         ho = self.handoff.update(
             now=now, dt=dt, go2=articulation, depth_hw=depth_106x60,
             cmd_vx=vx, stairs_action_active=bool(follow_cmd.stairs_action_active),
-            base_z=float(state.base_z), body_speed=state.body_speed,
+            base_z=state.base_z, body_speed=state.body_speed,
             roll=float(state.roll), pitch=float(state.pitch),
             roll_rate=float(state.roll_rate), pitch_rate=float(state.pitch_rate),
             height_above_step=state.height_above_step, foot_contacts=None,

@@ -1,0 +1,42 @@
+# Installable-package definition for the src/ layout (review §1/§9). `pip install -e .`
+# puts the src/ import root on sys.path so `import core`, `import go2_locomotion`, etc.
+# resolve from anywhere -- the same effect the entry points hack via per-file sys.path
+# inserts. This coexists with those inserts today; deleting them (and converting every
+# intra-repo import to qualified form) is a larger migration that must be validated against
+# BOTH the sim and real import graphs, so it is intentionally NOT done here.
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stair-climbing-robotic-dog"
+version = "0.1.0"
+description = "Stair-climbing robotic dog for oxygen-therapy patients (Unitree Go2 follow + climb)"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+]
+
+[project.optional-dependencies]
+# Host-safe test suite deps ONLY -- exactly what src/tests imports on a plain host. No torch,
+# rclpy, pyrealsense2, or Isaac (those are robot/sim runtime deps installed via their own
+# channels). Mirrors .github/workflows/tests.yml so `pip install -e .[test]` reproduces CI.
+test = [
+    "pytest",
+    "pytest-subtests",
+    "numpy",
+    "opencv-python-headless",
+    "pillow",
+]
+
+[tool.setuptools]
+# src/ layout: the import roots (core.*, real.*, go2_locomotion.*, ...) live under src/.
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+# NOTE: src/sim is intentionally not yet a package (its modules import each other by bare
+# name and are run as scripts); only the __init__.py-bearing packages are discovered.
+
+[tool.pytest.ini_options]
+testpaths = ["src/tests"]

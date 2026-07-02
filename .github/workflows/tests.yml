@@ -1,0 +1,31 @@
+name: tests
+
+# Minimal CI: run the host-safe pytest suite on every push/PR so a collection break
+# (e.g. an import to a deleted module) can never again sit green-but-unrun in the tree.
+# The suite is host-safe by design — no torch / rclpy / pyrealsense2 / Isaac needed.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'   # matches the dev host
+
+      - name: Install host-safe test deps
+        run: |
+          python -m pip install --upgrade pip
+          # The [test] extra in pyproject.toml is the single source of truth for the
+          # host-safe deps (no torch/rclpy/pyrealsense2/isaac). Editable install also puts
+          # the src/ import root on sys.path.
+          pip install -e ".[test]"
+
+      - name: Run test suite
+        run: python -m pytest -q   # testpaths=src/tests (pyproject)

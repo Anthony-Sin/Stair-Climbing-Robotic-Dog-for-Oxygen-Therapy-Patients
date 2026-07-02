@@ -25,16 +25,23 @@ def parse_args():
         help='Use Isaac Sim as the camera/robot backend instead of real hardware'
     )
     sim_group.add_argument(
-        '--frame-port', type=int, default=55002,
-        help='UDP port SimCameraCapture listens on for frames from isaac_env.py'
+        # MUST match isaac_args.py --frame-port (default 52002) or the two processes never
+        # communicate with defaults. run_sim.ps1 passes both explicitly; this aligns the
+        # bare-default (hand-run) case that used to silently mismatch (review §8).
+        '--frame-port', type=int, default=52002,
+        help='UDP port SimCameraCapture listens on for frames from isaac_env.py '
+             '(keep in sync with isaac_args.py --frame-port)'
     )
     sim_group.add_argument(
         '--cmd-host', type=str, default=os.environ.get('SIM_CMD_HOST', '192.168.1.91'),
         help='Host/IP where isaac_env.py receives sim velocity commands'
     )
     sim_group.add_argument(
-        '--cmd-port', type=int, default=55001,
-        help='UDP port isaac_env.py listens on for velocity commands'
+        # MUST match isaac_args.py --cmd-port (default 52100); mismatched defaults meant a
+        # hand-run controller sent commands to a port the sim was not listening on.
+        '--cmd-port', type=int, default=52100,
+        help='UDP port isaac_env.py listens on for velocity commands '
+             '(keep in sync with isaac_args.py --cmd-port)'
     )
     sim_group.add_argument(
         '--sim-frame-timeout-exit-sec', type=float, default=30.0,
@@ -438,6 +445,21 @@ def parse_args():
                              'tightening (static standoff = --stair-target-distance).')
     parser.add_argument('--stair-follow-bearing-scale', type=float, default=0.4,
                         help='Scale factor for follow bearing injected in hybrid mode on stairs')
+    # Crest-creep (top-of-stairs) + stair-transport tunables. These were previously read via
+    # getattr(args, ..., <literal>) with NO parser entry -- phantom config: tunable only by
+    # editing code, typo-silent, invisible to --help (review §2/§8). Promoted to real flags
+    # with the SAME defaults the getattr fallbacks used, so behaviour is unchanged.
+    parser.add_argument('--no-crest-creep', dest='crest_creep', action='store_false', default=True,
+                        help='Disable the top-of-stairs crest creep (a small forward push at the '
+                             'crest so the rear feet clear the last riser). On by default.')
+    parser.add_argument('--crest-creep-speed', type=float, default=0.16,
+                        help='Forward speed (m/s) of the crest creep at the top of the stairs.')
+    parser.add_argument('--crest-creep-min-gap-m', type=float, default=0.0,
+                        help='Suppress crest creep while the patient gap is below this (m); 0 = never.')
+    parser.add_argument('--crest-creep-pitch-deg', type=float, default=5.0,
+                        help='Body pitch (deg) at/below which the crest is considered reached so creep may fire.')
+    parser.add_argument('--stair-transport-wz-max', type=float, default=0.0,
+                        help='Extra cap (rad/s) on yaw-rate during stair transport; 0 = no extra cap.')
     parser.add_argument('--hold-ramp-sec', type=float, default=0.25,
                         help='Ramp time in seconds to blend policy action to stance pose during soft hold')
     parser.add_argument('--stairs-model', type=str, default='src/sim/models/yolo/yolov8x-worldv2.pt',

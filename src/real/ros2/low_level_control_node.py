@@ -18,8 +18,10 @@ is the gate for the CRC, and field access is defensive where it can be.
 from __future__ import annotations
 
 import math
+import os
 import threading
 import time
+from dataclasses import replace
 from typing import Optional
 
 import numpy as np
@@ -27,7 +29,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
 from std_msgs.msg import Float32MultiArray, String
 from sensor_msgs.msg import Image
 
@@ -40,11 +42,12 @@ from real.control.lowcmd_builder import (
     build_low_cmd_fields, build_damping_fields, crc32_core, N_CMD_SLOTS,
 )
 from real.control.safety_watchdog import SafetyWatchdog
+from real.control.command_gate import classify_command_age, FRESH, HOLD, DAMP
 from real.control.follow_command import FollowCommand, FOLLOW_CMD_TOPIC, DEPTH_TOPIC
 from real.perception.heightscan_provider import height_fn_from_grid
 from real.perception.depth_to_policy import preprocess as preprocess_depth
 from real.logging.real_telemetry import RealTelemetry
-from real.ros2.qos import sensor_qos, reliable_qos
+from real.ros2.qos import sensor_qos, reliable_qos, latched_qos
 from go2_locomotion.pgtt_heightmap import PGTT_N_POINTS
 
 from datetime import datetime
@@ -63,6 +66,12 @@ class LowLevelControlNode(Node):
     def __init__(self) -> None:
         super().__init__("low_level_control")
         g = ReentrantCallbackGroup()
+        # The control tick gets its OWN mutually-exclusive group so the executor can
+        # NEVER start tick N+1 while tick N is still running. A single >20 ms tick
+        # (torch-JIT, GC) would otherwise re-enter runner.step() on another executor
+        # thread and corrupt the RL policy's prev_action / gait-phase state -> the
+        # intermittent, unreproducible limb jerks. Subscriptions stay reentrant.
+        ctrl_group = MutuallyExclusiveCallbackGroup()
 
         # ---- parameters (override via ros2 launch / real_robot.yaml) -------------
         p = self.declare_parameter
@@ -73,6 +82,12 @@ class LowLevelControlNode(Node):
         heightscan_topic = p("heightscan_topic", "/go2/heightscan").value
         self._control_hz = float(p("control_hz", 50.0).value)
         self._require_released = bool(p("require_sport_released", True).value)
+        # Follow-command staleness thresholds. Past cmd_timeout_sec we HOLD (zero the
+        # velocity, keep the current walk/climb mode, balance in place); past cmd_damp_sec
+        # we DAMP (safe-stop). This is THE guard against executing a dead vision process's
+        # last command forever. cmd_timeout matches the MPPI sidecar's 0.4 s gate.
+        self._cmd_timeout_sec = float(p("cmd_timeout_sec", 0.4).value)
+        self._cmd_damp_sec = float(p("cmd_damp_sec", 1.0).value)
         self._climb_backend = str(p("climb_backend", "blind_rl").value)
         # Defaults point at the existing shared weights; the robot's launch/real_robot.yaml
         # overrides these to the on-device copies under real/models/.
@@ -82,7 +97,10 @@ class LowLevelControlNode(Node):
         walk_kd = float(p("walk_kd", 0.5).value)
         climb_kp = float(p("climb_kp", 20.0).value)
         climb_kd = float(p("climb_kd", 0.5).value)
-        self._record_telemetry = bool(p("record_telemetry", False).value)
+        # Telemetry ON by default: this is the safety platform's flight recorder next to
+        # an oxygen patient; it must not depend on someone remembering to pass a flag. An
+        # empty telemetry_dir now auto-derives a run dir instead of silently disabling.
+        self._record_telemetry = bool(p("record_telemetry", True).value)
         telemetry_dir = str(p("telemetry_dir", "").value)
 
         # ---- shared state (written by callbacks, read by the 50 Hz tick) ---------
@@ -90,11 +108,21 @@ class LowLevelControlNode(Node):
         self._low_state = None
         self._low_state_ts: Optional[float] = None
         self._cmd = FollowCommand()
+        self._last_cmd_ts: Optional[float] = None   # receipt time of last follow command
+        self._malformed_cmd_count = 0
         self._depth_m: Optional[np.ndarray] = None
         self._heightscan: Optional[np.ndarray] = None
         self._stair = {}
         self._sport_released = not self._require_released
         self._articulation: Optional[LowStateArticulation] = None
+
+        # Control-condition tracking for honest logging + exit_reason. ``_condition`` is
+        # the current edge-de-duplicated state ("ok"/"cmd_hold"/"cmd_lost"/watchdog
+        # reason); ``_exit_reason`` is what finish() records; a latched watchdog fault
+        # freezes it (a tilt/stale trip is the run's outcome, not a later clean exit).
+        self._condition = ""
+        self._exit_reason = "completed"
+        self._latched_fault = False
 
         # ---- policies + runner + watchdog ---------------------------------------
         self._runner = self._build_runner(walk_kp, walk_kd, climb_kp, climb_kd)
@@ -107,13 +135,22 @@ class LowLevelControlNode(Node):
         self._nominal_tick_s = 1.0 / max(1.0, self._control_hz)
         self._jitter_warn_last_ts: float = 0.0
 
-        # Optional run telemetry (throttled to ~10 Hz) in the perf_tracker run-dir layout.
+        # Run telemetry (throttled to ~10 Hz) in the perf_tracker run-dir layout. On by
+        # default; if no dir was configured we auto-derive one so it is never silently off.
         self._tel = None
         self._tel_count = 0
-        if self._record_telemetry and telemetry_dir:
-            self._tel = RealTelemetry(telemetry_dir)
-            self._tel.start(timestamp=datetime.now().isoformat(timespec="seconds"),
-                            command="real/ros2/low_level_control_node.py --ros2")
+        if self._record_telemetry:
+            if not telemetry_dir:
+                telemetry_dir = self._default_telemetry_dir()
+            try:
+                self._tel = RealTelemetry(telemetry_dir)
+                self._tel.start(timestamp=datetime.now().isoformat(timespec="seconds"),
+                                command="real/ros2/low_level_control_node.py --ros2")
+                self.get_logger().info(f"telemetry recording -> {telemetry_dir}")
+            except Exception as exc:
+                # Never let the flight recorder take down the 50 Hz loop -- but say so.
+                self.get_logger().error(f"telemetry init failed ({exc}); continuing without it")
+                self._tel = None
 
         # ---- ROS I/O -------------------------------------------------------------
         self._lowcmd_pub = self.create_publisher(LowCmd, self._lowcmd_topic, reliable_qos())
@@ -122,8 +159,11 @@ class LowLevelControlNode(Node):
         self.create_subscription(Image, DEPTH_TOPIC, self._on_depth, sensor_qos(), callback_group=g)
         self.create_subscription(Float32MultiArray, heightscan_topic, self._on_heightscan, sensor_qos(), callback_group=g)
         self.create_subscription(Float32MultiArray, stair_topic, self._on_stair, sensor_qos(), callback_group=g)
-        self.create_subscription(String, sport_state_topic, self._on_sport_state, sensor_qos(), callback_group=g)
-        self.create_timer(1.0 / max(1.0, self._control_hz), self._control_tick, callback_group=g)
+        # Latched QoS: sport_startup publishes "released" ONCE, latched. A VOLATILE/
+        # BestEffort subscriber would never receive that latched history if it (re)starts
+        # late -> it waits forever, robot flat, no error. Match the publisher's profile.
+        self.create_subscription(String, sport_state_topic, self._on_sport_state, latched_qos(), callback_group=g)
+        self.create_timer(1.0 / max(1.0, self._control_hz), self._control_tick, callback_group=ctrl_group)
         self.get_logger().info(f"low_level_control up @ {self._control_hz:.0f} Hz, backend={self._climb_backend}")
 
     # ------------------------------------------------------------- construction
@@ -164,8 +204,14 @@ class LowLevelControlNode(Node):
         with self._lock:
             try:
                 self._cmd = FollowCommand.unpack(msg.data)
+                self._last_cmd_ts = self._now()   # node-local staleness clock
             except Exception:
-                pass
+                self._malformed_cmd_count += 1
+                if self._malformed_cmd_count == 1:
+                    self.get_logger().warning(
+                        "dropped a malformed follow command (unpack failed); "
+                        "further drops counted in _malformed_cmd_count"
+                    )
 
     def _on_depth(self, msg) -> None:
         # 16UC1 millimetres -> float32 metres (the stair detector + mask expect metres).
@@ -206,6 +252,7 @@ class LowLevelControlNode(Node):
             low_state = self._low_state
             ts = self._low_state_ts
             cmd = self._cmd
+            last_cmd_ts = self._last_cmd_ts
             depth = self._depth_m
             heightscan = self._heightscan
             stair = dict(self._stair)
@@ -231,8 +278,31 @@ class LowLevelControlNode(Node):
             now=now, last_state_ts=ts, roll=roll, pitch=pitch,
         )
         if not verdict.ok:
+            # Tilt / joint-limit latch; a stale-lowstate gap is TRANSIENT and auto re-arms in
+            # the watchdog, so don't freeze the run's exit_reason on it. Log once + damp.
+            _latching = verdict.reason != "lowstate_stale"
+            self._enter_condition(verdict.reason, latching=_latching)
             self._publish_damping()
             return
+
+        # Command staleness: NEVER execute the last follow command forever. If vision
+        # (process A) dies/lags, degrade gracefully -- HOLD (zero velocity, keep the
+        # current walk/climb mode so we don't hand back mid-stair, balance in place),
+        # then DAMP if it stays gone. classify_command_age is pure + unit-tested.
+        cmd_age = float(now - last_cmd_ts) if last_cmd_ts is not None else float("inf")
+        freshness = classify_command_age(
+            age_sec=cmd_age, ever_received=last_cmd_ts is not None,
+            timeout_sec=self._cmd_timeout_sec, damp_sec=self._cmd_damp_sec,
+        )
+        if freshness == DAMP:
+            self._enter_condition("cmd_lost")
+            self._publish_damping()
+            return
+        if freshness == HOLD:
+            self._enter_condition("cmd_hold")
+            cmd = replace(cmd, vx=0.0, wz=0.0, yaw_err=0.0, hold=True)
+        else:
+            self._enter_condition("ok")
 
         if self._articulation is None:
             self._articulation = LowStateArticulation(low_state)
@@ -350,6 +420,45 @@ class LowLevelControlNode(Node):
     def _now(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
 
+    def _enter_condition(self, condition: str, *, latching: bool = False) -> None:
+        """Log a control-condition transition once per edge and thread it into exit_reason.
+
+        ``condition`` is one of "ok" / "cmd_hold" / "cmd_lost" / a watchdog reason. A
+        ``latching`` fault (tilt/stale from the watchdog) freezes ``_exit_reason`` -- it
+        is the run's outcome and a later clean shutdown must not overwrite it to
+        "completed". Non-latching conditions update ``_exit_reason`` live so the run
+        summary reflects the state at shutdown (e.g. ended mid-HOLD -> "cmd_hold").
+        """
+        if condition == self._condition:
+            return
+        self._condition = condition
+        if condition == "ok":
+            self.get_logger().info("control OK: follow command fresh, watchdog clear")
+        elif condition == "cmd_hold":
+            self.get_logger().warning(
+                "follow command STALE -> HOLD (zero velocity, balancing in place; "
+                "keeping current walk/climb mode)"
+            )
+        else:
+            self.get_logger().error(f"control FAULT -> {condition}: damping")
+        if self._latched_fault:
+            return
+        if latching:
+            self._exit_reason, self._latched_fault = condition, True
+        elif condition == "ok":
+            self._exit_reason = "completed"
+        else:
+            self._exit_reason = condition
+
+    def _default_telemetry_dir(self) -> str:
+        """Auto-derive ``run_logs/real/real_run_<ts>`` under the repo root when telemetry
+        is enabled but no dir was configured, so the flight recorder is never silently off.
+        """
+        here = os.path.abspath(__file__)   # .../src/real/ros2/low_level_control_node.py
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(here))))
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return os.path.join(repo_root, "run_logs", "real", f"real_run_{ts}")
+
 
 def main(args=None) -> None:
     rclpy.init(args=args)
@@ -367,7 +476,9 @@ def main(args=None) -> None:
             pass
         try:
             if node._tel is not None:
-                node._tel.finish(exit_reason="completed")
+                # Honest outcome: the watchdog/staleness reason if one tripped, else
+                # "completed". Never hard-code "completed" over a real fault.
+                node._tel.finish(exit_reason=getattr(node, "_exit_reason", "completed"))
         except Exception:
             pass
         node.destroy_node()

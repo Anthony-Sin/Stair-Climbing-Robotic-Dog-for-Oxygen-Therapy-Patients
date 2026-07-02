@@ -1,11 +1,15 @@
 """Headless smoke + behaviour tests for the WARNING target-acquisition HUD
-(``core/hud/warning_kit.py`` + ``examples/warning_hud.py``).
+(``core/hud/warning_kit.py`` and its split siblings).
 
 Pure host render (numpy + cv2 + PIL) — no GL, no camera, no audio device.  Covers:
 the HUD renders for every tracking state; info cards actually spawn/collapse with
-the scene (DEPTH while tracking, ALERT when lost, CONTACT-02 with 2+ targets); the
-range estimate is monotonic; and the presence-driven state machine walks
-BOOT→LOCK→LOST→REACQUIRE→LOCK.
+the scene (DEPTH while tracking, ALERT when lost, CONTACT-02 with 2+ targets); and
+the depth/LiDAR instruments + toasts render then expire.
+
+Note: the standalone demo driver ``examples/warning_hud.py`` (its ``estimate_range`` /
+``StateMachine`` / ``SimSource`` / ``Demo``) was deleted with the whole examples/
+showcase, so the tests that exercised only that demo were removed with it — this file
+now covers only the shipping HUD compositor + card system, which still exist.
 """
 import os
 import sys
@@ -15,10 +19,8 @@ import numpy as np
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
-sys.path.insert(0, os.path.join(_ROOT, "examples"))
 
 from core.hud.warning_kit import Target, Telemetry, WarningHud, CardStack, CardSpec  # noqa: E402
-from warning_hud import estimate_range, StateMachine, SimSource, Demo  # noqa: E402
 
 W, H = 1280, 720
 
@@ -123,57 +125,6 @@ class InstrumentsAndToasts(unittest.TestCase):
         for _ in range(12):
             hud._draw_toasts(frame, Telemetry("LOCKED", **base, toasts=[]), 1.0, 0.05)
         self.assertNotIn("HELLO", hud._toasts)
-
-
-class Telemetry_Honesty(unittest.TestCase):
-    def test_range_monotonic(self):
-        near = estimate_range(0.60)   # big bbox -> close
-        far = estimate_range(0.20)    # small bbox -> far
-        self.assertIsNotNone(near)
-        self.assertLess(near, far)
-        self.assertIsNone(estimate_range(0.0))
-
-    def test_sim_confidence_varies_and_bounded(self):
-        src = SimSource()
-        scores = []
-        for t in (2.5, 3.5, 4.6, 5.5, 6.5):       # inside the "present" window
-            _, tgs, _ = src.read(t)
-            scores += [tg.score for tg in tgs]
-        self.assertTrue(scores)
-        self.assertTrue(all(0.3 <= s <= 1.0 for s in scores))
-        self.assertGreater(max(scores) - min(scores), 0.02)   # not a flat fake value
-
-
-class StateWalk(unittest.TestCase):
-    def test_presence_drives_full_sequence(self):
-        sm = StateMachine(lock_frames=3, lost_frames=3)
-        seq = []
-        cues = []
-
-        def present_at(t):                        # gone in a middle window
-            return not (5.0 <= t < 6.0) and t >= 2.2
-
-        t = 0.0
-        while t < 8.0:
-            sm.update(present_at(t), t, cues)
-            seq.append(sm.state)
-            t += 0.05
-        self.assertEqual(seq[0], "BOOTING")
-        self.assertIn("LOCKED", seq)
-        self.assertIn("TARGET LOST", seq)
-        self.assertIn("REACQUIRE", seq)
-        self.assertEqual(sm.state, "LOCKED")       # relocked by the end
-        names = [c[1] for c in cues]
-        self.assertIn("lock", names)
-        self.assertIn("alert", names)
-
-    def test_demo_step_runs_without_audio(self):
-        demo = Demo(SimSource(), WarningHud((W, H)), with_audio=False)
-        out = None
-        for i in range(60):
-            out = demo.step(i / 30.0, 1 / 30.0)
-        self.assertEqual(out.shape, (H, W, 3))
-        self.assertTrue(demo.cues)                 # emitted at least boot cues
 
 
 if __name__ == "__main__":

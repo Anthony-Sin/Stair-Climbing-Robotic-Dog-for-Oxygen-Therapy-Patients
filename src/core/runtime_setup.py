@@ -35,7 +35,7 @@ def _build_camera(args):
             latency_ms=getattr(args, "sim_latency_ms", 0.0),
             latency_jitter_ms=getattr(args, "sim_latency_jitter_ms", 0.0),
         )
-    from camera_capture import CameraCapture
+    from real.bot.camera_capture import CameraCapture
     return CameraCapture(
         mode=args.camera_mode,
         width=1280,
@@ -70,7 +70,7 @@ def _build_robot_controller(args):
             return None
         return ctrl
 
-    from robot_controller import RobotController
+    from real.bot.robot_controller import RobotController
     low_level = getattr(args, "low_level_locomotion", False)
     base_model = getattr(args, "parkour_base_jit", "src/sim/models/locomotion/parkour/base_jit.pt")
     vision_model = getattr(args, "parkour_vision_weight", "src/sim/models/locomotion/parkour/vision_weight.pt")

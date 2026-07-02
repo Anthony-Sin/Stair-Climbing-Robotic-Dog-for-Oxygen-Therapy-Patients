@@ -1,0 +1,16 @@
+# Training-side Python deps for fine_tuning/ (RunPod RTX 6000 Ada, CUDA 12.x).
+#
+# PyTorch is intentionally NOT pinned here, so installing these does not clobber the
+# CUDA-enabled torch that RunPod GPU images already ship with. If torch is missing,
+# runpod_setup.sh installs the CUDA 12.6 build (matches docker/Dockerfile_x86_sim):
+#
+#     pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu126
+#
+# (RTX 6000 Ada is sm_89 / Ada Lovelace -- any cu12x torch >= 2.4 works.)
+
+numpy>=1.23
+python-dotenv>=1.0
+wandb>=0.16
+runpod>=1.6
+tqdm>=4.66
+tensorboard>=2.14

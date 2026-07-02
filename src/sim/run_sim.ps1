@@ -1849,6 +1849,23 @@ if (Test-Path -LiteralPath $evalSummaryFile) {
 # --- Update cross-run performance table + auto-charts ---
 Invoke-PerfTracker
 
+# Optional self-grading gate: turn analyze_climb's honest verdict into an EXIT CODE so a
+# stair run self-grades (fail on a fall / stair-collision / patient-collision risk) instead
+# of a human reading the table. OFF by default -- perf ingestion above already ran and sweeps
+# expect exit 0; set the env var SIM_GRADE_GATE=1 to arm it. Mirrors Invoke-PerfTracker's
+# proven WSL python3 invocation; captures wsl's exit code BEFORE the print pipe so it isn't
+# masked by ForEach-Object.
+if ($env:SIM_GRADE_GATE -eq '1' -and (-not $DryRun) -and (-not $NoIsaac)) {
+    $wslGradeScript = "$WslSrcRoot/sim/analysis/analyze_climb.py"
+    $gradeOut = & wsl.exe -e python3 $wslGradeScript $WslRunLogDir --gate 2>&1
+    $gradeExit = $LASTEXITCODE
+    $gradeOut | ForEach-Object { Write-Host $_ }
+    if ($gradeExit -ne 0) {
+        Write-Stage "summary" "failed" "Self-grade gate failed (fell / collided / patient-collision risk)" @{ run_log_dir = $RunLogDir }
+        exit $gradeExit
+    }
+}
+
 Write-Stage "summary" "complete" "run_sim completed" @{ run_log_dir = $RunLogDir }
 Write-Host ""
 # Small btop header, then the full (copyable) paths unboxed -- absolute paths are

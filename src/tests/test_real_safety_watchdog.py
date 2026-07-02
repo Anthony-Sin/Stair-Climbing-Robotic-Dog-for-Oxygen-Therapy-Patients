@@ -18,21 +18,27 @@ def test_fresh_upright_is_ok():
     assert v.ok and v.reason == "ok"
 
 
-def test_stale_state_trips_and_latches():
+def test_stale_state_trips_then_auto_rearms():
     wd = SafetyWatchdog(stale_sec=0.25)
     v = wd.evaluate(now=10.0, last_state_ts=9.0, roll=0.0, pitch=0.0)  # 1.0 s stale
     assert not v.ok and v.reason == "lowstate_stale"
-    # latched: even a perfectly healthy reading stays faulted until reset
+    assert wd.faulted  # unsafe to drive while stale
+    # NOT latched: the instant a fresh state returns it auto re-arms. A transient DDS gap
+    # must not permanently damp the dog on an incline (recoverable blip -> guaranteed fall).
     v2 = wd.evaluate(now=10.02, last_state_ts=10.0, roll=0.0, pitch=0.0)
-    assert not v2.ok and v2.reason == "lowstate_stale"
-    wd.reset()
-    assert wd.evaluate(now=10.04, last_state_ts=10.02, roll=0.0, pitch=0.0).ok
+    assert v2.ok and v2.reason == "ok"
+    assert not wd.faulted
 
 
-def test_tilt_trips():
+def test_tilt_trips_and_latches_until_reset():
     wd = SafetyWatchdog(max_tilt_rad=0.52)
     v = wd.evaluate(now=1.0, last_state_ts=0.99, roll=0.6, pitch=0.0)
     assert not v.ok and v.reason == "tilt_exceeded"
+    # LATCHED (unlike staleness): a fall stays tripped even on a healthy reading until reset.
+    v2 = wd.evaluate(now=1.02, last_state_ts=1.01, roll=0.0, pitch=0.0)
+    assert not v2.ok and v2.reason == "tilt_exceeded"
+    wd.reset()
+    assert wd.evaluate(now=1.04, last_state_ts=1.03, roll=0.0, pitch=0.0).ok
 
 
 def test_joint_limit_trips_when_bounds_given():

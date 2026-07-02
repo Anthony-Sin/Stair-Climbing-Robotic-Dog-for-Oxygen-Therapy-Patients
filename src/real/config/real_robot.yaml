@@ -18,6 +18,8 @@ low_level_control:
     stair_topic: /go2/stair_detection
     control_hz: 50.0
     require_sport_released: true
+    cmd_timeout_sec: 0.4         # follow command older than this -> HOLD (zero vel, balance)
+    cmd_damp_sec: 1.0            # follow command older than this -> DAMP (safe-stop)
     climb_backend: blind_rl
     # Weights: copy to real/models/ on the robot and repoint these.
     pgtt_policy_path: sim/models/pgtt/pgtt_go2_level17.npz
@@ -26,7 +28,7 @@ low_level_control:
     walk_kd: 0.5
     climb_kp: 20.0               # blind_rl motor-PD (verified contract)
     climb_kd: 0.5
-    record_telemetry: false      # set true (+ telemetry_dir) to log a perf_tracker run
+    record_telemetry: true       # flight recorder ON by default; empty dir auto-derives run_logs/real/<ts>
     telemetry_dir: ""
 
 lidar_heightscan:

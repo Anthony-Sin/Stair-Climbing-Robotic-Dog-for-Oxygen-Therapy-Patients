@@ -21,6 +21,23 @@ def test_pack_length():
     assert len(FollowCommand().pack()) == FOLLOW_CMD_LEN
 
 
+def test_stamp_roundtrips_and_publish_override_wins():
+    cmd = FollowCommand(vx=0.2, stamp=123.5)
+    assert cmd.pack()[-1] == 123.5                       # field rides in the last slot
+    assert cmd.pack(stamp=999.0)[-1] == 999.0            # publish-time override wins
+    assert FollowCommand.unpack(cmd.pack(stamp=42.0)).stamp == 42.0
+
+
+def test_legacy_12field_vector_unpacks_unstamped():
+    # A pre-stamp 12-length wire vector still decodes (stamp -> 0.0), so a mixed-version
+    # bring-up degrades to the old behaviour instead of raising on the 50 Hz hot path.
+    legacy = [0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, math.nan,
+              math.nan, math.nan, math.nan, math.nan]
+    out = FollowCommand.unpack(legacy)
+    assert out.vx == 0.1 and out.person_detected is True
+    assert out.stamp == 0.0
+
+
 def test_full_roundtrip():
     cmd = FollowCommand(
         vx=0.42,
@@ -85,6 +102,8 @@ def test_unpack_rejects_short_vector():
 
 if __name__ == "__main__":
     test_pack_length()
+    test_stamp_roundtrips_and_publish_override_wins()
+    test_legacy_12field_vector_unpacks_unstamped()
     test_full_roundtrip()
     test_none_optionals_roundtrip_via_nan()
     test_bool_coercion_from_floats()

@@ -14,7 +14,10 @@ from typing import Dict, List, Optional
 # Resolve run directory
 # ---------------------------------------------------------------------------
 def resolve_run_dir(arg: Optional[str] = None) -> Path:
-    repo_root = Path(__file__).resolve().parents[1]
+    # This file is <repo>/src/verification/analyze_run_io.py, so the true repo root
+    # (where the gitignored log/ lives) is parents[2] -- parents[1] is src/ and made
+    # every lookup resolve to the nonexistent src/log/ (silently, via callers' except).
+    repo_root = Path(__file__).resolve().parents[2]
     log_root = repo_root / "log"
 
     if arg:

@@ -77,14 +77,18 @@ RUN rm -rf /opt/opencv /opt/opencv_contrib
 # ----------------------
 # Install Python packages (NO opencv-python here)
 # ----------------------
+# NOTE: TensorRT is provided by the l4t-jetpack base at /usr/src/tensorrt, matched to the
+# on-device CUDA/cuDNN. Do NOT pip-install a different TensorRT: the old
+# `tensorrt==10.7.0` from pypi.nvidia.com overrode the JetPack TRT (8.6) that BUILT the
+# engines, so deserialize_cuda_engine() returned None at runtime with no actionable error
+# (review §5). Use the base image's TRT.
 RUN pip3 install --no-cache-dir \
     numpy \
     matplotlib \
     pillow \
     scipy \
     tqdm \
-    onnx onnxruntime \
-    tensorrt==10.7.0 --extra-index-url https://pypi.nvidia.com
+    onnx onnxruntime
 
 # ----------------------
 # Clone and install Ultralytics (YOLOv11) with no OpenCV deps
@@ -112,8 +116,13 @@ RUN pip3 install --no-cache-dir \
     networkx==2.8.8 \
     --extra-index-url https://pypi.nvidia.com
 
-# Install PyTorch and Torchvision directly from pip
-RUN pip3 install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu124
+# PyTorch/torchvision for Jetson (aarch64). The old `--index-url .../whl/cu124` is the x86
+# CUDA index -- on the Jetson it resolves to a CPU-only (or no) wheel, so torch silently ran
+# on the CPU and inference fell off a cliff vs the 50 Hz loop (review §5). Install the NVIDIA
+# Jetson build instead. VERIFY the index tag matches the JetPack/CUDA on THIS base
+# (l4t-jetpack r36.2 -> CUDA 12.2); if the tag is wrong the build FAILS loudly (good) rather
+# than silently installing CPU torch. Pin exact torch/torchvision versions once verified.
+RUN pip3 install --no-cache-dir torch torchvision --index-url https://pypi.jetson-ai-lab.dev/jp6/cu122
 
 RUN pip install --no-cache-dir numpy==1.23.5 --force-reinstall
 

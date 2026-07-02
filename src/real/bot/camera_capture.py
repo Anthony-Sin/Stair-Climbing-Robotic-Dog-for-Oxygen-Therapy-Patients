@@ -11,7 +11,7 @@ from pyrealsense2 import decimation_filter, spatial_filter, temporal_filter, hol
 import sys
 import time
 
-from image_ops import rotate_image
+from core.image_ops import rotate_image
 
 
 class CameraCapture:
@@ -56,6 +56,11 @@ class CameraCapture:
             "timeout_ms": 0,
             "error": None,
         }
+        # RealSense recovery: a USB blip must NOT permanently kill perception (the old code
+        # returned (None, None) forever with no restart). Count consecutive frame failures
+        # and restart the pipeline (+ hardware_reset) once they cross the threshold.
+        self._consec_frame_failures = 0
+        self._reconnect_after_failures = 5
 
         if mode != 'single':
             self._log(
@@ -237,19 +242,15 @@ class CameraCapture:
                     'height': height
                 }
         except Exception as e:
-            self._log(f"[CameraCapture] Error getting intrinsics: {e}")
-            # Fallback to image center if intrinsics fail
-            w, h = self.resolution
-            if self.rotate in [90, 270]:
-                w, h = h, w
-            return {
-                'fx': w * 0.8,  # Rough estimate: focal length ~80% of width
-                'fy': h * 0.8,
-                'cx': w / 2.0,
-                'cy': h / 2.0,
-                'width': w,
-                'height': h
-            }
+            # Do NOT fabricate intrinsics (the old fx = 0.8*width fallback). A wrong focal
+            # length silently corrupts EVERY bearing/distance calculation downstream --
+            # unacceptable on a robot moving next to an oxygen-therapy patient. CLAUDE.md
+            # rule 6: fix the core issue, never a plausible-but-wrong safe-fail. Fail fast
+            # with an actionable message so the operator repairs the camera stream instead.
+            raise RuntimeError(
+                "Failed to read RealSense camera intrinsics -- refusing to run on fabricated "
+                f"calibration (all bearing/distance math would be silently wrong). Cause: {e}"
+            ) from e
     
     def _get_frames_from_pipeline(self, pipeline, timeout_ms=1000):
         """
@@ -314,16 +315,58 @@ class CameraCapture:
                 - is_stitched: Always False in current runtime
                 - homography: Always None in current runtime
         """
+        # A prior reconnect attempt may have left us with no pipeline -- try once more.
+        if not self.pipelines:
+            self._reconnect_pipeline()
+            if not self.pipelines:
+                return None, None, False, None
+
         # Keep frame wait bounded so transient camera hiccups do not look like app freezes.
         img, depth = self._get_frames_from_pipeline(self.pipelines[0], timeout_ms=1000)
         if img is None or depth is None:
+            self._consec_frame_failures += 1
+            if self._consec_frame_failures >= self._reconnect_after_failures:
+                # Repeated failures -> the stream is wedged (USB blip, driver hang). Restart
+                # the pipeline instead of returning (None, None) forever.
+                self._reconnect_pipeline()
+                self._consec_frame_failures = 0
             return None, None, False, None
 
+        self._consec_frame_failures = 0
         if self.rotate in [90, 180, 270]:
             img = rotate_image(img, self.rotate)
             depth = rotate_image(depth, self.rotate)
 
         return img, [depth], False, None
+
+    def _reconnect_pipeline(self):
+        """Restart the RealSense pipeline after repeated frame failures.
+
+        Best-effort recovery from a wedged USB device: stop the current pipeline, issue a
+        hardware_reset to force re-enumeration, then re-init. Leaves ``self.pipelines`` empty
+        on failure so ``get_frame`` returns (None, None) (no crash) and retries next call.
+        """
+        self._log("[CameraCapture] Reconnecting RealSense pipeline after repeated frame failures")
+        for pipeline in self.pipelines:
+            try:
+                pipeline.stop()
+            except Exception:
+                pass
+        self.pipelines = []
+        try:
+            ctx = rs.context()
+            for dev in ctx.query_devices():
+                try:
+                    dev.hardware_reset()
+                except Exception:
+                    pass
+            time.sleep(1.0)   # let the device re-enumerate before re-opening
+        except Exception as exc:
+            self._log(f"[CameraCapture] hardware_reset skipped: {exc}")
+        try:
+            self._init_pipelines()
+        except Exception as exc:
+            self._log(f"[CameraCapture] Reconnect failed (will retry next frame): {exc}")
 
     def get_last_frame_meta(self):
         # DEBUG-TRACE REMOVE-ME: Read-only capture metadata for stall diagnostics.

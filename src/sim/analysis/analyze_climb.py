@@ -264,13 +264,30 @@ def print_report(run_dir, result):
 
 
 def main():
-    run_dir = sys.argv[1] if len(sys.argv) > 1 else latest_run_dir()
+    # Backward-compatible CLI: the run dir is the first positional arg (run_stair_sweep.ps1
+    # greps this stdout, so print_report is untouched). Adding `--gate` turns the honest
+    # verdict into an EXIT CODE so a sim run can self-grade (exit 1 on a fall / stair
+    # collision / patient-collision risk) instead of a human reading the table.
+    argv = sys.argv[1:]
+    gate = "--gate" in argv
+    positional = [a for a in argv if not a.startswith("--")]
+    run_dir = positional[0] if positional else latest_run_dir()
     if not run_dir:
         print("no run dir found")
-        return
+        return 2 if gate else 0
     result = analyze_run(run_dir)
     print_report(run_dir, result)
+    if not gate:
+        return 0
+    s = result.get("stats") or {}
+    bad = bool(s.get("fell")) or bool(s.get("collided")) or bool(s.get("patient_collision_risk"))
+    if bad:
+        print("  GATE: FAIL (fell / collided / patient-collision risk) -> exit 1")
+        return 1
+    print("  GATE: PASS")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    rc = main()
+    sys.exit(rc if isinstance(rc, int) else 0)

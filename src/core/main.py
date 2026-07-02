@@ -34,6 +34,9 @@ from core.control.stair_policy import (
     _apply_stair_command_policy,
     _apply_front_obstacle_gate,
     _depth_from_bbox_excluding_person,
+    _stair_loss_forward_block,
+    evaluate_depth_stair_gate,
+    depth_stair_latch_allowed,
 )
 from core.control.follow_shaping import (
     _apply_follow_standoff_policy,
@@ -417,6 +420,11 @@ def main():
     # YOLO. This is the fix for the wedge where the climb trigger (stairs_action_active) drops because
     # the patient climbed out of view (it was patient-gated) -> dog reverts to flat gait -> stuck.
     _stairs_seen_ts = 0.0
+    # Last time YOLO-World actually saw stairs. A CLEAN signal (updated only on real YOLO
+    # stair detection), unlike _stairs_seen_ts which updates on the merged stairs_detected and
+    # is therefore polluted by depth false-positives. Used to gate the depth-only latch so
+    # near-floor slivers can't latch stair mode on flat ground (incident 8.3 residual).
+    _last_yolo_stair_ts = -1e9
     # Last gap (m) measured WHILE the patient was actually detected. The live depth/gap reading
     # becomes the near RISER (~0.2 m) once the patient climbs out of view on the stairs, which would
     # trip the stair collision floor and freeze the climb (run_sim_20260619_141416: frozen 30 s at the
@@ -651,60 +659,45 @@ def main():
             )
             if _stair_yolo_detected:
                 stair_latch_counter = int(args.stairs_latch_frames)
+                _last_yolo_stair_ts = current_time
                 if _stair_yolo_bbox is not None:
                     last_stairs_bbox = list(_stair_yolo_bbox)
                     last_stairs_conf = float(stairs_result.get("conf", 0.0))
 
-            # Depth-based near-field stair detection (Rec 2): run the geometric depth
-            # column profiler and merge its result with YOLO. When YOLO blanks out at
-            # close range the depth detector keeps stairs_detected True, eliminating the
-            # need for the close-dropout latch as the primary compensation.
-            #
-            # P2-2 FIX (units): DepthStairDetector.detect() treats the depth grid as
-            # METRES (it filters `0.06 < d < ~2.2` and derives world heights from it),
-            # but depth_img here is MILLIMETRES (uint16, the D435 convention used
-            # everywhere else in this module -- see the /1000.0 conversions in
-            # person_follower / stair_policy). Feeding mm meant every pixel exceeded the
-            # 2.2 m range gate, so the detector's valid-row filter emptied and it fired on
-            # 0 of 2027 frames (--stair-depth-engage-distance rode entirely on the YOLO
-            # latch). Convert to metres so the geometric detector can actually trigger.
-            # (Its camera geometry config still targets the parkour cam; this only
-            # restores correct UNITS so the depth path is no longer silently dead.)
-            _depth_m_grid = np.asarray(depth_img, dtype=np.float32) * 0.001
-            # Exclude the followed person from the geometric stair profiler. The comment
-            # above (YOLO suppression) assumed the depth detector is immune to the person's
-            # footprint -- it is NOT. A patient standing ~0.6 m ahead fills the detector's
-            # central column band, and their body (feet->head at ~constant forward distance)
-            # back-projects into a stack of rising height LEVELS, which the clusterer reads
-            # as a multi-riser staircase (observed: 8 fake "stairs" at the follow standoff).
-            # That latched stairs_detected from frame 1, forcing the FSM into STAIR_NEAR on
-            # flat ground: the stair policy tamed the follow yaw so the dog under-steered and
-            # never tracked the patient, then dropped into STAIR_LOSS_FLOOR and walked
-            # straight forward blind (run_sim_20260702_091146: never plain-followed). Zero
-            # the person's bbox so only real terrain drives the detector; the near treads
-            # below/around the person on the ACTUAL staircase still register. Prefer the live
-            # track, fall back to the coasted follow target so brief YOLO dropouts stay masked.
+            # Depth-based near-field stair detection (Rec 2): the geometric depth column
+            # profiler, merged with YOLO -- it keeps stairs_detected True when YOLO blanks
+            # out at close range. The mm->m units fix (P2-2) and the person-mask (incident
+            # 8.3) both live in evaluate_depth_stair_gate now, a pure + unit-tested gate
+            # (tests/test_depth_stair_gate.py) so the loop's two hardest bugs are covered.
+            # Prefer the live track's bbox, fall back to the coasted follow target so brief
+            # YOLO dropouts stay masked.
             _mask_person = main_person if main_person is not None else follow_input_person
             _mask_bbox = _mask_person.get("bbox") if _mask_person is not None else None
-            debug_info["depth_stair_person_masked"] = False
-            if _mask_bbox is not None and len(_mask_bbox) >= 4:
-                _mh, _mw = _depth_m_grid.shape[:2]
-                _mx1 = max(0, int(round(float(_mask_bbox[0]))))
-                _my1 = max(0, int(round(float(_mask_bbox[1]))))
-                _mx2 = min(_mw, int(round(float(_mask_bbox[2]))))
-                _my2 = min(_mh, int(round(float(_mask_bbox[3]))))
-                if _mx2 > _mx1 and _my2 > _my1:
-                    _depth_m_grid[_my1:_my2, _mx1:_mx2] = 0.0
-                    debug_info["depth_stair_person_masked"] = True
-            _depth_det = _depth_stair_detector.detect(_depth_m_grid)
-            _depth_stairs_confirmed = (
-                bool(_depth_det.get("stair_detected", False))
-                and int(_depth_det.get("stair_count", 0)) >= _depth_stair_cfg.stair_min_count
+            _depth_gate = evaluate_depth_stair_gate(
+                depth_img, _mask_bbox, _depth_stair_detector,
+                min_count=_depth_stair_cfg.stair_min_count,
             )
-            if _depth_stairs_confirmed:
+            _depth_det = _depth_gate.result
+            _depth_stairs_confirmed = _depth_gate.confirmed
+            debug_info["depth_stair_person_masked"] = _depth_gate.person_masked
+            # Gate the DEPTH-ONLY latch on recent YOLO-World stair evidence. Design intent
+            # (main L884): YOLO detects the staircase from AFAR, depth carries it at close
+            # range. Without this gate, near-floor / person-edge depth slivers confirm >=2
+            # fake risers on FLAT ground (count oscillates 1->6->2->9...) and latch stair mode
+            # with NO corroboration -- the controller tames follow yaw and the dog stops
+            # tracking the patient (incident 8.3 residual: run_..142645 latched stairs at
+            # frame 14 while YOLO's first real detection was frame 517 -> ~500 flat frames in
+            # stair mode, never plain-followed). YOLO still latches on its own (above); depth
+            # may only EXTEND the latch while YOLO has been seen within stair_seen_persist_sec.
+            _depth_may_latch = depth_stair_latch_allowed(
+                depth_confirmed=_depth_stairs_confirmed, now=current_time,
+                last_yolo_stair_ts=_last_yolo_stair_ts,
+                persist_sec=float(args.stair_seen_persist_sec),
+            )
+            if _depth_may_latch:
                 stair_latch_counter = int(args.stairs_latch_frames)
-                # Use the depth detector's leading edge as stairs_depth_m when YOLO bbox
-                # depth is unavailable (populated below after stair depth measurement).
+            debug_info["depth_stair_confirmed"] = bool(_depth_stairs_confirmed)
+            debug_info["depth_stair_yolo_gated_out"] = bool(_depth_stairs_confirmed and not _depth_may_latch)
             debug_info["depth_stair_detected"] = bool(_depth_det.get("stair_detected", False))
             debug_info["depth_stair_count"] = int(_depth_det.get("stair_count", 0))
             debug_info["depth_stair_leading_edge_m"] = _depth_det.get("leading_edge_distance")
@@ -1728,8 +1721,24 @@ def main():
                     _loss_gap is not None
                     and float(_loss_gap) < float(args.stair_climb_collision_floor)
                 )
-                _loss_climb_vx = 0.0 if _loss_block else float(_committed_stair_floor)
+                # P0-4 safety: the stale last-known gap is not enough on its own -- it reads
+                # "safe" exactly when the patient stops on the step just ahead and detection
+                # drops. Add two live/dispatch guards so the blind loss drive can never walk
+                # the dog into them: (a) a LIVE near-field depth return that is NOT a riser
+                # (a body/wall close ahead), and (b) a detection-age ceiling so the dog never
+                # drives blind forever toward a departed patient (mirrors the committed-climb
+                # backstop at the forced-latch shaping pass, enforced here at dispatch too).
+                _loss_near_block = _stair_loss_forward_block(args, depth_img, debug_info)
+                _loss_det_age = ((time.perf_counter() - last_matched_visual_ts)
+                                 if last_matched_visual_ts is not None else 1e9)
+                _loss_age_block = _loss_det_age > float(args.stair_blind_climb_timeout_sec)
+                _loss_climb_vx = (
+                    0.0 if (_loss_block or _loss_near_block or _loss_age_block)
+                    else float(_committed_stair_floor)
+                )
                 debug_info["stairs_loss_collision_block"] = bool(_loss_block)
+                debug_info["stairs_loss_age_block"] = bool(_loss_age_block)
+                debug_info["stairs_loss_det_age_sec"] = round(float(_loss_det_age), 2)
                 debug_info["stairs_loss_last_person_gap_m"] = (
                     None if _loss_gap is None else round(float(_loss_gap), 3))
                 controller.move(

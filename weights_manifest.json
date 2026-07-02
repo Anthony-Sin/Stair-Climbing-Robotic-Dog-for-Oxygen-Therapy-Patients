@@ -1,0 +1,134 @@
+{
+  "_comment": "Integrity + provenance manifest for the untracked model weights (gitignored *.pt/*.trt/*.onnx/*.npz). Review \u00a79: without this a fresh clone cannot obtain weights. sha256 lets scripts/fetch_weights.py verify a fetched/rebuilt file. .trt/.engine are NOT portable (host-GPU specific) -- rebuild them on-target.",
+  "version": 1,
+  "entries": [
+    {
+      "path": "src/real/models/osnet_ain_x1_0.trt",
+      "sha256": "28d82497654bf430398ff288c48a21d85e7154e9ffb12c7948896d679e575bd7",
+      "size_bytes": 10577756,
+      "purpose": "Real: OSNet ReID TensorRT engine (person re-identification)",
+      "source": "TODO: fill in (URL / training run / on-device build cmd)",
+      "portable": false
+    },
+    {
+      "path": "src/real/models/yolo11n-pose-fp16.trt",
+      "sha256": "9e4edb95f2c0dfb27ae8d57d580a17d79321e6d0ec6a9959c35cee3a0fc25296",
+      "size_bytes": 10628532,
+      "purpose": "Real: YOLO11n pose TensorRT engine (person keypoints); D435 pipeline",
+      "source": "TODO: fill in (URL / training run / on-device build cmd)",
+      "portable": false
+    },
+    {
+      "path": "src/real/models/yolov8s-worldv2.pt",
+      "sha256": "9b2c17ab6124a913e9b3a5c170617920d91b0f01111a8479da69f00e2cf27792",
+      "size_bytes": 25923032,
+      "purpose": "Real: YOLO-World v2 open-vocab (stair detection); .engine built on-device",
+      "source": "TODO: fill in (URL / training run / on-device build cmd)",
+      "portable": true
+    },
+    {
+      "path": "src/sim/models/clip/ViT-B-32.pt",
+      "sha256": "40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af",
+      "size_bytes": 353976522,
+      "purpose": "CLIP ViT-B/32 (YOLO-World open-vocab text encoder)",
+      "source": "TODO: fill in (URL / training run / on-device build cmd)",
+      "portable": true
+    },
+    {
+      "path": "src/sim/models/locomotion/go2_robot_lab_policy.pt",
+      "sha256": "9f14cb95e74ac9e5e30954da0fc0c33eaa41e337852ebed19fcee869279ade0b",
+      "size_bytes": 769376,
+      "purpose": "Blind RL locomotion policy (climb backend)",
+      "source": "TODO: fill in (URL / training run / on-device build cmd)",
+      "portable": true
+    },
+    {
+      "path": "src/sim/models/locomotion/parkour/base_jit.pt",
+      "sha256": "ec179cfd8ca449794971f917d47bee93780f8ea611420f95ac3fefa7209cd845",
+      "size_bytes": 1162135,
+      "purpose": "Parkour locomotion base policy (TorchScript JIT)",
+      "source": "TODO: fill in (URL / training run / on-device build cmd)",
+      "portable": true
+    },
+    {
+      "path": "src/sim/models/locomotion/parkour/vision_weight.pt",
+      "sha256": "275a891dd652b88b305c3ad74b9ab943fd0c2347ff88b0fe4727d7e5d41ae6d4",
+      "size_bytes": 35534700,
+      "purpose": "Parkour locomotion vision head weights",
+      "source": "TODO: fill in (URL / training run / on-device build cmd)",
+      "portable": true
+    },
+    {
+      "path": "src/sim/models/pgtt/pgtt_go2_level03.npz",
+      "sha256": "bc53159677453ca0a475df116b36c28064aad64a29fc12988b59775a6b4094d8",
+      "size_bytes": 988828,
+      "purpose": "PGTT parametric-gait terrain-tracking policy (level = terrain difficulty)",
+      "source": "TODO: fill in (URL / training run / on-device build cmd)",
+      "portable": true
+    },
+    {
+      "path": "src/sim/models/pgtt/pgtt_go2_level07.npz",
+      "sha256": "4b3bd1159acc4c9a3edfa93963a2b4c072fc2b87a5c599be1492d4716bc2fa98",
+      "size_bytes": 988828,
+      "purpose": "PGTT parametric-gait terrain-tracking policy (level = terrain difficulty)",
+      "source": "TODO: fill in (URL / training run / on-device build cmd)",
+      "portable": true
+    },
+    {
+      "path": "src/sim/models/pgtt/pgtt_go2_level10.npz",
+      "sha256": "0b6eaf655f93641530cb5b3f02b292973a1f3c9b9a94d39e255cb355a5d98cce",
+      "size_bytes": 988828,
+      "purpose": "PGTT parametric-gait terrain-tracking policy (level = terrain difficulty)",
+      "source": "TODO: fill in (URL / training run / on-device build cmd)",
+      "portable": true
+    },
+    {
+      "path": "src/sim/models/pgtt/pgtt_go2_level13.npz",
+      "sha256": "a2bc8432e3e38f4e215a6432af3eda725c6951fcfe28dde6a1690a65f07f52a2",
+      "size_bytes": 988828,
+      "purpose": "PGTT parametric-gait terrain-tracking policy (level = terrain difficulty)",
+      "source": "TODO: fill in (URL / training run / on-device build cmd)",
+      "portable": true
+    },
+    {
+      "path": "src/sim/models/pgtt/pgtt_go2_level17.npz",
+      "sha256": "0fd68f316b4a63a07888940d61969658622eb94f60e274b1147e5bea26ca8c3f",
+      "size_bytes": 988828,
+      "purpose": "PGTT parametric-gait terrain-tracking policy (level = terrain difficulty)",
+      "source": "TODO: fill in (URL / training run / on-device build cmd)",
+      "portable": true
+    },
+    {
+      "path": "src/sim/models/pgtt/pgtt_go2_level20.npz",
+      "sha256": "fc32987782cb249e89db970d615a40bd3dc0e7477ea571c2d3dd517e8bac89c4",
+      "size_bytes": 988828,
+      "purpose": "PGTT parametric-gait terrain-tracking policy (level = terrain difficulty)",
+      "source": "TODO: fill in (URL / training run / on-device build cmd)",
+      "portable": true
+    },
+    {
+      "path": "src/sim/models/reid/osnet_ain_x1_0.trt",
+      "sha256": "28d82497654bf430398ff288c48a21d85e7154e9ffb12c7948896d679e575bd7",
+      "size_bytes": 10577756,
+      "purpose": "Sim: OSNet ReID TensorRT engine (host-GPU specific)",
+      "source": "TODO: fill in (URL / training run / on-device build cmd)",
+      "portable": false
+    },
+    {
+      "path": "src/sim/models/yolo/yolo11n-pose-fp16.trt",
+      "sha256": "9e4edb95f2c0dfb27ae8d57d580a17d79321e6d0ec6a9959c35cee3a0fc25296",
+      "size_bytes": 10628532,
+      "purpose": "Sim: YOLO11n pose TensorRT engine (host-GPU specific, rebuild per machine)",
+      "source": "TODO: fill in (URL / training run / on-device build cmd)",
+      "portable": false
+    },
+    {
+      "path": "src/sim/models/yolo/yolov8x-worldv2.pt",
+      "sha256": "41e771bfbbb8894dd857f3fef7cac3b3578dffd49fd3547101efa6a606a02a0e",
+      "size_bytes": 146355704,
+      "purpose": "Sim: YOLO-World x2 open-vocab (stair detection)",
+      "source": "TODO: fill in (URL / training run / on-device build cmd)",
+      "portable": true
+    }
+  ]
+}
