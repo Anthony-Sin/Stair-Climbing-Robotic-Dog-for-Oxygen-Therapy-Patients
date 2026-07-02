@@ -216,7 +216,7 @@ start_vision() {
   fi
 
   docker run "${docker_args[@]}" "$VISION_IMAGE" bash -lc "
-    python3 real/main.py \
+    python3 src/real/main.py \
       --follow \
       --follow-backend mppi \
       --target-distance ${TARGET_DISTANCE} \

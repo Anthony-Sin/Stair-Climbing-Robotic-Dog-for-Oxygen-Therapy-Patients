@@ -224,60 +224,40 @@ graph TD
 ## Project Structure
 
 ```
-core/                          Docker controller process
-  main.py                      Main runtime loop
-  args_parser.py               CLI argument parsing
-  control/
-    climb_fsm.py               6-state ClimbFSM
-    follow_shaping.py          Speed governor + stair command shaping
-    person_follower.py         3-zone PID person follower
-    pid_controller.py          PID implementation
-    stair_policy.py            Stair forward command policy
-  vision/
-    depth_processor.py         Depth gap estimation
-    lidar_fusion.py            Camera + LiDAR depth fusion
-    single_person_tracker.py   IoU re-ID tracker
-    yolo_pose_inference.py     YOLOv8-Pose person detection
-    yolo_stairs_inference.py   YOLO-World stair detection
-  hud/                         HUD overlay rendering
-  telemetry/                   Telemetry publishing
+src/                             All application Python (import root)
+  core/                          Docker controller process
+    main.py                      Main runtime loop
+    args_parser.py               CLI argument parsing
+    control/                     climb_fsm · follow_shaping · person_follower (follow_controller/config/tuning) · pid_controller · stair_policy
+    vision/                      depth_processor · lidar_fusion · single_person_tracker · yolo_pose/stairs_inference
+    hud/                         HUD overlay rendering (warning_* + hud_* modules)
+    telemetry/                   Telemetry publishing (term_ui split into ansi/theme/components/…)
+  shared/                        Shared real/sim logic — single source of truth
+    perception/parkour_depth_mask.py   Person depth-mask (real + sim shim to here)
+  go2_locomotion/                Shared locomotion policies (sim + real ROS2)
+    pgtt_locomotion_policy.py    PGTT MLP — default walking policy
+    pgtt_stair_handoff.py        HandoffController FSM (config/detectors/controller)
+    parkour_locomotion_policy.py Extreme-Parkour-Onboard CNN (contract + runner)
+    rl_locomotion_policy.py      blind-RL proprioceptive policy (contract + runner)
+    closed_loop_stair_climber.py Deterministic IK Climber
+  sim/                           Isaac Sim environment
+    isaac/
+      isaac_env.py               Sim entry point · 50 Hz physics loop
+      env/                       Extracted isaac_env subsystems (cameras · terrain_queries · go2_control · frame_publisher · …)
+      biped_anim/ world/ perception/ terrain_bench/ final_scene/ o2_payload/
+    analysis/                    Run analysis tools (sweep_present / follow_present split into modules)
+    models/                      Model checkpoints (locomotion / yolo / pgtt)
+    run_sim.bat / run_sim.ps1    Primary sim launcher (+ run_stair_sweep / run_bench)
+  real/                          ROS2 real-robot port (ros2/ control/ bot/ perception/ logging/)
+  perf_tracker/                  Run tracking (archive.jsonl, performance_table.csv)
+  fine_tuning/                   RunPod RL retrain scaffold
+  launcher_lib/ + launcher.py    Interactive btop-style launcher
+  examples/  tools/  verification/   Demos + dev/analysis scripts
+  tests/                         Host-side pytest suite
 
-go2_locomotion/                Shared locomotion policies (sim + real ROS2)
-  pgtt_locomotion_policy.py    PGTT MLP — default walking policy
-  pgtt_stair_handoff.py        HandoffController FSM
-  parkour_locomotion_policy.py Extreme-Parkour-Onboard CNN
-  rl_locomotion_policy.py      blind-RL proprioceptive policy
-  closed_loop_stair_climber.py Deterministic IK Climber
-
-sim/                           Isaac Sim environment
-  isaac/
-    isaac_env.py               Sim entry point · 50 Hz physics loop
-    biped_anim/                Patient procedural gait (clip + IK)
-    world/                     World actors (H1 puppet, patient body)
-    perception/                Sim-side perception helpers
-    terrain_bench/             Multi-terrain benchmark runner
-    o2_payload/                O2 payload physics + monitor
-  analysis/                    Run analysis tools
-  models/                      All model checkpoints
-    locomotion/                Go2 policy files
-    yolo/                      YOLO models
-    pgtt/                      PGTT heightmap model
-  run_sim.bat / run_sim.ps1    Primary sim launcher
-  run_stair_sweep.bat / .ps1   Warm riser sweep
-  run_bench.bat / .ps1         Multi-terrain benchmark
-
-perf_tracker/                  Run tracking
-  archive.jsonl                Full run history (source of truth)
-  performance_table.csv        Lean actionable leaderboard
-
-real/                          ROS2 Foxy real-robot port (deferred until sim proven)
-  ros2/                        Thin rclpy nodes
-  control/                     Pure host-tested control
-
-docker/                        Dockerfiles + compose for controller container
-ros2_ws/                       ROS2 workspace (Nav2 Humble sidecar)
-fine_tuning/                   RunPod RL retrain scaffold
-tests/                         Host-side pytest suite
+docker/                          Dockerfiles + compose for controller container
+ros2_ws/                         ROS2 workspace (Nav2 Humble sidecar)
+docs/                            DESIGN.md · SIM_FLAGS.md · svgs/ architecture diagrams
 ```
 
 ---
@@ -289,7 +269,7 @@ Ensure **NVIDIA Isaac Sim** is installed and **Docker Desktop** is running.
 ### Interactive launcher (btop-style)
 
 The quickest way to start either target is the **interactive launcher** — a
-btop-style terminal interface (see [`DESIGN.md`](DESIGN.md)) where you pick the
+btop-style terminal interface (see [`DESIGN.md`](docs/DESIGN.md)) where you pick the
 flags on screen and watch a live dashboard of the run:
 
 ```powershell
@@ -322,23 +302,23 @@ the TUI.
 
 ```powershell
 # Standard launch — Isaac Sim GUI + Docker controller
-.\sim\run_sim.bat
+.\src\sim\run_sim.bat
 
 # Headless + fast render
-.\sim\run_sim.bat --headless --fast-render
+.\src\sim\run_sim.bat --headless --fast-render
 
 # Warm start — keeps Isaac alive between runs (skips ~123 s RTX boot)
-.\sim\run_sim.bat --headless --fast-render --warm
-.\sim\run_sim.bat --warm-shutdown        # clean stop
+.\src\sim\run_sim.bat --headless --fast-render --warm
+.\src\sim\run_sim.bat --warm-shutdown        # clean stop
 
 # Self-test walk — drives policy directly without Docker
-.\sim\run_sim.bat --self-test-walk --self-test-vx 0.5 --self-test-sec 15
+.\src\sim\run_sim.bat --self-test-walk --self-test-vx 0.5 --self-test-sec 15
 
 # Sim-to-real validation — adds D435 noise, latency, domain randomisation
-.\sim\run_sim.bat --sim2real-validation-cam
+.\src\sim\run_sim.bat --sim2real-validation-cam
 
 # Multi-terrain benchmark
-cd sim
+cd src\sim
 .\run_bench.bat
 .\run_bench.bat --only stairs_steep,ramp_20deg
 
@@ -346,4 +326,4 @@ cd sim
 .\run_stair_sweep.bat
 ```
 
-For the complete flag reference and logging layout see [`SIM_FLAGS.md`](SIM_FLAGS.md).
+For the complete flag reference and logging layout see [`SIM_FLAGS.md`](docs/SIM_FLAGS.md).
