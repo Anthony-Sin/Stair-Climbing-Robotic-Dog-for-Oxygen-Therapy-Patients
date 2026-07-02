@@ -360,6 +360,13 @@ STAIR_WAYPOINT_MAX_TILT_DEG = 25.0  # upright band; a clean climb does not excee
 # feeds motion commands.
 ROBOT_PERSON_COLLISION_DISTANCE_M = 0.55
 
+# Lateral (Y) drift threshold (m) for the patient walking down the centre lane. The old
+# 0.01 m (1 cm) fired for any normal walking sway -- a dead "cries wolf" metric. The patient
+# path is the centre lane (y=0); >0.5 m off it is a real departure from the intended lane
+# (the person-approach amplitude and stair half-widths are all under this), so this only
+# flags an actual off-lane wander, not the natural gait wobble.
+HUMAN_LANE_DRIFT_M = 0.5
+
 # Telemetry-only state for the stair demo; the RL policy owns joint control.
 _go2_locomotion_state = Go2LocomotionState()
 
@@ -385,6 +392,118 @@ _GRACEFUL_STOP = False
 def _request_graceful_stop(*_args):
     global _GRACEFUL_STOP
     _GRACEFUL_STOP = True
+
+
+# ---------------------------------------------------------------------------
+# Step-phase profiler: accumulate per-phase wall-milliseconds over the Isaac step
+# loop and log ONE summary line every ~200 steps. The sim runs at RTF ~0.117, so
+# this pins down which subsystem (physics / GPU render readback / recorder encode /
+# parkour depth / LiDAR raycast / frame publish) eats the wall time. Cheap: a couple
+# of perf_counter() reads per phase, no allocation on the hot path.
+# ---------------------------------------------------------------------------
+_PROFILE_PHASES = (
+    "physics", "render_readback", "recorder", "parkour_depth", "lidar", "publisher", "other"
+)
+
+
+class _StepProfiler:
+    """Accumulate per-phase wall-time and emit a mean-ms/%-of-loop summary periodically.
+
+    Usage per step::
+
+        prof.step_begin()
+        with prof.phase("physics"):
+            world.step(...)
+        ...
+        prof.step_end(sim_dt_this_step)
+
+    ``phase()`` is a context manager; a phase that never runs on a given step simply
+    contributes 0 that step. ``step_end`` folds the un-attributed remainder of the
+    loop into ``other`` and, every ``interval`` steps, logs the summary and resets.
+    """
+
+    def __init__(self, logger, log_event_fn, *, interval: int = 200, enabled: bool = True):
+        self._logger = logger
+        self._log_event = log_event_fn
+        self._interval = max(1, int(interval))
+        self.enabled = bool(enabled)
+        self._accum = {p: 0.0 for p in _PROFILE_PHASES}
+        self._steps = 0
+        self._loop_accum = 0.0          # summed full-step wall time (window)
+        self._sim_accum = 0.0           # summed sim-time advanced (window), for RTF
+        self._step_t0 = 0.0
+        self._attributed = 0.0          # phase time attributed within the current step
+
+    class _Ctx:
+        __slots__ = ("_prof", "_key", "_t0")
+
+        def __init__(self, prof, key):
+            self._prof = prof
+            self._key = key
+            self._t0 = 0.0
+
+        def __enter__(self):
+            if self._prof.enabled:
+                self._t0 = time.perf_counter()
+            return self
+
+        def __exit__(self, *exc):
+            if self._prof.enabled:
+                dt = time.perf_counter() - self._t0
+                self._prof._accum[self._key] += dt
+                self._prof._attributed += dt
+            return False
+
+    def phase(self, key: str):
+        return _StepProfiler._Ctx(self, key)
+
+    def step_begin(self) -> None:
+        if not self.enabled:
+            return
+        self._step_t0 = time.perf_counter()
+        self._attributed = 0.0
+
+    def step_end(self, sim_dt: float = 0.0) -> None:
+        if not self.enabled:
+            return
+        loop = time.perf_counter() - self._step_t0
+        # Un-attributed remainder of the loop (command read, telemetry, evaluation,
+        # scene motion, etc.) folds into "other" -- never negative.
+        self._accum["other"] += max(0.0, loop - self._attributed)
+        self._loop_accum += loop
+        self._sim_accum += max(0.0, float(sim_dt))
+        self._steps += 1
+        if self._steps >= self._interval:
+            self._emit()
+            self._reset()
+
+    def _emit(self) -> None:
+        n = max(1, self._steps)
+        loop_ms = (self._loop_accum / n) * 1000.0
+        means_ms = {p: (self._accum[p] / n) * 1000.0 for p in _PROFILE_PHASES}
+        denom = self._loop_accum if self._loop_accum > 1e-9 else 1e-9
+        pcts = {p: round(100.0 * self._accum[p] / denom, 1) for p in _PROFILE_PHASES}
+        # Measured RTF over the window (sim seconds advanced / wall seconds spent).
+        rtf = None
+        if self._sim_accum > 0.0 and self._loop_accum > 1e-9:
+            rtf = round(self._sim_accum / self._loop_accum, 4)
+        fields = {"steps": int(self._steps), "loop_ms": round(loop_ms, 2), "rtf": rtf}
+        for p in _PROFILE_PHASES:
+            fields[f"{p}_ms"] = round(means_ms[p], 2)
+            fields[f"{p}_pct"] = pcts[p]
+        try:
+            self._log_event(self._logger, logging.INFO, "step_profile",
+                            "Per-phase step timing (mean ms and pct of loop over window)", **fields)
+        except Exception:
+            pass
+
+    def _reset(self) -> None:
+        for p in _PROFILE_PHASES:
+            self._accum[p] = 0.0
+        self._steps = 0
+        self._loop_accum = 0.0
+        self._sim_accum = 0.0
+
 
 # Handle for the mounted oxygen-concentrator payload (rail cradle + breakable
 # strap + free tank rigid body), set by load_go2() and consumed by the
@@ -1463,6 +1582,33 @@ def get_terrain_height(x: float, y: float) -> float:
     return 0.0
 
 
+def _collapse_height_threshold(x: float, y: float) -> float:
+    """Effective body-height-above-terrain "collapse" floor at (x, y).
+
+    On flat ground this is the plain ROBOT_COLLAPSE_HEIGHT_M. During the staircase
+    phase the terrain reference is get_terrain_height()'s DISCRETE tread top, which
+    jumps a full riser the instant x crosses a riser edge. The body sits above/behind
+    the tread it is stepping onto, so for a moment `rz - terrain_z` reads ~one riser
+    too low even on a clean climb (e.g. 0.139 m vs the 0.18 m floor) while tilt never
+    exceeds ~27.5 deg. Add a riser-height slack on the stairs (and one riser back /
+    forward of the span, to cover the approach/crest samples) so a single-riser
+    discretization jump cannot brand a clean climb a "collapse". The genuine fall test
+    (low AND tilted past ROBOT_COLLAPSE_TILT_DEG) is unaffected -- this only widens the
+    LOW-height half of it on the stairs, where the low reading is a measurement artifact.
+    """
+    s = get_active_stairs()
+    slack = float(s.step_height_m)
+    # One tread of margin around the span so the last approach step and the top-riser
+    # crest sample (where the discretization jump is largest) are both covered.
+    on_or_near_stairs = (
+        (-s.half_width_m <= y <= s.half_width_m)
+        and (s.start_x_m - s.step_depth_m) <= x <= (s.end_x_m + s.step_depth_m)
+    )
+    if on_or_near_stairs:
+        return ROBOT_COLLAPSE_HEIGHT_M - slack
+    return ROBOT_COLLAPSE_HEIGHT_M
+
+
 def get_terrain_height_smooth(x: float, y: float) -> float:
     """Continuous stair height for the patient's rendered root and ground-truth Z.
 
@@ -1502,6 +1648,14 @@ def _get_person_pose_z(x: float, y: float, *, smooth: bool = True) -> float:
 # each nosing. 0.05 s keeps the lag (hence the foot dip) tiny while still taking the
 # hard edge off the per-tread rise.
 _PERSON_VISUAL_Z_TAU = 0.05
+# Faster tau used ONLY when the discrete-tread target has jumped ~a full riser ahead of
+# the eased root (the stairs->landing CREST). At the crest the terrain steps up a full
+# riser onto the landing; with the normal 0.05 s tau the visual root lags far enough that
+# the planted feet end up ~0.22-0.25 m BELOW the landing (feet cannot reach up past the
+# root). Snapping the root up quickly there closes the gap so the planted feet sit ON the
+# landing. Small per-tread deltas keep the normal smoothness -- only the big crest jump
+# eases fast, so the flat-ground/per-step feel is unchanged.
+_PERSON_VISUAL_Z_TAU_CREST = 0.012
 
 
 def _person_visual_z(state, x: float, y: float, dt: float) -> float:
@@ -1516,10 +1670,31 @@ def _person_visual_z(state, x: float, y: float, dt: float) -> float:
     i.e. a real alternating step. The two-legs-up artifact is handled by the short easing
     tau (it was the easing LAG, not the body height). Per-foot IK still references each
     foot's own discrete tread. GT Z is on the smooth ramp separately, so GT is unaffected.
+
+    Adaptive crest easing: when the discrete-tread target has stepped up ~a full riser
+    ahead of the eased root (the stairs->landing crest), ease with the faster
+    _PERSON_VISUAL_Z_TAU_CREST so the root reaches the landing fast enough that the
+    planted feet sit ON it (they otherwise end up ~a riser below). Small per-tread deltas
+    keep the normal _PERSON_VISUAL_Z_TAU, so flat ground and per-step feel are unchanged.
     """
     target = _get_person_pose_z(x, y, smooth=False)  # discrete tread top (+ final-scene offset)
-    a = 1.0 if dt <= 0.0 else min(1.0, dt / _PERSON_VISUAL_Z_TAU)
-    state.visual_pz += a * (target - state.visual_pz)
+    delta = target - state.visual_pz
+    # Crest detection: fast-ease ONLY when stepping up onto the TOP landing (the last
+    # riser -> flat landing), where the accumulated smoothing lag leaves the planted feet
+    # ~a riser below the landing. Restrict to the crest by POSITION (last tread onto the
+    # landing) AND a real pending step-up, so mid-climb per-tread rises keep the normal
+    # smooth tau (and flat ground is never affected). The landing starts at end_x_m; the
+    # last tread spans [end_x_m - step_depth_m, end_x_m].
+    s = get_active_stairs()
+    riser = float(s.step_height_m)
+    _at_crest = (
+        (-s.half_width_m <= y <= s.half_width_m)
+        and x >= (s.end_x_m - s.step_depth_m)
+        and delta > 0.4 * riser
+    )
+    tau = _PERSON_VISUAL_Z_TAU_CREST if _at_crest else _PERSON_VISUAL_Z_TAU
+    a = 1.0 if dt <= 0.0 else min(1.0, dt / tau)
+    state.visual_pz += a * delta
     return state.visual_pz
 
 
@@ -3276,6 +3451,14 @@ def apply_rgb_perception_noise(rgb: np.ndarray, vx: float, vy: float, wz: float)
 # ---------------------------------------------------------------------------
 # Frame publisher
 # ---------------------------------------------------------------------------
+# zlib compression level for the published depth buffer. Level 9 (max) spent
+# meaningful CPU on the render/publish tick for little size win on 16-bit depth;
+# level 5 is a near-identical ratio at a fraction of the CPU. The decoder uses a
+# plain zlib.decompress (auto-detects the level), so this is wire-compatible --
+# only the encode cost changes, not the field name or format.
+_DEPTH_ZLIB_LEVEL = 5
+
+
 class FramePublisher:
     """Encodes RGB + depth frames and sends over UDP to SimCameraCapture.
 
@@ -3424,7 +3607,7 @@ class FramePublisher:
 
             rgb_b64 = base64.b64encode(buf.tobytes()).decode('ascii')
             depth_b64 = base64.b64encode(
-                zlib.compress(small_depth.astype(np.uint16).tobytes(), level=9)
+                zlib.compress(small_depth.astype(np.uint16).tobytes(), level=_DEPTH_ZLIB_LEVEL)
             ).decode('ascii')
 
             meta = {
@@ -5089,7 +5272,10 @@ def _run_evaluation_and_save_images(
             )
             if abs(roll) > ROBOT_FALL_TILT_RAD or abs(pitch) > ROBOT_FALL_TILT_RAD:
                 robot_balance_violation = True
-            if height < ROBOT_COLLAPSE_HEIGHT_M:
+            # Tread-referenced collapse floor: on the stairs the discrete tread jump makes
+            # a clean climb momentarily read ~one riser low, so the floor is slackened there
+            # (see _collapse_height_threshold). Flat ground keeps the plain 0.18 m floor.
+            if height < _collapse_height_threshold(rx, ry):
                 robot_balance_violation = True
 
         # Analyze final state details
@@ -5104,10 +5290,12 @@ def _run_evaluation_and_save_images(
             "tilt_deg", math.degrees(max(abs(roll), abs(pitch)))
         ))
         # Mirror the live watchdog: a fall is flipped, OR low AND clearly tipped.
-        # A low-but-upright final pose is a wedge/crouch, not a fall.
+        # A low-but-upright final pose is a wedge/crouch, not a fall. The low-height
+        # half uses the tread-referenced floor so a stair crest sample cannot fake a
+        # collapse; the tilt half (must exceed ROBOT_COLLAPSE_TILT_DEG) is unchanged.
         final_pose_fallen = (
             final_tilt_deg > _ROBOT_FALL_TILT_DEG
-            or (height < ROBOT_COLLAPSE_HEIGHT_M and final_tilt_deg > _ROBOT_COLLAPSE_TILT_DEG)
+            or (height < _collapse_height_threshold(rx, ry) and final_tilt_deg > _ROBOT_COLLAPSE_TILT_DEG)
         )
         robot_fell = bool(evaluation_exit_reason == "robot_fell" or final_pose_fallen)
 
@@ -5154,9 +5342,10 @@ def _run_evaluation_and_save_images(
     human_fell = False
     
     if person_trajectory:
-        # Check drift
+        # Check drift off the intended centre lane (y=0). 1 cm fired for any normal
+        # walking sway (a dead metric); HUMAN_LANE_DRIFT_M flags a real off-lane wander.
         max_py = max(abs(pt["pos"][1]) for pt in person_trajectory)
-        if max_py > 0.01:
+        if max_py > HUMAN_LANE_DRIFT_M:
             human_drifted = True
             
         # Check rotation (Yaw deviation)
@@ -5719,6 +5908,12 @@ def main() -> None:
     dt         = 1.0 / args.physics_hz
     step_count = 0
 
+    # Per-phase step-loop profiler (--step-profile, ON by default). Logs a mean-ms /
+    # %-of-loop summary + measured RTF every 200 steps so the wall-time bottleneck
+    # (physics vs GPU readback vs recorder encode vs depth vs LiDAR vs publish) is visible.
+    _step_profiler = _StepProfiler(LOGGER, log_event, interval=200,
+                                   enabled=bool(getattr(args, "step_profile", True)))
+
     # Recording cameras (top-down + external scene_view) render+capture on their own
     # finer cadence (--record-every) so their mp4s get a higher FPS than the
     # perception/control loop (which stays on --render-every). Clamp to >=1 and never
@@ -5732,12 +5927,25 @@ def main() -> None:
     # perception loop already performs -- the front camera proves those still complete under
     # the policy's GPU load, so the recording cameras ride the same renders.
     record_every = int(args.render_every)
-    record_fps = args.physics_hz / max(1, record_every)
+    # Decouple the record WRITE cadence from the perception PUBLISH cadence. The
+    # recording cameras ride the perception render ticks (every `record_every`==render_every
+    # steps), but we only ENCODE a frame to mp4 every Nth render tick (--record-every-n-steps)
+    # so the async encoder/IO does less work per second. Perception publish stays on
+    # --render-every (untouched). Math: render rate = physics_hz / render_every (200/7 = ~28.6
+    # fps); write rate = render_rate / stride. Default stride 2 -> ~14.3 fps (in the 10-15 fps
+    # target). Stride 1 = write every render tick (~28.6 fps, old behaviour).
+    _record_write_stride = max(1, int(args.record_every_n_steps))
+    _render_rate_hz_for_record = args.physics_hz / max(1, record_every)
+    record_fps = _render_rate_hz_for_record / _record_write_stride
+    # Counts render ticks so we can subsample them for the record write cadence.
+    _record_render_tick = 0
 
     # Recording encoder: prefer an HD ffmpeg H.264 pipe (up to --record-resolution),
     # fall back to the bundled mp4v (~768x432 cap). Resolved once and shared by all
     # recording cameras via RecordingWriter.
-    from recording_writer import RecordingWriter, resolve_ffmpeg, parse_resolution
+    from recording_writer import (
+        RecordingWriter, AsyncRecordingWriter, resolve_ffmpeg, parse_resolution,
+    )
     _record_res = parse_resolution(args.record_resolution)
     _reclog = lambda level, action, msg, **f: log_event(LOGGER, level, action, msg, **f)
     _ffmpeg_exe = resolve_ffmpeg() if args.record_encoder in ("auto", "ffmpeg") else None
@@ -5757,9 +5965,11 @@ def main() -> None:
         topdown_video_dir = os.path.dirname(topdown_video_path)
         if topdown_video_dir:
             os.makedirs(topdown_video_dir, exist_ok=True)
-        topdown_recorder = RecordingWriter(topdown_video_path, record_fps,
-                                           encoder=args.record_encoder, max_resolution=_record_res,
-                                           role="topdown", log=_reclog)
+        topdown_recorder = AsyncRecordingWriter(
+            RecordingWriter(topdown_video_path, record_fps,
+                            encoder=args.record_encoder, max_resolution=_record_res,
+                            role="topdown", log=_reclog),
+            log=_reclog)
 
     # External scene view (Isaac scene Left camera) -> scene_view.mp4. run_sim points
     # --raw-video-path at the videos dir so it sits beside opencv_preview.mp4
@@ -5772,9 +5982,11 @@ def main() -> None:
         raw_video_dir = os.path.dirname(raw_video_path)
         if raw_video_dir:
             os.makedirs(raw_video_dir, exist_ok=True)
-        raw_recorder = RecordingWriter(raw_video_path, record_fps,
-                                       encoder=args.record_encoder, max_resolution=_record_res,
-                                       role="scene_view", log=_reclog)
+        raw_recorder = AsyncRecordingWriter(
+            RecordingWriter(raw_video_path, record_fps,
+                            encoder=args.record_encoder, max_resolution=_record_res,
+                            role="scene_view", log=_reclog),
+            log=_reclog)
     else:
         raw_video_path = ""
 
@@ -5785,9 +5997,11 @@ def main() -> None:
         fv_video_dir = os.path.dirname(follow_view_video_path)
         if fv_video_dir:
             os.makedirs(fv_video_dir, exist_ok=True)
-        follow_view_recorder = RecordingWriter(follow_view_video_path, record_fps,
-                                               encoder=args.record_encoder, max_resolution=_record_res,
-                                               role="follow_view", log=_reclog)
+        follow_view_recorder = AsyncRecordingWriter(
+            RecordingWriter(follow_view_video_path, record_fps,
+                            encoder=args.record_encoder, max_resolution=_record_res,
+                            role="follow_view", log=_reclog),
+            log=_reclog)
 
     # Simulated Hesai XT16 LiDAR: real PhysX raycasts against the scene geometry,
     # rendered to log_dir/lidar_preview.mp4 (BEV scatter + range image). Scanned at
@@ -5816,6 +6030,8 @@ def main() -> None:
               perception_fps=round(float(_render_rate_hz), 2),
               record_every=int(record_every),
               render_every=int(args.render_every),
+              record_write_stride=int(_record_write_stride),
+              async_writes=True,
               recording_resolution=(f"up to {_record_res[0]}x{_record_res[1]} (ffmpeg H.264)"
                                     if _ffmpeg_exe else "768x432 (mp4v fallback)"),
               mp4v_fallback_max_pixels=int(_RECORD_MAX_PIXELS))
@@ -5907,6 +6123,7 @@ def main() -> None:
             # not have to draw 200 fps. The camera frame block below uses the same
             # cadence, so a fresh render is available exactly when it reads RGB.
             step_count += 1
+            _step_profiler.step_begin()
             sim_clock_sec += 1.0 / max(1, int(args.physics_hz))  # continuous sim time (for frame sim_t)
             # Graceful stop (launcher max-run cap / Ctrl-C): break the render loop so the
             # finally block RELEASES the video writers (writes the mp4 moov atom) instead
@@ -5962,8 +6179,18 @@ def main() -> None:
             # add GPU wall-clock; physics/RL still step every frame, and the perception
             # PUBLISH cadence is unchanged, so the control pipeline is not degraded.
             _perception_tick = (step_count % args.render_every == 0)
-            _record_tick = topdown_recording_released and (step_count % record_every == 0)
-            render_now = _render_enabled and (_perception_tick or _record_tick)
+            # A "render tick" fires whenever a recording camera could capture (every
+            # record_every == render_every steps once recording is released). We SUBSAMPLE
+            # these into the actual record WRITE cadence (--record-every-n-steps): only every
+            # Nth render tick is encoded to mp4, so the async encoder does less work per second.
+            # This does NOT reduce renders (perception already renders every render_every, so
+            # render_now stays True via _perception_tick) and does NOT touch the perception
+            # publish cadence.
+            _render_capture_tick = topdown_recording_released and (step_count % record_every == 0)
+            if _render_capture_tick:
+                _record_render_tick += 1
+            _record_tick = _render_capture_tick and (_record_render_tick % _record_write_stride == 0)
+            render_now = _render_enabled and (_perception_tick or _render_capture_tick)
             # PATIENT_FAST_VERIFY: skip ALL rendering so the loop steps physics at full
             # rate (headless RTX render is ~2 Hz on this box and starves the patient walk
             # to ~0.5 s before the ~70 s app exit). The walk_log reads USD/PhysX transforms
@@ -5972,7 +6199,8 @@ def main() -> None:
                 _perception_tick = False
                 _record_tick = False
                 render_now = False
-            world.step(render=render_now)
+            with _step_profiler.phase("physics"):
+                world.step(render=render_now)
 
             # O2 payload watchdog: post-step (live prim poses) it reports the
             # carried mass / CoM effect every report_every steps and emits a loud
@@ -6135,7 +6363,8 @@ def main() -> None:
             # Parkour: feed the rigid depth camera to the policy at ~parkour_depth_hz,
             # only while it is actually driving the robot. submit_depth() preprocesses
             # to [1,58,87]; the policy re-encodes it every Nth control step.
-            if parkour_depth_camera is not None and scene_motion_allowed:
+            with _step_profiler.phase("parkour_depth"):
+              if parkour_depth_camera is not None and scene_motion_allowed:
                 if _parkour_depth_step % _parkour_submit_every == 0:
                     try:
                         _depth_hw = parkour_depth_camera.get_depth()
@@ -6547,8 +6776,11 @@ def main() -> None:
                     # wedge, not a fall -- and on stairs the terrain reference under the
                     # body can read low mid-climb -- so height alone no longer triggers.
                     _flip_now = _ltilt > _ROBOT_FALL_TILT_DEG
+                    # Tread-referenced collapse floor: slackened by one riser on the stairs
+                    # so a discrete-tread jump mid-climb cannot fake a low reading. The tilt
+                    # gate (> ROBOT_COLLAPSE_TILT_DEG) still guards the genuine collapse.
                     _low_and_tipped_now = (
-                        robot_height_now < ROBOT_COLLAPSE_HEIGHT_M
+                        robot_height_now < _collapse_height_threshold(lrx, lry)
                         and _ltilt > _ROBOT_COLLAPSE_TILT_DEG
                     )
                     robot_fallen_now = _flip_now or _low_and_tipped_now
@@ -6748,8 +6980,9 @@ def main() -> None:
                                 "Mounted camera local pose update failed",
                                 error=str(exc),
                             )
-                    rgb_data   = camera.get_rgb()
-                    depth_data = camera.get_depth()
+                    with _step_profiler.phase("render_readback"):
+                        rgb_data   = camera.get_rgb()
+                        depth_data = camera.get_depth()
                     # Debug: dump the front-camera RGB (what YOLO sees) and exit.
                     # Used to confirm the person is rendered and framed for detection.
                     if args.front_cam_out and step_count >= int(args.front_cam_after) and rgb_data is not None:
@@ -6779,7 +7012,8 @@ def main() -> None:
                         # UDP frame to the controller (BEV panel + distance fusion), the
                         # HUD telemetry shows real hits, and lidar_preview.mp4 records the
                         # full BEV/range image unless --no-lidar-preview disables it.
-                        if lidar_scan_enabled and os.environ.get("PATIENT_FAST_VERIFY") != "1" and (step_count // args.render_every) % lidar_scan_stride == 0:
+                        with _step_profiler.phase("lidar"):
+                         if lidar_scan_enabled and os.environ.get("PATIENT_FAST_VERIFY") != "1" and (step_count // args.render_every) % lidar_scan_stride == 0:
                             try:
                                 robot_pose = stair_demo.get("robot", {})
                                 scan = cast_scan(
@@ -6849,9 +7083,10 @@ def main() -> None:
                                               "XT16 LiDAR scan/render failed", error=str(exc))
 
                         # Depth noise is applied inside publisher.send after downsampling
-                        publisher.send(rgb_data, depth_mm, vx, vy, wz, gt_patient, gt_distractor,
-                                       stair_demo, swing_legs, lidar_profile_latest,
-                                       sim_t=sim_clock_sec)
+                        with _step_profiler.phase("publisher"):
+                            publisher.send(rgb_data, depth_mm, vx, vy, wz, gt_patient, gt_distractor,
+                                           stair_demo, swing_legs, lidar_profile_latest,
+                                           sim_t=sim_clock_sec)
                         # Frame-transport diagnostic: count actual TCP sends and report the
                         # link state so we can tell "Isaac never sent" (render starved) from
                         # "link not connected" (container TCP server not up / forwarding down).
@@ -6873,8 +7108,11 @@ def main() -> None:
             # Recording cameras (top-down + external scene_view) capture on the finer
             # --record-every cadence for a higher FPS than the perception loop above.
             # render_now already drew a fresh RTX frame this step (the record cadence is
-            # folded into the render gate), so get_rgb() returns a current image.
-            if _record_tick:
+            # folded into the render gate), so get_rgb() returns a current image. The
+            # frame WRITES are handed to a background thread (AsyncRecordingWriter), so this
+            # block only pays the get_rgb()/colour-convert cost, not the mp4 encode.
+            with _step_profiler.phase("recorder"):
+             if _record_tick:
                 # Top-down overhead recording — starts when scene motion is released.
                 # RecordingWriter lazily opens an HD ffmpeg pipe (or mp4v fallback) on
                 # the first frame and resizes per backend.
@@ -6962,6 +7200,11 @@ def main() -> None:
                                       "Follow-view recording capture raised; follow_view.mp4 may be empty",
                                       error=str(_fv_exc))
 
+            # Close the per-step profiling window (folds un-attributed time into "other"
+            # and logs the mean-ms/%-of-loop summary every 200 steps). sim_dt = one physics
+            # step of sim-time, used to derive the measured RTF.
+            _step_profiler.step_end(sim_dt=dt)
+
         # After loop exits, run evaluation and capture final image
         if evaluation_done or (_robot_positions_over_time or _person_positions_over_time):
             _run_evaluation_and_save_images(
@@ -6984,18 +7227,24 @@ def main() -> None:
         if not args.warm_isaac:
             _running = False
             publisher.close()
-        if topdown_recorder is not None and topdown_recorder.started:
+        # AsyncRecordingWriter.release() DRAINS the write queue and JOINS the worker
+        # thread BEFORE the underlying RecordingWriter.release() finalises the mp4 moov
+        # atom, so it must be called unconditionally (even if .started is still False
+        # because the worker had not encoded the first queued frame yet) -- otherwise
+        # queued frames are lost and the file is truncated / unplayable.
+        if topdown_recorder is not None:
             try:
                 topdown_recorder.release()
-                log_event(LOGGER, logging.INFO, "topdown_video_saved", "Top-down video recording finalized",
-                          path=topdown_video_path, backend=topdown_recorder.backend, frames=int(topdown_recorder.frames))
+                if topdown_recorder.started:
+                    log_event(LOGGER, logging.INFO, "topdown_video_saved", "Top-down video recording finalized",
+                              path=topdown_video_path, backend=topdown_recorder.backend, frames=int(topdown_recorder.frames))
+                elif topdown_video_path and _topdown_empty_record_ticks > 0:
+                    log_event(LOGGER, logging.WARNING, "topdown_recording_missing",
+                              "topdown.mp4 was never recorded: the top-down render product returned no frame on every record tick",
+                              empty_record_ticks=int(_topdown_empty_record_ticks),
+                              locomotion_mode="parkour")
             except Exception:
                 pass
-        elif topdown_video_path and _topdown_empty_record_ticks > 0:
-            log_event(LOGGER, logging.WARNING, "topdown_recording_missing",
-                      "topdown.mp4 was never recorded: the top-down render product returned no frame on every record tick",
-                      empty_record_ticks=int(_topdown_empty_record_ticks),
-                      locomotion_mode="parkour")
         if lidar_video_writer is not None:
             try:
                 lidar_video_writer.release()
@@ -7003,29 +7252,31 @@ def main() -> None:
                           path=lidar_video_path)
             except Exception:
                 pass
-        if raw_recorder is not None and raw_recorder.started:
+        if raw_recorder is not None:
             try:
                 raw_recorder.release()
-                log_event(LOGGER, logging.INFO, "raw_video_saved", "External scene_view recording finalized",
-                          path=raw_video_path, backend=raw_recorder.backend, frames=int(raw_recorder.frames))
+                if raw_recorder.started:
+                    log_event(LOGGER, logging.INFO, "raw_video_saved", "External scene_view recording finalized",
+                              path=raw_video_path, backend=raw_recorder.backend, frames=int(raw_recorder.frames))
+                elif raw_video_path and _raw_empty_record_ticks > 0:
+                    log_event(LOGGER, logging.WARNING, "scene_view_recording_missing",
+                              "scene_view.mp4 was never recorded: the scene_view render product returned no frame on every record tick",
+                              empty_record_ticks=int(_raw_empty_record_ticks),
+                              locomotion_mode="parkour")
             except Exception:
                 pass
-        elif raw_video_path and _raw_empty_record_ticks > 0:
-            log_event(LOGGER, logging.WARNING, "scene_view_recording_missing",
-                      "scene_view.mp4 was never recorded: the scene_view render product returned no frame on every record tick",
-                      empty_record_ticks=int(_raw_empty_record_ticks),
-                      locomotion_mode="parkour")
-        if follow_view_recorder is not None and follow_view_recorder.started:
+        if follow_view_recorder is not None:
             try:
                 follow_view_recorder.release()
-                log_event(LOGGER, logging.INFO, "follow_view_video_saved", "Follow-view chase camera recording finalized",
-                          path=follow_view_video_path, backend=follow_view_recorder.backend, frames=int(follow_view_recorder.frames))
+                if follow_view_recorder.started:
+                    log_event(LOGGER, logging.INFO, "follow_view_video_saved", "Follow-view chase camera recording finalized",
+                              path=follow_view_video_path, backend=follow_view_recorder.backend, frames=int(follow_view_recorder.frames))
+                elif follow_view_video_path and _follow_view_empty_record_ticks > 0:
+                    log_event(LOGGER, logging.WARNING, "follow_view_recording_missing",
+                              "follow_view.mp4 was never recorded: the follow-view render product returned no frame on every record tick",
+                              empty_record_ticks=int(_follow_view_empty_record_ticks))
             except Exception:
                 pass
-        elif follow_view_video_path and _follow_view_empty_record_ticks > 0:
-            log_event(LOGGER, logging.WARNING, "follow_view_recording_missing",
-                      "follow_view.mp4 was never recorded: the follow-view render product returned no frame on every record tick",
-                      empty_record_ticks=int(_follow_view_empty_record_ticks))
         if not args.warm_isaac:
             simulation_app.close()
             log_event(LOGGER, logging.INFO, "simulation_shutdown", "Simulation shutdown completed")

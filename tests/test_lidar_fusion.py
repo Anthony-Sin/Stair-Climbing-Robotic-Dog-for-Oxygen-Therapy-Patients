@@ -55,6 +55,56 @@ def test_profile_roundtrip_and_bearing():
     assert lf.person_bearing_rad(300, 640, 900) > 0
 
 
+def _world_floor_and_person(sensor_z=0.4, person_range=2.0, person_half_deg=6.0):
+    """Injected raycast modelling the P0-2 failure mode.
+
+    The downward XT16 channels ring the FLOOR: a ray with a negative vertical
+    component (direction[2] < 0) hits the ground at range sensor_z/|sin(elev)|
+    (~1.545 m for the -15 deg channel at a 0.4 m mount). A near-horizontal ray dead
+    ahead (world +x) instead hits the PERSON at person_range (~2.0 m). Everything
+    else misses (open scene). This is the exact geometry where the pre-filter
+    nearest-per-azimuth collapse reported the 1.545 m floor as the "person range".
+    """
+    def raycast(origin, direction, max_dist):
+        dx, dy, dz = direction[0], direction[1], direction[2]
+        # Downward ray -> floor hit (the ring that masks the person).
+        if dz < -1e-6:
+            r = float(sensor_z) / abs(dz)  # plane z=0 at height sensor_z below origin
+            return r if r <= max_dist else None
+        # Near-horizontal ray dead ahead -> the person at person_range.
+        horiz = math.hypot(dx, dy)
+        if horiz > 1e-6:
+            fwd_cos = dx / horiz
+            if fwd_cos > math.cos(math.radians(person_half_deg)) and abs(dy) < 0.2:
+                return person_range if person_range <= max_dist else None
+        return None
+    return raycast
+
+
+def test_ground_filter_recovers_person_behind_floor_ring():
+    cfg = Xt16Config(azimuth_step_deg=3.0, max_range_m=50.0, mount_z_m=0.0)
+    # Sensor origin z=0.4 so the -15 deg channel rings the floor at ~1.545 m; person
+    # dead ahead at 2.0 m. The downward floor ring is NEARER than the person.
+    scan = cast_scan(cfg, (0.0, 0.0, 0.4), 0.0, _world_floor_and_person(0.4, 2.0))
+
+    # WITHOUT the ground filter, the nearest-per-azimuth collapse reports the floor.
+    prof_raw = profile_from_scan(scan, view_range_m=6.0, ground_clip_below_sensor_m=0.0)
+    decoded_raw = lf.decode_lidar_profile(prof_raw)
+    rng_raw = lf.lidar_range_at_bearing(decoded_raw, 0.0, window_deg=4.0)
+    assert rng_raw is not None and abs(rng_raw - 1.545) < 0.1, (
+        f"expected the floor ring (~1.545 m) without the filter, got {rng_raw}"
+    )
+
+    # WITH the ground filter (default enabled) the floor cells are dropped and the
+    # person's true 2.0 m range survives at bearing 0.
+    prof = profile_from_scan(scan, view_range_m=6.0)  # default clip from config
+    decoded = lf.decode_lidar_profile(prof)
+    rng = lf.lidar_range_at_bearing(decoded, 0.0, window_deg=4.0)
+    assert rng is not None and abs(rng - 2.0) < 0.05, (
+        f"expected the person (~2.0 m) after the ground filter, got {rng}"
+    )
+
+
 def _world_person_at(az_deg, rng=1.5, wall=5.0):
     """Injected raycast: a single near return at azimuth az_deg (CCW/+left), walls elsewhere."""
     target = math.radians(az_deg)
@@ -117,6 +167,21 @@ def test_fuse_agreement_weighted():
     # Disagree -> keep depth, flag, low confidence.
     z = lf.fuse_distance(2.1, 5.0, agree_tol_m=0.25)
     assert z["disagreement"] and z["source"] == "depth_disagree" and z["fused_m"] == 2.1
+
+    # Absurd-far depth vs a confident near LiDAR -> REJECT the depth, use LiDAR.
+    # (Evidence: a frame accepted fused=36.87 m while the LiDAR said 0.59 m.)
+    r = lf.fuse_distance(36.87, 0.59)
+    assert r["source"] == "lidar_reject_far_depth" and r["fused_m"] == 0.59
+    assert r["disagreement"] and r["confidence"] >= 0.5
+
+    # A FAR LiDAR return is not "confident near", so an equally far depth is NOT
+    # force-rejected (falls through to the ordinary disagreement fallback / blend).
+    far = lf.fuse_distance(12.0, 5.0)
+    assert far["source"] != "lidar_reject_far_depth"
+
+    # The guard is opt-outable and does not fire when depth is only modestly farther.
+    off = lf.fuse_distance(36.87, 0.59, reject_far_depth=False)
+    assert off["source"] != "lidar_reject_far_depth"
 
     # Single-source and empty.
     assert lf.fuse_distance(None, 2.0)["fused_m"] == 2.0

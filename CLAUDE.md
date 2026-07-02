@@ -59,13 +59,17 @@ Do NOT include directory trees, tech stack summaries, style guides, obvious best
 - This repository targets a **live remote robot system running on NVIDIA Jetson Orin** (currently working in the sim version).
 - Operational commands for model export/conversion/inference must be run on the **robot**, inside the robot's **Docker container** used for runtime, unless explicitly stated otherwise.
 - **Path mapping rule:**
-  - Host repo `src/` is mounted as container working root `/workspace`.
-  - When giving runnable commands for runtime tasks, prefer container-relative paths from `/workspace` (e.g., `python3 misc/convert_to_trt.py ...`), or explicitly state both host and container forms.
+  - The **repo root** is mounted as container working root `/workspace` (`docker/start_follow_system.sh`: `-v "$REPO_ROOT:/workspace" -w /workspace`). There is **no `src/`** dir; a container path is `/workspace/<repo-relative path>`.
+  - When giving runnable commands for runtime tasks, prefer container-relative paths from `/workspace` (e.g., `python3 real/models/export_stairs_trt.py ...`), or explicitly state both host and container forms.
 - Review the Jetson environment configuration located in the `/docker` directory to understand the system architecture, dependencies, and runtime environment.
 
 ---
 
 ## 8. Incident Ledger Entries
+
+**TRIGGER:** Giving container-relative paths per the "`src/` -> `/workspace`" phrasing.
+**LESSON:** This repo mounts the **repo root** (not a `src/` dir) at `/workspace` (`docker/start_follow_system.sh`); a container path is `/workspace/<repo-relative path>` (e.g. host `real/models/export_stairs_trt.py` -> `/workspace/real/models/export_stairs_trt.py`).
+**WHY:** There is no `src/` dir; blindly prefixing `src/` produces wrong container paths.
 
 **TRIGGER:** Developer asks whether a runtime/export command should run on host vs container for robot deployment.
 **LESSON:** Default to the robot runtime Docker container and state that context explicitly in the first command answer.
@@ -206,6 +210,10 @@ Do NOT include directory trees, tech stack summaries, style guides, obvious best
 **TRIGGER:** Adding a pre-policy phase to the Go2 main loop that must appear in the recorded videos (e.g. `--stand-up-from-ground`).
 **LESSON:** Recorder capture is gated by `topdown_recording_released` (drives `_record_tick`), which only flips on `scene_motion_released` (first controller command) OR `--no-hold-motion`. In the default follow demo motion is HELD until the first YOLO command, so the whole pre-command window is NOT recorded. To record a pre-command phase you must also release recording for it (the stand-up adds `or _standing_up` to that gate). Also: the fall-watchdog (`robot_fallen_now`/`robot_fall_since_sim_sec`) and the motion clock live INSIDE `if scene_motion_allowed:`, so holding `scene_motion_allowed=False` during the phase safely suspends fall-detection + timeouts (and a low-but-upright body wouldn't trip the low-AND-tilted fall test anyway). The stand-up itself runs in the `not scene_motion_allowed` freeze branch via `_Go2StandUp.tick()`; it seats folded (`GO2_FOLDED_POSE`, stiff 800/40 gains), smoothstep-ramps targets to the standing pose, then hands gains to the policy via `_handoff_drive_gains_to_policy`.
 **WHY:** The recorder-release and fall/clock gating are non-obvious couplings; a pre-policy phase silently goes unrecorded in the demo (and could false-trip the fall logic) unless both are accounted for.
+
+**TRIGGER:** Gating any command-suppression (wz/vx kill, hold, etc.) on `debug_info["stairs_action_active"]` as if it means "we are on the stairs".
+**LESSON:** `stairs_action_active` is NOT "on the stairs" -- it latches ~2.5 m early and reads the person / flat ground as stairs. In a flat-follow run (`run_sim_20260702_000504`) it was True on 2167/2200 frames while `stair_climb_committed` and `stairs_near` were True on ZERO frames and the dog never climbed. If you must suppress a command only during a genuine climb, gate on `stair_climb_committed` (the FSM climb latch) or `stairs_near` (physically at the riser), NOT `stairs_action_active`.
+**WHY:** The Task-3.7 transport wz-clamp keyed on `stairs_action_active` and so zeroed the follower's turn during ordinary flat-ground person-follow: with a person approaching-and-turning the follower asked for a full turn (rotation_cmd=1.0) but wz was forced to 0, the bearing ran out to -58 deg, the person left the FOV and was lost, and the dog spiraled off route (x -4.5 -> 20, "collided with patient"). The committed-climb branch already owns wz=0 during the real climb, so the clamp only needs to cover the prepare / at-riser window.
 
 ---
 

@@ -147,14 +147,25 @@ def fuse_distance(
     agree_tol_m: float = 0.25,
     rel_tol: float = 0.15,
     lidar_weight: float = 0.6,
+    reject_far_depth: bool = True,
+    far_depth_ratio: float = 2.0,
+    confident_near_lidar_m: float = 3.0,
 ) -> Dict[str, Any]:
     """Agreement-weighted blend of the depth-camera and LiDAR distances.
 
     - both valid and agree (|d-l| <= tol) -> weighted blend, high confidence
+    - both valid, depth ABSURDLY FAR vs a confident near LiDAR -> use LiDAR
     - both valid and disagree              -> fall back to depth, flag, low conf
     - only one valid                       -> use it
     - neither valid                        -> fused_m None
     Returns {fused_m, lidar_m, depth_m, confidence, disagreement, source}.
+
+    Plausibility guard (``reject_far_depth``, default on): the bimodal/foreground
+    depth occasionally latches onto the far background and reports an absurd range
+    (a frame accepted fused=36.87 m while the LiDAR said 0.59 m). When BOTH sources
+    are valid, the LiDAR return is a confident NEAR one (<= ``confident_near_lidar_m``),
+    and depth exceeds it by more than ``far_depth_ratio`` x, the depth is REJECTED and
+    the LiDAR range is used instead of accepting the impossible depth.
     """
     d = float(depth_m) if (depth_m is not None and depth_m > 0.0) else None
     l = float(lidar_m) if (lidar_m is not None and lidar_m > 0.0) else None
@@ -168,6 +179,20 @@ def fuse_distance(
         return out
     if l is None:
         out.update(fused_m=d, confidence=0.6, disagreement=False, source="depth_only")
+        return out
+
+    # Absurd-far-depth guard: a confident near LiDAR return beats a depth that reads
+    # more than far_depth_ratio x farther (the background-latch failure). Take the
+    # LiDAR range; flag the disagreement but keep moderate confidence (the near LiDAR
+    # is the trustworthy source here, unlike the ambiguous depth-disagree fallback).
+    if (
+        reject_far_depth
+        and l <= float(confident_near_lidar_m)
+        and d > float(far_depth_ratio) * l
+    ):
+        out.update(
+            fused_m=l, confidence=0.5, disagreement=True, source="lidar_reject_far_depth"
+        )
         return out
 
     tol = max(float(agree_tol_m), float(rel_tol) * min(d, l))

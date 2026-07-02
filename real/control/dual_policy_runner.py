@@ -120,7 +120,9 @@ class DualPolicyRunner:
 
         # depth_106x60 is 106×60 (the real D435 output size). The handoff uses it only
         # for stair detection (any HxW works). If climb_backend were ever changed to
-        # "parkour", the parkour policy expects [58,87] — resize before passing.
+        # "parkour", the parkour policy expects [58,87] — feed depth through the ready
+        # seam real.perception.depth_to_policy.preprocess_parkour() (same resize +
+        # person-mask machinery, [58,87] out) before passing it to that backend.
         ho = self.handoff.update(
             now=now, dt=dt, go2=articulation, depth_hw=depth_106x60,
             cmd_vx=vx, stairs_action_active=bool(follow_cmd.stairs_action_active),

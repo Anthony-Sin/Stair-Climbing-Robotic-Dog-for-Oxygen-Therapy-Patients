@@ -21,6 +21,11 @@ except Exception:  # pragma: no cover
     mask_person_in_parkour_depth = None  # type: ignore
 
 POLICY_W, POLICY_H = 106, 60
+# The Extreme-Parkour policy expects a [58,87] (HxW) depth frame. This is a READY SEAM
+# only: the native stack defaults to the blind_rl climb backend, so parkour is NOT
+# wired into DualPolicyRunner today. If the climb backend is ever switched to "parkour",
+# feed depth through preprocess_parkour() below (same resize/person-mask machinery).
+PARKOUR_H, PARKOUR_W = 58, 87
 
 
 def resize_nearest(depth: np.ndarray, out_hw: Tuple[int, int] = (POLICY_H, POLICY_W)) -> np.ndarray:
@@ -64,3 +69,18 @@ def preprocess(
     if c1 > c0 and r1 > r0:
         out[r0:r1, c0:c1] = np.nan
     return out
+
+
+def preprocess_parkour(
+    depth_m: np.ndarray,
+    person_bbox: Optional[Sequence[float]] = None,
+) -> np.ndarray:
+    """Return the [58,87] (HxW) metric depth with the person masked out.
+
+    READY SEAM for a future ``climb_backend="parkour"`` -- reuses the exact same
+    ``resize_nearest``/person-mask machinery as ``preprocess`` (which is UNTOUCHED and
+    still returns 106x60), only with the parkour output size. NOT wired into the runner
+    today (native default is blind_rl); this exists so switching the backend is a one-
+    line call, not a new depth path.
+    """
+    return preprocess(depth_m, person_bbox, out_hw=(PARKOUR_H, PARKOUR_W))

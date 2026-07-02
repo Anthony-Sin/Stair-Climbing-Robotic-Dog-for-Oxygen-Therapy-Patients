@@ -52,10 +52,23 @@ class YoloStairsInference:
         try:
             from ultralytics import YOLOWorld
             self.model = YOLOWorld(self.model_path)
-            # Define queries/classes dynamically
-            self.model.set_classes(["stairs", "staircase", "steps", "brick stairs", "brick steps", "concrete stairs"])
-            
-            LOGGER.info("YOLO-World initialized and classes set to ['stairs', 'staircase', 'steps', 'brick stairs', 'brick steps', 'concrete stairs']")
+            # A TensorRT-exported YOLO-World engine has its vocabulary BAKED IN at export
+            # time; calling set_classes() on it fails or is a no-op. Skip it for
+            # .engine/.trt paths (classes were baked by real/models/export_stairs_trt.py).
+            # The .pt path behavior is unchanged.
+            _is_engine = str(self.model_path).lower().endswith((".engine", ".trt"))
+            if _is_engine:
+                LOGGER.info(
+                    "YOLO-World engine detected (%s): classes are baked into the engine; "
+                    "skipping set_classes()", self.model_path,
+                )
+            else:
+                try:
+                    # Define queries/classes dynamically
+                    self.model.set_classes(["stairs", "staircase", "steps", "brick stairs", "brick steps", "concrete stairs"])
+                    LOGGER.info("YOLO-World initialized and classes set to ['stairs', 'staircase', 'steps', 'brick stairs', 'brick steps', 'concrete stairs']")
+                except Exception as e:
+                    LOGGER.warning("set_classes() failed (%s); proceeding with model's existing vocab", e)
             
             # Start background worker thread
             self._thread = threading.Thread(

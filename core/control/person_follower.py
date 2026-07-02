@@ -36,6 +36,15 @@ _REVERSAL_BEARING_DEG = 20.0
 # than the slow fixed lost_search_yaw_speed used for a one-frame-glimpse correction.
 _LOST_SCAN_LEG_SEC = 2.5
 
+# Max plausible patient walking speed (m/s) used to clamp a single frame's gap jump:
+# at the variable ~283 ms follow loop, the fused gap cannot physically move faster
+# than this between accepted frames, so a larger jump is a fusion glitch, not motion.
+_MAX_PERSON_SPEED_MPS = 1.5
+# Minimum confidence a single fused frame needs to CHANGE the stop/brake zone. Below
+# this the zone only changes after two consecutive frames agree, killing phantom
+# stops/cruises from one low-confidence (disagreeing) frame.
+_ZONE_CHANGE_MIN_CONFIDENCE = 0.5
+
 
 @dataclass
 class PersonFollowingConfig:
@@ -164,6 +173,17 @@ class PersonFollower:
         # phase is measured from this (NOT raw lost_age) so it always begins by turning TOWARD
         # the last-seen side, never mid-sweep. Reset to None on every re-detection.
         self.lost_search_start_time = None
+        # Gap-rate plausibility clamp state (P0-3b): the last ACCEPTED fused gap (m) and the
+        # wall time it was accepted, so a single-frame gap jump can be capped at the max
+        # plausible patient speed x dt (a fusion glitch cannot teleport the person).
+        self._prev_accepted_gap_m = None
+        self._prev_accepted_gap_ts = None
+        # Zone-transition confidence gate state (P0-3c): the last COMMITTED distance zone and
+        # a pending-transition counter, so a low-confidence single frame cannot flip the
+        # stop/brake zone (needs confidence >= threshold OR two consecutive agreeing frames).
+        self._committed_zone = None
+        self._pending_zone = None
+        self._pending_zone_count = 0
 
         # Store reference to the YoloPoseInference instance for keypoint-based depth measurement
         self.yolo_pose = yolo_pose_inference
@@ -434,6 +454,11 @@ class PersonFollower:
         self.last_person_range_m = None
         self.last_profile_bearing_rad = None
         self.lost_search_start_time = None
+        self._prev_accepted_gap_m = None
+        self._prev_accepted_gap_ts = None
+        self._committed_zone = None
+        self._pending_zone = None
+        self._pending_zone_count = 0
 
     def update(self, main_person: Optional[Union[Dict[str, Any], Sequence[float]]], depth_image: np.ndarray,
                frame_shape: Tuple[int, int], depth_mapper: Optional[Any] = None,
@@ -764,6 +789,27 @@ class PersonFollower:
             debug_info['reason'] = 'Invalid depth measurement'
             return 0.0, 0.0, debug_info
 
+        # --- P0-3b: gap-rate plausibility clamp -------------------------------------
+        # The follow loop runs at a variable ~283 ms; a single frame's gap cannot
+        # physically jump more than MAX_PERSON_SPEED x dt. A larger jump is a fusion
+        # glitch (a background-latch depth or a stray LiDAR return), so clamp the
+        # ACCEPTED gap toward the previous accepted value rather than letting one bad
+        # frame slam the zone logic. The first frame (or a long gap after a loss) is
+        # accepted as-is (no prior to clamp against, or dt too large to be meaningful).
+        _gap_pre_clamp = float(depth_m)
+        _clamp_dt = float(dt) if (dt is not None and dt > 0.0) else 0.0
+        debug_info['gap_rate_clamped'] = False
+        if (self._prev_accepted_gap_m is not None and 0.0 < _clamp_dt <= 1.0):
+            _max_delta = _MAX_PERSON_SPEED_MPS * _clamp_dt
+            _delta = _gap_pre_clamp - float(self._prev_accepted_gap_m)
+            if abs(_delta) > _max_delta:
+                depth_m = float(self._prev_accepted_gap_m) + math.copysign(_max_delta, _delta)
+                debug_info['gap_rate_clamped'] = True
+                debug_info['gap_rate_pre_clamp_m'] = round(_gap_pre_clamp, 4)
+                debug_info['gap_rate_max_delta_m'] = round(_max_delta, 4)
+        self._prev_accepted_gap_m = float(depth_m)
+        self._prev_accepted_gap_ts = current_time
+
         debug_info['depth_valid'] = True
         debug_info['depth_distance_m'] = depth_m
         debug_info['target_distance'] = float(self.config.target_distance)
@@ -790,10 +836,54 @@ class PersonFollower:
         kp_dist = float(self.config.trans_x_dist_kp)
         distance_error = float(depth_m) - float(self.config.target_distance)
         tolerance = float(self.config.trans_x_tolerance)
-        if distance_error > tolerance:
+
+        # --- P0-3c: confidence gate on zone TRANSITIONS -----------------------------
+        # Classify the raw zone this frame, then require confidence >= threshold OR two
+        # consecutive frames in the new zone before COMMITTING a change of the stop/brake
+        # zone. A single low-confidence (disagreeing) fused frame must not flip the dog
+        # into a phantom stop or cruise. The three zones (cruise/stop/brake) are
+        # preserved -- only the transition timing is gated.
+        raw_zone = (
+            'cruise' if distance_error > tolerance else
+            'stop' if distance_error >= -tolerance else
+            'brake'
+        )
+        _conf = debug_info.get('distance_confidence')
+        _conf = 1.0 if _conf is None else float(_conf)
+        if self._committed_zone is None:
+            # First valid frame: commit immediately (no prior zone to protect).
+            self._committed_zone = raw_zone
+            self._pending_zone = None
+            self._pending_zone_count = 0
+        elif raw_zone == self._committed_zone:
+            # No change requested -> clear any pending transition.
+            self._pending_zone = None
+            self._pending_zone_count = 0
+        else:
+            # A zone change is requested. Accept immediately when confident; otherwise
+            # require a second consecutive frame agreeing on the same new zone.
+            if _conf >= _ZONE_CHANGE_MIN_CONFIDENCE:
+                self._committed_zone = raw_zone
+                self._pending_zone = None
+                self._pending_zone_count = 0
+            else:
+                if self._pending_zone == raw_zone:
+                    self._pending_zone_count += 1
+                else:
+                    self._pending_zone = raw_zone
+                    self._pending_zone_count = 1
+                if self._pending_zone_count >= 2:
+                    self._committed_zone = raw_zone
+                    self._pending_zone = None
+                    self._pending_zone_count = 0
+        zone = self._committed_zone
+        debug_info['distance_zone_raw'] = raw_zone
+        debug_info['distance_zone_gated'] = bool(zone != raw_zone)
+
+        if zone == 'cruise':
             # Proportional approach: ramp from near-zero up to cruise as error grows.
             trans_x_cmd_raw = min(cruise, kp_dist * distance_error)
-        elif distance_error >= -tolerance:
+        elif zone == 'stop':
             # Person within target band (±tolerance): hold position.
             trans_x_cmd_raw = 0.0
         else:
@@ -805,11 +895,7 @@ class PersonFollower:
         debug_info['trans_x_cmd_raw'] = float(trans_x_cmd_raw)
         debug_info['trans_x_cruise_speed'] = cruise
         debug_info['trans_x_distance_error_m'] = round(distance_error, 4)
-        debug_info['distance_zone'] = (
-            'cruise' if distance_error > tolerance else
-            'stop' if distance_error >= -tolerance else
-            'brake'
-        )
+        debug_info['distance_zone'] = zone
         trans_x_cmd = self._suppress_reverse_follow_command(
             float(trans_x_cmd_raw),
             debug_info,

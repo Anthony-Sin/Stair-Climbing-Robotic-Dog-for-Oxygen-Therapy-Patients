@@ -357,6 +357,22 @@ def main():
 
     prev_time = time.perf_counter()
 
+    # --- Task 3.6: split stall telemetry ---------------------------------------------
+    # latency_spike_count -- frame-starvation tail (loop/capture/fps), the loop threshold
+    #   made RELATIVE to the recent median loop time (>2x median) so it tracks real
+    #   latency spikes instead of the sim's constant slow rate.
+    # motion_stall_count -- the robot commanded forward but not moving: the handoff FSM's
+    #   real stall flag when it reaches debug_info, else a ground-truth body-progress
+    #   fallback (commanding forward while the body makes no headway).
+    # stall_count kept as an alias (= latency_spike_count) for any downstream reader.
+    _loop_ms_window: List[float] = []          # recent total_loop_ms for the median
+    _loop_ms_window_max = 60
+    latency_spike_count = 0
+    motion_stall_count = 0
+    _motion_stall_last_x: Optional[float] = None   # last GT body x (m) for progress check
+    _motion_stall_accum_sec = 0.0                  # time commanding fwd with no progress
+    _motion_stall_last_ts: Optional[float] = None
+
     target_exporter = None
     if use_mppi_backend:
         target_exporter = VisionTargetExporter(
@@ -766,7 +782,19 @@ def main():
             # column profiler and merge its result with YOLO. When YOLO blanks out at
             # close range the depth detector keeps stairs_detected True, eliminating the
             # need for the close-dropout latch as the primary compensation.
-            _depth_det = _depth_stair_detector.detect(depth_img)
+            #
+            # P2-2 FIX (units): DepthStairDetector.detect() treats the depth grid as
+            # METRES (it filters `0.06 < d < ~2.2` and derives world heights from it),
+            # but depth_img here is MILLIMETRES (uint16, the D435 convention used
+            # everywhere else in this module -- see the /1000.0 conversions in
+            # person_follower / stair_policy). Feeding mm meant every pixel exceeded the
+            # 2.2 m range gate, so the detector's valid-row filter emptied and it fired on
+            # 0 of 2027 frames (--stair-depth-engage-distance rode entirely on the YOLO
+            # latch). Convert to metres so the geometric detector can actually trigger.
+            # (Its camera geometry config still targets the parkour cam; this only
+            # restores correct UNITS so the depth path is no longer silently dead.)
+            _depth_m_grid = np.asarray(depth_img, dtype=np.float32) * 0.001
+            _depth_det = _depth_stair_detector.detect(_depth_m_grid)
             _depth_stairs_confirmed = (
                 bool(_depth_det.get("stair_detected", False))
                 and int(_depth_det.get("stair_count", 0)) >= _depth_stair_cfg.stair_min_count
@@ -899,6 +927,60 @@ def main():
             trans_x_cmd, rotation_cmd = _apply_stair_command_policy(
                 args, trans_x_cmd, rotation_cmd, debug_info
             )
+
+            # --- P1-3: crest creep carve-out (finish the last treads) ------------------------
+            # Near the top the patient slows on the landing and the follow stop-band collapses
+            # vx to ~0 while the dog is still ~0.5 m short of the crest (gap ~0.63-0.66 m inside
+            # the ~0.72 m stop band) -> it pins behind the patient and never finishes the climb.
+            # When the climb is LATCHED (stairs_action_active) AND the top is NEAR (the same
+            # controller-visible crest signals the stair-finish uses: stair_demo phase levels off
+            # to the landing, or the body pitch flattens) AND the patient is visible-but-in-band,
+            # allow a small forward CREEP so the dog climbs the last treads. A HARD floor on the
+            # TRUE patient gap (depth_distance_m, not the near-riser depth) keeps it from ever
+            # creeping inside the safe standoff -- the person-gated hold still owns the too-close
+            # case. Analogous to --stair-loss-forward-floor but for the near-top in-band case.
+            debug_info["crest_creep_active"] = False
+            if bool(getattr(args, "crest_creep", True)) and bool(
+                debug_info.get("stairs_action_active", False)
+            ):
+                _cc_speed = max(0.0, float(getattr(args, "crest_creep_speed", 0.16)))
+                _cc_min_gap = max(
+                    float(getattr(args, "crest_creep_min_gap_m", 0.0)),
+                    float(args.stair_climb_collision_floor),
+                )
+                _cc_zone = str(debug_info.get("distance_zone", ""))
+                _cc_true_gap = debug_info.get("depth_distance_m")
+                # Top-near from the controller-visible crest signals (same source the
+                # stair-finish check reads): the landing phase, or the body pitch flattening.
+                # Read from frame_meta -- debug_info["stair_demo"] is only populated later in
+                # this loop iteration (below), so it is not yet available here.
+                _cc_top_near = False
+                _cc_sd = frame_meta.get("stair_demo") if isinstance(frame_meta, dict) else None
+                if isinstance(_cc_sd, dict):
+                    _cc_phase = _cc_sd.get("phase")
+                    _cc_pitch = (_cc_sd.get("robot", {}) or {}).get("pitch_deg", 0.0)
+                    _cc_top_near = (
+                        _cc_phase in ("top_landing", "flat_follow")
+                        or abs(float(_cc_pitch)) <= float(getattr(args, "crest_creep_pitch_deg", 5.0))
+                    )
+                _cc_in_band = (
+                    bool(debug_info.get("person_detected", False))
+                    and _cc_zone in ("stop", "brake")
+                )
+                _cc_gap_ok = (
+                    _cc_true_gap is not None
+                    and float(_cc_true_gap) > 1e-3
+                    and float(_cc_true_gap) > _cc_min_gap
+                )
+                if _cc_speed > 0.0 and _cc_top_near and _cc_in_band and _cc_gap_ok:
+                    # Cap the creep at the stair speed limit so it never exceeds the climb cap.
+                    _cc_cap = max(0.0, float(args.trans_x_max) * float(args.stair_speed_scale))
+                    _cc_target = _cc_speed if _cc_cap <= 0.0 else min(_cc_speed, _cc_cap)
+                    if float(trans_x_cmd) < _cc_target:
+                        trans_x_cmd = _cc_target
+                        debug_info["crest_creep_active"] = True
+                        debug_info["crest_creep_speed_mps"] = float(_cc_target)
+                        debug_info["crest_creep_true_gap_m"] = round(float(_cc_true_gap), 3)
 
             # --- Stair-climb persistence latch (the wedge fix) -------------------------------
             # On the stairs the dog loses stairs DETECTION (pitched up, the near riser fills the
@@ -1578,6 +1660,43 @@ def main():
 
                 command_trans_x = trans_x_limiter.update(trans_x_cmd * cmd_scale)
                 command_rotation = rotation_limiter.update(rotation_cmd * cmd_scale)
+                # --- Task 3.7: zero/clamp the outgoing angular twist on stairs ------------
+                # On the parkour stair path the effective steer is the smoothed yaw_err
+                # (computed below with stair_centering_scale); the raw wz twist is already
+                # dropped by the policy on the stairs. But the transport still SENDS this
+                # command_rotation, and it saturated at +/-1.0 rad/s on ~12% of climb frames
+                # -- a real /lowcmd subscriber would act on that saturated twist and yaw the
+                # body off the risers. Explicitly zero (or hard-clamp) the outgoing angular
+                # command while the climb is active so no consumer can spin on the stairs.
+                # The yaw_err steering path below is UNCHANGED.
+                #
+                # REGRESSION FIX (run_sim_20260702_000504): the gate must key on ACTUAL stair
+                # engagement, NOT stairs_action_active alone. That flag latches ~2.5 m early and
+                # reads the person / flat ground as stairs (it was True on 2167/2200 frames of a
+                # flat-follow run where stair_climb_committed and stairs_near were BOTH never
+                # True). Gating the wz kill on it froze the follower's turn during flat-ground
+                # tracking: with a person approaching-and-turning, the follower asked for a full
+                # turn (rotation_cmd=1.0) but this zeroed it, the bearing ran out to -58 deg, the
+                # person left the FOV and was lost, and the dog wandered off route (x -4.5 -> 20).
+                # Only kill the twist when we are genuinely on/committed to the stairs. The
+                # committed-climb branch above already owns wz=0 during the real climb, so this
+                # is the belt-and-suspenders for the prepare / at-riser window; flat follow keeps
+                # full steering authority.
+                _on_stairs_for_real = (
+                    bool(debug_info.get("stairs_action_active", False))
+                    and (bool(stair_climb_committed)
+                         or bool(debug_info.get("stairs_near", False)))
+                )
+                if _on_stairs_for_real:
+                    _stair_wz_cap = max(0.0, float(getattr(args, "stair_transport_wz_max", 0.0)))
+                    if _stair_wz_cap <= 0.0:
+                        command_rotation = 0.0
+                    else:
+                        command_rotation = float(np.clip(command_rotation, -_stair_wz_cap, _stair_wz_cap))
+                    rotation_limiter.reset(float(command_rotation))
+                    debug_info["stair_transport_wz_clamped"] = True
+                else:
+                    debug_info["stair_transport_wz_clamped"] = False
                 if command_trans_x < 0.0:
                     debug_info["command_reverse_follow_suppressed"] = True
                     debug_info["command_reverse_follow_before_suppression"] = float(command_trans_x)
@@ -2065,11 +2184,79 @@ def main():
             total_loop_ms   = (time.perf_counter() - loop_start_ts) * 1000.0
             stage_ms["total_loop"] = total_loop_ms
             emit_trace_frame = (frame_idx % int(args.debug_trace_every_n_frames)) == 0
-            stall_suspected  = (
-                total_loop_ms >= 400.0
+
+            # --- Task 3.6: latency-spike vs motion-stall split -------------------------
+            # LATENCY spike: the frame-starvation tail. The loop threshold is RELATIVE to
+            # the recent MEDIAN loop time (>2x median) so it flags true spikes above the
+            # ambient rate, not the sim's constant slow rate (which pinned the old fixed
+            # 400 ms threshold). Capture/fps floors retain absolute thresholds.
+            _loop_ms_window.append(float(total_loop_ms))
+            if len(_loop_ms_window) > _loop_ms_window_max:
+                _loop_ms_window.pop(0)
+            _loop_ms_median = (
+                float(np.median(_loop_ms_window)) if _loop_ms_window else float(total_loop_ms)
+            )
+            latency_spike = (
+                (len(_loop_ms_window) >= 5 and total_loop_ms > 2.0 * _loop_ms_median)
                 or capture_wait_ms >= 300.0
                 or processing_fps <= 3.0
             )
+            if latency_spike:
+                latency_spike_count += 1
+
+            # MOTION stall: commanding forward but the body makes no headway. Prefer the
+            # handoff FSM's real stall flag when it reaches debug_info (forward-compatible:
+            # the Isaac side may thread handoff.stalled through the frame sidecar later);
+            # otherwise fall back to ground-truth body-x progress from stair_demo -- a
+            # genuine motion signal (unlike the timing proxy), commanding fwd >= a floor
+            # while the body advances < a small distance over a sustained window.
+            _handoff_stalled = debug_info.get("handoff_stalled")
+            if _handoff_stalled is None:
+                _handoff_stalled = debug_info.get("stalled")
+            _cmd_fwd = float(debug_info.get("command_trans_x_limited", 0.0) or 0.0)
+            motion_stall = False
+            if _handoff_stalled is not None:
+                motion_stall = bool(_handoff_stalled) and _cmd_fwd >= 0.05
+            else:
+                _ms_sd = frame_meta.get("stair_demo") if isinstance(frame_meta, dict) else None
+                _ms_x = None
+                if isinstance(_ms_sd, dict):
+                    _ms_x = (_ms_sd.get("robot", {}) or {}).get("x_m")
+                _ms_now = time.perf_counter()
+                _ms_dt = (
+                    0.0 if _motion_stall_last_ts is None
+                    else max(0.0, _ms_now - _motion_stall_last_ts)
+                )
+                _motion_stall_last_ts = _ms_now
+                if _ms_x is not None and _motion_stall_last_x is not None and _cmd_fwd >= 0.05:
+                    _progress = abs(float(_ms_x) - float(_motion_stall_last_x))
+                    # No headway this frame while commanding forward -> accumulate; any real
+                    # progress resets. A sustained no-progress window counts one stall.
+                    if _progress < 0.005:
+                        _motion_stall_accum_sec += _ms_dt
+                    else:
+                        _motion_stall_accum_sec = 0.0
+                    if _motion_stall_accum_sec >= 0.6:
+                        motion_stall = True
+                        _motion_stall_accum_sec = 0.0
+                else:
+                    _motion_stall_accum_sec = 0.0
+                if _ms_x is not None:
+                    _motion_stall_last_x = float(_ms_x)
+            if motion_stall:
+                motion_stall_count += 1
+
+            # stall_suspected preserved (either kind) for the trace gate; stall_count kept
+            # as a backward-compatible alias for downstream readers (= latency_spike_count).
+            stall_suspected = bool(latency_spike or motion_stall)
+            stall_count = latency_spike_count
+            debug_info["latency_spike"] = bool(latency_spike)
+            debug_info["latency_spike_count"] = int(latency_spike_count)
+            debug_info["motion_stall"] = bool(motion_stall)
+            debug_info["motion_stall_count"] = int(motion_stall_count)
+            debug_info["stall_count"] = int(stall_count)
+            debug_info["loop_ms_median"] = round(float(_loop_ms_median), 1)
+
             if emit_trace_frame or stall_suspected:
                 debug_trace.log(
                     "frame_timing",
@@ -2080,6 +2267,12 @@ def main():
                     stage_ms=stage_ms,
                     sim_mode=bool(args.sim),
                     stall_suspected=bool(stall_suspected),
+                    latency_spike=bool(latency_spike),
+                    latency_spike_count=int(latency_spike_count),
+                    motion_stall=bool(motion_stall),
+                    motion_stall_count=int(motion_stall_count),
+                    stall_count=int(stall_count),
+                    loop_ms_median=round(float(_loop_ms_median), 1),
                     frame_meta=frame_meta,
                     preview_save_enabled=bool(preview_output_enabled),
                     preview_save_images=bool(preview_save_images),

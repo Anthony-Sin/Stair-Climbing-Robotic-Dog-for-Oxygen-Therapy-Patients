@@ -59,6 +59,13 @@ class Xt16Config:
     # dropout_prob: per-ray probability of a missing return (no echo).
     range_noise_m: float = 0.0
     dropout_prob: float = 0.0
+    # Ground filter for the polar profile: the XT16 downward channels (-15 deg) ring
+    # the FLOOR at ~1.545 m for a sensor ~0.4 m off the ground, and the nearest-per-
+    # azimuth collapse would otherwise report that floor return instead of the
+    # (farther) person. Cells whose vertical offset (r*sin(elev)) sits more than this
+    # far BELOW the sensor are dropped before the collapse. Positive metres; the
+    # default enables the filter. Set to a large value / <=0 to disable.
+    ground_clip_below_sensor_m: float = 0.20
 
     @property
     def n_azimuth(self) -> int:
@@ -175,19 +182,51 @@ from perception.lidar_preview import (  # noqa: E402,F401  (re-export for back-c
 )
 
 
-def profile_from_scan(scan: Xt16Scan, view_range_m: float) -> dict:
+def profile_from_scan(
+    scan: Xt16Scan,
+    view_range_m: float,
+    *,
+    ground_clip_below_sensor_m: Optional[float] = None,
+) -> dict:
     """Compact horizontal polar profile of a scan for the vision controller.
 
     Collapses the (channels, n_azimuth) range grid to the nearest return per
     azimuth column (uint16 millimetres, 0 == no return), zlib+base64 encoded so it
     fits the UDP frame packet. ``core.lidar_fusion.decode_lidar_profile`` reverses
     it; keep the two in sync. omni-free so it stays unit-testable on its own.
+
+    Ground filter: before the nearest-per-azimuth collapse, cells whose return
+    dips well BELOW the sensor (a floor hit from a downward channel) are dropped so
+    the nearest FOREGROUND (person/obstacle) return survives instead of being
+    masked by the closer floor ring. A return at range ``r`` on channel ``ci`` has a
+    vertical offset ``r * sin(elev[ci])`` relative to the sensor; cells more than
+    ``ground_clip_below_sensor_m`` below the sensor are masked to NaN. When None the
+    ``Xt16Config.ground_clip_below_sensor_m`` value is used (enabled by default);
+    pass a large value / <=0 to disable. The WIRE FORMAT is unchanged (uint16 mm
+    nearest-per-azimuth), so the decoder needs no change.
     """
     import base64
     import zlib
 
     ranges = np.asarray(scan.ranges, dtype=np.float32)  # (channels, n_azimuth)
+    clip = (
+        float(scan.config.ground_clip_below_sensor_m)
+        if ground_clip_below_sensor_m is None
+        else float(ground_clip_below_sensor_m)
+    )
     if ranges.size:
+        # Drop floor hits: a downward channel's return at range r sits
+        # r*sin(elev) below the sensor (sin(elev) < 0 for elevations below 0).
+        # Mask cells whose vertical offset is more than `clip` metres below the
+        # sensor so the closer floor ring cannot win the nearest-per-azimuth min.
+        if clip > 0.0:
+            sin_elev = np.sin(np.radians(scan.config.vertical_angles_deg())).astype(
+                np.float32
+            )  # (channels,)
+            vert_offset = sin_elev[:, None] * ranges  # broadcast over azimuth
+            floor_mask = vert_offset < (-clip)
+            if np.any(floor_mask):
+                ranges = np.where(floor_mask, np.nan, ranges)
         # Nearest return per azimuth column; NaN (no return) -> +inf so it loses
         # the min, then mapped back to 0.
         finite = np.where(np.isnan(ranges), np.inf, ranges)

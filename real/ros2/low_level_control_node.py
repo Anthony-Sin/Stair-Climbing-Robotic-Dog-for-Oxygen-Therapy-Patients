@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 import threading
+import time
 from typing import Optional
 
 import numpy as np
@@ -98,6 +99,13 @@ class LowLevelControlNode(Node):
         # ---- policies + runner + watchdog ---------------------------------------
         self._runner = self._build_runner(walk_kp, walk_kd, climb_kp, climb_kd)
         self._watchdog = SafetyWatchdog()
+
+        # Tick-period jitter measurement (P: the loop feeds a HARDCODED nominal dt to
+        # runner.step; these measure the ACTUAL wall period so Jetson jitter is visible
+        # in the trace. Observability only -- the dt fed to the policy stays nominal).
+        self._last_tick_ts: Optional[float] = None
+        self._nominal_tick_s = 1.0 / max(1.0, self._control_hz)
+        self._jitter_warn_last_ts: float = 0.0
 
         # Optional run telemetry (throttled to ~10 Hz) in the perf_tracker run-dir layout.
         self._tel = None
@@ -186,6 +194,14 @@ class LowLevelControlNode(Node):
 
     # ------------------------------------------------------------------ control
     def _control_tick(self) -> None:
+        tick_t0 = time.perf_counter()
+        # Measure the ACTUAL tick period (Jetson-jitter observability). Guard the first
+        # tick (no prior timestamp). This does NOT change the dt fed to the policy.
+        tick_dt_meas_ms: Optional[float] = None
+        if self._last_tick_ts is not None:
+            tick_dt_meas_ms = (tick_t0 - self._last_tick_ts) * 1000.0
+        self._last_tick_ts = tick_t0
+
         with self._lock:
             low_state = self._low_state
             ts = self._low_state_ts
@@ -195,6 +211,16 @@ class LowLevelControlNode(Node):
             stair = dict(self._stair)
             released = self._sport_released
         now = self._now()
+
+        # Warn (throttled) when the measured period blows the real-time budget. Throttle
+        # to >1.5x nominal and at most once/second so a jitter storm can't flood the log.
+        if tick_dt_meas_ms is not None and tick_dt_meas_ms > 1.5 * self._nominal_tick_s * 1000.0:
+            if (tick_t0 - self._jitter_warn_last_ts) >= 1.0:
+                self._jitter_warn_last_ts = tick_t0
+                self.get_logger().warn(
+                    f"control tick jitter: measured {tick_dt_meas_ms:.1f} ms "
+                    f"(nominal {self._nominal_tick_s * 1000.0:.1f} ms) -- Jetson budget overrun"
+                )
 
         # Gate: do not touch /lowcmd until sport mode is released AND state is fresh.
         if low_state is None or (self._require_released and not released):
@@ -214,14 +240,27 @@ class LowLevelControlNode(Node):
             self._articulation.update(low_state)
 
         state = self._build_robot_state(low_state, roll, pitch, yaw, stair)
+
+        # --- per-stage wall-ms (perf_counter deltas only -- no I/O on the hot path) ---
+        _t = time.perf_counter()
         masked_depth = preprocess_depth(depth, cmd.person_bbox) if depth is not None else None
+        preprocess_ms = (time.perf_counter() - _t) * 1000.0
+
+        _t = time.perf_counter()
         out = self._runner.step(
             self._articulation, cmd,
+            # NOTE: dt is the NOMINAL 1/control_hz on purpose. The frozen policies were
+            # tuned at a fixed control dt; feeding the MEASURED (jittery) dt could
+            # destabilize them. Jitter is only OBSERVED (tick_dt_ms), never fed back.
             depth_106x60=masked_depth, height_fn=self._make_height_fn(heightscan),
             state=state, dt=1.0 / self._control_hz, now=now,
         )
+        policy_ms = (time.perf_counter() - _t) * 1000.0
+
+        _t = time.perf_counter()
         fields = build_low_cmd_fields(out.targets_isaac, out.kp, out.kd)
         self._publish_lowcmd(fields)
+        publish_ms = (time.perf_counter() - _t) * 1000.0
 
         if self._tel is not None:
             self._tel_count += 1
@@ -230,6 +269,19 @@ class LowLevelControlNode(Node):
                     pitch_deg=math.degrees(pitch), roll_deg=math.degrees(roll),
                     policy_cmd=[cmd.vx, 0.0, cmd.wz],
                     action_norm=out.telemetry.get("action_norm"),
+                )
+                # Per-stage latency evidence (matches the sim's frame_timing stage_ms).
+                # tick_total captured LAST so it covers this tick's real work; the JSONL
+                # write itself is outside the 20 ms budget concern (only ~10 Hz).
+                tick_total_ms = (time.perf_counter() - tick_t0) * 1000.0
+                self._tel.record_frame_timing(
+                    stage_ms={
+                        "preprocess": preprocess_ms,
+                        "policy": policy_ms,
+                        "publish": publish_ms,
+                        "tick_total": tick_total_ms,
+                    },
+                    tick_dt_ms=tick_dt_meas_ms,
                 )
 
     def _build_robot_state(self, low_state, roll, pitch, yaw, stair) -> RobotState:

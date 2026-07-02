@@ -25,9 +25,11 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import queue
 import shutil
 import subprocess
-from typing import Callable, Optional, Tuple
+import threading
+from typing import Any, Callable, Optional, Tuple
 
 # Per-frame size ceiling for the legacy mp4v fallback (mirrors isaac_env's
 # _RECORD_MAX_PIXELS: ~768x432 stays under the proven-good mpeg4 macroblock count).
@@ -244,3 +246,142 @@ class RecordingWriter:
                 pass
             self._cv2_writer = None
         return self.started and self.frames > 0
+
+
+class AsyncRecordingWriter:
+    """Wrap a :class:`RecordingWriter` and push frame WRITES onto a background thread.
+
+    The synchronous ``RecordingWriter.write()`` (cv2 resize + colour convert already
+    happen on the caller; here it is the ffmpeg-pipe/cv2 encode) is done off the Isaac
+    physics loop so a slow encoder cannot stall physics. A small bounded queue with a
+    drop-oldest policy keeps memory bounded: if the encoder falls behind, the OLDEST
+    queued frame is dropped (a slightly choppier video) rather than blocking the loop.
+
+    CRITICAL (moov-atom guarantee): :meth:`release` DRAINS the queue and JOINS the
+    worker BEFORE releasing the underlying writer, so every shutdown path (graceful
+    STOP_ISAAC, SIGINT/SIGTERM/SIGBREAK -> finally block) finalises a complete mp4.
+    The public API mirrors ``RecordingWriter`` (``write``/``release``/``started``/
+    ``frames``/``backend``) so it is a drop-in replacement at the call sites.
+    """
+
+    def __init__(
+        self,
+        writer: RecordingWriter,
+        *,
+        maxsize: int = 8,
+        log: Optional[Callable[..., None]] = None,
+    ) -> None:
+        self._writer = writer
+        self._log = log or (lambda *a, **k: None)
+        self._queue: "queue.Queue[Optional[Any]]" = queue.Queue(maxsize=max(1, int(maxsize)))
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._dropped = 0
+        self._drop_warned = False
+        self._released = False
+
+    # -- pass-through introspection (mirror RecordingWriter) ---------------
+    @property
+    def started(self) -> bool:
+        return bool(self._writer.started)
+
+    @property
+    def frames(self) -> int:
+        return int(self._writer.frames)
+
+    @property
+    def backend(self) -> Optional[str]:
+        return self._writer.backend
+
+    @property
+    def role(self) -> str:
+        return self._writer.role
+
+    @property
+    def dropped(self) -> int:
+        return int(self._dropped)
+
+    def _ensure_thread(self) -> None:
+        if self._thread is None and not self._released:
+            self._thread = threading.Thread(
+                target=self._run, name=f"recorder-{self._writer.role}", daemon=True
+            )
+            self._thread.start()
+
+    # -- write (non-blocking, drop-oldest) --------------------------------
+    def write(self, bgr) -> None:
+        if self._released or bgr is None:
+            return
+        self._ensure_thread()
+        try:
+            self._queue.put_nowait(bgr)
+            return
+        except queue.Full:
+            pass
+        # Queue full: drop the OLDEST frame to make room, so we never block physics.
+        try:
+            _ = self._queue.get_nowait()
+            self._dropped += 1
+        except queue.Empty:
+            pass
+        try:
+            self._queue.put_nowait(bgr)
+        except queue.Full:
+            self._dropped += 1
+        if self._dropped and not self._drop_warned and self._dropped >= 30:
+            self._drop_warned = True
+            self._log(
+                logging.WARNING,
+                "recording_frames_dropped",
+                f"{self._writer.role} async recorder dropped frames (encoder behind); "
+                f"video will be slightly choppier",
+                role=self._writer.role,
+                dropped=int(self._dropped),
+            )
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                frame = self._queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if frame is None:
+                break
+            try:
+                self._writer.write(frame)
+            except Exception:
+                # Never let an encode error kill the worker; drop the frame.
+                self._dropped += 1
+
+    def _drain(self) -> None:
+        """Encode anything still queued at stop so the tail of the run is recorded."""
+        while True:
+            try:
+                frame = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            if frame is None:
+                continue
+            try:
+                self._writer.write(frame)
+            except Exception:
+                self._dropped += 1
+
+    # -- finalize (flush + join, THEN release the mp4) --------------------
+    def release(self) -> bool:
+        """Flush the queue, join the worker, and finalise the underlying mp4 (moov
+        atom). Safe to call more than once."""
+        if self._released:
+            return self._writer.started and self._writer.frames > 0
+        self._released = True
+        # Stop the worker, then encode any queued tail so no frames are lost.
+        self._stop_event.set()
+        try:
+            self._queue.put_nowait(None)  # wake the worker if it is blocked on get()
+        except queue.Full:
+            pass
+        if self._thread is not None:
+            self._thread.join(timeout=15.0)
+            self._thread = None
+        self._drain()
+        return self._writer.release()

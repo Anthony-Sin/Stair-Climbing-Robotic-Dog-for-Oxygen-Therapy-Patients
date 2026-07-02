@@ -59,6 +59,23 @@ def build_parser() -> argparse.ArgumentParser:
                              "command loop stay on --render-every). With --physics-hz 200, "
                              "3 -> ~66 fps recording vs ~28 fps perception. The extra renders only "
                              "cost GPU wall-clock; physics still steps every frame at --physics-hz.")
+    parser.add_argument("--record-every-n-steps", type=int, default=2,
+                        help="WRITE a recorded frame every Nth RENDER tick (the recording "
+                             "cameras ride the perception render cadence --render-every, so this "
+                             "throttles how often those renders are ENCODED to mp4). At "
+                             "--physics-hz 200 / --render-every 7 the render rate is ~28.6 fps; "
+                             "with N=2 recording writes ~14.3 fps (in the 10-15 fps target) -- "
+                             "lighter encode/IO load per second without adding any extra renders "
+                             "and WITHOUT touching the perception PUBLISH cadence (unchanged at "
+                             "--render-every). 1 = write every render tick (old behaviour).")
+    parser.add_argument("--step-profile", dest="step_profile", action="store_true", default=True,
+                        help="Accumulate per-phase wall-time (physics / render_readback / recorder "
+                             "/ parkour_depth / lidar / publisher / other) over the Isaac step loop "
+                             "and log a mean-ms + %%-of-loop summary every ~200 steps (with the "
+                             "measured RTF). Cheap (a handful of perf_counter reads per step); ON by "
+                             "default. Use --no-step-profile to disable.")
+    parser.add_argument("--no-step-profile", dest="step_profile", action="store_false",
+                        help="Disable the per-phase step profiler (see --step-profile).")
     parser.add_argument("--person-x", type=float, default=-3.5,
                         help="Initial X position of the person target. Default -3.5 gives "
                              "~5.5 m of flat-ground approach before the stairs at x≈2.0.")

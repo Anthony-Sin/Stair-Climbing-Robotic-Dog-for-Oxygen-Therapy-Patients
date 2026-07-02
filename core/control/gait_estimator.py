@@ -2,6 +2,16 @@ import numpy as np
 import math
 from typing import Optional, Tuple
 
+# Max plausible patient walking speed (m/s). Depth derivatives faster than this over a
+# frame are noise (a single bad depth read produced 47 m/s spikes), and the final
+# estimate is clamped here (a patient truly walks ~0.35 m/s).
+MAX_PERSON_SPEED = 1.5
+MAX_LEADER_SPEED = 1.5
+# Per-frame decay applied to leader_speed_mps when the target is not detected, so a
+# stale estimate bleeds toward 0 instead of being held across a dropout.
+_LOSS_DECAY = 0.9
+
+
 class GaitEstimator:
     """
     Estimates human gait features (walking state, ground point, and metric speed)
@@ -17,6 +27,24 @@ class GaitEstimator:
         self.history = []
         self.leader_speed_mps = 0.0
         self._was_walking = False
+
+    def decay(self) -> float:
+        """Bleed the leader-speed estimate toward 0 on a no-detection frame.
+
+        Call from the main loop when the target is not detected this frame (no
+        keypoints AND no bbox, or depth is None): holding a stale speed across a
+        dropout makes downstream standoff controllers over-pace a stopped patient.
+        Also drops the walk-onset latch so a decayed estimate is not re-inflated by
+        the onset prior when the patient re-appears standing still. Returns the new
+        leader_speed_mps.
+        """
+        self.leader_speed_mps = max(0.0, float(self.leader_speed_mps) * _LOSS_DECAY)
+        self._was_walking = False
+        return self.leader_speed_mps
+
+    # Backwards-compatible alias for callers that phrase this as an event.
+    def on_no_detection(self) -> float:
+        return self.decay()
         
     def update(
         self,
@@ -47,6 +75,18 @@ class GaitEstimator:
         Returns:
             Tuple of (is_walking: bool, confidence: float, leader_speed_mps: float, ground_point: Optional[Tuple[float, float]])
         """
+        # 0. Full loss this frame (no keypoints AND no bbox): DECAY the speed estimate
+        # toward 0 instead of holding a stale value or (worse) letting a spurious
+        # derivative accumulate. The follower calls update() every frame including losses,
+        # so routing the loss path through decay() here keeps the estimate honest without
+        # needing a separate main-loop call. Nothing to measure -> is_walking False,
+        # confidence 0, no ground point. (A live bbox with only depth missing is still a
+        # DETECTION: it falls through so the ankle-cue walking analysis stays alive; the
+        # speed EMA below simply does not update without depth.)
+        if keypoints is None and bbox is None:
+            self.decay()
+            return False, 0.0, self.leader_speed_mps, None
+
         # 1. Ground point extraction: lower of the two ankles, falling back to bbox base
         ground_point = None
         if keypoints is not None and visibility is not None:
@@ -71,46 +111,66 @@ class GaitEstimator:
             ground_point = (float(x1 + x2) / 2.0, float(y2))
 
         # 2. Metric ground speed estimation (smooth EMA)
+        # dt is clamped to a sane window: the follow loop runs at a variable ~283 ms and
+        # occasionally spikes much larger, and a raw (depth - last_depth)/dt with a large
+        # variable dt + noisy depth produced 47 m/s spikes. Clamp dt everywhere in the
+        # speed math so a stretched frame cannot blow up the derivative.
         curr_speed = 0.0
+        speed_reliable = True
+        dt_eff = min(max(float(dt), 1e-3), 0.5)
         if depth_m is not None and dt > 0.0 and len(self.history) > 0:
             last_frame = self.history[-1]
             last_depth = last_frame.get("depth_m")
             last_keypoints = last_frame.get("keypoints")
-            
-            if last_depth is not None:
-                # Relative forward speed
-                v_depth = (depth_m - last_depth) / dt
-                v_forward_ground = v_depth + robot_speed
-                
-                # Relative lateral speed (Hips center fallback to bbox center)
-                hip_center_x = camera_cx
-                last_hip_center_x = camera_cx
-                
-                if keypoints is not None and len(keypoints) > 12:
-                    hip_center_x = (keypoints[11][0] + keypoints[12][0]) / 2.0
-                elif bbox is not None:
-                    hip_center_x = (bbox[0] + bbox[2]) / 2.0
-                    
-                if last_keypoints is not None and len(last_keypoints) > 12:
-                    last_hip_center_x = (last_keypoints[11][0] + last_keypoints[12][0]) / 2.0
-                elif last_frame.get("bbox") is not None:
-                    last_bbox = last_frame["bbox"]
-                    last_hip_center_x = (last_bbox[0] + last_bbox[2]) / 2.0
-                    
-                x_m = (hip_center_x - camera_cx) * depth_m / camera_fx if camera_fx > 0 else 0.0
-                last_x_m = (last_hip_center_x - camera_cx) * last_depth / camera_fx if camera_fx > 0 else 0.0
-                
-                v_lateral_rel = (x_m - last_x_m) / dt
-                v_lateral_ground = v_lateral_rel + robot_yaw_speed * depth_m
-                
-                curr_speed = math.sqrt(v_forward_ground**2 + v_lateral_ground**2)
 
-        # Smooth estimated ground speed with EMA (α=0.30 halves the 200 ms lag vs the old 0.15)
-        if len(self.history) > 0:
-            alpha = 0.30
-            self.leader_speed_mps = max(0.0, alpha * curr_speed + (1.0 - alpha) * self.leader_speed_mps)
-        else:
-            self.leader_speed_mps = max(0.0, curr_speed)
+            if last_depth is not None:
+                # Reject implausible per-frame depth JUMPS: a change faster than the max
+                # plausible patient speed x dt is a noisy depth read, not real motion.
+                # Skip the EMA this frame (contribute nothing) rather than emit a spike.
+                if abs(float(depth_m) - float(last_depth)) > MAX_PERSON_SPEED * dt_eff:
+                    speed_reliable = False
+                else:
+                    # Relative forward speed
+                    v_depth = (depth_m - last_depth) / dt_eff
+                    v_forward_ground = v_depth + robot_speed
+
+                    # Relative lateral speed (Hips center fallback to bbox center)
+                    hip_center_x = camera_cx
+                    last_hip_center_x = camera_cx
+
+                    if keypoints is not None and len(keypoints) > 12:
+                        hip_center_x = (keypoints[11][0] + keypoints[12][0]) / 2.0
+                    elif bbox is not None:
+                        hip_center_x = (bbox[0] + bbox[2]) / 2.0
+
+                    if last_keypoints is not None and len(last_keypoints) > 12:
+                        last_hip_center_x = (last_keypoints[11][0] + last_keypoints[12][0]) / 2.0
+                    elif last_frame.get("bbox") is not None:
+                        last_bbox = last_frame["bbox"]
+                        last_hip_center_x = (last_bbox[0] + last_bbox[2]) / 2.0
+
+                    x_m = (hip_center_x - camera_cx) * depth_m / camera_fx if camera_fx > 0 else 0.0
+                    last_x_m = (last_hip_center_x - camera_cx) * last_depth / camera_fx if camera_fx > 0 else 0.0
+
+                    v_lateral_rel = (x_m - last_x_m) / dt_eff
+                    v_lateral_ground = v_lateral_rel + robot_yaw_speed * depth_m
+
+                    curr_speed = math.sqrt(v_forward_ground**2 + v_lateral_ground**2)
+                    # Clamp the per-frame estimate to the max plausible leader speed so a
+                    # residual outlier cannot leak a spike into the EMA.
+                    curr_speed = min(curr_speed, MAX_LEADER_SPEED)
+
+        # Smooth estimated ground speed with EMA (α=0.30 halves the 200 ms lag vs the old 0.15).
+        # An unreliable frame (rejected depth jump) does NOT update the EMA -- the estimate
+        # simply holds, rather than being dragged by a fabricated spike.
+        if speed_reliable:
+            if len(self.history) > 0:
+                alpha = 0.30
+                self.leader_speed_mps = max(0.0, alpha * curr_speed + (1.0 - alpha) * self.leader_speed_mps)
+            else:
+                self.leader_speed_mps = max(0.0, curr_speed)
+        # Final clamp: the reported estimate never exceeds the max plausible leader speed.
+        self.leader_speed_mps = min(self.leader_speed_mps, MAX_LEADER_SPEED)
 
         # Save current frame to rolling history
         self.history.append({

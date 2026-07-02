@@ -24,10 +24,15 @@ if "--trt-engine" not in sys.argv:
     sys.argv.extend(["--trt-engine", "real/models/yolo11n-pose-fp16.trt"])
 
 if "--stairs-model" not in sys.argv:
-    # TODO: convert yolov8s-worldv2.pt to TRT for ~3-5x faster inference on Orin.
-    # Until then, PyTorch inference may run <5 Hz vs >30 Hz for the TRT pose model,
-    # causing stairs_action_active to lag the 50 Hz control loop.
-    sys.argv.extend(["--stairs-model", "real/models/yolov8s-worldv2.pt"])
+    # Auto-select: prefer an on-device TensorRT engine when present (~3-5x faster on
+    # Orin -- PyTorch inference runs <5 Hz vs >30 Hz, lagging the 50 Hz control loop),
+    # fall back to the PyTorch weights otherwise. The .engine is built ON the robot by
+    # real/models/export_stairs_trt.py (it bakes the YOLO-World vocab in at export;
+    # yolo_stairs_inference skips set_classes for .engine paths accordingly).
+    _stairs_engine = "real/models/yolov8s-worldv2.engine"
+    _stairs_pt = "real/models/yolov8s-worldv2.pt"
+    _stairs_model = _stairs_engine if os.path.exists(_stairs_engine) else _stairs_pt
+    sys.argv.extend(["--stairs-model", _stairs_model])
 
 from core.main import main
 

@@ -31,6 +31,7 @@ class RealTelemetry:
             os.makedirs(d, exist_ok=True)
         self._status_path = os.path.join(self._logs, "status.jsonl")
         self._isaac_path = os.path.join(self._debug, "isaac_env.jsonl")
+        self._frame_timing_path = os.path.join(self._debug, "frame_timing.jsonl")
         self._n_samples = 0
 
     # ------------------------------------------------------------------ lifecycle
@@ -53,6 +54,31 @@ class RealTelemetry:
             policy_cmd=policy_cmd, action_norm=action_norm,
         ))
         self._n_samples += 1
+
+    def record_frame_timing(
+        self,
+        *,
+        stage_ms: Dict[str, float],
+        fps: Optional[float] = None,
+        tick_dt_ms: Optional[float] = None,
+    ) -> None:
+        """Append one per-tick timing sample to ``debug/frame_timing.jsonl``.
+
+        Mirrors the sim's ``frame_timing`` trace event (event name + ``data.stage_ms``)
+        so ``perf_tracker.extract_metrics`` and the analysis tooling ingest real runs
+        with the SAME per-stage-ms evidence format the sim emits. The caller throttles
+        this to ~10 Hz; the write is the only I/O here. Cheap + exception-safe: a bad
+        value or a full disk must never take down the 50 Hz control loop.
+        """
+        try:
+            data: Dict[str, Any] = {"stage_ms": {k: float(v) for k, v in dict(stage_ms).items()}}
+            if fps is not None:
+                data["fps"] = float(fps)
+            if tick_dt_ms is not None:
+                data["tick_dt_ms"] = float(tick_dt_ms)
+            self._append(self._frame_timing_path, {"event": "frame_timing", "data": data})
+        except Exception:
+            pass
 
     def finish(self, *, exit_reason: str = "completed", motion_elapsed_sec: float = 0.0,
                final_x_m: Optional[float] = None) -> None:
