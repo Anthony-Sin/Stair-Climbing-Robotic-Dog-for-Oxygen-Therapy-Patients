@@ -248,7 +248,10 @@ def _spinner(t: float, theme: tu.Theme) -> str:
 def _find_run_dir() -> Optional[str]:
     """The active sim run folder (run_sim.ps1 writes log/latest_run.txt at startup)."""
     try:
-        with open(os.path.join(REPO_ROOT, "log", "latest_run.txt"), encoding="utf-8") as fh:
+        # utf-8-sig: PowerShell 5.1 'Set-Content -Encoding UTF8' can prepend a BOM; plain "utf-8"
+        # then leaves it on the first char so os.path.isdir() fails and the panel silently blanks.
+        # utf-8-sig strips a BOM if present and is a no-op otherwise (the writer is now BOM-less too).
+        with open(os.path.join(REPO_ROOT, "log", "latest_run.txt"), encoding="utf-8-sig") as fh:
             d = fh.read().strip()
         return d if d and os.path.isdir(d) else None
     except Exception:

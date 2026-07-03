@@ -35,6 +35,35 @@ def _sha256(path: str) -> str:
     return h.hexdigest()
 
 
+def _fetch_atomic(src: str, dest: str, want_sha256: str) -> bool:
+    """Download `src` to `dest` atomically: write to a sibling .part temp, verify the sha256,
+    and only os.replace() into place on success. On any mismatch/error the partial file is
+    removed and `dest` is left untouched -- a fresh clone never ends up with a half-written or
+    corrupt weight (review §10).
+    """
+    os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+    tmp = dest + ".part"
+    try:
+        urllib.request.urlretrieve(src, tmp)
+        got = _sha256(tmp)
+        if got != want_sha256:
+            print(f"         ERROR: downloaded sha256 {got[:12]} != manifest {want_sha256[:12]}"
+                  f"  (kept nothing; check the 'source' / release tag)")
+            return False
+        os.replace(tmp, dest)  # atomic on same filesystem
+        print(f"         OK: {dest} ({got[:12]})")
+        return True
+    except Exception as exc:  # network / IO / hash -- never leave a partial file behind
+        print(f"         ERROR: fetch failed ({exc})")
+        return False
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--fetch", action="store_true",
@@ -44,7 +73,7 @@ def main() -> int:
     with open(_MANIFEST, "r", encoding="utf-8") as fh:
         manifest = json.load(fh)
 
-    present = missing = corrupt = 0
+    present = missing = corrupt = fetch_failed = 0
     for e in manifest["entries"]:
         path = os.path.join(_ROOT, e["path"])
         want = e["sha256"]
@@ -66,16 +95,14 @@ def main() -> int:
             continue
         if args.fetch:
             print(f"         downloading {src} ...")
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            urllib.request.urlretrieve(src, path)
-            got = _sha256(path)
-            if got != want:
-                print(f"         ERROR: downloaded sha256 {got[:12]} != manifest {want[:12]}")
-                return 1
+            if not _fetch_atomic(src, path, want):
+                fetch_failed += 1
 
     print(f"\n{present} present, {missing} missing, {corrupt} corrupt "
           f"(of {len(manifest['entries'])})")
-    return 1 if (corrupt or missing) and not args.fetch else 0
+    if args.fetch:
+        return 1 if fetch_failed else 0
+    return 1 if (corrupt or missing) else 0
 
 
 if __name__ == "__main__":

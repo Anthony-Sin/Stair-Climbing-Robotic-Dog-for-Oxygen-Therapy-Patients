@@ -126,9 +126,13 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 export PYTHONPATH="$SRC:${PYTHONPATH:-}"
 
 # --- Preflight: refuse to start on a failed sanity check ----------------------
-stage preflight start "sanity check (pgtt + rl policy)"
-python3 -m real.verification.preflight --pgtt "$SRC/sim/models/pgtt/pgtt_go2_level17.npz" \
-        --rl "$SRC/sim/models/locomotion/go2_robot_lab_policy.pt"
+# Validate the SAME weight paths the control node loads from real_robot.yaml (NOT a
+# divergent hardcoded set -- that config rot let preflight pass while the node died on a
+# FileNotFoundError). Run from the repo root so the yaml's CWD-relative paths resolve the
+# same way the launch resolves them.
+stage preflight start "sanity check (pgtt + rl policy, from real_robot.yaml)"
+cd "$REPO"
+python3 -m real.verification.preflight --params "$SRC/real/config/real_robot.yaml"
 stage preflight ready "policies ok"
 
 PIDS=()

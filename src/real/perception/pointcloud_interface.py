@@ -7,7 +7,10 @@ apply the per-SKU lidar->base extrinsic. Swapping SKUs is a config change, not a
 change -- the provider never learns which LiDAR is fitted.
 
 EXTRINSICS BELOW ARE PLACEHOLDERS -- measure the real lidar->base transform on the
-robot and set it in real_robot.yaml. A wrong extrinsic shifts the whole elevation map.
+robot and EDIT ``_EXTRINSICS`` here (it is a hardcoded constant, NOT read from a ROS
+parameter or real_robot.yaml; changing it means changing this file). A wrong extrinsic
+shifts the whole elevation map. Preflight FAILS (not just warns) when lidar mode still
+carries this placeholder -- see ``real.verification.preflight.check_lidar_extrinsics``.
 """
 from __future__ import annotations
 

@@ -5,6 +5,13 @@ runs the walk<->climb transition every locomotion step (see the module docstring
 of ``pgtt_stair_handoff`` for the full Task-2 contract). Split out of
 ``pgtt_stair_handoff`` (which now re-exports ``HandoffController``) so the FSM is
 its own module; the config + detectors it depends on live in sibling modules.
+
+TIMING IS CALLER-DEFINED ACCUMULATED TIME (incident 8.6). Every window/timeout is
+measured against ``self._t`` -- a clock advanced by ``self._t += dt`` from the CALLER's
+``dt`` -- NOT the wall-clock ``now`` argument. Mixing the two (``_commit_until = now +
+window`` while the stall detector accumulated sim ``dt``) meant a window meant one
+duration in the ~8.5x-slower headless sim and another on the robot. ``now`` is still
+accepted for signature/log compatibility but is NOT used for any timing decision.
 """
 
 from __future__ import annotations
@@ -133,11 +140,14 @@ class HandoffController:
         stairs_ahead_gt: Optional[bool] = None,
         forward_goal_dist_m: Optional[float] = None,
     ) -> Dict[str, Any]:
+        # Advance the caller-defined accumulated clock. ALL timing below is measured against
+        # THIS (self._elapsed_dt), never the wall-clock ``now`` (incident 8.6).
         self._elapsed_dt += max(0.0, float(dt))
+        _t = self._elapsed_dt
         # Throttled depth detection (the parkour cam only refreshes ~10 Hz).
-        if depth_hw is not None and (now - self._last_detect_ts) >= float(self.cfg.stair_detect_period_sec):
+        if depth_hw is not None and (_t - self._last_detect_ts) >= float(self.cfg.stair_detect_period_sec):
             self._det = self.detector.detect(depth_hw)
-            self._last_detect_ts = now
+            self._last_detect_ts = _t
         det = self._det
 
         # --- Stair-commit ("person walked up out of frame -> keep going up") ----------
@@ -172,10 +182,10 @@ class HandoffController:
         if (self.cfg.stair_commit_enabled and commit_armed
                 and (stairs_ahead or self.state == "climb") and not person_detected
                 and _terrain_confirms):
-            self._commit_until = float(now) + float(self.cfg.stair_commit_max_sec)
+            self._commit_until = _t + float(self.cfg.stair_commit_max_sec)
         committing = (
             bool(self.cfg.stair_commit_enabled)
-            and (float(now) < self._commit_until)
+            and (_t < self._commit_until)
             and not person_detected
         )
         # Person re-detected: clear the post-climb re-acquisition flag so normal follow resumes.
@@ -240,7 +250,7 @@ class HandoffController:
             le = det.get("leading_edge_distance")
             near_enough = (le is not None) and (float(le) <= float(self.cfg.handoff_distance_m))
             controller_ok = bool(stairs_action_active) or (not self.cfg.require_controller_stairs)
-            armed = now >= self._cooldown_until
+            armed = _t >= self._cooldown_until
             has_stairs = (
                 bool(det.get("stair_detected", False))
                 and int(det.get("stair_count", 0)) >= int(self.cfg.stair_min_count)
@@ -282,7 +292,7 @@ class HandoffController:
                 # => decision logged but the dog stays upright at the riser via the stair-commit.
                 do_climb = (backend in ("parkour", "blind_rl")) or bool(self.cfg.climb_attempt)
                 if not do_climb:
-                    self._cooldown_until = float(now) + float(self.cfg.re_eval_cooldown_sec)
+                    self._cooldown_until = _t + float(self.cfg.re_eval_cooldown_sec)
                     log_event(
                         self.logger, logging.INFO, "handoff_climb_suppressed",
                         "Stall/standoff at stairs -- climb decision made but the IK climb is off",
@@ -291,7 +301,7 @@ class HandoffController:
                 else:
                     self.state = "climb"
                     self._climb_start_z = float(base_z) if base_z is not None else None
-                    self._climb_t0 = float(now)
+                    self._climb_t0 = _t
                     self._climb_elapsed = 0.0
                     self._climb_progress_z = float(base_z) if base_z is not None else None
                     self._climb_stall_sec = 0.0
@@ -456,7 +466,7 @@ class HandoffController:
                           "aborted_tilt" if abort else
                           "climb_stalled" if climb_stuck else "timeout")
                 self.state = "walk"
-                self._cooldown_until = float(now) + float(self.cfg.re_eval_cooldown_sec)
+                self._cooldown_until = _t + float(self.cfg.re_eval_cooldown_sec)
                 self.stall.reset()
                 self._egress = False
                 self._egress_x0 = None
@@ -477,7 +487,7 @@ class HandoffController:
                     # (run_20260625_004009_738: x=9.694 m, 3.4 m overshoot, then fell off edge).
                     self._commit_until = min(
                         self._commit_until,
-                        float(now) + float(self.cfg.post_egress_commit_sec),
+                        _t + float(self.cfg.post_egress_commit_sec),
                     )
                 log_event(
                     self.logger, logging.INFO, "handoff_disengage",

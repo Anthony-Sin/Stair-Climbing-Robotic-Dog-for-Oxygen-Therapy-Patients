@@ -5,7 +5,7 @@ param(
     [string]$RawVideoPath = "",
     [Parameter(Mandatory = $true)][string]$FrameHost,
     [int]$FramePort = 52002,
-    [int]$CmdPort = 52001,
+    [int]$CmdPort = 52100,
     # Low-level controller selection + PGTT curriculum checkpoint (see run_sim.ps1).
     [string]$LocomotionPolicy = "pgtt",
     [string]$PgttLevel = "level17",
@@ -44,7 +44,6 @@ param(
     [switch]$WithO2Payload,
     [switch]$Headless,
     [switch]$FastRender,
-    [switch]$PatientPhysics,
     [string]$PatientCharacterUsd = "",
     [switch]$WarmIsaac,
     [string]$WarmCommandFile = "",
@@ -236,13 +235,14 @@ if ($StairWaypointTest) {
 
 # Oxygen-concentrator payload (mounting rails + O2 tank) on the Go2's back. isaac_env
 # attaches it in load_go2() and runs the O2PayloadMonitor (mass/CoM, tank-detach watchdog).
-$o2Arg = "--with-o2-payload"
-Write-ConsoleLog "  O2 payload:          ON (oxygen tank + mounting rails attached to the Go2)"
-
-$patientPhysicsArg = ""
-if ($PatientPhysics) {
-    $patientPhysicsArg = "--patient-physics"
-    Write-ConsoleLog "  Patient physics:     ON (dynamic biped articulation enabled)"
+# Respect the -WithO2Payload toggle so a baseline WITHOUT payload actually differs (an
+# A/B: -WithO2Payload => attached; absent => --no-o2-payload detaches it).
+if ($WithO2Payload) {
+    $o2Arg = "--with-o2-payload"
+    Write-ConsoleLog "  O2 payload:          ON (oxygen tank + mounting rails attached to the Go2)"
+} else {
+    $o2Arg = "--no-o2-payload"
+    Write-ConsoleLog "  O2 payload:          OFF (baseline, no payload attached)"
 }
 
 $holdMotionArg = ""
@@ -251,7 +251,7 @@ if ($NoHoldMotion) {
     Write-ConsoleLog "  Scene motion:        starts immediately (patient walks without waiting for a controller command)"
 }
 
-$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" $personArgs --go2-x $Go2X --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera $rawArg $locomotionArgs $validationCamArg $selfTestArg $warmArg $benchArg $handoffArg $waypointArg $o2Arg $patientPhysicsArg $holdMotionArg > `"$RawLog`" 2>&1`""
+$cmdArgs = "/c `"`"$IsaacBat`" `"$IsaacEnv`" $personArgs --go2-x $Go2X --frame-host $FrameHost --frame-port $FramePort --cmd-port $CmdPort --log-dir `"$RunLogDir`" --no-view-follow-camera $rawArg $locomotionArgs $validationCamArg $selfTestArg $warmArg $benchArg $handoffArg $waypointArg $o2Arg $holdMotionArg > `"$RawLog`" 2>&1`""
 
 # Start the process with direct OS redirection to prevent pipeline blocking
 $process = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs -PassThru -NoNewWindow

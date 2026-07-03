@@ -68,10 +68,19 @@ def main():
     args = parse_args()
     _print_startup_banner(args)
 
+    # Run id: shared across every process in a run for cross-process trace correlation. Read from
+    # FOLLOW_RUN_ID (the coordination constant) if set; otherwise mint one, EXPORT it so any child
+    # process inherits the same id, and log it.
+    _follow_run_id = os.environ.get("FOLLOW_RUN_ID", "").strip()
+    if not _follow_run_id:
+        _follow_run_id = f"run_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"
+        os.environ["FOLLOW_RUN_ID"] = _follow_run_id
+
     debug_trace = DebugTraceLogger(
         trace_dir=args.debug_trace_dir,
         filename="vision_main_trace.jsonl",
         source="vision.main",
+        run_id=_follow_run_id,
     )
     debug_trace.log(
         "session_start",
@@ -205,8 +214,12 @@ def main():
     # How long to COAST on the last good detection through YOLO dropouts before treating the
     # target as lost. The close, turning patient at the 0.45 m follow distance overflows / leaves
     # the narrow front-camera FOV and drops out of YOLO for up to ~1.3 s at a time (run 111200:
-    # det rate 27%, dropout streaks to 1.35 s). 1.6 s in sim bridges those so the dog keeps a
-    # continuous bearing instead of stuttering to a stop on every miss; 0.35 s on real hardware.
+    # det rate 27%, dropout streaks to 1.35 s). During the COAST the follower is fed the last
+    # matched box, so the dog keeps ADVANCING toward the last-known bearing/gap instead of stopping.
+    # NOTE: raising this cannot fix the SECOND-zigzag apex loss -- there YOLO-pose drops the
+    # frame-overflowing, side-profile patient for 80+ frames (raw det ~21%), far longer than any
+    # safe coast, and a longer coast just drives toward a stale box. The real limiter is detection
+    # rate (see the follow-standoff / FOV discussion), not this window.
     visual_lock_hold_sec = 1.6 if args.sim else 0.35
     last_matched_visual_ts: Optional[float] = None
     # Last non-None tracker output, kept so we can coast through EMPTY-detection frames (where
@@ -363,7 +376,12 @@ def main():
     preview_save_count    = 0
     frame_idx             = 0
     sim_frame_failure_since: Optional[float] = None
-    stair_latch_counter = 0
+    # Stairs-detected latch expressed in WALL-SECONDS (incident 8.6): a frame counter meant a
+    # different physical hold on every platform (~10 s headless sim vs ~1.3 s on the robot for the
+    # old 40-frame latch). Hold stairs_detected True until this timestamp; refreshed on each
+    # positive detection. Resolved seconds come from --stairs-latch-sec (or the deprecated
+    # --stairs-latch-frames converted at the assumed FPS in arg_postprocess).
+    _stairs_latch_until_ts = -1e9
     last_stairs_bbox: Optional[List[float]] = None
     last_stairs_conf = 0.0
     last_stairs_depth_m: Optional[float] = None
@@ -431,6 +449,11 @@ def main():
     # base, gap_ctrl=0.24 = the riser, patient lost 190 s). Use this last-known PATIENT gap for the
     # on-loss collision check instead, so the dog climbs blind toward the departed patient.
     last_person_gap_m = None
+    # Previous frame's GENUINE stairs_action_active. The standoff shaping (_apply_follow_standoff_policy)
+    # runs BEFORE the stair policy produces this frame's value, so it is passed the prior-frame genuine
+    # value (compute-then-pass, incident 8.5) -- stair state persists across frames, so the one-frame
+    # lag is harmless, and this fixes the never-firing on-stairs go/hold bypass.
+    _prev_stairs_action_active = False
     # Method 1 carrot / virtual-target steering (opt-in via --carrot-follow). Body-frame breadcrumb
     # FIFO of the person; steering aims one standoff behind the newest sample. See _update_carrot_heading.
     carrot_trail: List[List[float]] = []
@@ -557,6 +580,15 @@ def main():
                 trt_dets_scaled.append(det_scaled)
 
             track_start_ts  = time.perf_counter()
+            # NOTE (follow regression fixed 2026-07-03): do NOT retune ByteTrack's max_time_lost from
+            # the measured loop rate. That window is a FRAME count -- "how many missed-detection frames
+            # to coast a lost track before dropping it" -- and ByteTrack's Kalman is frame-indexed, so
+            # frame_rate feeds ONLY max_time_lost, not the motion model. Feeding the ~4 FPS headless-sim
+            # rate collapsed the coast from 30 frames to ~4: a person briefly out of view during a
+            # zig-zag turn was dropped after ~1 s instead of coasting (the dog keeps following the last
+            # bbox and re-orients toward it), so the dog fell into a bounded lost-search and never
+            # re-acquired (run_sim_20260703_110219: lost at frame 341, 20 s to timeout). Keep the
+            # construction-time frame-count window (track_buffer=30) -- the checkpoint-proven value.
             tracked_dets, main_person = tracker.update(trt_dets_scaled, img.shape)
             stage_ms["track"] = (time.perf_counter() - track_start_ts) * 1000.0
 
@@ -658,7 +690,7 @@ def main():
                 stairs_result.get("detected", False) and not _stair_yolo_detected
             )
             if _stair_yolo_detected:
-                stair_latch_counter = int(args.stairs_latch_frames)
+                _stairs_latch_until_ts = current_time + float(args.stairs_latch_sec)
                 _last_yolo_stair_ts = current_time
                 if _stair_yolo_bbox is not None:
                     last_stairs_bbox = list(_stair_yolo_bbox)
@@ -695,16 +727,14 @@ def main():
                 persist_sec=float(args.stair_seen_persist_sec),
             )
             if _depth_may_latch:
-                stair_latch_counter = int(args.stairs_latch_frames)
+                _stairs_latch_until_ts = current_time + float(args.stairs_latch_sec)
             debug_info["depth_stair_confirmed"] = bool(_depth_stairs_confirmed)
             debug_info["depth_stair_yolo_gated_out"] = bool(_depth_stairs_confirmed and not _depth_may_latch)
             debug_info["depth_stair_detected"] = bool(_depth_det.get("stair_detected", False))
             debug_info["depth_stair_count"] = int(_depth_det.get("stair_count", 0))
             debug_info["depth_stair_leading_edge_m"] = _depth_det.get("leading_edge_distance")
 
-            stairs_detected = stair_latch_counter > 0
-            if stair_latch_counter > 0:
-                stair_latch_counter -= 1
+            stairs_detected = current_time < _stairs_latch_until_ts
 
             # Stair close-follow: tighten the standoff while any stair evidence is
             # present so the dog stays close enough to keep the patient in frame as
@@ -713,7 +743,20 @@ def main():
             # This prevents the standoff from snapping back to the wide normal value
             # the instant YOLO-World blanks out at close range (<0.8 m riser face).
             _depth_stairs_visible = bool(debug_info.get("depth_stair_detected", False))
-            _stair_close_active = stairs_detected or _depth_stairs_visible
+            # incident 8.3 (ungated consumer): the RAW depth stair detector back-projects the CLOSE
+            # followed patient's legs into fake risers on flat ground (depth_stair_detected True from
+            # frame 1 with the patient metres from the stairs, run_sim_20260703_152845). Entering
+            # stair-close on that raw signal collapsed the follow target to --stair-target-distance
+            # (0.5 m, then tightened to ~0.28 m in follow_shaping) and crowded the dog into the
+            # patient -> only-LEGS in frame -> YOLO drops the lock at the apex. Honour the comment's
+            # intent ("ENTER on YOLO"): the depth signal may only MAINTAIN stair-close when YOLO has
+            # RECENTLY corroborated stairs (same gate as the depth latch). The YOLO-gated latch
+            # `stairs_detected` already covers the genuine on-stairs case where YOLO blanks at a close
+            # riser (it latches from the far-range YOLO detection), so real climbs are unaffected.
+            _yolo_stair_recent = (
+                (current_time - _last_yolo_stair_ts) <= float(args.stair_seen_persist_sec)
+            )
+            _stair_close_active = stairs_detected or (_depth_stairs_visible and _yolo_stair_recent)
             debug_info["stair_close_active"] = _stair_close_active
             person_follower.config.target_distance = (
                 float(args.stair_target_distance) if _stair_close_active
@@ -759,7 +802,8 @@ def main():
             debug_info["stairs_raw_detected"] = bool(stairs_result.get("raw_detected", False))
             debug_info["stairs_positive_count"] = int(stairs_result.get("positive_count", 0))
             debug_info["stairs_consistency_required"] = int(stairs_result.get("consistency_required", 1))
-            debug_info["stairs_latch_frames_remaining"] = int(stair_latch_counter)
+            debug_info["stairs_latch_sec_remaining"] = round(
+                max(0.0, float(_stairs_latch_until_ts) - float(current_time)), 3)
             debug_info["stairs_bbox"] = stairs_bbox
             # Horizontal staircase-center offset in [-1,1] (frame center = 0, +right),
             # used by the optional approach square-up to face the stairs head-on.
@@ -817,10 +861,14 @@ def main():
                 debug_info.get("is_walking", False),
                 debug_info,
                 standoff_state,
+                # Pass the prior-frame genuine stair-action (compute-then-pass, incident 8.5): the
+                # producers run later this frame, so reading debug_info here always got the default.
+                stairs_action_active=_prev_stairs_action_active,
             )
 
             trans_x_cmd, rotation_cmd = _apply_stair_command_policy(
-                args, trans_x_cmd, rotation_cmd, debug_info
+                args, trans_x_cmd, rotation_cmd, debug_info,
+                frame_meta=frame_meta if isinstance(frame_meta, dict) else None,
             )
 
             # --- P1-3: crest creep carve-out (finish the last treads) ------------------------
@@ -888,6 +936,16 @@ def main():
             # HOLD it while a near riser sits ahead during a recent climb (the dog is mid-step,
             # detection just can't see the staircase). Released when the front clears (flat/landing).
             _genuine_stairs = bool(debug_info.get("stairs_action_active", False))
+            # PRE-OVERRIDE snapshot of the genuine per-frame stair action (safety). The persistence
+            # latch (below, ~L946) and the close-range dropout (~L1391) both FORCE
+            # stairs_action_active=True; downstream SAFETY consumers (the stop-ramp / too_close
+            # stance-lock suppression, read via _stairs_instant ~L1299) must see the TRUE per-frame
+            # value, not the latched override, or they stay disabled on flat ground. Stash the genuine
+            # value now, before any override this frame; the yaw-taming consumers keep reading the
+            # (possibly-latched) debug_info flag as before.
+            debug_info["stairs_action_active_genuine"] = _genuine_stairs
+            # Carry the genuine value to next frame's standoff-shaping bypass (compute-then-pass).
+            _prev_stairs_action_active = _genuine_stairs
             # Remember the gap measured while the patient is actually detected (used by the on-loss
             # collision check; the live gap becomes the near riser once the patient leaves view).
             if bool(debug_info.get("person_detected", False)):
@@ -926,12 +984,25 @@ def main():
             # ahead after a recent climb, so the dog keeps driving UP to close the gap and re-trigger
             # the climb, rather than releasing and stalling. Released when the gap is back near the
             # standoff (caught up / reached the patient on the flat).
-            _gap_ctrl_now = debug_info.get("standoff_gap_ctrl_m")
-            _patient_ahead = (_gap_ctrl_now is not None
-                              and float(_gap_ctrl_now) > float(args.stair_target_distance) + 0.5)
+            # GENUINE stair evidence required to EXTEND the latch (incident 8.3 / safety). The old
+            # extension re-armed on `_near_riser or _patient_ahead` where `_patient_ahead` was
+            # `gap > stair_target_distance + 0.5` (~1.0 m) -- true on nearly EVERY flat-follow frame,
+            # so after ONE engage the latch re-armed +6 s every frame FOREVER, forcing
+            # stairs_action_active True on flat ground (2167/2200 flat frames stuck) and disabling
+            # the front-obstacle gate / stop-ramp / too_close stance-lock. The `_patient_ahead`
+            # computation is now REMOVED (dead). Extend ONLY on real stair evidence: a recent CLEAN
+            # YOLO-World stair detection (_last_yolo_stair_ts, not the depth-polluted merged signal),
+            # or a near riser in depth that YOLO has recently corroborated (mirrors
+            # depth_stair_latch_allowed).
+            _yolo_stair_recent = (current_time - _last_yolo_stair_ts) <= float(args.stair_seen_persist_sec)
+            # A near riser may CORROBORATE but must never extend on its own: at close follow range the
+            # patient's legs read as a near riser (incident 8.3 residual), which is precisely the
+            # flat-ground false-latch. So near-riser only counts WITH recent clean YOLO -- i.e. the
+            # extension evidence reduces to _yolo_stair_recent (the AND-term is kept for intent clarity).
+            _genuine_stair_extend_evidence = _yolo_stair_recent or (_near_riser and _yolo_stair_recent)
             if (_genuine_stairs or _depth_climb_engage
                     or (current_time < _climbing_persist_until
-                        and (_near_riser or _patient_ahead))):
+                        and _genuine_stair_extend_evidence)):
                 _climbing_persist_until = current_time + 6.0
             _climbing_latched = current_time < _climbing_persist_until
             debug_info["stair_climbing_latch"] = bool(_climbing_latched)
@@ -1296,7 +1367,12 @@ def main():
             # distant detection as on-stairs disabled the ordinary too-close hold/ramp almost two
             # metres before the first riser, so the policy's intrinsic creep accelerated unchecked
             # into the step. Suppress stance-lock only after the near/depth-gated stair action starts.
-            _stairs_instant = bool(debug_info.get("stairs_action_active", False))
+            # Read the PRE-OVERRIDE genuine value (stashed above, before the persistence latch /
+            # close-dropout forced stairs_action_active True): a latched-but-not-genuine frame on
+            # flat ground must NOT suppress the too_close stance-lock / stop-ramp (in-code note
+            # below records 2167/2200 flat frames stuck when this stayed permanently latched). The
+            # close-range dropout below (_stair_close_dropout) re-adds the legitimate on-stairs case.
+            _stairs_instant = bool(debug_info.get("stairs_action_active_genuine", False))
             if _stairs_instant:
                 last_on_stairs_ts = current_time
             _stairs_recent = (current_time - last_on_stairs_ts) < float(args.stair_hold_suppress_sec)
@@ -1363,10 +1439,13 @@ def main():
             # depth), hold the policy in climb-gait for stair_climb_max_sec so the heading stays
             # DEPTH SELF-STEER through the whole ascent. The mid-climb detection dropout otherwise
             # flips hybrid back to person-bearing steering and the dog steers off-axis and topples
-            # ~step 5 (run_sim_20260619_052408). The genuine detection (read at L_stairs_instant,
-            # BEFORE any override this frame) drives the latch -- no self-refreshing loop -- and
-            # YOLO re-detecting the upper steps during the climb keeps refreshing it. Drive is
-            # unchanged (the follow/stair-floor command sustains the climb); only heading is held.
+            # ~step 5 (run_sim_20260619_052408). The FSM's climb-gait latch is now driven by the
+            # PRE-OVERRIDE genuine detection (stairs_action_active_genuine, stashed before the
+            # persistence latch / close-dropout force the flag True this frame) plus recent CLEAN
+            # YOLO stair recency, so it does NOT self-refresh off _patient_ahead on flat ground
+            # (the old extension bug). YOLO re-detecting the upper steps during the climb keeps
+            # refreshing it. Drive is unchanged (the follow/stair-floor command sustains the
+            # climb); only heading is held.
 
             # Climb-mode continuity through the CLOSE-RANGE detection dropout ONLY. At the
             # first riser YOLO can no longer frame the staircase (it fills / drops below the
@@ -1423,6 +1502,11 @@ def main():
                     bool(debug_info.get("lost_search_active", False))
                     or bool(debug_info.get("recovery_cmd_active", False))
                 ),
+                # CLEAN YOLO stair recency so the FSM's persistence-latch EXTENSION cannot
+                # self-refresh on flat ground off _patient_ahead (see the main-loop latch fix).
+                yolo_stair_recent=bool(
+                    (current_time - _last_yolo_stair_ts) <= float(args.stair_seen_persist_sec)
+                ),
             )
             debug_info.update(_fsm_debug)
             # Sync FSM-owned latch state back to local variables used by dispatch below
@@ -1471,7 +1555,17 @@ def main():
                 # Hard collision floor ONLY: if the smoothed gap drops below the collision floor,
                 # zero the drive (no stance-lock -- a blend at speed on the slope nose-dives) so the
                 # dog never climbs into the patient.
+                # SAFETY (P0-4 audit): the committed climb drives a FIXED stair_climb_speed with no
+                # follow floor, so a None smoothed gap (garbage/unwarmed depth) used to silently
+                # disable this collision floor and let the dog charge the fixed climb speed blind.
+                # When the smoothed gap is unavailable, fall back to the last-known PATIENT gap (the
+                # same signal the loss paths use) so the floor is not defeated by a None. That gap is
+                # legitimately far during a normal climb (patient ahead/out of view), so this does
+                # NOT freeze real climbs -- it only stops when a genuinely-close patient was the last
+                # thing we saw and the smoothed gap has gone unknown.
                 _gap_ctrl = debug_info.get("standoff_gap_ctrl_m")
+                if _gap_ctrl is None:
+                    _gap_ctrl = last_person_gap_m
                 _climb_block = (
                     _gap_ctrl is not None and float(_gap_ctrl) > 1e-3
                     and float(_gap_ctrl) < float(args.stair_climb_collision_floor)
@@ -2171,6 +2265,7 @@ def main():
             if emit_trace_frame or stall_suspected:
                 debug_trace.log(
                     "frame_timing",
+                    frame=int(frame_idx),
                     frame_index=int(frame_idx),
                     processing_fps=float(processing_fps),
                     preview_fps=float(preview_fps),

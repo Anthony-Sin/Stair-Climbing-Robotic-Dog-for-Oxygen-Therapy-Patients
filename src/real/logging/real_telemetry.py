@@ -33,6 +33,9 @@ class RealTelemetry:
         self._isaac_path = os.path.join(self._debug, "isaac_env.jsonl")
         self._frame_timing_path = os.path.join(self._debug, "frame_timing.jsonl")
         self._n_samples = 0
+        # Count of fall-diag writes dropped by an IOError/OSError (e.g. full eMMC). The flight
+        # recorder must never kill the flight: a write failure is caught + counted, not raised.
+        self._write_errors = 0
 
     # ------------------------------------------------------------------ lifecycle
     def start(self, *, timestamp: str, command: str, locomotion_mode: str = "pgtt") -> None:
@@ -49,11 +52,22 @@ class RealTelemetry:
         h: Optional[float] = None,
         action_norm: Optional[float] = None,
     ) -> None:
-        self._append(self._isaac_path, fall_diag_event(
-            x=x, h=h, pitch_deg=pitch_deg, roll_deg=roll_deg,
-            policy_cmd=policy_cmd, action_norm=action_norm,
-        ))
-        self._n_samples += 1
+        # A full eMMC (or any disk/serialization error) must NOT propagate to kill the 50 Hz
+        # control node -- the flight recorder must not kill the flight. Catch + count; the
+        # first failure is worth surfacing (the caller sees the count via ``write_errors``).
+        try:
+            self._append(self._isaac_path, fall_diag_event(
+                x=x, h=h, pitch_deg=pitch_deg, roll_deg=roll_deg,
+                policy_cmd=policy_cmd, action_norm=action_norm,
+            ))
+            self._n_samples += 1
+        except (IOError, OSError, ValueError, TypeError):
+            self._write_errors += 1
+
+    @property
+    def write_errors(self) -> int:
+        """Count of dropped fall-diag/timing writes (e.g. disk full). 0 in the normal case."""
+        return self._write_errors
 
     def record_frame_timing(
         self,
@@ -77,8 +91,11 @@ class RealTelemetry:
             if tick_dt_ms is not None:
                 data["tick_dt_ms"] = float(tick_dt_ms)
             self._append(self._frame_timing_path, {"event": "frame_timing", "data": data})
-        except Exception:
-            pass
+        except (IOError, OSError, ValueError, TypeError):
+            # Same policy as record_fall_diag: a full disk / bad value must never take down the
+            # 50 Hz loop, but silently swallowing means the black box goes dark on a full eMMC.
+            # Count it (surfaced via ``write_errors``) instead of a blanket pass.
+            self._write_errors += 1
 
     def finish(self, *, exit_reason: str = "completed", motion_elapsed_sec: float = 0.0,
                final_x_m: Optional[float] = None) -> None:

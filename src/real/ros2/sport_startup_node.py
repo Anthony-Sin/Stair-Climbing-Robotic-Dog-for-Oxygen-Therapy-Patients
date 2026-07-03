@@ -93,14 +93,24 @@ class SportStartupNode(Node):
         self._publish_state("release_failed")
 
     def _mode_released(self) -> bool:
-        """True when CheckMode reports no active control mode (best-effort across SDK versions)."""
+        """True when CheckMode reports no active control mode (best-effort across SDK versions).
+
+        FAIL CLOSED on error: a dead/unresponsive SDK session must NOT report "released"
+        (that would open the low-level /lowcmd gate against a robot whose sport service is
+        actually still driving it -- two stacks fighting). An exception means the sport
+        state is UNKNOWN, which is treated as "not released"; the ReleaseMode loop then
+        retries and, if it never confirms, publishes "release_failed" and the low-level
+        node keeps waiting instead of writing /lowcmd.
+        """
         try:
             code, data = self._switcher.CheckMode()
             name = (data or {}).get("name", "") if isinstance(data, dict) else ""
             return not bool(name)
-        except Exception:
-            # If CheckMode is unavailable on this firmware, assume the loop's releases took.
-            return True
+        except Exception as exc:
+            self.get_logger().warning(
+                f"CheckMode failed ({exc}); treating sport mode as NOT released (fail closed)"
+            )
+            return False
 
     # ------------------------------------------------------------------ teardown
     def restore_factory(self) -> None:

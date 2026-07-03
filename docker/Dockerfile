@@ -93,12 +93,16 @@ RUN pip3 install --no-cache-dir \
 # ----------------------
 # Clone and install Ultralytics (YOLOv11) with no OpenCV deps
 # ----------------------
-RUN git clone https://github.com/ultralytics/ultralytics.git /workspace/ultralytics
+# TODO-PIN: replace v8.3.0 with the known-good ultralytics release tag before the next rebuild
+# (floating master is a reproducibility hazard -- review §12). Tag syntax shown; set the exact tag.
+RUN git clone --depth 1 --branch v8.3.0 https://github.com/ultralytics/ultralytics.git /workspace/ultralytics
 WORKDIR /workspace/ultralytics
 RUN pip3 install --no-cache-dir . --no-deps
 
 # Install CLIP for YOLO-World open-vocabulary classification
-RUN pip3 install --no-cache-dir git+https://github.com/ultralytics/CLIP.git
+# TODO-PIN: ultralytics/CLIP has no releases; pin to the known-good commit SHA before rebuild.
+# Replace <PLACEHOLDER-SHA> with the real 40-char SHA (operator must set before next rebuild).
+RUN pip3 install --no-cache-dir "git+https://github.com/ultralytics/CLIP.git@<PLACEHOLDER-SHA>"
 
 # Manually install all Ultralytics dependencies except opencv-python
 RUN pip3 install --no-cache-dir \
@@ -122,20 +126,29 @@ RUN pip3 install --no-cache-dir \
 # Jetson build instead. VERIFY the index tag matches the JetPack/CUDA on THIS base
 # (l4t-jetpack r36.2 -> CUDA 12.2); if the tag is wrong the build FAILS loudly (good) rather
 # than silently installing CPU torch. Pin exact torch/torchvision versions once verified.
-RUN pip3 install --no-cache-dir torch torchvision --index-url https://pypi.jetson-ai-lab.dev/jp6/cu122
+# TODO-PIN: pin torch/torchvision to the EXACT versions the jetson-ai-lab jp6/cu122 index served
+# on the last known-good build (unpinned = a rebuild silently drifts to a new torch -- review §12).
+# Replace <TORCH-VER>/<TV-VER> with the resolved versions (e.g. read them off pip-freeze.txt from a
+# good image). Leaving the index tag; a wrong tag fails loudly (good) per the note above.
+RUN pip3 install --no-cache-dir torch==<TORCH-VER> torchvision==<TV-VER> --index-url https://pypi.jetson-ai-lab.dev/jp6/cu122
 
 RUN pip install --no-cache-dir numpy==1.23.5 --force-reinstall
 
 # Clone and install ByteTrack from source
 # Install ByteTrack (minimal install without clobbering existing packages)
+# TODO-PIN: ByteTrack has no releases; pin to the known-good commit SHA before rebuild.
+# Replace <PLACEHOLDER-SHA> with the real 40-char SHA (operator must set before next rebuild).
 RUN git clone https://github.com/ifzhang/ByteTrack.git /opt/bytetrack && \
+    cd /opt/bytetrack && git checkout <PLACEHOLDER-SHA> && cd - && \
     pip install --no-cache-dir --no-deps -e /opt/bytetrack
 # Install additional python packages required by ByteTrack
 RUN pip install --no-cache-dir loguru lap cython_bbox
 
 # Install CycloneDDS 0.10.2 and set it up properly
 WORKDIR /opt
-RUN git clone https://github.com/eclipse-cyclonedds/cyclonedds.git -b releases/0.10.x && \
+# Pin to the 0.10.2 release TAG (was floating branch releases/0.10.x); must match the
+# cyclonedds==0.10.2 Python binding installed below (review §12).
+RUN git clone --depth 1 -b 0.10.2 https://github.com/eclipse-cyclonedds/cyclonedds.git && \
     cd cyclonedds && \
     mkdir build install && \
     cd build && \
@@ -150,8 +163,11 @@ RUN pip install --no-cache-dir cyclonedds==0.10.2
 
 # Install unitree_sdk2_python from source without its dependencies
 WORKDIR /opt
+# TODO-PIN: unitree_sdk2_python -- pin to the known-good commit SHA (or release tag) before rebuild.
+# Replace <PLACEHOLDER-SHA> with the real 40-char SHA (operator must set before next rebuild).
 RUN git clone https://github.com/unitreerobotics/unitree_sdk2_python.git && \
     cd unitree_sdk2_python && \
+    git checkout <PLACEHOLDER-SHA> && \
     pip install --no-cache-dir --no-deps -e .
 
 # Manually install other dependencies for unitree_sdk2_python
@@ -165,7 +181,10 @@ RUN apt-get update && apt-get install -y libeigen3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt
-RUN git clone https://github.com/unitreerobotics/z1_sdk.git
+# TODO-PIN: z1_sdk -- pin to the known-good commit SHA (or release tag) before rebuild.
+# Replace <PLACEHOLDER-SHA> with the real 40-char SHA (operator must set before next rebuild).
+RUN git clone https://github.com/unitreerobotics/z1_sdk.git && \
+    cd z1_sdk && git checkout <PLACEHOLDER-SHA>
 
 RUN pip install --no-cache-dir pybind11
 
@@ -202,11 +221,19 @@ RUN pip install --no-cache-dir ecs-logging
 # the shader/font assets still end up in the wheel via the default packages
 # inclusion (verified: 84 files incl. all .frag/.vert/.ttf).
 # ----------------------
+# TODO-PIN: arcv personal fork -- pin to the known-good commit SHA before rebuild (floating
+# master on a personal fork is the highest reproducibility risk here -- review §12). Replace
+# <PLACEHOLDER-SHA> with the real 40-char SHA (operator must set before next rebuild).
 RUN pip install --no-cache-dir "moderngl>=5.10" \
-    && git clone --depth 1 https://github.com/Anthony-Sin/arcv.git /opt/arcv_build \
+    && git clone https://github.com/Anthony-Sin/arcv.git /opt/arcv_build \
+    && git -C /opt/arcv_build checkout <PLACEHOLDER-SHA> \
     && sed -i '/\[tool\.hatch\.build\.targets\.wheel\.force-include\]/,$d' /opt/arcv_build/pyproject.toml \
     && pip install --no-cache-dir --no-deps /opt/arcv_build \
     && rm -rf /opt/arcv_build
+
+# Record the exact resolved dependency set baked into THIS image, so the working image documents
+# its own deps (recovers the pins the TODO-PIN placeholders above should be set to -- review §12).
+RUN pip3 freeze > /opt/pip-freeze.txt
 
 # Clean up torch wheel and pip cache (safe final cleanup)
 RUN rm -rf /root/.cache/pip

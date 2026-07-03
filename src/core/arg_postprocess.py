@@ -4,9 +4,26 @@ Keeps ``parse_args`` to argument *declaration*; this module owns the
 range-clamping and coercion applied to the parsed namespace.
 """
 
+# Bridge FPS for converting the deprecated frame-count latches to seconds (incident 8.6).
+# Mirrors args_parser._ASSUMED_LOOP_FPS; kept local to avoid a circular import.
+_ASSUMED_LOOP_FPS = 10.0
+
 
 def postprocess_args(args):
     """Clamp/coerce parsed args in place and return the namespace."""
+    # --- incident 8.6: resolve frame-count latches to canonical SECONDS ------------------
+    # The loop has no fixed rate, so a frame count is a different wall-duration on every
+    # platform. Prefer the seconds flag when given; otherwise convert the legacy frame count
+    # at the assumed loop FPS. Consumers read the resolved *_sec value.
+    if getattr(args, "stairs_latch_sec", None) is None:
+        args.stairs_latch_sec = max(0.0, int(args.stairs_latch_frames) / _ASSUMED_LOOP_FPS)
+    else:
+        args.stairs_latch_sec = max(0.0, float(args.stairs_latch_sec))
+    if getattr(args, "motion_lock_sec", None) is not None:
+        # Seconds explicitly requested -> derive the frame count the consumer uses.
+        args.motion_lock_sec = max(0.0, float(args.motion_lock_sec))
+        args.motion_lock_frames = max(1, int(round(args.motion_lock_sec * _ASSUMED_LOOP_FPS)))
+
     args.debug_trace_every_n_frames = max(1, int(args.debug_trace_every_n_frames))
     args.sim_frame_timeout_exit_sec = max(0.0, float(args.sim_frame_timeout_exit_sec))
     args.sim_latency_ms = max(0.0, float(args.sim_latency_ms))
@@ -47,7 +64,7 @@ def postprocess_args(args):
     args.stair_rot_max = max(0.0, float(args.stair_rot_max))
     args.stair_yaw_deadband_deg = max(0.0, float(args.stair_yaw_deadband_deg))
     args.stair_target_distance = max(0.0, float(args.stair_target_distance))
-    args.stair_follow_bearing_scale = max(0.0, float(args.stair_follow_bearing_scale))
+    # (removed --stair-follow-bearing-scale clamp: the dead core flag was deleted; the sim owns its own.)
     args.hold_ramp_sec = max(0.0, float(args.hold_ramp_sec))
     args.follow_start_delay = max(0.0, float(args.follow_start_delay))
     args.parkour_yaw_deadband_deg = max(0.0, float(args.parkour_yaw_deadband_deg))

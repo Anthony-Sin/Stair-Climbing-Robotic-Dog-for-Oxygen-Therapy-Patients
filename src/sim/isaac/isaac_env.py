@@ -27,6 +27,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
 from sim_logging_utils import (
+    UPRIGHT_TILT_DEG,
     configure_sim_logger,
     log_event,
     log_scene_baseline,
@@ -237,7 +238,37 @@ log_event(
     lidar_dropout_prob=float(args.lidar_dropout_prob),
     dr_lighting_pct=float(args.dr_lighting_pct),
 )
+
+# Seed the perception-noise generator so noise is reproducible in principle (identical
+# seed + frame index => identical noise). Defaults to --dr-seed when --perception-seed
+# is unset so a run is reproducible without a separate flag.
+from env.perception_noise import set_perception_seed as _set_perception_seed
+_perception_seed = (int(args.perception_seed) if getattr(args, "perception_seed", None) is not None
+                    else int(getattr(args, "dr_seed", 0)))
+_set_perception_seed(_perception_seed)
+log_event(
+    LOGGER, logging.INFO, "perception_seed_set",
+    f"Perception-noise seed = {_perception_seed} (frame-indexed, reproducible)",
+    perception_seed=int(_perception_seed),
+    source=("--perception-seed" if getattr(args, "perception_seed", None) is not None else "--dr-seed"),
+)
+
+# LOUD startup banner: which PGTT heightmap backend is active. 'raycast' is the
+# validated default so sim exercises the hardware elevation-map path; 'ground_truth'
+# uses the analytic terrain height.
+_pgtt_backend = str(getattr(args, "pgtt_height_backend", "raycast"))
+log_event(
+    LOGGER, logging.INFO, "pgtt_height_backend_active",
+    (f"PGTT HEIGHT BACKEND = {_pgtt_backend.upper()} "
+     + ("(raycast: PhysX down-rays, hardware elevation-map path)"
+        if _pgtt_backend == "raycast"
+        else "(ground_truth: analytic terrain height)")),
+    pgtt_height_backend=_pgtt_backend,
+)
 from go2_locomotion.go2_locomotion_utils import PARKOUR_DEFAULT_POSE, PGTT_DEFAULT_POSE, GO2_FOLDED_POSE, classify_dof, get_dof_names, quat_to_matrix
+from go2_locomotion.locomotion_arbiter import (
+    ClimbWzInputs, arbitrate_climb_wz, arbitrate_climb_vx,
+)
 from world.sim_person_actor import spawn_sim_person
 from perception.sim_lidar_xt16 import Xt16Config, cast_scan, render_preview, profile_from_scan
 
@@ -289,7 +320,9 @@ ROBOT_FALL_SUSTAIN_SEC = 1.0
 # the step below it and keeps |roll|/|pitch| within this band, SUSTAINED over the
 # 2 s hold (a collided/wedged dog cannot hold a clean upright stance that long).
 STAIR_WAYPOINT_MIN_STAND_M = 0.22   # height above the step below (collision run dragged to 0.12-0.17)
-STAIR_WAYPOINT_MAX_TILT_DEG = 25.0  # upright band; a clean climb does not exceed this
+# Single-sourced from sim_logging_utils.UPRIGHT_TILT_DEG (25.0) so the live watchdog and
+# the offline analyzer (sim/analysis/analyze_climb.py) can never drift.
+STAIR_WAYPOINT_MAX_TILT_DEG = UPRIGHT_TILT_DEG  # upright band; a clean climb does not exceed this
 # Conservative root-to-patient separation used only for verification. Control
 # still uses the vision/depth collision floor; this ground-truth value never
 # feeds motion commands.
@@ -388,6 +421,11 @@ def _cmd_receiver_thread(port: int) -> None:
     sock.bind(("0.0.0.0", port))
     sock.settimeout(0.5)
     last_reverse_x_suppressed_log_ts = 0.0
+    # Highest command seq applied so far. A datagram with a strictly-lower seq is a
+    # reordered OLD velocity (UDP can deliver out of order) and is dropped so a stale
+    # command cannot overwrite a newer one. -1 = nothing applied yet.
+    last_cmd_seq = -1
+    dropped_stale_cmds = 0
     log_event(
         LOGGER,
         logging.INFO,
@@ -400,6 +438,22 @@ def _cmd_receiver_thread(port: int) -> None:
         try:
             data, _ = sock.recvfrom(1024)
             payload = json.loads(data.decode("utf-8"))
+            # Drop a reordered old command datagram (seq older than the last applied).
+            # Datagrams without a seq (older senders) are always accepted.
+            _cmd_seq = payload.get("seq")
+            if _cmd_seq is not None:
+                _cmd_seq = int(_cmd_seq)
+                if _cmd_seq <= last_cmd_seq:
+                    dropped_stale_cmds += 1
+                    if dropped_stale_cmds in (1, 10, 100) or dropped_stale_cmds % 1000 == 0:
+                        log_event(
+                            LOGGER, logging.INFO, "cmd_reordered_dropped",
+                            "Dropped a reordered/stale velocity command (seq older than last applied)",
+                            seq=int(_cmd_seq), last_applied_seq=int(last_cmd_seq),
+                            dropped_total=int(dropped_stale_cmds),
+                        )
+                    continue
+                last_cmd_seq = _cmd_seq
             vx_raw = float(payload.get("vx", 0.0))
             vx = max(0.0, vx_raw)
             vy = float(payload.get("vy", 0.0))
@@ -460,9 +514,10 @@ def _cmd_receiver_thread(port: int) -> None:
                 active_count = int(_cmd_vel.get("active_count", 0))
             if cmd_count == 1:
                 # First packet from Docker proves the WSL2 port proxy is up — safe to
-                # reconnect the frame TCP link.
-                if _warm_publisher is not None and getattr(_warm_publisher, "_frame_send_gated", False):
-                    _warm_publisher._frame_send_gated = False
+                # reconnect the frame TCP link. The gate flag is poked cross-thread, so
+                # clear it via the publisher's lock-guarded setter (not a raw attr write).
+                if _warm_publisher is not None and _warm_publisher.is_frame_send_gated():
+                    _warm_publisher.set_frame_send_gated(False)
                 log_event(
                     LOGGER,
                     logging.INFO,
@@ -1333,7 +1388,7 @@ _camera_mount_update_warned = False
 _final_scene_wall_camera_update_warned = False
 
 
-def spawn_person(world, x: float = 1.0, y: float = 0.0, patient_physics: bool = False,
+def spawn_person(world, x: float = 1.0, y: float = 0.0,
                  character_usd: str = "", anim_mode: str = "clip"):
     global _patient_state
     _patient_state = PatientLocomotionState(start_x=x, start_y=y)
@@ -1365,7 +1420,7 @@ def spawn_person(world, x: float = 1.0, y: float = 0.0, patient_physics: bool = 
 
     person = spawn_sim_person(
         world, x=x, y=y, logger=LOGGER, stairs_provider=get_active_stairs,
-        ground_height_fn=get_terrain_height, patient_physics=patient_physics,
+        ground_height_fn=get_terrain_height,
         character_usd=character_usd or None, anim_mode=anim_mode,
     )
     initial_z = _get_person_pose_z(x, y, smooth=True)
@@ -1987,48 +2042,32 @@ def _step_go2_locomotion(
                     log_event(LOGGER, logging.INFO, "handoff_policy_swap",
                               "Hot-swapped PGTT -> blind (proprioceptive) RL policy for the climb")
                     _HANDOFF_CLIMBING = True
-                # Forward floor during the climb (same rationale as the parkour backend) so the
-                # controller's collision-floor / standoff does not park the dog mid-climb.
-                # AT THE TOP (egress): use the FSM's person-gated floor instead -- it is 0 when
-                # the patient is close on the landing, so the dog holds (blind net stands) and
-                # never drives into the patient; otherwise it walks the rear feet off the crest.
-                if bool(_ho.get("top_egress")) and _ho.get("climb_vx_floor") is not None:
-                    _cvx = max(float(vx), float(_ho.get("climb_vx_floor")))
-                else:
-                    _cvx = max(float(vx), float(getattr(args, "handoff_climb_vx", 0.22)))
-                # Steer the blind climb with a yaw-RATE (wz). The blind net has no depth
-                # self-steer, so the INCOMING wz -- the main loop's heading-hold up the
-                # staircase in the waypoint test, or the person-follow steering otherwise --
-                # IS the correct command, so pass it THROUGH by default. Only override it when
-                # a live person bearing is available (bias toward the patient), or hold the
-                # last bearing-rate (decaying) if a person we WERE following drops out briefly.
-                # NEVER force wz=0 with no person: that severed the heading-hold and let the
-                # climb slowly yaw/crab off the stair edge until it rolled (run ..022123:
-                # yaw 0.7->34 deg, y 0.04->0.63 m, rolled to -27 deg and fell).
-                _bwz = float(wz)
-                if bool(getattr(args, "handoff_climb_heading_hold", True)):
-                    if person_detected:
-                        _bscale = float(getattr(args, "stair_follow_bearing_scale", 0.9))
-                        _brmax = float(getattr(args, "stair_rot_max", 0.6))
-                        _bwz = float(np.clip(float(yaw_err) * _bscale, -_brmax, _brmax))
-                        _PGTT_CLIMB_POLICY._last_climb_wz = _bwz
-                    elif _ho.get("wz_override") is not None:
-                        # Person lost: stair_commit heading lock (yaw->0, live IMU) is the
-                        # primary persistent reference. The old decay-hold (_last_climb_wz *=
-                        # 0.92) reached zero in ~1 s at 28 Hz (0.92^28 ≈ 0.10/s) but never
-                        # became None, so the wz_override branch was permanently blocked and
-                        # wz stayed 0 for the rest of the climb (run 081406_745: yaw 6°->43°,
-                        # robot spiralled off stairs). yaw->0 is always correct on a straight
-                        # staircase and is driven by live IMU, not a stale bearing.
-                        _bwz = float(_ho["wz_override"])
-                        _PGTT_CLIMB_POLICY._last_climb_wz = None  # clear stale bearing
-                    elif getattr(_PGTT_CLIMB_POLICY, "_last_climb_wz", None) is not None:
-                        # Fallback only when stair_commit is disabled / waypoint test:
-                        # hold the last bearing-rate, decaying toward zero.
-                        _held = float(_PGTT_CLIMB_POLICY._last_climb_wz)
-                        _bwz = _held
-                        _PGTT_CLIMB_POLICY._last_climb_wz = _held * 0.92
-                    # else: no stair_commit + no bearing history (waypoint test) -> keep incoming
+                # Forward floor + yaw-rate arbitration for the blind climb are the CANONICAL
+                # steering logic, now single-sourced in go2_locomotion.locomotion_arbiter (the
+                # real DualPolicyRunner calls the same function). The postmortem rationale for
+                # every branch (NEVER force wz=0; person-lost stair_commit heading lock clears
+                # the stale bearing; hold-last decay only without a lock) lives in that module.
+                # Only the sim-only glue -- the _PGTT_CLIMB_POLICY._last_climb_wz attribute
+                # state and the canonical frame-count 0.92 decay factor -- stays here.
+                _cvx = arbitrate_climb_vx(
+                    vx,
+                    climb_vx=float(getattr(args, "handoff_climb_vx", 0.22)),
+                    top_egress=bool(_ho.get("top_egress")),
+                    egress_vx_floor=_ho.get("climb_vx_floor"),
+                )
+                _wz_res = arbitrate_climb_wz(ClimbWzInputs(
+                    incoming_wz=float(wz),
+                    person_detected=bool(person_detected),
+                    yaw_err=float(yaw_err),
+                    wz_override=_ho.get("wz_override"),
+                    last_climb_wz=getattr(_PGTT_CLIMB_POLICY, "_last_climb_wz", None),
+                    heading_hold=bool(getattr(args, "handoff_climb_heading_hold", True)),
+                    bearing_scale=float(getattr(args, "stair_follow_bearing_scale", 0.9)),
+                    rot_max=float(getattr(args, "stair_rot_max", 0.6)),
+                    wz_hold_decay=0.92,  # canonical Isaac per-call frame-count decay
+                ))
+                _bwz = _wz_res.wz
+                _PGTT_CLIMB_POLICY._last_climb_wz = _wz_res.next_last_climb_wz
                 telemetry = _PGTT_CLIMB_POLICY.step(go2, (_cvx, vy, _bwz), dt)
                 _go2_locomotion_state.leg_summary = _PGTT_CLIMB_POLICY.leg_command_summary()
                 _go2_locomotion_state.policy_name = _PGTT_CLIMB_POLICY.policy_path.name
@@ -2481,6 +2520,7 @@ def _run_evaluation_and_save_images(
         summary_path = os.path.join(_log_bucket(log_dir, "reports"), "evaluation_summary.txt")
         try:
             with open(summary_path, "w") as f:
+                f.write("schema: 1\n")
                 f.write("EVALUATION SUMMARY:\n")
                 f.write(f"Human: {human_summary}\n")
                 f.write(f"Robot dog: {robot_summary}\n")
@@ -2503,6 +2543,7 @@ def _run_evaluation_and_save_images(
             with open(report_path, "w") as f:
                 json.dump(
                     {
+                        "schema": 1,
                         "human_summary": human_summary,
                         "robot_summary": robot_summary,
                         "exit_reason": evaluation_exit_reason,
@@ -2576,6 +2617,33 @@ from env.profiler import _StepProfiler
 from env.scene_build import _set_xform_ops, setup_scene_lighting, spawn_scene_visual_details, update_scene_lighting
 from env.terrain_queries import _collapse_height_threshold, _get_person_pose_z, _person_visual_z, _pgtt_raycast_height, _physx_raycast_distance, get_terrain_height
 from env.world_setup import Go2SceneHandle, _resolve_go2_usd, build_world, resolve_go2_body_prim_path
+
+
+def _nearest_riser_dist_ahead(robot_td: dict):
+    """Distance (m) from the robot to the nearest riser leading edge AHEAD along +X.
+
+    The staircase runs along +X; each riser leading edge is at
+    ``start_x_m + i*step_depth_m``. Returns the smallest positive (edge_x - robot_x)
+    over the treads within the stair Y footprint, or None off-lane / past the top.
+    Sensor sidecar helper (mimics the real robot's forward riser range). GT-derived.
+    """
+    try:
+        rx = float(robot_td.get("x_m"))
+        ry = float(robot_td.get("y_m"))
+    except (TypeError, ValueError):
+        return None
+    s = get_active_stairs()
+    if s is None:
+        return None
+    if not (-s.half_width_m <= ry <= s.half_width_m):
+        return None
+    best = None
+    for i in range(int(s.step_count)):
+        edge_x = float(s.start_x_m) + i * float(s.step_depth_m)
+        d = edge_x - rx
+        if d > 0.0 and (best is None or d < best):
+            best = d
+    return None if best is None else round(float(best), 4)
 
 
 def main() -> None:
@@ -2718,7 +2786,7 @@ def main() -> None:
         log_event(LOGGER, logging.INFO, "person_spawn_skipped",
                   "Stair waypoint test: person not spawned (no follow, camera tracks robot only)")
     else:
-        person = spawn_person(world, x=args.person_x, y=args.person_y, patient_physics=getattr(args, "patient_physics", False),
+        person = spawn_person(world, x=args.person_x, y=args.person_y,
                               character_usd=getattr(args, "patient_character_usd", ""),
                               anim_mode=getattr(args, "patient_anim_mode", "clip"))
     update_final_scene_recording_cameras(stage)
@@ -2736,7 +2804,7 @@ def main() -> None:
         # Seat the patient at its standing pose for a few steps so the first rendered
         # frames look right and nothing drifts before the patrol begins.
         settle_steps = int(0.3 * args.physics_hz)
-        log_event(LOGGER, logging.INFO, "patient_physics_settle_start",
+        log_event(LOGGER, logging.INFO, "patient_settle_start",
                   f"Seating patient at standing pose ({settle_steps} steps)")
         for _ in range(settle_steps):
             try:
@@ -3024,18 +3092,16 @@ def main() -> None:
     _step_profiler = _StepProfiler(LOGGER, log_event, interval=200,
                                    enabled=bool(getattr(args, "step_profile", True)))
 
-    # Recording cameras (top-down + external scene_view) render+capture on their own
-    # finer cadence (--record-every) so their mp4s get a higher FPS than the
-    # perception/control loop (which stays on --render-every). Clamp to >=1 and never
-    # coarser than the perception cadence (a higher record-every would be a downgrade).
-    record_every = max(1, min(int(args.record_every), int(args.render_every)))
-    # The perceptive policy runs a Torch depth backbone on the GPU and adds a depth
-    # render product. With the default fine record cadence, the two 1080p recording render
-    # products (topdown + scene_view) get starved -- their get_rgb() returns no frame every
-    # record tick, so topdown.mp4 / scene_view.mp4 silently never record. Fold recording onto
+    # Recording cameras (top-down + external scene_view) ride the perception render ticks.
+    # The perceptive policy runs a Torch depth backbone on the GPU and adds a depth render
+    # product. If recording rendered on its own finer cadence, the two 1080p recording render
+    # products (topdown + scene_view) got starved -- their get_rgb() returned no frame every
+    # record tick, so topdown.mp4 / scene_view.mp4 silently never recorded. Fold recording onto
     # the perception render cadence so NO extra 1080p renders are issued beyond the ones the
-    # perception loop already performs -- the front camera proves those still complete under
-    # the policy's GPU load, so the recording cameras ride the same renders.
+    # perception loop already performs -- the front camera proves those still complete under the
+    # policy's GPU load, so the recording cameras ride the same renders. The record WRITE cadence
+    # is throttled separately via --record-every-n-steps below. (The old --record-every flag tried
+    # to set a finer render cadence but was always overwritten here -- it was dead and is removed.)
     record_every = int(args.render_every)
     # Decouple the record WRITE cadence from the perception PUBLISH cadence. The
     # recording cameras ride the perception render ticks (every `record_every`==render_every
@@ -3283,11 +3349,11 @@ def main() -> None:
                 or (follow_view_camera is not None)
             )
             # Perception/control reads RGB on --render-every. The recording cameras
-            # (topdown + scene_view) capture on the finer --record-every once recording
-            # is released, so render on the UNION of the two cadences: a fresh RTX frame
-            # is then guaranteed whenever either consumer reads. The extra renders only
-            # add GPU wall-clock; physics/RL still step every frame, and the perception
-            # PUBLISH cadence is unchanged, so the control pipeline is not degraded.
+            # (topdown + scene_view) ride the SAME render cadence (record_every == render_every)
+            # once recording is released, so a fresh RTX frame is guaranteed whenever either
+            # consumer reads. The record WRITE rate is throttled separately by --record-every-n-steps.
+            # Physics/RL still step every frame and the perception PUBLISH cadence is unchanged,
+            # so the control pipeline is not degraded.
             _perception_tick = (step_count % args.render_every == 0)
             # A "render tick" fires whenever a recording camera could capture (every
             # record_every == render_every steps once recording is released). We SUBSAMPLE
@@ -3487,7 +3553,8 @@ def main() -> None:
                             # D435 produces (clean by default; on with the preset).
                             if args.parkour_depth_noise_mult > 0.0:
                                 _depth_hw = apply_parkour_depth_noise(
-                                    _depth_hw, args.parkour_depth_noise_mult)
+                                    _depth_hw, args.parkour_depth_noise_mult,
+                                    frame_idx=int(step_count))
                             # Mask the followed person out of the depth so the
                             # perceptive policy does not read the near body as
                             # terrain and charge at it (close-range surge). ON by
@@ -4192,11 +4259,29 @@ def main() -> None:
                                     log_event(LOGGER, logging.WARNING, "lidar_scan_failed",
                                               "XT16 LiDAR scan/render failed", error=str(exc))
 
+                        # Sim-computed sensor sidecar (mimics hardware): body pitch (rad),
+                        # body-frame odom velocity (m/s), nearest riser leading-edge distance (m).
+                        # Derived from the same ground-truth telemetry, exposed under sensor_*
+                        # keys so CORE consumers can prefer them over the gt_ keys.
+                        _robot_td = (stair_demo or {}).get("robot", {})
+                        _sensor_imu_pitch = None
+                        try:
+                            _sensor_imu_pitch = math.radians(float(_robot_td.get("pitch_deg")))
+                        except (TypeError, ValueError):
+                            _sensor_imu_pitch = None
+                        _sensor_odom_vx = getattr(_go2_locomotion_state, "diag_body_vx", None)
+                        _sensor_odom_vy = getattr(_go2_locomotion_state, "diag_body_vy", None)
+                        _sensor_riser_dist = _nearest_riser_dist_ahead(_robot_td)
+
                         # Depth noise is applied inside publisher.send after downsampling
                         with _step_profiler.phase("publisher"):
                             publisher.send(rgb_data, depth_mm, vx, vy, wz, gt_patient, gt_distractor,
                                            stair_demo, swing_legs, lidar_profile_latest,
-                                           sim_t=sim_clock_sec)
+                                           sim_t=sim_clock_sec, frame_idx=int(step_count),
+                                           sensor_imu_pitch=_sensor_imu_pitch,
+                                           sensor_odom_vx=_sensor_odom_vx,
+                                           sensor_odom_vy=_sensor_odom_vy,
+                                           sensor_riser_dist_ahead=_sensor_riser_dist)
                         # Frame-transport diagnostic: count actual TCP sends and report the
                         # link state so we can tell "Isaac never sent" (render starved) from
                         # "link not connected" (container TCP server not up / forwarding down).
@@ -4215,10 +4300,10 @@ def main() -> None:
                         error=str(exc),
                     )
 
-            # Recording cameras (top-down + external scene_view) capture on the finer
-            # --record-every cadence for a higher FPS than the perception loop above.
-            # render_now already drew a fresh RTX frame this step (the record cadence is
-            # folded into the render gate), so get_rgb() returns a current image. The
+            # Recording cameras (top-down + external scene_view) capture on the perception
+            # --render-every cadence (record_every == render_every); write rate is throttled by
+            # --record-every-n-steps. render_now already drew a fresh RTX frame this step (the
+            # record cadence is folded into the render gate), so get_rgb() returns a current image. The
             # frame WRITES are handed to a background thread (AsyncRecordingWriter), so this
             # block only pays the get_rgb()/colour-convert cost, not the mp4 encode.
             with _step_profiler.phase("recorder"):
@@ -4490,7 +4575,8 @@ def _warm_reset_state_for_new_episode() -> None:
         # Gate frame sends until Docker's command socket arrives, proving the WSL2 port
         # proxy is fully established.  Without this, Isaac reconnects rapidly to a stale
         # proxy, sendall() silently succeeds (OS buffer), and Docker never receives frames.
-        _warm_publisher._frame_send_gated = True
+        # Set via the lock-guarded setter (the receiver thread reads/clears it).
+        _warm_publisher.set_frame_send_gated(True)
     if hasattr(update_final_scene_recording_cameras, "_logged_robot_pose"):
         try:
             del update_final_scene_recording_cameras._logged_robot_pose

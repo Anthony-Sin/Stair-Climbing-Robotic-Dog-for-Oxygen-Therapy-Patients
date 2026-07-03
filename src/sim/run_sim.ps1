@@ -76,7 +76,11 @@ param(
     [double]$StairWaypointX = 6.77,
     [double]$StairWaypointY = 0.0,
     [switch]$NoParkourPersonMask,
-    [switch]$WithO2Payload,
+    # Oxygen tank is ON by default (this is the oxygen-therapy demo -- the dog carries the tank).
+    # Still a real toggle for an A/B baseline: pass -WithO2Payload:$false (or -NoO2Payload, which the
+    # launcher / run_sim.bat emit) to run WITHOUT the payload.
+    [switch]$WithO2Payload = $true,
+    [switch]$NoO2Payload,
     [switch]$NoParkourWalkMode,
     [switch]$NoSpeedGovernor,
     # Stand-up-from-ground (default ON in isaac_env.py): the robot spawns folded on the
@@ -87,7 +91,6 @@ param(
     [double]$SimLatencyJitterMs = 0.0,
     [switch]$Headless,
     [switch]$FastRender,
-    [switch]$PatientPhysics,
     [string]$PatientCharacterUsd = "",
     # Start scene motion (patient patrol) immediately instead of waiting for the
     # Docker controller's first command. Pair with --no-docker-run for a Docker-free
@@ -97,10 +100,15 @@ param(
     # 0 = straight-line (default). 2 = S-curve: right then left then re-centres at stair entry.
     [int]$PersonApproachTurns = 0,
     [double]$PersonApproachAmplitude = 1.2,
-    # Follow standoff (m) the controller holds behind the patient. Default 0.6 keeps run_sim.bat
-    # unchanged; the follow sweep widens it for a realistic-patient zigzag (a wider standoff keeps
-    # a gently-weaving patient inside the narrow 69 deg RGB/YOLO cone).
-    [double]$TargetDistance = 0.6,
+    # Follow standoff (m) the controller holds behind the patient. WHY not the old tight 0.6 m: the
+    # body-mounted D435 sits low, so at close range the patient is only-LEGS in frame (torso/head clip
+    # above the top) and the pose detector cannot hold a lock -- verified in the loss frame of
+    # run_sim_20260703_150109 (LOCKED->ACQUIRING->LOST at RANGE 1.15 m, camera showing knees-down),
+    # so the dog dropped the patient at the last zig-zag apex. A wider standoff keeps more of the
+    # patient's body inside the narrow 69 deg RGB/YOLO cone. 1.0 m is the chosen standoff (well clear
+    # of the 0.6 m crowd zone); the real robot now uses the same 1.0 m (config_contract / args_parser
+    # --target-distance default). Pass -TargetDistance 0.6 to reproduce the old tight follow.
+    [double]$TargetDistance = 1.0,
     [switch]$WarmIsaac,
     [switch]$WarmShutdown,
     [int]$WarmMaxRuns = 10,
@@ -294,6 +302,77 @@ function Format-StageConsole {
     return "$ts  $gl  $stg $msg"
 }
 
+function Write-ConsoleLine {
+    # Emit ONE already-split line to the interactive console with a GUARANTEED carriage
+    # return. WHY: this launcher turns on VT/ANSI processing (SetConsoleMode 0x0004) so it
+    # can print colored btop-style boxes. Once VT is on, the Windows console follows the
+    # Unix rule that a bare LF is a pure line-feed -- it drops a row but does NOT return to
+    # column 0 -- so any line that reaches the console terminated by a bare "\n" starts one
+    # step further right than the last: the "staircase". PowerShell's own Write-Host
+    # terminates lines with a bare LF (verified: the emitted bytes are 0x0A, not 0x0D 0x0A),
+    # which is invisible with VT OFF but staircases with VT ON. Writing a literal "`r`n"
+    # through [Console]::Out emits the bytes 0x0D 0x0A regardless of VT state, so the cursor
+    # returns to column 0. When stdout is redirected (launcher capture / NO_COLOR) VT is off
+    # and $UseColor is false, so we fall back to plain Write-Host -- the Python reader that
+    # consumes that stream splits on LF and strips its own CR, so a bare LF is correct there.
+    param([string]$Text)
+    if ($script:UseColor) {
+        [Console]::Out.Write($Text)
+        [Console]::Out.Write("`r`n")
+    } else {
+        Write-Host $Text
+    }
+}
+
+function Remove-Ansi {
+    # Strip SGR/CSI escape sequences so file logs and regex matchers see plain text even
+    # when the source emitted color (e.g. the container's term_ui under CLICOLOR_FORCE).
+    param([string]$Text)
+    return ($Text -replace "$($script:ESC)\[[0-9;?]*[A-Za-z]", "")
+}
+
+function Format-RelayLine {
+    # Apply the DESIGN.md palette to a PLAIN relayed status line. The perf_table / charts /
+    # self-grade tools print with NO color of their own, so the launcher paints them here to
+    # match the rest of the console. Purely cosmetic and console-only: Use-Paint is a no-op
+    # when color is off, and callers still log the original plain text. Heuristic by design.
+    param([string]$Text)
+    if (-not $script:UseColor -or -not $Text) { return $Text }
+    $t = $Text.TrimEnd()
+    # Full-width rule separators (==== / ----).
+    if ($t -match '^[=]{3,}$' -or $t -match '^[-]{3,}$') { return Use-Paint $Text $script:Pal.muted }
+    # Bracketed source tag: "[perf_table] ..." / "[charts] ..." -> tag in lavender, rest fg.
+    if ($Text -match '^(\s*)(\[[^\]]+\])(.*)$') {
+        return $matches[1] + (Use-Paint $matches[2] $script:Pal.blue) + (Use-Paint $matches[3] $script:Pal.fg)
+    }
+    # Run header line.
+    if ($Text -match '^\s*RUN\s') { return Use-Paint $Text $script:Pal.primary -Bold }
+    # Explicit verdict tokens (uppercase/symbol only, to avoid false hits on prose).
+    if ($Text -match '(✗|\bFAIL(ED)?\b|\bERROR\b)') { return Use-Paint $Text $script:Pal.red }
+    if ($Text -match '(✓|\bPASS(ED)?\b)')            { return Use-Paint $Text $script:Pal.green }
+    if ($Text -match '(⚠|\bWARNING\b)')              { return Use-Paint $Text $script:Pal.yellow }
+    # Aligned key/value rows ("label" then 2+ spaces then value) -> muted label, fg value.
+    if ($Text -match '^(\S[\S ]{0,18}?)(\s{2,})(.+)$') {
+        return (Use-Paint $matches[1] $script:Pal.muted) + $matches[2] + (Use-Paint $matches[3] $script:Pal.fg)
+    }
+    return $Text
+}
+
+function Write-RelayText {
+    # Relay a chunk of native (WSL / Docker / python) stdout to the console without
+    # staircasing. Native tools emit bare-LF line endings and PowerShell 5.1 can hand us a
+    # whole multi-line blob as a SINGLE pipeline object, so we split into physical lines and
+    # route each through Write-ConsoleLine (guaranteed CRLF, see above). Mirrors the
+    # split/relay Invoke-LoggedCommand already does, for the callers that only relay+print.
+    # These callers (perf_table / self-grade) print uncolored, so paint each line to match.
+    param([object]$Value)
+    $clean = ConvertTo-CleanText $Value
+    if (-not $clean) { return }
+    foreach ($line in ($clean -split "`r?`n")) {
+        if ($line) { Write-ConsoleLine (Format-RelayLine $line) }
+    }
+}
+
 $RepoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
 $SrcRoot = Join-Path $RepoRoot 'src'
 $Stamp = Get-Date -Format "yyyyMMdd_HHmmss_fff"
@@ -417,31 +496,13 @@ if (-not $DryRun) {
     } catch {}
 }
 
-# Clear the log folder at startup to prevent old runs from clashing. In warm mode the
-# folder is preserved (the warm Isaac is mid-session and owns log/warm_isaac/ plus the
-# active run folder); old run_sim_* folders are still bounded by Prune-OldRunLogs.
+# Startup log cleanup is LOCK-HOLDER ONLY: the stale Docker containers / kit.exe /
+# isaac_env.py / hub.exe that hold file locks were already stopped above. We do NOT
+# delete the run_sim_* run directories here -- doing so destroyed evidence (the one run
+# where the dog toppled was gone after the next smoke run) and defeated the KeepRunLogs
+# retention flag, which only takes effect via Prune-OldRunLogs (run BEFORE and AFTER the
+# run below, honoring -KeepRunLogs). Old runs are bounded there, never wiped wholesale.
 $LogRoot = Join-Path $RepoRoot "log"
-if (-not $WarmIsaac -and (Test-Path -LiteralPath $LogRoot)) {
-    # Try deleting via WSL to bypass any WSL/Docker mount locks
-    try {
-        $wslLogRoot = ConvertTo-WslPath -WindowsPath $LogRoot
-        & wsl.exe -e rm -rf $wslLogRoot 2>$null
-    } catch {}
-
-    # Try deleting via Windows to clean up anything remaining
-    try {
-        Remove-Item -LiteralPath $LogRoot -Recurse -Force -ErrorAction SilentlyContinue
-    } catch {}
-
-    # Double-check: if it still exists, try to empty it
-    if (Test-Path -LiteralPath $LogRoot) {
-        Get-ChildItem -LiteralPath $LogRoot | ForEach-Object {
-            try {
-                Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
-            } catch {}
-        }
-    }
-}
 # Ensure the log folder exists
 if (-not (Test-Path -LiteralPath $LogRoot)) {
     New-Item -ItemType Directory -Force -Path $LogRoot | Out-Null
@@ -453,7 +514,11 @@ New-Item -ItemType Directory -Force -Path $VideosDir | Out-Null
 New-Item -ItemType Directory -Force -Path $ReportsDir | Out-Null
 New-Item -ItemType Directory -Force -Path $LogsDir | Out-Null
 New-Item -ItemType Directory -Force -Path $DebugDir | Out-Null
-Set-Content -LiteralPath $LatestRunFile -Encoding UTF8 -Value $RunLogDir
+# UTF-8 WITHOUT BOM: PS 5.1 'Set-Content -Encoding UTF8' prepends a BOM that the launcher's
+# telemetry-panel readers (launcher_lib render._find_run_dir / runner) then leave on the first
+# char, so os.path.isdir() fails and the panel silently blanks. Write BOM-less (same fix as the
+# $tmp json above); the readers also use utf-8-sig now as belt-and-suspenders.
+[System.IO.File]::WriteAllText($LatestRunFile, $RunLogDir, (New-Object System.Text.UTF8Encoding $false))
 Set-Content -LiteralPath $SummaryLog -Encoding UTF8 -Value @(
     "run_sim log guide",
     "Run folder: $RunLogDir",
@@ -925,11 +990,25 @@ function Invoke-LoggedCommand {
         }
 
         & $FilePath @Arguments 2>&1 | ForEach-Object {
-            $line = ConvertTo-CleanText $_
-            if ($line) {
-                Add-Content -LiteralPath $LogPath -Encoding UTF8 -Value $line
-                if (-not (Test-ConsoleLineQuiet -Line $line)) {
-                    Write-Host $line
+            # WSL/Docker emit LF-only line endings, and PowerShell 5.1 can hand us a whole
+            # multi-line chunk as ONE pipeline object with embedded '\n's. Split into
+            # physical lines so each is graded/logged individually, then relay via
+            # Write-ConsoleLine, which terminates every line with an explicit CRLF -- under
+            # the VT/ANSI console mode this launcher enables, a bare LF line-feeds WITHOUT a
+            # carriage return, producing the "staircase" where each line starts further right.
+            $clean = ConvertTo-CleanText $_
+            if ($clean) {
+                foreach ($line in ($clean -split "`r?`n")) {
+                    if (-not $line) { continue }
+                    # The container's term_ui emits its own DESIGN.md color when run with
+                    # CLICOLOR_FORCE (the banner boxes). Log + quiet-filter on the PLAIN text
+                    # so file logs stay escape-free and the diagnosis regexes keep matching;
+                    # relay the original (colored) line to the interactive console.
+                    $plain = Remove-Ansi $line
+                    Add-Content -LiteralPath $LogPath -Encoding UTF8 -Value $plain
+                    if (-not (Test-ConsoleLineQuiet -Line $plain)) {
+                        Write-ConsoleLine $line
+                    }
                 }
             }
         }
@@ -1198,7 +1277,7 @@ function Invoke-PerfTracker {
         try { $gitBranch = ((& git rev-parse --abbrev-ref HEAD 2>&1) -join "").Trim() } catch {}
         $wslPerfScript = "$WslSrcRoot/perf_tracker/update_table.py"
         & wsl.exe -e python3 $wslPerfScript $WslRunLogDir --git-branch $gitBranch 2>&1 |
-            ForEach-Object { Write-Host $_ }
+            ForEach-Object { Write-RelayText $_ }
     } catch {
         Write-Host "[perf_table] Warning: performance table update skipped: $_"
     }
@@ -1508,7 +1587,12 @@ if ($NoIsaac) {
     if ($NoParkourPersonMask) {
         $isaacArgs += "-NoParkourPersonMask"
     }
-    $isaacArgs += "-WithO2Payload"
+    # Oxygen tank ON by default (-WithO2Payload defaults $true); still a real toggle -- pass
+    # -WithO2Payload:$false OR -NoO2Payload (emitted by the launcher / run_sim.bat --no-o2-payload)
+    # and run_isaac_window sends --no-o2-payload to detach it for an A/B baseline.
+    if ($WithO2Payload -and -not $NoO2Payload) {
+        $isaacArgs += "-WithO2Payload"
+    }
     if ($NoParkourWalkMode) {
         $isaacArgs += "-NoParkourWalkMode"
     }
@@ -1526,9 +1610,6 @@ if ($NoIsaac) {
     }
     if ($FastRender) {
         $isaacArgs += "-FastRender"
-    }
-    if ($PatientPhysics) {
-        $isaacArgs += "-PatientPhysics"
     }
     if ($PatientCharacterUsd) {
         $isaacArgs += "-PatientCharacterUsd"; $isaacArgs += $PatientCharacterUsd
@@ -1713,7 +1794,9 @@ if ($NoDockerRun) {
         "--follow-standoff-speed-gain 0.0",
         "--follow-pace-distance 2.0",
         "--follow-pace-floor-speed 0.5",
-        "--follow-standoff-band-out 0.15",
+        # canonical: src/shared/config_contract.py (standoff_band_out=0.35). Was 0.15,
+        # which actively reverted the parser's documented 0.35 fix -- restored to 0.35.
+        "--follow-standoff-band-out 0.35",
         "--follow-standoff-band-in -0.15",
         "--follow-stop-ramp-sec 0.7",
         "--stair-speed-scale 0.45",
@@ -1756,6 +1839,26 @@ if ($NoDockerRun) {
         $visionArgs += "--stair-square-up"
     }
     $visionCommand = $visionArgs -join " "
+
+    # Record the FULLY-RESOLVED flag set (the exact argv this run launches with, after the
+    # hardwired $visionArgs block and every override above) so every run records which config
+    # layer won. Written as JSON to the run's reports dir.
+    try {
+        $resolvedFlags = [ordered]@{
+            schema         = 1
+            stamp          = $Stamp
+            run_log_dir    = "$RunLogDir"
+            isaac_argv     = @($isaacArgs)
+            vision_argv    = @($visionArgs)
+            vision_command = "$visionCommand"
+        }
+        $resolvedFlagsPath = Join-Path $ReportsDir "resolved_flags.json"
+        $resolvedFlags | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $resolvedFlagsPath -Encoding UTF8
+        Write-Stage "isaac" "resolved_flags" "Wrote fully-resolved launch flags" @{ path = $resolvedFlagsPath }
+    } catch {
+        Write-Stage "isaac" "warning" "Failed to write resolved_flags.json" @{ error = "$($_.Exception.Message)" }
+    }
+
     $byteTrackNumpyAliasFix = "find /opt/bytetrack -type f -name '*.py' -exec sed -i 's/np\.float\b/float/g; s/np\.int\b/int/g; s/np\.bool\b/bool/g' {} + 2>/dev/null"
     $containerCommand = $byteTrackNumpyAliasFix + "; cd /workspace && exec " + $visionCommand
 
@@ -1784,6 +1887,18 @@ if ($NoDockerRun) {
         "${WslRunLogDir}:/workspace/run_logs",
         "-e",
         "SIM_LOG_DIR=/workspace/run_logs/debug",
+        # Force the container's term_ui (core/telemetry) to emit DESIGN.md color even though
+        # its stdout is a pipe, so the "go2 controller"/"perception" banner boxes render in
+        # color on the console. The launcher strips these escapes before writing docker_run.log
+        # (Invoke-LoggedCommand), so file logs + diagnosis regexes stay plain.
+        "-e",
+        "CLICOLOR_FORCE=1",
+        # Correlate the vision/controller subprocess with the sim's run id (labels.run_id
+        # in isaac_env.jsonl == run_sim_<stamp>) so both processes log the same run.
+        "-e",
+        "FOLLOW_RUN_ID=run_sim_${Stamp}",
+        "-e",
+        "SIM_RUN_ID=run_sim_${Stamp}",
         "-w",
         "/workspace",
         $Image,
@@ -1867,17 +1982,22 @@ if (Test-Path -LiteralPath $evalSummaryFile) {
 # --- Update cross-run performance table + auto-charts ---
 Invoke-PerfTracker
 
-# Optional self-grading gate: turn analyze_climb's honest verdict into an EXIT CODE so a
-# stair run self-grades (fail on a fall / stair-collision / patient-collision risk) instead
-# of a human reading the table. OFF by default -- perf ingestion above already ran and sweeps
-# expect exit 0; set the env var SIM_GRADE_GATE=1 to arm it. Mirrors Invoke-PerfTracker's
-# proven WSL python3 invocation; captures wsl's exit code BEFORE the print pipe so it isn't
-# masked by ForEach-Object.
-if ($env:SIM_GRADE_GATE -eq '1' -and (-not $DryRun) -and (-not $NoIsaac)) {
+# Prune old run folders AFTER the run completes, honoring -KeepRunLogs. This is the
+# ONLY place run_sim_* dirs are deleted (startup no longer wipes log/), so the retention
+# flag actually bounds history without destroying the just-finished run's evidence.
+Prune-OldRunLogs -KeepCount $KeepRunLogs
+
+# Self-grading gate: turn analyze_climb's honest verdict into an EXIT CODE so a stair run
+# self-grades (fail on a fall / stair-collision / patient-collision risk) instead of a human
+# reading the table. ON by default so the CLAUDE.md-mandated verification run FAILS on a fall
+# unless someone remembers an env var; opt OUT with SIM_GRADE_GATE=0 (e.g. sweeps that expect
+# exit 0). Mirrors Invoke-PerfTracker's proven WSL python3 invocation; captures wsl's exit
+# code BEFORE the print pipe so it isn't masked by ForEach-Object.
+if ($env:SIM_GRADE_GATE -ne '0' -and (-not $DryRun) -and (-not $NoIsaac)) {
     $wslGradeScript = "$WslSrcRoot/sim/analysis/analyze_climb.py"
     $gradeOut = & wsl.exe -e python3 $wslGradeScript $WslRunLogDir --gate 2>&1
     $gradeExit = $LASTEXITCODE
-    $gradeOut | ForEach-Object { Write-Host $_ }
+    $gradeOut | ForEach-Object { Write-RelayText $_ }
     if ($gradeExit -ne 0) {
         Write-Stage "summary" "failed" "Self-grade gate failed (fell / collided / patient-collision risk)" @{ run_log_dir = $RunLogDir }
         exit $gradeExit

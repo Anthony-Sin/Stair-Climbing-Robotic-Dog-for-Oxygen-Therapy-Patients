@@ -40,16 +40,33 @@ DOCKER_RUN_COMMON=(
   --label "arch=$ARCH"
 )
 
-if [[ "$ARCH" == "x86_64" ]]; then
-  # Mount TensorRT libs for x86 and set LD_LIBRARY_PATH env
+if [[ "$ARCH" == "x86_64" && -n "${HOST_TENSORRT_DIR:-}" ]]; then
+  # x86 sim-dev only: optionally mount a host TensorRT tree (the x86 sim image expects the libs
+  # under /workspace/TensorRT-8.5.1.7). Set HOST_TENSORRT_DIR to your local path; empty (default)
+  # skips the mount so the repo is NOT pinned to one developer's home directory (the old
+  # hard-coded /home/juanwil/... broke on every other machine -- review §5/§12). Mirrors
+  # start_follow_system.sh.
   DOCKER_RUN_COMMON+=(
-    -v /home/juanwil/Projects/USF/GO2/TensorRT-8.5.1.7:/workspace/TensorRT-8.5.1.7:ro
-    -e LD_LIBRARY_PATH=/workspace/TensorRT-8.5.1.7/lib:${LD_LIBRARY_PATH:-}
+    -v "${HOST_TENSORRT_DIR}:/workspace/TensorRT-8.5.1.7:ro"
+    -e LD_LIBRARY_PATH="/workspace/TensorRT-8.5.1.7/lib:${LD_LIBRARY_PATH:-}"
   )
 fi
 
 # Generate container name with timestamp for uniqueness
 CONTAINER_NAME="go2-pose-$(date +%H%M%S)"
+
+# Record git SHA + resolved image id into the run dir so an incident can be correlated to an
+# exact image + commit (review §12). run_logs/ is gitignored.
+BUILD_INFO_DIR="${PARENT_DIR}/run_logs/${CONTAINER_NAME}"
+mkdir -p "$BUILD_INFO_DIR"
+{
+  echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "git_sha=$(git -C "$PARENT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  echo "image=${IMAGE_NAME}"
+  echo "image_id=$(docker image inspect --format '{{.Id}}' "$IMAGE_NAME" 2>/dev/null || echo unknown)"
+  echo "container=${CONTAINER_NAME}"
+} > "${BUILD_INFO_DIR}/build_info.txt"
+echo "📝 Build info: ${BUILD_INFO_DIR}/build_info.txt"
 
 echo "🚀 Starting ${IMAGE_NAME} as ${CONTAINER_NAME}..."
 docker run "${DOCKER_RUN_COMMON[@]}" --name ${CONTAINER_NAME} ${IMAGE_NAME}

@@ -172,7 +172,8 @@ def _print_summary(cfg: Config, rc: int, theme: tu.Theme) -> None:
     latest = os.path.join(REPO_ROOT, "log", "latest_run.txt")
     if cfg.target == "sim" and os.path.isfile(latest):
         try:
-            with open(latest, encoding="utf-8") as fh:
+            # utf-8-sig: tolerate a PS 5.1 UTF-8 BOM on the pointer file (see _find_run_dir).
+            with open(latest, encoding="utf-8-sig") as fh:
                 run_dir = fh.read().strip()
             rows.append(tu.kv("logs", run_dir, theme, 7, "primary", bold_value=False))
             rows.append(tu.kv("read me", os.path.join(run_dir, "00_READ_ME_FIRST.txt"),

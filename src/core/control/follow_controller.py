@@ -177,14 +177,33 @@ class PersonFollower:
         return float(np.median(vals))
 
     def _update_person_tracking(self, main_person: Optional[Union[Dict[str, Any], Sequence[float]]],
-                                current_time: float, frame_shape: Tuple[int, int]):
-        """Update person tracking state and velocity estimation"""
+                                current_time: float, frame_shape: Tuple[int, int],
+                                is_matched: bool = True):
+        """Update person tracking state and velocity estimation.
+
+        ``is_matched`` is False when the fed box is a Kalman-COASTED prediction (the
+        tracker returned the main track's extrapolated box on a YOLO-miss frame, not a
+        fresh detection). Such a box has a FROZEN centre: trusting it collapses the
+        velocity EMA toward zero and staleness-freezes ``last_person_center``. Both are
+        the cues ``_resolve_lost_search_direction`` reads to decide which way to turn on
+        a full loss, so a coasted box made the re-acquire scan chase a stale bearing with
+        no motion cue (run_sim_20260703_101317_194: patient left frame at the second
+        zigzag, scan ping-ponged around a frozen +9.3 deg and never re-acquired). Steering
+        during the coast still uses the live box downstream in ``update`` -- only the
+        recovery anchors are held to their last MATCHED values here.
+        """
         if main_person is not None:
             # Person is detected
             center = self._extract_center(main_person)
             if center is not None:
                 current_center = center
-                
+
+                if self.is_tracking and not is_matched:
+                    # Coasted box: keep the target "not lost" (so recovery does not fire
+                    # yet) but do NOT overwrite the last-matched centre/velocity/time.
+                    self.last_lost_time = None
+                    return
+
                 if not self.is_tracking:
                     # Start tracking
                     self.is_tracking = True
@@ -398,7 +417,11 @@ class PersonFollower:
             Tuple of (trans_x_command, rotation_command, debug_info)
             Returns (0.0, 0.0, debug_info) if person is lost or depth is invalid
         """
-        current_time = time.time()
+        # MONOTONIC clock for ALL duration math here (dt, lost_age_sec, gait dt, gap-rate window).
+        # main.py drives the loop off perf_counter; PersonFollower used time.time(), so an NTP step /
+        # DST jump corrupted lost_age_sec and dt (incident 8.6 class). Every current_time use below is
+        # a DURATION (difference), never an exported wall timestamp, so perf_counter is a safe swap.
+        current_time = time.perf_counter()
         
         debug_info = {
             'person_detected': main_person is not None,
@@ -432,8 +455,13 @@ class PersonFollower:
         if self.last_detection_time is not None:
             dt = current_time - self.last_detection_time
             
-        # Update person tracking state
-        self._update_person_tracking(main_person, current_time, frame_shape)
+        # Update person tracking state. A dict box carries 'matched_detection' from the
+        # tracker (False == Kalman-coasted, not a fresh YOLO hit); non-dict inputs are
+        # always treated as real detections. Only matched boxes update the recovery anchors.
+        is_matched = True
+        if isinstance(main_person, dict):
+            is_matched = bool(main_person.get('matched_detection', True))
+        self._update_person_tracking(main_person, current_time, frame_shape, is_matched=is_matched)
         
         # Extract ground_point, keypoints, and bounding box
         ground_point = None

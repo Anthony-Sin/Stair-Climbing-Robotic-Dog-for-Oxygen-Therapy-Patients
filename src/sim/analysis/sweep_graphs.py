@@ -8,7 +8,7 @@ package works without it.
 import os
 
 from sweep_constants import (
-    STAIR_BASE_X, FALL_TILT_DEG, COLLAPSE_H_M,
+    STAIR_BASE_X, FALL_TILT_DEG, COLLAPSE_H_M, UPRIGHT_TILT_DEG,
     VERDICT_COLORS, DEFAULT_STEP_COUNT, DEFAULT_TOP_EDGE_X,
 )
 from sweep_helpers import log, fmt_time
@@ -100,7 +100,7 @@ def _plot_stability(ax, rows):
     xs = range(len(rows))
     vals = [r.get("max_tilt_deg") or 0 for r in rows]
     ax.bar(xs, vals, color=_verdict_bar_colors(rows))
-    ax.axhspan(0, 18, color="#2e7d32", alpha=0.14)
+    ax.axhspan(0, UPRIGHT_TILT_DEG, color="#2e7d32", alpha=0.14)
     ax.axhline(FALL_TILT_DEG, ls="--", color="#e05050", lw=1.2)
     ax.text(len(rows) - 0.5, FALL_TILT_DEG + 1, f"fall line ({FALL_TILT_DEG:.0f}°)", ha="right",
             color="#e05050", fontsize=8)

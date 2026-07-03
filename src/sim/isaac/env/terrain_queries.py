@@ -107,8 +107,6 @@ def _get_person_pose_z(x: float, y: float, *, smooth: bool = True) -> float:
     base_z = get_terrain_height_smooth(x, y) if smooth else get_terrain_height(x, y)
     if env_state._FINAL_SCENE_SPEC is None:
         return base_z
-    if getattr(env_state.args, "patient_physics", False):
-        return base_z
     from final_scene import person_pose_z
     return person_pose_z(base_z, env_state._FINAL_SCENE_SPEC)
 

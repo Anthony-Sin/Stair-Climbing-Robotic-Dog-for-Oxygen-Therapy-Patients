@@ -14,7 +14,7 @@ class SimRobotController:
     Mirrors the RobotController API so main.py needs no changes.
     """
 
-    def __init__(self, cmd_host: Optional[str] = None, cmd_port: int = 52001) -> None:
+    def __init__(self, cmd_host: Optional[str] = None, cmd_port: int = 52100) -> None:
         self._host = cmd_host or os.environ.get("SIM_CMD_HOST", "192.168.1.91")
         self._port = cmd_port
         self._sock = None
@@ -23,6 +23,9 @@ class SimRobotController:
         self._total_sent = 0
         self._failed_sent = 0
         self._last_reverse_x_suppressed_log_ts = 0.0
+        # Monotonic command sequence: stamped on every datagram so the Isaac receiver
+        # can drop a reordered/stale velocity (UDP may deliver out of order).
+        self._cmd_seq = 0
 
     def initialize(self) -> bool:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -98,7 +101,10 @@ class SimRobotController:
         # stairs_action_active pairs with the Isaac decoder in isaac_env.py -- update
         # both together. It tells the parkour policy (hybrid heading mode) the climb has
         # engaged, so it self-steers from depth instead of the person bearing there.
-        payload = json.dumps({"vx": vx, "vy": vy, "wz": wz, "yaw_err": float(yaw_err),
+        seq = self._cmd_seq
+        self._cmd_seq += 1
+        payload = json.dumps({"seq": int(seq),
+                              "vx": vx, "vy": vy, "wz": wz, "yaw_err": float(yaw_err),
                               "stairs_detected": stairs_detected,
                               "stairs_action_active": bool(stairs_action_active),
                               "person_bbox": _pbb,

@@ -21,6 +21,20 @@ follow the patient → detect stairs → attempt the climb.
 Locomotion math is the repo-root `go2_locomotion/` package, shared with the sim (the
 sim is its regression test). The SDK is confined to `sport_startup_node`.
 
+## Which runtime? (only one may drive the robot)
+
+**The NATIVE low-level stack above is the CURRENT in-repo runtime.** It RELEASES the
+built-in sport service and drives `/lowcmd` directly (staleness → DAMP). The older
+Docker/sidecar stack in `ros2_ws/` (Nav2/MPPI, which keeps the sport service ACTIVE and
+does StopMove=stand on staleness) is **deprecated / secondary** and must not run at the
+same time — the two are mutually exclusive by physics (one releases sport, the other
+holds it), and nothing physically arbitrates `/lowcmd` vs the sport service. Running both
+lets them fight over the robot.
+
+**Interlock:** `low_level_control_node` refuses to start if it detects the sidecar stack
+is up — it aborts when `GO2_SIDECAR_ACTIVE` is set (the Docker launch sets it). Override
+with `GO2_ALLOW_SPORT_ACTIVE=1` **only** after you have confirmed the sidecar is down.
+
 ## Prerequisites (on the Jetson)
 
 1. **ROS 2 Foxy** + **CycloneDDS** (`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`).
@@ -35,8 +49,11 @@ sim is its regression test). The SDK is confined to `sport_startup_node`.
 
 ## CONFIRM before first run (cannot be derived from the repo)
 
-- **LiDAR SKU**: Mid-360 vs Hesai XT16 → sets `lidar_sku` + the topic + the
-  `pointcloud_interface` extrinsic (the placeholder extrinsics MUST be measured).
+- **LiDAR SKU**: Mid-360 vs Hesai XT16 → sets `lidar_sku` + the topic. The lidar→base
+  **extrinsic is a hardcoded constant** in `real/perception/pointcloud_interface.py`
+  (`_EXTRINSICS`), NOT a ROS/yaml parameter — measure it on the robot and EDIT that
+  constant. Preflight **FAILS** (not just warns) if `heightscan_mode: lidar` ships with the
+  identity placeholder still in place.
 - **RealSense D435** fitted and its topic namespace.
 - **Firmware Motion-Switcher service name** (the V2.0 interface changed it); confirm
   `ReleaseMode()` actually releases on your firmware.

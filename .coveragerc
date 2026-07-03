@@ -1,0 +1,32 @@
+# Coverage configuration for the host-safe pytest suite.
+#
+# Purpose: make coverage VISIBLE. A deep review found 0 lines of the 2,200-line core
+# frame loop (src/core/main.py) are covered, yet that fact was invisible in CI. This
+# config measures src/ so `pytest --cov` (see .github/workflows/tests.yml) emits a report
+# and an artifact. NO threshold/gate is set here on purpose -- the goal for now is to stop
+# "0% of main.py" from being silent, not to fail the build.
+
+[run]
+branch = True
+source = src
+# Only the application packages -- not the tests measuring themselves, caches, or the
+# sim/isaac + real hardware trees that never run host-side (they would show as 0% noise).
+omit =
+    */tests/*
+    */__pycache__/*
+    src/sim/*
+    src/real/*
+    src/examples/*
+    src/tools/*
+    src/verification/*
+    */conftest.py
+
+[report]
+# Show every measured file (including the 0%-covered ones -- that is the whole point).
+show_missing = True
+skip_covered = False
+# Don't error the report step just because nothing hit a file.
+ignore_errors = True
+
+[xml]
+output = coverage.xml

@@ -48,6 +48,15 @@ class SinglePersonTracker:
         cfg = tracker_cfg or default_cfg
         cfg = SimpleNamespace(**cfg)
         self.byte_tracker = BYTETracker(cfg)
+        # BYTETracker.max_time_lost = int(frame_rate/30 * track_buffer) is a FRAME count: how many
+        # missed-detection frames to COAST a lost track (Kalman-predicting its bbox) before dropping
+        # it. It is intentionally frame-denominated, NOT wall-time (incident 8.6 does NOT apply here):
+        # ByteTrack's Kalman is frame-indexed, and what matters for re-acquisition is the number of
+        # detection opportunities, which is a frame count. With the default track_buffer=30 the coast
+        # is 30 frames; at the ~4 FPS headless sim that reads as a generous ~7.5 s, which is what lets
+        # the dog keep following (coasting the last bbox + rotating toward it) through a zig-zag turn
+        # where the patient is briefly out of view. DO NOT shrink this by feeding the measured loop
+        # rate -- that collapsed it to ~4 frames and broke follow (run_sim_20260703_110219).
         self.main_track_id = None
         self.lost_counter = 0
         self.max_lost_frames = max_lost_frames

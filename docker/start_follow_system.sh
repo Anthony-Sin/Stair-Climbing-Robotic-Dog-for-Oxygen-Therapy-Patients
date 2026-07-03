@@ -11,9 +11,19 @@ SIDECAR_CONTAINER_NAME="${SIDECAR_CONTAINER_NAME:-go2-follow-sidecar}"
 SIDECAR_ENABLE_LIDAR_MAPPING="${SIDECAR_ENABLE_LIDAR_MAPPING:-0}"
 SIM_OBSTACLES="${SIM_OBSTACLES:-false}"
 
+# NOTE (config sprawl, review finding #4): this is the DEPRECATED Nav2/sidecar driving stack
+# (the native low-level stack is the current runtime -- see src/real/DEPLOY.md "Which runtime?").
+# Its follow standoff (0.45) differs from the canonical values in src/shared/config_contract.py
+# (follow_standoff_real=1.5 via run_real.sh, follow_standoff_sim=0.6). Left as-is because it is a
+# Nav2-MPPI-tuned value on a path that is not exercised here; if this stack is resurrected, reconcile
+# it against the contract before a patient-adjacent run.
 TARGET_DISTANCE="${TARGET_DISTANCE:-0.45}"
 TARGET_EXPORT_HOST="${TARGET_EXPORT_HOST:-0.0.0.0}"
 TARGET_EXPORT_PORT="${TARGET_EXPORT_PORT:-41234}"
+# ROTATE: this deprecated path uses 270; the native path defaults to --rotate 0 (camera_capture.py).
+# SAME physical D435 -> exactly one of these matches the real mount. Not flipped here because neither
+# has been hardware-confirmed (§3: the native stack composition "was never exercised"); resolve
+# against the physical camera orientation before running either stack on the robot.
 ROTATE="${ROTATE:-270}"
 CAMERA_MODE="${CAMERA_MODE:-single}"
 TRT_ENGINE="${TRT_ENGINE:-src/real/models/yolo11n-pose-fp16.trt}"
@@ -154,6 +164,23 @@ parse_up_args() {
   done
 }
 
+write_build_info() {
+  # Correlate an incident to an exact image + commit (review §12): capture git SHA and the
+  # resolved vision image id/tag into the run dir at bring-up.
+  local out="${DEBUG_LOG_RUN_DIR}/build_info.txt"
+  local git_sha image_id
+  git_sha="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  image_id="$(docker image inspect --format '{{.Id}}' "$VISION_IMAGE" 2>/dev/null || echo unknown)"
+  {
+    echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "git_sha=${git_sha}"
+    echo "vision_image=${VISION_IMAGE}"
+    echo "vision_image_id=${image_id}"
+    echo "sidecar_image=${SIDECAR_IMAGE}"
+  } > "$out"
+  echo "Build info: ${out} (git ${git_sha}, image ${image_id})"
+}
+
 prepare_debug_log_dirs() {
   local run_stamp
   run_stamp="$(date +%Y%m%d_%H%M%S)"
@@ -164,6 +191,7 @@ prepare_debug_log_dirs() {
     "${DEBUG_LOG_RUN_DIR}/sidecar/ecs" \
     "${DEBUG_LOG_RUN_DIR}/sidecar/debug_trace"
   echo "Debug log directory: ${DEBUG_LOG_RUN_DIR}"
+  write_build_info
 }
 
 start_vision() {

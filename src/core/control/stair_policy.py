@@ -155,11 +155,62 @@ def _depth_from_bbox_excluding_person(
         return None
 
 
+def _crest_reached(frame_meta: Optional[Dict[str, Any]], debug_info: Dict[str, Any]) -> bool:
+    """Whether the dog has reached the crest / a level landing (climb can finish).
+
+    Detects the crest from whichever signal is available, preferring hardware-real ones:
+
+      * ``sensor_imu_pitch`` (rad) / ``sensor_riser_dist_ahead`` (m) -- real sensors the
+        Isaac side MAY thread through the frame sidecar; the body pitch flattening (or no
+        riser ahead) means the top is reached. Works on the robot.
+      * ``stair_demo`` (sim GROUND-TRUTH only) -- the demo phase levelling to the landing or
+        the GT body pitch flattening. Fallback for sim where the sensors are absent.
+
+    Read from ``frame_meta`` (populated EARLY in the loop), not ``debug_info["stair_demo"]``
+    which the main loop writes LATER in the same frame -- so the old debug_info read here got
+    the default and the brief-loss forward floor never cancelled at the crest (incident 8.5).
+    """
+    fm = frame_meta if isinstance(frame_meta, dict) else {}
+    # 1. Hardware sensors (preferred; work on the robot). Backward-compatible: absent => skip.
+    pitch = fm.get("sensor_imu_pitch")
+    if pitch is None:
+        pitch = debug_info.get("sensor_imu_pitch")
+    if pitch is not None:
+        try:
+            # sensor_imu_pitch is radians; ~5 deg ~= 0.087 rad flat-enough for the landing.
+            if abs(float(pitch)) <= 0.0873:
+                return True
+        except (TypeError, ValueError):
+            pass
+    riser_ahead = fm.get("sensor_riser_dist_ahead")
+    if riser_ahead is None:
+        riser_ahead = debug_info.get("sensor_riser_dist_ahead")
+    if riser_ahead is not None:
+        try:
+            # No riser within a tread ahead => crest/landing reached.
+            if float(riser_ahead) > 1.0:
+                return True
+        except (TypeError, ValueError):
+            pass
+    # 2. Sim ground-truth fallback (stair_demo). Read from frame_meta (populated early).
+    stair_demo = fm.get("stair_demo")
+    if isinstance(stair_demo, dict):
+        phase = stair_demo.get("phase")
+        pitch_deg = (stair_demo.get("robot", {}) or {}).get("pitch_deg", 0.0)
+        try:
+            if phase in ("top_landing", "flat_follow") or abs(float(pitch_deg)) <= 5.0:
+                return True
+        except (TypeError, ValueError):
+            pass
+    return False
+
+
 def _apply_stair_command_policy(
     args,
     trans_x_cmd: float,
     rotation_cmd: float,
     debug_info: Dict[str, Any],
+    frame_meta: Optional[Dict[str, Any]] = None,
 ) -> Tuple[float, float]:
     if not bool(debug_info.get("stairs_detected", False)):
         debug_info["stairs_action_active"] = False
@@ -180,15 +231,14 @@ def _apply_stair_command_policy(
             and lost_grace is not None
             and float(lost_age) <= float(lost_grace)
         )
-        # Bounded stair finish-to-footing: stop early if we have reached flat ground/top or pitch levels off
-        stair_demo = debug_info.get("stair_demo")
-        if brief_loss and stair_demo and isinstance(stair_demo, dict):
-            phase = stair_demo.get("phase")
-            robot_data = stair_demo.get("robot", {})
-            pitch_deg = robot_data.get("pitch_deg", 0.0)
-            if phase in ("top_landing", "flat_follow") or abs(pitch_deg) <= 5.0:
-                brief_loss = False
-                debug_info["stair_finish_completed"] = True
+        # Bounded stair finish-to-footing: stop early if we have reached flat ground/top or pitch
+        # levels off. Detect the crest from frame_meta (populated early) / hardware sensors, NOT
+        # debug_info["stair_demo"] which main.py writes LATER this frame -- the old read got the
+        # default so this exit never fired and the brief-loss floor kept pushing at the crest
+        # (incident 8.5). _crest_reached also works on the robot via sensor_imu_pitch.
+        if brief_loss and _crest_reached(frame_meta, debug_info):
+            brief_loss = False
+            debug_info["stair_finish_completed"] = True
         if not brief_loss:
             debug_info["stairs_action_active"] = False
             debug_info["stairs_gated_no_person"] = True
@@ -325,7 +375,12 @@ def _apply_front_obstacle_gate(
     try:
         roi = roi_info.get("roi")
         if roi is not None:
-            ry1, ry2, rx1, rx2 = int(roi[0]), int(roi[1]), int(roi[2]), int(roi[3])
+            # central_roi_nearest_depth returns roi = (x1, y1, x2, y2) (columns FIRST,
+            # then rows), so the crop is depth_img[y1:y2, x1:x2]. The old unpack read it
+            # rows-first (ry1,ry2,rx1,rx2 = roi[0..3]) and cropped [x1:y1, x2:y2] with the
+            # axes swapped -> an empty/degenerate crop (e.g. depth_img[486:360, 793:662]),
+            # so this whole riser-suppression path was dead. Mirror _roi_depth_row_gradient.
+            rx1, ry1, rx2, ry2 = int(roi[0]), int(roi[1]), int(roi[2]), int(roi[3])
             _roi_crop = depth_img[ry1:ry2, rx1:rx2]
             if _roi_crop.size > 0:
                 # Use mm values directly (depth image is in mm); row-wise minimum depth.
@@ -418,6 +473,9 @@ def _stair_loss_forward_block(args, depth_img, debug_info: Dict[str, Any]) -> bo
     (blocking on every riser would freeze the climb at the base).
     """
     if depth_img is None:
+        # No depth frame at all this iteration -> the depth pipeline is stale, not garbage.
+        # The OTHER loss guards (last-known-gap collision block + detection-age ceiling)
+        # still apply, so this guard is a no-op here (matches test_no_depth_frame).
         return False
     try:
         nearest_m, roi_info = DepthProcessor.central_roi_nearest_depth(
@@ -426,7 +484,12 @@ def _stair_loss_forward_block(args, depth_img, debug_info: Dict[str, Any]) -> bo
             height_ratio=float(args.obstacle_roi_height_ratio),
         )
     except Exception:
-        return False
+        # FAIL CLOSED: a depth frame EXISTS but the near-field probe threw (garbage/malformed
+        # depth). We cannot rule out a body/wall close ahead, so block the blind forward drive
+        # rather than driving into a possibly-close patient (safety-critical, patient-adjacent).
+        debug_info["stairs_loss_nearfield_probe_error"] = True
+        debug_info["stairs_loss_nearfield_block"] = True
+        return True
     debug_info["stairs_loss_nearfield_depth_m"] = (
         None if nearest_m is None else round(float(nearest_m), 3))
     if nearest_m is None or float(nearest_m) > float(args.obstacle_stop_distance):

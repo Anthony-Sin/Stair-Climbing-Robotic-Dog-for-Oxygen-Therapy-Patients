@@ -88,22 +88,28 @@ def check_joint_limits() -> CheckResult:
     return CheckResult("joint_limits", not bad, "all default poses in-limit" if not bad else ", ".join(bad))
 
 
-def check_lidar_extrinsics() -> CheckResult:
-    """WARN (not fail) when the LiDAR->base extrinsics are still the placeholder value.
+def check_lidar_extrinsics(heightscan_mode: str = "flat") -> CheckResult:
+    """Placeholder LiDAR->base extrinsics: WARN in flat mode, FAIL in lidar mode.
 
-    The extrinsics can only be MEASURED on the robot (DEPLOY.md). We cannot measure
-    them here, so we flag when the shipped placeholder (identity R + t=[0,0,0.10]) is
-    still in place, so it can't silently ship. Detectable because the placeholder is a
-    clearly-identifiable constant in ``real.perception.pointcloud_interface._EXTRINSICS``.
+    Truth (corrected from the old docstring that implied a settable ROS param): the
+    lidar->base extrinsic is a HARDCODED placeholder in
+    ``real.perception.pointcloud_interface._EXTRINSICS`` (identity R + t=[0,0,0.10]). It is
+    NOT read from a ROS parameter -- to change it you edit that constant. It can only be
+    MEASURED on the robot (DEPLOY.md), and a wrong extrinsic shifts the whole elevation map.
+
+    In FLAT heightscan mode the extrinsic is unused, so the placeholder is a WARN. In LIDAR
+    mode it drives control, so an unmeasured placeholder is a FAIL -- do NOT let it silently
+    ship a run that steers on a mis-registered heightmap.
     """
     _PLACEHOLDER_T = (0.0, 0.0, 0.10)
+    lidar = str(heightscan_mode).strip().lower() == "lidar"
     try:
         from real.perception.pointcloud_interface import _EXTRINSICS  # type: ignore
     except Exception as exc:
-        # Cannot introspect -> warn (better than silently assuming it's fine).
-        return CheckResult("lidar_extrinsics", True,
+        # Cannot introspect: in lidar mode this is unsafe to run past -> FAIL; in flat -> warn.
+        return CheckResult("lidar_extrinsics", not lidar,
                            f"could not import extrinsics ({type(exc).__name__}); MEASURE before a run",
-                           warn=True)
+                           warn=not lidar)
 
     stale = []
     for sku, ext in _EXTRINSICS.items():
@@ -113,12 +119,13 @@ def check_lidar_extrinsics() -> CheckResult:
         if is_identity_R and is_placeholder_t:
             stale.append(str(sku))
     if stale:
-        return CheckResult(
-            "lidar_extrinsics", True,
-            f"PLACEHOLDER extrinsics still set for {stale} (identity R + t={_PLACEHOLDER_T}); "
-            f"MEASURE lidar->base and set real_robot.yaml before a run",
-            warn=True,
-        )
+        detail = (f"PLACEHOLDER extrinsics still set for {stale} (identity R + t={_PLACEHOLDER_T}); "
+                  f"edit pointcloud_interface._EXTRINSICS with the MEASURED lidar->base transform "
+                  f"before a run")
+        if lidar:
+            # Lidar mode drives control on this: FAIL (not just warn).
+            return CheckResult("lidar_extrinsics", False, detail + " [FAIL: heightscan_mode=lidar]")
+        return CheckResult("lidar_extrinsics", True, detail + " [warn: flat mode, unused]", warn=True)
     return CheckResult("lidar_extrinsics", True, "extrinsics differ from placeholder")
 
 
@@ -142,24 +149,111 @@ def check_policies_load(pgtt_path: str, rl_path: str) -> CheckResult:
         return CheckResult("policies_load", False, f"{type(exc).__name__}: {exc}")
 
 
-def run_pure_checks(pgtt_path: str, rl_path: str, *, load_policies: bool = True) -> List[CheckResult]:
+def run_pure_checks(pgtt_path: str, rl_path: str, *, load_policies: bool = True,
+                    heightscan_mode: str = "flat") -> List[CheckResult]:
     checks = [
         check_crc_roundtrip(), check_joint_limits(),
-        check_lidar_extrinsics(), check_weights_present(pgtt_path, rl_path),
+        check_lidar_extrinsics(heightscan_mode), check_weights_present(pgtt_path, rl_path),
     ]
     if load_policies:
         checks.append(check_policies_load(pgtt_path, rl_path))
     return checks
 
 
+def _repo_root() -> str:
+    # .../src/real/verification/preflight.py -> repo root is four dirs up.
+    here = os.path.abspath(__file__)
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(here))))
+
+
+def _scalar_from_yaml(params_path: str, key: str, default: str) -> str:
+    """Return the value for a simple ``  key: value`` line in the params yaml.
+
+    Prefers PyYAML (present in any ROS 2 env); if PyYAML is unavailable (a bare dev host)
+    falls back to a minimal line scan so preflight still validates the ACTUAL yaml paths --
+    the whole point of the config-rot fix -- rather than a divergent hardcoded set. The
+    params yaml is flat ``key: value`` scalars, so the line scan is sufficient here.
+    """
+    try:
+        import yaml  # lazy
+        with open(params_path, "r", encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh) or {}
+        for section in doc.values():
+            params = (section or {}).get("ros__parameters") if isinstance(section, dict) else None
+            if isinstance(params, dict) and key in params:
+                return str(params[key])
+        return default
+    except ImportError:
+        import re
+        pat = re.compile(r"^\s*" + re.escape(key) + r"\s*:\s*(.+?)\s*(#.*)?$")
+        try:
+            with open(params_path, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    m = pat.match(line)
+                    if m:
+                        return m.group(1).strip().strip('"').strip("'")
+        except OSError:
+            pass
+        return default
+
+
+def weight_paths_from_yaml(params_path: str) -> "tuple[str, str]":
+    """Read the SAME real_robot.yaml the launch loads and return (pgtt, rl) weight paths.
+
+    This closes the config-rot gap: preflight used to validate DIFFERENT hardcoded absolute
+    paths than the node loaded from the yaml, so a stale/relocated yaml path passed preflight
+    yet crashed the control node on FileNotFoundError (robot folded, nothing driving). We
+    parse the yaml's weight paths and resolve any relative path against the repo root (the
+    launch/run CWD per DEPLOY.md), exactly as the node's CWD-relative load does.
+    """
+    pgtt = _scalar_from_yaml(params_path, "pgtt_policy_path",
+                             "src/sim/models/pgtt/pgtt_go2_level17.npz")
+    rl = _scalar_from_yaml(params_path, "rl_policy_path",
+                           "src/sim/models/locomotion/go2_robot_lab_policy.pt")
+    root = _repo_root()
+    resolve = lambda p: p if os.path.isabs(p) else os.path.join(root, p)
+    return resolve(pgtt), resolve(rl)
+
+
+def heightscan_mode_from_yaml(params_path: str) -> str:
+    """Read ``heightscan_mode`` ('flat'|'lidar') from the launch yaml so the extrinsics
+    check can FAIL (not warn) when lidar mode ships with placeholder extrinsics.
+    """
+    return _scalar_from_yaml(params_path, "heightscan_mode", "flat")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Pre-run sanity checks for the real Go2 controller.")
-    ap.add_argument("--pgtt", default="src/sim/models/pgtt/pgtt_go2_level17.npz")
-    ap.add_argument("--rl", default="src/sim/models/locomotion/go2_robot_lab_policy.pt")
+    _default_params = os.path.join(_repo_root(), "src", "real", "config", "real_robot.yaml")
+    ap.add_argument("--params", default=_default_params,
+                    help="the real_robot.yaml the launch loads; its weight paths are validated "
+                         "(so preflight checks EXACTLY what the control node will load)")
+    ap.add_argument("--pgtt", default=None,
+                    help="override the pgtt weight path (else read from --params yaml)")
+    ap.add_argument("--rl", default=None,
+                    help="override the rl weight path (else read from --params yaml)")
     ap.add_argument("--no-load", action="store_true", help="skip the (slow) policy-load check")
     args = ap.parse_args()
 
-    results = run_pure_checks(args.pgtt, args.rl, load_policies=not args.no_load)
+    # Validate the SAME paths the node loads from the yaml unless explicitly overridden.
+    pgtt_path, rl_path = args.pgtt, args.rl
+    if pgtt_path is None or rl_path is None:
+        try:
+            y_pgtt, y_rl = weight_paths_from_yaml(args.params)
+        except Exception as exc:
+            print(f"[FAIL] params_yaml       could not read {args.params}: {exc}")
+            sys.exit(1)
+        pgtt_path = pgtt_path or y_pgtt
+        rl_path = rl_path or y_rl
+    print(f"[INFO] validating weights the control node will load (from {args.params}):")
+    print(f"[INFO]   pgtt = {pgtt_path}")
+    print(f"[INFO]   rl   = {rl_path}")
+    hs_mode = heightscan_mode_from_yaml(args.params)
+    print(f"[INFO]   heightscan_mode = {hs_mode} "
+          f"(lidar mode FAILS on placeholder extrinsics)")
+
+    results = run_pure_checks(pgtt_path, rl_path, load_policies=not args.no_load,
+                              heightscan_mode=hs_mode)
     ok = True
     for r in results:
         if not r.ok:

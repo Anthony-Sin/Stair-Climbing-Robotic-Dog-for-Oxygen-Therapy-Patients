@@ -70,7 +70,9 @@ class TestSimCommand(unittest.TestCase):
         d, _a, _c, _e, _s = L.build_command(c)
         self.assertIn("--locomotion-policy parkour", d)
         self.assertIn("--headless", d)
-        self.assertIn("--with-o2-payload", d)
+        # O2 payload ON is the default (backend --with-o2-payload default); an ON value emits no
+        # flag, so the OFF-only flag must be absent. (Toggling o2 OFF would emit --no-o2-payload.)
+        self.assertNotIn("--no-o2-payload", d)
         self.assertIn("--max-run-time-sec 120", d)
 
     def test_default_numeric_is_omitted(self):
@@ -237,9 +239,10 @@ class TestParseLine(unittest.TestCase):
         self.assertIn("--max-run-time-sec 3600", d2)
 
     def test_multiple_tokens(self):
+        # O2 payload defaults ON now; typing "o2" TOGGLES it OFF -> emits --no-o2-payload.
         d, errs = _sim_parse(["headless", "o2", "pgtt-level", "level20"])
         self.assertIn("--headless", d)
-        self.assertIn("--with-o2-payload", d)
+        self.assertIn("--no-o2-payload", d)
         self.assertIn("--pgtt-level level20", d)
         self.assertEqual(errs, [])
 

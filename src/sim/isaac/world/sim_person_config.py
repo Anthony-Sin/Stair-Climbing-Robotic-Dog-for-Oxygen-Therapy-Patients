@@ -7,11 +7,6 @@ sibling actor/asset/xform modules (and re-exported by the ``sim_person_actor`` f
 """
 import math
 
-# H1 prim path: the robot is invisible (render geometry hidden, collision kept), so the
-# follow logic keeps tracking the visible PERSON_VISUAL_PRIM exactly as before.
-PERSON_H1_PRIM = "/World/PersonH1"
-
-
 CHARACTER_PARENT_PRIM = "/World/Characters"
 PERSON_VISUAL_PRIM = "/World/Characters/SimWalker"
 PERSON_COLLIDER_PRIM = "/World/PersonCollider"

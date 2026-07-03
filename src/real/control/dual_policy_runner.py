@@ -25,6 +25,9 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
+from go2_locomotion.locomotion_arbiter import (
+    ClimbWzInputs, arbitrate_climb_vx, arbitrate_climb_wz, rate_independent_decay,
+)
 from real.control.follow_command import FollowCommand
 
 LOGGER = logging.getLogger("cable.real.dual_policy_runner")
@@ -78,7 +81,7 @@ class DualPolicyRunner:
         climb_kp: float = 20.0,
         climb_kd: float = 0.5,
         climb_vx: float = 0.22,
-        bearing_scale: float = 0.9,
+        bearing_scale: float = 0.9,   # == CONTRACT["stair_bearing_scale"]; see src/shared/config_contract.py
         rot_max: float = 0.6,
         heading_hold: bool = True,
         logger: Optional[logging.Logger] = None,
@@ -96,6 +99,13 @@ class DualPolicyRunner:
         self.logger = logger or LOGGER
         self._in_climb = False
         self._last_climb_wz: Optional[float] = None
+
+    @property
+    def in_climb(self) -> bool:
+        """True while the blind-RL climb backend is active (set on climb entry, cleared on
+        exit). The control node reads this to make the tilt watchdog climb-mode aware and to
+        skip the walk-envelope joint-limit check during a climb."""
+        return self._in_climb
 
     def reset(self) -> None:
         try:
@@ -153,8 +163,21 @@ class DualPolicyRunner:
                     pass
                 self._in_climb = True
                 self.logger.info("Hot-swap PGTT -> blind_rl for the climb")
-            cvx = max(vx, self.climb_vx)
-            bwz = self._climb_wz(follow_cmd, wz)
+            # Forward-velocity floor via the CANONICAL arbiter (shared with isaac_env). HOLD
+            # must stop a CLIMBING robot too: on a vision dropout the node zeroes vx and sets
+            # hold=True, and the arbiter returns 0.0 for HOLD BEFORE the climb floor -- without
+            # that the floor (max(vx, climb_vx)) would override the zero and drive ~0.6 s blind
+            # forward toward the patient, then collapse. The blind-RL net balances in place at
+            # zero command, so steering still holds heading while forward drive is zeroed.
+            # top_egress/climb_vx_floor now flow through too (they always came out of the shared
+            # HandoffController; the old real copy ignored them) so the person-gated crest push
+            # matches the sim.
+            cvx = arbitrate_climb_vx(
+                vx, climb_vx=self.climb_vx, hold=bool(follow_cmd.hold),
+                top_egress=bool(ho.get("top_egress")),
+                egress_vx_floor=ho.get("climb_vx_floor"),
+            )
+            bwz = self._climb_wz(ho, follow_cmd, wz, float(dt))
             self.blind_rl.step(articulation, (cvx, 0.0, bwz), float(dt))
             return RunnerOutput(
                 np.asarray(self.blind_rl.last_targets_isaac, dtype=np.float32),
@@ -192,21 +215,36 @@ class DualPolicyRunner:
         )
 
     # ---------------------------------------------------------------- internals
-    def _climb_wz(self, follow_cmd: FollowCommand, wz: float) -> float:
-        """Steer the blind climb: bearing when the person is visible, hold-last on a
-        brief loss, else pass the incoming heading-hold through (never force 0)."""
-        if not self.heading_hold:
-            return wz
-        if follow_cmd.person_detected:
-            bwz = float(np.clip(float(follow_cmd.yaw_err) * self.bearing_scale,
-                                -self.rot_max, self.rot_max))
-            self._last_climb_wz = bwz
-            return bwz
-        if self._last_climb_wz is not None:
-            held = float(self._last_climb_wz)
-            self._last_climb_wz = held * 0.92
-            return held
-        return wz
+    def _climb_wz(self, ho: Dict[str, Any], follow_cmd: FollowCommand, wz: float, dt: float) -> float:
+        """Steer the blind climb via the CANONICAL arbiter (shared with isaac_env).
+
+        Aligns the real robot to the sim-proven cascade: bearing when the person is visible,
+        the stair-commit heading lock (``ho["wz_override"]``, yaw->0 driven by live IMU) on a
+        person loss WHILE COMMITTED, hold-last (decaying) only without a lock, else pass the
+        incoming heading-hold through -- NEVER force 0.
+
+        DIVERGENCE FIXED: the old real copy had no ``wz_override`` branch, so on a person loss
+        it always fell to the decaying hold-last, which never became None and thus permanently
+        blocked the stair-commit lock (the exact failure of run 081406_745: the robot spiralled
+        off the stairs). The lock is now honored here as it is in the sim.
+
+        The hold-last bearing decays RATE-INDEPENDENTLY (incident 8.6): a fixed per-call factor
+        means a ~7x-different physical decay at the sim's ~4 FPS vs the 28 Hz robot, so we pass
+        ``rate_independent_decay(dt)`` -- exp(-dt/tau) with tau derived to equal the canonical
+        0.92 at 28 Hz -- as the arbiter's per-tick decay factor."""
+        res = arbitrate_climb_wz(ClimbWzInputs(
+            incoming_wz=float(wz),
+            person_detected=bool(follow_cmd.person_detected),
+            yaw_err=float(follow_cmd.yaw_err),
+            wz_override=ho.get("wz_override"),
+            last_climb_wz=self._last_climb_wz,
+            heading_hold=self.heading_hold,
+            bearing_scale=self.bearing_scale,
+            rot_max=self.rot_max,
+            wz_hold_decay=rate_independent_decay(float(dt)),
+        ))
+        self._last_climb_wz = res.next_last_climb_wz
+        return res.wz
 
     def _telemetry(self, ho: Dict[str, Any], backend: str, vx: float, wz: float) -> Dict[str, Any]:
         t = {"backend": backend, "cmd_vx": round(float(vx), 3), "cmd_wz": round(float(wz), 3)}

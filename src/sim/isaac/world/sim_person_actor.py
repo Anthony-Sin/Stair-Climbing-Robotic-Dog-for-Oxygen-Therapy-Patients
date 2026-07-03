@@ -8,10 +8,11 @@ sibling ``skel_anim_utils`` module.
 
 This module is now a thin re-export facade: the implementation was split by
 responsibility into the sibling ``sim_person_config`` (constants), ``sim_person_xform``
-(pose helpers), ``sim_person_physics`` (MJCF body build), ``sim_person_asset`` (USD asset
-resolution + extension bootstrap), and ``sim_person_driver`` (the ``SimPersonTarget``
-pose driver + ``spawn_sim_person``) modules. Everything that was previously a top-level
-name here is re-exported below so ``from world.sim_person_actor import ...`` keeps working.
+(pose helpers), ``sim_person_asset`` (USD asset resolution + extension bootstrap), and
+``sim_person_driver`` (the ``SimPersonTarget`` pose driver + ``spawn_sim_person``)
+modules. Everything that was previously a top-level name here is re-exported below so
+``from world.sim_person_actor import ...`` keeps working. The patient is a kinematic
+UsdSkel character posed by the procedural gait -- there is no physics puppet.
 """
 # DynamicCapsule shim kept for parity with the historical import surface (some call
 # sites/back-compat referenced it via this module); not used by the split code itself.
@@ -30,13 +31,8 @@ from world.skel_anim_utils import (  # noqa: F401
     _estimate_gait_period,
 )
 
-# The invisible H1 physics humanoid constants (re-exported; the driver imports them
-# directly). isaac_env references H1_MIN_WALK_VX / H1_MAX_WZ via this module surface.
-from world.h1_puppet import H1_MIN_WALK_VX, H1_MAX_WZ  # noqa: F401
-
 # --- Static configuration / constants -------------------------------------------------
 from world.sim_person_config import (  # noqa: F401
-    PERSON_H1_PRIM,
     CHARACTER_PARENT_PRIM,
     PERSON_VISUAL_PRIM,
     PERSON_COLLIDER_PRIM,
@@ -55,14 +51,6 @@ from world.sim_person_xform import (  # noqa: F401
     _set_xform_pose,
     _yaw_quat_for_orient_op,
     _find_first_skel_root,
-)
-
-# --- MJCF/USD physics-body construction -----------------------------------------------
-from world.sim_person_physics import (  # noqa: F401
-    create_link,
-    create_revolute_joint,
-    build_patient_physics,
-    _drive_joint,
 )
 
 # --- Character-asset resolution + animation-extension bootstrap -----------------------

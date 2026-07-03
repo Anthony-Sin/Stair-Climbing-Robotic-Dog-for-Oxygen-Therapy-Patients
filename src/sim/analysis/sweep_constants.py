@@ -10,7 +10,7 @@ import sys
 
 # Sibling import (analyze_climb.py lives next to this file) regardless of cwd.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from analyze_climb import STAIR_BASE_X, STEP_RUN, FALL_TILT_DEG, COLLAPSE_H_M  # noqa: E402
+from analyze_climb import STAIR_BASE_X, STEP_RUN, FALL_TILT_DEG, COLLAPSE_H_M, UPRIGHT_TILT_DEG  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # constants

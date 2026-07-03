@@ -1,13 +1,18 @@
 # Runtime logs and traces
 logs/
 log/
+run_logs/
 debug_logs/
 *.jsonl
 *.csv
 *.tar
 *.tar.gz
-# generated prior-run snapshot (see perf_tracker/update_table.py)
-perf_tracker/data/last_run.json
+# perf_tracker archive.jsonl is the irreplaceable append-only source of truth (every run ever
+# ingested, ~1MB). It is small + high-value, so track it despite the *.jsonl blanket ignore
+# above (review §10). If it ever grows past a few MB, re-ignore it and back it up externally.
+!src/perf_tracker/data/archive.jsonl
+# generated prior-run snapshot (see perf_tracker/update_table.py); path is under src/ post-refactor
+src/perf_tracker/data/last_run.json
 
 # Temporary folders
 tmp/

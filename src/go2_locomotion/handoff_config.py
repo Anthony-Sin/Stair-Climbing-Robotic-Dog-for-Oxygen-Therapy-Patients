@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from go2_locomotion.tilt_limits import FSM_ABORT_TILT_RAD
+
 
 # Max riser height (m) the flat-ground PGTT trot clears WITHOUT the climb policy.
 # Risers TALLER than this are "real stairs" that need the handoff. This is the
@@ -79,7 +81,10 @@ class HandoffConfig:
     # during egress (the top landing is flat, so base_z plateaus there by design).
     climb_stall_timeout_sec: float = 8.0  # hand back if no vertical progress for this long
     climb_progress_min_m: float = 0.05    # "progress" == base_z rose at least this much (< one riser)
-    climb_abort_tilt_rad: float = 0.70   # bail to PGTT if the climber tips past this (~40 deg)
+    # Bail to PGTT if the climber tips past this (~40 deg). SINGLE-SOURCED from
+    # go2_locomotion.tilt_limits so it stays strictly BELOW the watchdog's climb-mode
+    # latch-damp limit -- the graceful abort must be reachable before the collapse.
+    climb_abort_tilt_rad: float = FSM_ABORT_TILT_RAD
     re_eval_cooldown_sec: float = 1.5    # stay in WALK this long after a climb before re-arming
     # Whether to PHYSICALLY run the closed-loop climber when the switch triggers (the
     # handoff DECISION is always computed/logged either way). DEFAULT OFF: even when

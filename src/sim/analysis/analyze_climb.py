@@ -15,6 +15,13 @@ import sys
 import os
 import glob
 
+# Single-source the upright tilt band from the live watchdog's module so the offline
+# verdict can never drift from the running sim (it had hand-mirrored 18 deg vs the live
+# 25 deg). sim_logging_utils is stdlib-only, so this imports without Isaac.
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot"))
+from sim_logging_utils import UPRIGHT_TILT_DEG  # noqa: E402
+
 STAIR_BASE_X = 2.0
 STEP_RUN = 0.305   # commercial run (m); demo_gentle 0.30, residential 0.279
 
@@ -26,7 +33,7 @@ STEP_RUN = 0.305   # commercial run (m); demo_gentle 0.30, residential 0.279
 FALL_TILT_DEG = 60.0      # roll/pitch beyond this == flipped/toppled (ROBOT_FALL_TILT_RAD 1.05 rad)
 COLLAPSE_H_M = 0.18       # height-above-terrain under this == collapsed/dragging (ROBOT_COLLAPSE_HEIGHT_M)
 CLEAN_STAND_H_M = 0.22    # a cleanly-standing climb holds at least this much above the step
-UPRIGHT_TILT_DEG = 18.0   # a clean climb keeps |roll| and |pitch| within this band
+# UPRIGHT_TILT_DEG imported from sim_logging_utils (live value 25.0); was a drifted 18.0.
 NOSE_DOWN_MEAN_DEG = -8.0 # mean on-stairs pitch at/under this == persistently plowing nose-first
 NOSE_DOWN_MIN_DEG = -22.0 # a single nose-dive this deep into a riser == a collision
 

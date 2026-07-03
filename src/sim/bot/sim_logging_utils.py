@@ -6,6 +6,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+# Schema version stamped on every persisted stream this module emits (JSONL lines)
+# and reused by the run reports / walk_log / frame sidecar so a consumer can key off it.
+SCHEMA_VERSION = 1
+
+# SINGLE SOURCE OF TRUTH for the "upright" body-tilt band (degrees). The live isaac_env
+# waypoint climb-quality watchdog and the offline analyzer (sim/analysis/analyze_climb.py)
+# both import this so they can never drift (the analyzer had hand-mirrored 18 deg vs the
+# live 25 deg). Stdlib-only module, so the host-side analyzer imports it without Isaac.
+UPRIGHT_TILT_DEG = 25.0
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -45,6 +55,7 @@ class _SimJsonFormatter(logging.Formatter):
             # never be confused with a prior run's, even if files are concatenated.
             labels["run_id"] = run_id
         payload: Dict[str, Any] = {
+            "schema": SCHEMA_VERSION,
             "@timestamp": datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,

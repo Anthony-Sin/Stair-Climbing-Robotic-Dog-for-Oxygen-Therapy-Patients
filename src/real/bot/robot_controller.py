@@ -9,7 +9,6 @@ import logging
 import threading
 import time
 from typing import Optional
-import numpy as np
 
 try:
     from unitree_sdk2py.go2.sport.sport_client import SportClient
@@ -19,40 +18,6 @@ except ImportError:
 from core.telemetry.structured_logging import build_ecs_extra
 
 LOGGER = logging.getLogger("cable.vision.robot_controller")
-
-
-class PhysicalGo2Articulation:
-    """Mock Isaac Sim articulation interface for the physical robot's LowState."""
-
-    def __init__(self, low_state):
-        self.low_state = low_state
-
-    def get_world_pose(self) -> tuple[np.ndarray, np.ndarray]:
-        # Position is not used by the policy. Quaternion is [w, x, y, z].
-        quat = np.array(self.low_state.imu_state.quaternion, dtype=np.float32)
-        return (np.zeros(3, dtype=np.float32), quat)
-
-    def get_angular_velocity(self) -> np.ndarray:
-        # imu_state.gyro contains body-frame roll/pitch/yaw angular rates.
-        # get_angular_velocity must return world-frame rates.
-        # omega_world = rot @ gyro
-        quat = np.array(self.low_state.imu_state.quaternion, dtype=np.float32)
-        from go2_locomotion_utils import quat_to_matrix
-        rot = quat_to_matrix(quat)
-        gyro = np.array(self.low_state.imu_state.gyro, dtype=np.float32)
-        return rot @ gyro
-
-    def get_joint_positions(self) -> np.ndarray:
-        # Return joint positions in the SDK order (0-11)
-        return np.array([self.low_state.motor_state[i].q for i in range(12)], dtype=np.float32)
-
-    def get_joint_velocities(self) -> np.ndarray:
-        # Return joint velocities in the SDK order (0-11)
-        return np.array([self.low_state.motor_state[i].dq for i in range(12)], dtype=np.float32)
-
-    def set_joint_efforts(self, efforts: np.ndarray) -> None:
-        # No-op on the physical robot (target angles are sent to DDS LowCmd directly)
-        pass
 
 
 class RobotController:
@@ -133,33 +98,16 @@ class RobotController:
             time.sleep(1)  # Wait for balance mode to take effect
             
             if self.low_level_locomotion:
-                LOGGER.info("Initializing low-level controller and perceptive policy...")
-                from real.bot.low_level_controller import LowLevelController
-                from real.bot.parkour_locomotion_policy import ParkourLocomotionPolicy, ParkourPolicyConfig
-                from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
-                
-                self.low_level_controller = LowLevelController(self.network_interface)
-                if not self.low_level_controller.initialize():
-                    LOGGER.error("Failed to initialize low-level controller")
-                    return False
-                    
-                # Define config & instantiate policy
-                dof_names = [
-                    "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
-                    "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",
-                    "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint",
-                    "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
-                ]
-                cfg = ParkourPolicyConfig(
-                    base_model_path=self.base_model_path,
-                    vision_model_path=self.vision_model_path,
-                    device="cpu"
+                # The sdk2/parkour low-level path (LowLevelController + the real-side
+                # ParkourLocomotionPolicy fork) was a drifting, import-broken dead chain and
+                # has been REMOVED (see the src/ refactor incident ledger). The supported
+                # native low-level runtime is the ROS 2 stack (real/ros2/low_level_control_node,
+                # selected by --ros2, which is the default). Fail fast instead of pretending.
+                raise RuntimeError(
+                    "low_level_locomotion=True is no longer supported here: the legacy "
+                    "sdk2/parkour low-level chain was removed. Use the native ROS 2 stack "
+                    "(--ros2 -> real/ros2/low_level_control_node). See src/real/DEPLOY.md."
                 )
-                self.policy = ParkourLocomotionPolicy(cfg, dof_names=dof_names)
-                
-                self.motion_switcher = MotionSwitcherClient()
-                self.motion_switcher.Init()
-                LOGGER.info("Low-level components successfully initialized.")
 
             self.is_initialized = True
             print("Robot controller initialized successfully")
@@ -200,123 +148,12 @@ class RobotController:
             print("Robot controller not initialized")
             return False
             
-        stairs_action_active = kwargs.get("stairs_action_active", False)
-        hold = kwargs.get("hold", False)
-        depth_img = kwargs.get("depth_img")
-        person_bbox = kwargs.get("person_bbox")
+        # The low-level (sdk2/parkour) locomotion path was removed (see initialize()); this
+        # controller is now high-level sport-mode Move only. The native low-level joint stack
+        # is real/ros2/low_level_control_node, selected via --ros2 (the default).
+        self.sport_client.Move(trans_x, trans_y, rotation)
+        return True
 
-        if self.low_level_locomotion:
-            if stairs_action_active:
-                # Transition to low-level mode if not already there
-                if not self.in_low_level:
-                    LOGGER.info("STAIRS ENGAGED: Transitioning to low-level joint mode...")
-                    self.sport_client.StopMove()
-                    time.sleep(0.1)
-                    
-                    if self.motion_switcher is not None:
-                        self.motion_switcher.ReleaseMode()
-                        
-                    self.policy.reset()
-                    self.in_low_level = True
-                    
-                    # Start low-level background thread
-                    self.low_level_loop_running = True
-                    self.low_level_thread = threading.Thread(target=self._low_level_control_loop, daemon=True)
-                    self.low_level_thread.start()
-                    LOGGER.info("Transition to low-level control loop complete.")
-                
-                # Update inputs
-                with self.low_level_lock:
-                    self.low_level_vx = trans_x
-                    self.low_level_yaw_err = yaw_err
-                    self.low_level_stairs_active = stairs_action_active
-                    self.low_level_hold = hold
-                    self.low_level_depth_img = depth_img
-                    self.low_level_person_bbox = person_bbox
-                return True
-            else:
-                # Non-stair following. Transition back to high-level if needed
-                if self.in_low_level:
-                    LOGGER.info("STAIRS CLEARED: Transitioning back to high-level mode...")
-                    self.low_level_loop_running = False
-                    if self.low_level_thread is not None:
-                        self.low_level_thread.join(timeout=1.0)
-                        self.low_level_thread = None
-                    
-                    # Send safety damping command before enabling sport mode service
-                    if self.low_level_controller is not None:
-                        self.low_level_controller.safety_shutdown()
-                    
-                    # Select Mode "ai"
-                    if self.motion_switcher is not None:
-                        self.motion_switcher.SelectMode("ai")
-                    
-                    self.in_low_level = False
-                    
-                    time.sleep(1.0)
-                    self.sport_client.BalanceStand()
-                    time.sleep(0.5)
-                    LOGGER.info("Transition to high-level mode complete.")
-                
-                self.sport_client.Move(trans_x, trans_y, rotation)
-                return True
-        else:
-            self.sport_client.Move(trans_x, trans_y, rotation)
-            return True
-            
-    def _low_level_control_loop(self):
-        LOGGER.info("Low-level background thread started.")
-        import cv2
-        from parkour_depth_mask import mask_person_in_parkour_depth
-        
-        while self.low_level_loop_running:
-            start_time = time.monotonic()
-            
-            with self.low_level_lock:
-                vx = self.low_level_vx
-                yaw_err = self.low_level_yaw_err
-                stairs_active = self.low_level_stairs_active
-                hold = self.low_level_hold
-                depth_img = self.low_level_depth_img
-                person_bbox = self.low_level_person_bbox
-                
-            low_state = self.low_level_controller.get_state()
-            if low_state is not None:
-                # 1. Resize and mask depth frame if available
-                if depth_img is not None:
-                    try:
-                        depth_106x60 = cv2.resize(depth_img, (106, 60), interpolation=cv2.INTER_LINEAR)
-                        masked_depth, _, _ = mask_person_in_parkour_depth(
-                            depth_106x60, person_bbox, fill_mode="terrain"
-                        )
-                        self.policy.submit_depth(masked_depth)
-                    except Exception as e:
-                        LOGGER.error(f"Error preprocessing depth frame: {e}")
-                
-                # 2. Build mock articulation
-                articulation = PhysicalGo2Articulation(low_state)
-                
-                # 3. Step locomotion policy at 50Hz
-                dt = 0.02
-                self.policy.step(
-                    articulation,
-                    cmd=[vx, 0.0, 0.0],
-                    dt=dt,
-                    delta_yaw=yaw_err,
-                    stairs_active=stairs_active,
-                    hold=hold
-                )
-                
-                # 4. Publish joint commands
-                targets = self.policy.last_targets_isaac
-                self.low_level_controller.send_joint_commands(targets, kp=40.0, kd=1.0)
-                
-            elapsed = time.monotonic() - start_time
-            sleep_time = max(0.001, 0.02 - elapsed)
-            time.sleep(sleep_time)
-            
-        LOGGER.info("Low-level background thread stopped.")
-    
     def stop(self) -> bool:
         """
         Stop robot movement

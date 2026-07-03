@@ -17,7 +17,19 @@ _LIDAR_BRIDGE_YAW_GAIN = 1.0
 # When the last bbox glimpse was within this bearing of the axis but lateral MOTION points the
 # other way, the patient was crossing/reversing (a zigzag apex) -- trust the motion (where they
 # are heading), not the stale last-seen side.
-_REVERSAL_BEARING_DEG = 20.0
+#
+# NOTE (2026-07-03, run_sim_20260703_101317_194): the terminal loss happened at the SECOND
+# zigzag apex, where the patient reverses. The dog chased the stale last-seen in-frame side and
+# turned the WRONG way, then a 20 s bounded scan never re-acquired. The 360 deg LiDAR CANNOT
+# rescue this at the 0.6 m follow standoff: the single-plane XT16 returns NOTHING on the patient
+# at 0.3-1.4 m (lidar_distance_m was None for the whole close-range phase), so the LiDAR bearing
+# bridge has no data and the recovery direction rests entirely on the last bbox bearing + pixel
+# MOTION. That motion cue was previously junk (the tracker's Kalman-coasted box froze the centre
+# and collapsed the velocity EMA -- fixed in follow_controller._update_person_tracking). With a
+# clean matched velocity, widen the apex-reversal window from 20 to 35 deg (~the RGB half-FOV) so
+# ANY in-frame loss with clear counter-motion is treated as a possible reversal and the dog turns
+# toward where the patient is HEADING, not the side it last saw them on.
+_REVERSAL_BEARING_DEG = 35.0
 # Seconds to sweep ONE +/- arc leg of the in-place re-acquire scan. The scan rate is derived
 # from this and lost_search_arc_deg so the scan is brisk (reaches the arc in ~this long) rather
 # than the slow fixed lost_search_yaw_speed used for a one-frame-glimpse correction.

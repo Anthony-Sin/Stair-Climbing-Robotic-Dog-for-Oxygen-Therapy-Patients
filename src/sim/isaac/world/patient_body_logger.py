@@ -88,6 +88,16 @@ class PatientBodyLogger:
         self._writer = csv.writer(self._fh)
         self._writer.writerow(_HEADER)
         self.csv_path = csv_path
+        # Schema stamp as a SIDECAR (not a CSV meta row): csv.DictReader treats the first
+        # row as the header, so an inline meta row would break the validator. The sidecar
+        # records the schema version + column list beside the CSV instead.
+        try:
+            import json as _json
+            _meta_path = os.path.splitext(csv_path)[0] + ".meta.json"
+            with open(_meta_path, "w", encoding="utf-8") as _mf:
+                _json.dump({"schema": 1, "columns": list(_HEADER)}, _mf, indent=2)
+        except Exception:
+            pass
 
         self._prims = self._resolve_prims()
 

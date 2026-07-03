@@ -21,9 +21,14 @@ low_level_control:
     cmd_timeout_sec: 0.4         # follow command older than this -> HOLD (zero vel, balance)
     cmd_damp_sec: 1.0            # follow command older than this -> DAMP (safe-stop)
     climb_backend: blind_rl
-    # Weights: copy to real/models/ on the robot and repoint these.
-    pgtt_policy_path: sim/models/pgtt/pgtt_go2_level17.npz
-    rl_policy_path: sim/models/locomotion/go2_robot_lab_policy.pt
+    # Weights. Resolved CWD-relative by the node; the launch/run_real.sh CWD is the repo
+    # root (/workspace), where the current weights live under src/sim/models/ (post src/
+    # refactor). The pre-refactor "sim/models/..." paths pointed at nonexistent files, so
+    # preflight passed (it was handed DIFFERENT absolute paths) while the control node died
+    # on FileNotFoundError -- robot folded with nothing driving. These now point at the real
+    # current files. (On the robot you may copy them under real/models/ and repoint here.)
+    pgtt_policy_path: src/sim/models/pgtt/pgtt_go2_level17.npz
+    rl_policy_path: src/sim/models/locomotion/go2_robot_lab_policy.pt
     walk_kp: 40.0                # PGTT position drive (verified contract)
     walk_kd: 0.5
     climb_kp: 20.0               # blind_rl motor-PD (verified contract)

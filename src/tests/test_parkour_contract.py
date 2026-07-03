@@ -21,6 +21,13 @@ import os
 import sys
 
 import numpy as np
+import pytest
+
+# The pipeline checks below construct a real ParkourLocomotionPolicy, which imports
+# torch at load time. On a plain host without torch this file would raise at
+# collection; importorskip degrades it to a clean skip instead. (The weight-free
+# checks also transitively need torch via the policy module, so guard the whole file.)
+pytest.importorskip("torch", reason="parkour policy needs torch (robot/sim runtime dep)")
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "sim", "isaac"))
@@ -32,6 +39,14 @@ sys.path.insert(0, REPO)
 ASSETS = os.path.join(REPO, "sim", "models", "locomotion", "parkour")
 BASE = os.path.join(ASSETS, "base_jit.pt")
 VISION = os.path.join(ASSETS, "vision_weight.pt")
+
+#: The weighted pipeline checks need the gitignored shipped weights. Skip cleanly
+#: (rather than erroring) on a host/CI checkout that does not have them.
+_HAVE_WEIGHTS = os.path.exists(BASE) and os.path.exists(VISION)
+_NEED_WEIGHTS = pytest.mark.skipif(
+    not _HAVE_WEIGHTS,
+    reason=f"parkour weights absent under {ASSETS} (gitignored; run on the robot/sim host)",
+)
 
 # Isaac Nucleus Go2 reports DOFs joint-type-major (all hips, then thighs, then
 # calves) -- exercise the name remap with that order, not the policy order.
@@ -75,7 +90,7 @@ def _fake_policy():
     return pol
 
 
-def _test_weight_free():
+def test_weight_free():
     from go2_locomotion.parkour_locomotion_policy import (
         ParkourLocomotionPolicy, ParkourPolicyConfig, PARKOUR_DEFAULT_POS, PARKOUR_JOINT_ORDER,
         max_body_tilt_rad,
@@ -120,7 +135,7 @@ def _test_weight_free():
     print("OK leg_command_summary swing/stance from live target")
 
 
-def _test_person_mask():
+def test_person_mask():
     """Terrain-preserving person mask keeps the step the person stands on visible to the
     policy (the stair-base fall fix), while still removing the near body that causes the
     close-range surge. The legacy 'far' fill blanks the box to clear (reproduces the fall).
@@ -168,7 +183,7 @@ def _test_person_mask():
     print("OK person mask: bad bbox returns input unchanged")
 
 
-def _test_heading_slew():
+def test_heading_slew():
     """The parkour heading (delta_yaw) command is slew-limited so a bbox jump cannot snap
     the bearing and jolt the gait at a terrain transition (the smoothing primitive)."""
     from core.control.pid_controller import SlewRateLimiter
@@ -209,7 +224,8 @@ def _run_pipeline(cfg, label, *, delta_yaw=None):
     print(f"OK pipeline [{label}]: {diag}")
 
 
-def _test_soft_hold():
+@_NEED_WEIGHTS
+def test_soft_hold():
     """Verify that when hold=True is passed, self.hold_strength ramps up and blends the action_np to 0.0,
     and when hold=False is passed, it ramps down to 0.0.
     """
@@ -285,14 +301,15 @@ def _test_soft_hold():
 
 
 def main():
-    _test_weight_free()
-    _test_person_mask()
-    _test_heading_slew()
-    _test_soft_hold()
+    test_weight_free()
+    test_person_mask()
+    test_heading_slew()
 
     if not (os.path.exists(BASE) and os.path.exists(VISION)):
         print(f"SKIP: parkour weights not found under {ASSETS} (weight-free checks passed)")
         return 0
+
+    test_soft_hold()
 
     from go2_locomotion.parkour_locomotion_policy import ParkourPolicyConfig
 

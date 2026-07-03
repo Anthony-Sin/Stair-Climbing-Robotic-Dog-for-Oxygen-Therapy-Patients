@@ -103,6 +103,7 @@ class ClimbFSM:
         motion_allowed: bool,
         last_seen_bearing_deg: Optional[float] = None,
         recovery_yaw_active: bool = False,
+        yolo_stair_recent: Optional[bool] = None,  # CLEAN YOLO stair recency (see extension gate)
         stair_climb_committed_in: Optional[bool] = None,  # external override (unused normally)
     ) -> dict:
         """Update all latch variables and derive the new state.
@@ -112,7 +113,15 @@ class ClimbFSM:
         args = self._args
 
         # --- remember last patient gap while patient is visible ---
-        if person_detected and depth_distance_m is not None and float(depth_distance_m) > 1e-3:
+        # Apply the SAME >10 m outlier filter main.py uses at its intake (main ~L897). YOLO
+        # can report 36-39 m ghosts when it fires on a partial body above the camera frame
+        # during a stair climb; those are never valid follow distances here. Without this
+        # filter the FSM latched a poisoned 36 m gap and, on the post-update sync
+        # (main ~L1434), OVERWROTE main.py's filtered local with it -- feeding 36 m into the
+        # on-loss collision blocks so they read "safe" and let the dog drive into the patient.
+        # Filtering at BOTH intakes keeps the two copies in agreement (>10 m is authoritative).
+        if (person_detected and depth_distance_m is not None
+                and 1e-3 < float(depth_distance_m) < 10.0):
             self.last_person_gap_m = float(depth_distance_m)
 
         # --- _stairs_seen_ts: last time YOLO saw the stairs ---
@@ -131,15 +140,23 @@ class ClimbFSM:
 
         # --- climbing persistence latch (the wedge fix) ---
         near_riser = (front_near_m is not None and float(front_near_m) <= float(args.obstacle_slow_distance))
-        patient_ahead = (
-            standoff_gap_ctrl_m is not None
-            and float(standoff_gap_ctrl_m) > float(args.stair_target_distance) + 0.5
-        )
+        # (removed: the old `patient_ahead` = gap > stair_target_distance + 0.5 -- see below.)
         at_riser = (front_near_m is not None and float(front_near_m) <= float(args.stair_depth_engage_distance))
         depth_climb_engage = bool(stairs_seen_recent and at_riser)
 
+        # GENUINE stair evidence required to EXTEND the latch (incident 8.3 / safety). Mirrors the
+        # main-loop fix: the removed `patient_ahead` (gap > target+0.5) was true on nearly every
+        # flat-follow frame, so extending on it self-refreshed stair mode forever on flat ground.
+        # Extend ONLY
+        # on real stair evidence -- a recent CLEAN YOLO-World detection (yolo_stair_recent, passed
+        # in; the FSM's own stairs_seen_recent is polluted by depth false-positives via the merged
+        # stairs_detected signal) or a near riser YOLO has recently corroborated. When main.py does
+        # not pass yolo_stair_recent (e.g. unit tests), fall back to the pre-existing stairs_seen_recent
+        # so behaviour is unchanged there.
+        _yolo_recent = bool(stairs_seen_recent if yolo_stair_recent is None else yolo_stair_recent)
+        genuine_stair_extend_evidence = _yolo_recent or (near_riser and _yolo_recent)
         if (genuine_stairs or depth_climb_engage
-                or (current_time < self._climbing_persist_until and (near_riser or patient_ahead))):
+                or (current_time < self._climbing_persist_until and genuine_stair_extend_evidence)):
             self._climbing_persist_until = current_time + 6.0
         climbing_latched = current_time < self._climbing_persist_until
 

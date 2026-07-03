@@ -3,11 +3,22 @@ import argparse
 from core.arg_postprocess import postprocess_args
 import os
 
+# Cross-process config contract: canonical defaults shared with the sim/real processes.
+# The knobs core owns are seeded from here so a change lands everywhere at once (review §9).
+from shared.config_contract import contract_value
+
 # Facade re-exports: log-components constant + validator moved to core.log_components.
 from core.log_components import (  # noqa: F401
     _VALID_VISION_LOG_COMPONENTS,
     _normalize_log_components,
 )
+
+# Assumed control-loop rate used ONLY to convert legacy frame-count latches to seconds and back
+# (incident 8.6: the loop has no fixed rate -- ~4 FPS headless sim vs 15-30 FPS on the robot -- so
+# a frame-count latch means a different WALL duration on every platform). Durations are expressed
+# in SECONDS end-to-end now; this constant is the documented bridge for the deprecated *_frames
+# flags. Kept mid-range so a legacy --stairs-latch-frames 40 maps to a sane ~4 s.
+_ASSUMED_LOOP_FPS = 10.0
  
  
  
@@ -37,11 +48,12 @@ def parse_args():
         help='Host/IP where isaac_env.py receives sim velocity commands'
     )
     sim_group.add_argument(
-        # MUST match isaac_args.py --cmd-port (default 52100); mismatched defaults meant a
-        # hand-run controller sent commands to a port the sim was not listening on.
-        '--cmd-port', type=int, default=52100,
+        # MUST match isaac_args.py --cmd-port; mismatched defaults meant a hand-run controller
+        # sent commands to a port the sim was not listening on. Default is the cross-process
+        # contract value cmd_port (52100) so both ends move together (config_contract).
+        '--cmd-port', type=int, default=contract_value("cmd_port"),
         help='UDP port isaac_env.py listens on for velocity commands '
-             '(keep in sync with isaac_args.py --cmd-port)'
+             '(keep in sync with isaac_args.py --cmd-port; == config_contract cmd_port)'
     )
     sim_group.add_argument(
         '--sim-frame-timeout-exit-sec', type=float, default=30.0,
@@ -95,7 +107,14 @@ def parse_args():
                              'the real Go2 EDU: publish the follow command to the low-level '
                              'control node instead of driving unitree_sdk2 directly')
     parser.add_argument('--motion-lock-frames', type=int, default=10,
-                        help='Consecutive matched detections required before motion is allowed')
+                        help='DEPRECATED for wall-time reasoning (incident 8.6). Consecutive matched '
+                             'detections required before motion is allowed. Prefer --motion-lock-sec; '
+                             'when that is unset this frame count is used directly (it is a detection-'
+                             'consistency count, so it also has a sensible frame meaning).')
+    parser.add_argument('--motion-lock-sec', type=float, default=None,
+                        help='Wall-seconds of consecutive matched detections required before motion '
+                             'is allowed (rate-independent replacement for --motion-lock-frames). When '
+                             'set it overrides the frame count via the assumed loop FPS.')
     parser.add_argument('--no-auto-reacquire', dest='auto_reacquire',
                         action='store_false', default=True,
                         help='Skip automatic main-person re-selection after tracked ID is lost')
@@ -170,8 +189,18 @@ def parse_args():
     # -----------------------------------------------------------------------
     # PID -- rotation
     # -----------------------------------------------------------------------
-    parser.add_argument('--rot-kp', type=float, default=0.8)
-    parser.add_argument('--rot-kd', type=float, default=0.15)
+    # rot-kp is applied to the bearing error IN DEGREES (see PersonFollower). The old
+    # 0.8 saturated the +/-rot-max (1.0 rad/s) cap at just ~1.25 deg while the deadband is
+    # 3 deg -- i.e. yaw was 0 below 3 deg then slammed to the rail: a bang-bang controller
+    # with no proportional region. At the sim's ~4 FPS that latency-driven overshoot became
+    # a limit cycle that swung the patient edge-to-edge in frame and ejected them from the
+    # 69 deg FOV at a close-range zigzag apex (run_sim_20260703_101317_194, frame 486). 0.07
+    # gives a real proportional ramp from the 3 deg deadband out to ~14 deg, then full
+    # authority beyond -- so the dog still turns hard for a far-off target but eases in near
+    # centre instead of oscillating. kd cut to match (degree-scale derivative at low FPS was
+    # co-dominating the saturation).
+    parser.add_argument('--rot-kp', type=float, default=0.07)
+    parser.add_argument('--rot-kd', type=float, default=0.02)
     parser.add_argument('--rot-ki', type=float, default=0.0)
     parser.add_argument('--rot-max', type=float, default=1.0)
     parser.add_argument('--rot-tolerance', type=float, default=3.0)
@@ -243,8 +272,10 @@ def parse_args():
     # -----------------------------------------------------------------------
     # Target distance
     # -----------------------------------------------------------------------
-    parser.add_argument('--target-distance', type=float, default=1.5,
-                        help='Target following distance in meters')
+    parser.add_argument('--target-distance', type=float, default=1.0,
+                        help='Target following distance in meters. 1.0 m default is the real-robot '
+                             'standoff (run_real.sh uses this default); run_sim overrides it via '
+                             '-TargetDistance. See src/shared/config_contract.py (follow_standoff_*).')
     parser.add_argument('--follow-start-delay', type=float, default=0.0,
                         dest='follow_start_delay',
                         help='Seconds to hold all follow commands at zero after the person '
@@ -260,11 +291,13 @@ def parse_args():
                         help='Gain mapping leader speed to standoff distance offset')
     parser.add_argument('--follow-standoff-band-in', type=float, default=-0.15,
                         help='Hysteresis stop band offset relative to standoff target')
-    parser.add_argument('--follow-standoff-band-out', type=float, default=0.35,
+    parser.add_argument('--follow-standoff-band-out', type=float,
+                        default=contract_value("standoff_band_out"),  # 0.35 (see config_contract)
                         help='Hysteresis start band offset relative to standoff target. Widened '
                              'from 0.15 so a floor-speed burst overshoots the slow leader drift '
                              'and settles well inside the band instead of immediately re-triggering '
-                             'a go state (the frozen policy cannot burst gently).')
+                             'a go state (the frozen policy cannot burst gently). Default is the '
+                             'cross-process contract value standoff_band_out.')
     parser.add_argument('--no-follow-gait-gate', dest='follow_gait_gate',
                         action='store_false', default=True,
                         help='Disable keypoint/speed gait follow gating')
@@ -378,7 +411,15 @@ def parse_args():
                              '0.20 model default so a distant staircase (or the person) does not latch '
                              'stairs mode several metres before the dog reaches the steps')
     parser.add_argument('--stairs-latch-frames', type=int, default=40,
-                        help='Frames to keep stairs_detected true after a consistent positive detection')
+                        help='DEPRECATED (frame counts mean ~7x different wall-time in sim vs robot, '
+                             'incident 8.6). Use --stairs-latch-sec. Kept for back-compat: when '
+                             '--stairs-latch-sec is NOT given, this is converted to seconds via an '
+                             'assumed ~10 FPS loop rate.')
+    parser.add_argument('--stairs-latch-sec', type=float, default=None,
+                        help='Seconds to keep stairs_detected true after a consistent positive '
+                             'detection (wall-clock; the rate-independent replacement for '
+                             '--stairs-latch-frames). Defaults to the frame-count flag converted at '
+                             'the assumed loop FPS when unset.')
     parser.add_argument('--stair-near-distance', type=float, default=0.45,
                         help='Stair depth threshold where follow speed/centering are tightened. '
                              'Kept close to the first riser so stair drive does not start during '
@@ -443,8 +484,10 @@ def parse_args():
                              '--stair-target-distance, the effective standoff shrinks by this fraction '
                              '(default 0.35) down to --stair-target-distance-min. 0 disables dynamic '
                              'tightening (static standoff = --stair-target-distance).')
-    parser.add_argument('--stair-follow-bearing-scale', type=float, default=0.4,
-                        help='Scale factor for follow bearing injected in hybrid mode on stairs')
+    # (removed) --stair-follow-bearing-scale: this core copy (default 0.4) was consumed by NOTHING
+    # in core -- the sim's parkour heading uses isaac_args.py's OWN --stair-follow-bearing-scale
+    # (default 0.9, == config_contract.CONTRACT["stair_bearing_scale"]). The dead core duplicate is
+    # deleted to end the confusing 0.4-vs-0.9 split (review §9).
     # Crest-creep (top-of-stairs) + stair-transport tunables. These were previously read via
     # getattr(args, ..., <literal>) with NO parser entry -- phantom config: tunable only by
     # editing code, typo-silent, invisible to --help (review §2/§8). Promoted to real flags

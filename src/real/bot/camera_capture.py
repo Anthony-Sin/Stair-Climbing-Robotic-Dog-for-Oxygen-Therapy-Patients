@@ -61,6 +61,10 @@ class CameraCapture:
         # and restart the pipeline (+ hardware_reset) once they cross the threshold.
         self._consec_frame_failures = 0
         self._reconnect_after_failures = 5
+        # Broadcastable vision health state: "ok" | "degraded" | "restored" | "failed".
+        # Set on reconnect transitions so downstream can react (see set_state_callback).
+        self.vision_state = "ok"
+        self._state_cb = None
 
         if mode != 'single':
             self._log(
@@ -339,13 +343,41 @@ class CameraCapture:
 
         return img, [depth], False, None
 
+    def set_state_callback(self, cb):
+        """Register a callback ``cb(state: str)`` invoked on vision-state transitions
+        ("degraded" when a blocking reconnect starts, "restored"/"failed" when it ends).
+
+        The reconnect is SYNCHRONOUS on the vision loop (5 s detect + hardware_reset of every
+        USB device + re-init), so downstream (the follow controller / telemetry) needs to know
+        perception is momentarily unavailable and react (e.g. HOLD) rather than act on a stale
+        frame. Optional: with no callback the transitions are still logged (force=True)."""
+        self._state_cb = cb
+
+    def _set_vision_state(self, state: str) -> None:
+        if getattr(self, "vision_state", None) == state:
+            return
+        self.vision_state = state
+        # force=True so the transition is visible even when not verbose -- this is a
+        # degraded-perception event next to a patient, not routine chatter.
+        self._log(f"[CameraCapture][VISION_STATE] {state}", force=True)
+        cb = getattr(self, "_state_cb", None)
+        if cb is not None:
+            try:
+                cb(state)
+            except Exception:
+                pass
+
     def _reconnect_pipeline(self):
         """Restart the RealSense pipeline after repeated frame failures.
 
         Best-effort recovery from a wedged USB device: stop the current pipeline, issue a
         hardware_reset to force re-enumeration, then re-init. Leaves ``self.pipelines`` empty
         on failure so ``get_frame`` returns (None, None) (no crash) and retries next call.
+
+        Broadcasts a "degraded" vision state when the (synchronous) reconnect starts and
+        "restored"/"failed" when it ends, so downstream can react and telemetry shows it.
         """
+        self._set_vision_state("degraded")
         self._log("[CameraCapture] Reconnecting RealSense pipeline after repeated frame failures")
         for pipeline in self.pipelines:
             try:
@@ -365,8 +397,10 @@ class CameraCapture:
             self._log(f"[CameraCapture] hardware_reset skipped: {exc}")
         try:
             self._init_pipelines()
+            self._set_vision_state("restored")
         except Exception as exc:
             self._log(f"[CameraCapture] Reconnect failed (will retry next frame): {exc}")
+            self._set_vision_state("failed")
 
     def get_last_frame_meta(self):
         # DEBUG-TRACE REMOVE-ME: Read-only capture metadata for stall diagnostics.

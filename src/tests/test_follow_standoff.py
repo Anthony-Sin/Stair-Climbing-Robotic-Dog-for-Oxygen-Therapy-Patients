@@ -141,7 +141,11 @@ class TestFollowStandoff(unittest.TestCase):
         for _ in range(n):
             cmd = _apply_follow_standoff_policy(
                 args, trans_x_cmd=trans_x_cmd, gap_m=gap, leader_speed_mps=0.0,
-                is_walking=is_walking, debug_info=debug_info, state=state
+                is_walking=is_walking, debug_info=debug_info, state=state,
+                # incident 8.5 fix: the policy now takes the genuine flag explicitly instead of
+                # reading debug_info["stairs_action_active"] (which was produced later same-frame).
+                # Forward what the test staged in debug_info -> behaviour-equivalent to the old read.
+                stairs_action_active=bool(debug_info.get("stairs_action_active", False)),
             )
         return cmd
 
@@ -590,7 +594,9 @@ class TestLostSearchDirection(unittest.TestCase):
         frame_shape = (480, 640)
         depth = np.zeros((480, 640), dtype=np.float32)
         f.is_tracking = True
-        f.tracking_start_time = time.time() - 10.0
+        # PersonFollower now measures every duration off time.perf_counter() (incident 8.6). Seed
+        # follower timestamps with the SAME monotonic clock, or perf-vs-wall epochs mismatch by ~1.7e9.
+        f.tracking_start_time = time.perf_counter() - 10.0
         f.last_person_center = (600, 240)          # last seen RIGHT (search_sign +1)
         from core.control.person_follower import _LOST_SCAN_LEG_SEC
         arc_rad = _math.radians(f.config.lost_search_arc_deg)
@@ -601,8 +607,8 @@ class TestLostSearchDirection(unittest.TestCase):
         # The scan phase is measured from when the scan ENGAGED (lost_search_start_time), not raw
         # lost_age, so it always opens toward the last-seen side regardless of how long was lost.
         # Early (within the first leg): scan TOWARD the last-known side (right -> negative yaw).
-        f.last_lost_time = time.time() - 0.3 * leg_sec
-        f.lost_search_start_time = time.time() - 0.3 * leg_sec
+        f.last_lost_time = time.perf_counter() - 0.3 * leg_sec
+        f.lost_search_start_time = time.perf_counter() - 0.3 * leg_sec
         _, rot_toward, dbg_toward = f.update(None, depth, frame_shape)
         self.assertTrue(dbg_toward.get("lost_search_active"))
         self.assertEqual(dbg_toward.get("lost_search_phase"), "toward")
@@ -610,8 +616,8 @@ class TestLostSearchDirection(unittest.TestCase):
         self.assertLess(rot_toward, 0.0)
 
         # Mid-scan (the across leg, ~1.5 legs in): swing to the OPPOSITE side (left -> positive yaw).
-        f.last_lost_time = time.time() - 1.5 * leg_sec
-        f.lost_search_start_time = time.time() - 1.5 * leg_sec
+        f.last_lost_time = time.perf_counter() - 1.5 * leg_sec
+        f.lost_search_start_time = time.perf_counter() - 1.5 * leg_sec
         _, rot_across, dbg_across = f.update(None, depth, frame_shape)
         self.assertTrue(dbg_across.get("lost_search_active"))
         self.assertEqual(dbg_across.get("lost_search_phase"), "across")
@@ -629,11 +635,12 @@ class TestLostSearchDirection(unittest.TestCase):
         frame_shape = (480, 640)
         depth = np.zeros((480, 640), dtype=np.float32)
         f.is_tracking = True
-        f.tracking_start_time = time.time() - 30.0
+        # Seed with perf_counter (see note above) so scan_elapsed / lost_age match the follower's clock.
+        f.tracking_start_time = time.perf_counter() - 30.0
         f.last_person_center = (600, 240)
-        f.last_lost_time = time.time() - (f.config.lost_search_max_sec + 2.0)
+        f.last_lost_time = time.perf_counter() - (f.config.lost_search_max_sec + 2.0)
         # Scan has been running (and ping-ponging) longer than the max -> give up and hold.
-        f.lost_search_start_time = time.time() - (f.config.lost_search_max_sec + 2.0)
+        f.lost_search_start_time = time.perf_counter() - (f.config.lost_search_max_sec + 2.0)
 
         trans, rotation_cmd, dbg = f.update(None, depth, frame_shape)
 

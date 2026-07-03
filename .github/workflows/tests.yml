@@ -26,6 +26,31 @@ jobs:
           # host-safe deps (no torch/rclpy/pyrealsense2/isaac). Editable install also puts
           # the src/ import root on sys.path.
           pip install -e ".[test]"
+          # Coverage tooling is not in the [test] extra (can't edit pyproject here); install
+          # it in the workflow so the suite runs under coverage and 0%-of-main.py is VISIBLE.
+          pip install pytest-cov
 
-      - name: Run test suite
-        run: python -m pytest -q   # testpaths=src/tests (pyproject)
+      - name: Run test suite under coverage
+        # --cov reads .coveragerc (source=src, omits sim/real/tests). No threshold/gate:
+        # the point is to MAKE COVERAGE VISIBLE, not to fail the build on it yet.
+        run: |
+          python -m pytest -q \
+            --cov --cov-config=.coveragerc \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-report=html:htmlcov
+
+      - name: Print coverage summary
+        if: always()
+        run: |
+          python -m coverage report --rcfile=.coveragerc || true
+
+      - name: Upload coverage report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage.xml
+            htmlcov/
+          if-no-files-found: warn

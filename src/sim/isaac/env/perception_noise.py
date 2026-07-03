@@ -1,6 +1,11 @@
-"""isaac_env.py extraction (Phase 2 split): perception_noise. Verbatim bodies; only env_state requalification added."""
+"""isaac_env.py extraction (Phase 2 split): perception_noise.
+
+Perception noise is driven by a SEEDED numpy Generator indexed by FRAME NUMBER so a
+run is reproducible in principle (identical seed + frame index => identical noise).
+The prior global-`np.random` pools indexed by ``int(time.monotonic()*100) % 32``
+repeated every 0.32 s, varied with host load, and could not be reproduced.
+"""
 import numpy as np
-import time
 
 _random_cache = {}
 # ---------------------------------------------------------------------------
@@ -8,40 +13,70 @@ _random_cache = {}
 # ---------------------------------------------------------------------------
 _distortion_maps = {}
 
-def get_cached_random_normal(shape, mean=0.0, std=1.0, count=32):
-    key = ("normal", shape, mean, std)
+# Deterministic base seed for the perception-noise pools. Set once at startup from
+# the run's domain-rand seed (or --perception-seed) via set_perception_seed(); the
+# per-shape pools are (re)built from this so runs are reproducible. The number of
+# distinct pre-generated noise draws cycled through by frame index.
+_PERCEPTION_SEED = 0
+_NOISE_POOL_COUNT = 32
+
+
+def set_perception_seed(seed: int) -> None:
+    """Set the deterministic perception-noise seed and clear cached pools so they
+    are rebuilt from the new seed. Call once at startup (before the first frame)."""
+    global _PERCEPTION_SEED
+    _PERCEPTION_SEED = int(seed)
+    _random_cache.clear()
+
+
+def _pool_generator(kind: str, shape) -> np.random.Generator:
+    """Seeded per-(kind,shape) Generator so each pool is reproducible and independent."""
+    # Fold the base seed with a stable hash of (kind, shape) so different pools do
+    # not share the same draw sequence while remaining fully reproducible.
+    mix = (hash((kind, tuple(shape))) & 0x7FFFFFFF)
+    return np.random.default_rng((int(_PERCEPTION_SEED) & 0x7FFFFFFF) ^ mix)
+
+def get_cached_random_normal(shape, mean=0.0, std=1.0, count=_NOISE_POOL_COUNT):
+    key = ("normal", tuple(shape), mean, std)
     if key not in _random_cache:
-        _random_cache[key] = [np.random.normal(mean, std, size=shape).astype(np.float32) for _ in range(count)]
+        rng = _pool_generator("normal", shape)
+        _random_cache[key] = [rng.normal(mean, std, size=shape).astype(np.float32) for _ in range(count)]
     return _random_cache[key]
 
-def get_cached_random_uniform(shape, count=32):
-    key = ("uniform", shape)
+def get_cached_random_uniform(shape, count=_NOISE_POOL_COUNT):
+    key = ("uniform", tuple(shape))
     if key not in _random_cache:
-        _random_cache[key] = [np.random.random(size=shape).astype(np.float32) for _ in range(count)]
+        rng = _pool_generator("uniform", shape)
+        _random_cache[key] = [rng.random(size=shape).astype(np.float32) for _ in range(count)]
     return _random_cache[key]
 
-def apply_realsense_depth_noise(depth_mm: np.ndarray, noise_multiplier: float = 1.0) -> np.ndarray:
+def apply_realsense_depth_noise(depth_mm: np.ndarray, noise_multiplier: float = 1.0,
+                                frame_idx: int = 0) -> np.ndarray:
     """
     Simulate realistic Intel RealSense D435 depth noise on a depth map (in mm).
-    
+
     Includes:
     - Quadratic depth-dependent Gaussian noise (spatial noise)
     - Silhouette edge dropouts (due to stereo baseline shadows)
     - Random sensor dropouts (zero-fill holes)
+
+    The noise draw is selected by ``frame_idx`` (frame number) against a SEEDED pool,
+    so the same seed + frame index always yields the same noise (reproducible), unlike
+    the old wall-clock index which varied with host load and repeated every 0.32 s.
     """
     if depth_mm is None or depth_mm.size == 0:
         return depth_mm
-        
+
     noisy_depth = depth_mm.astype(np.float32)
-    
+
     # 1. Quadratic depth-dependent noise
     depth_m = noisy_depth / 1000.0
     alpha = 0.003 * noise_multiplier
     sigma = alpha * (depth_m ** 2) * 1000.0
-    
-    # Add Gaussian noise from pre-generated cache
-    noise_pool = get_cached_random_normal(noisy_depth.shape, 0.0, 1.0, count=32)
-    noise_idx = int(time.monotonic() * 100) % 32
+
+    # Add Gaussian noise from the seeded, frame-indexed pool
+    noise_pool = get_cached_random_normal(noisy_depth.shape, 0.0, 1.0, count=_NOISE_POOL_COUNT)
+    noise_idx = int(frame_idx) % _NOISE_POOL_COUNT
     noise = noise_pool[noise_idx] * sigma
     noisy_depth += noise
     
@@ -76,7 +111,8 @@ def apply_realsense_depth_noise(depth_mm: np.ndarray, noise_multiplier: float = 
     
     return np.clip(noisy_depth, 0.0, 65535.0).astype(np.uint16)
 
-def apply_parkour_depth_noise(depth_m: np.ndarray, noise_multiplier: float = 1.0) -> np.ndarray:
+def apply_parkour_depth_noise(depth_m: np.ndarray, noise_multiplier: float = 1.0,
+                              frame_idx: int = 0) -> np.ndarray:
     """Route a parkour depth frame (metres) through the RealSense D435 noise model.
 
     The parkour policy reads distance_to_image_plane in POSITIVE metres, while
@@ -86,11 +122,13 @@ def apply_parkour_depth_noise(depth_m: np.ndarray, noise_multiplier: float = 1.0
     become 0 (a hole), which preprocess_depth already maps to far_clip -- exactly
     how a real depth camera reports a missing return. Used only when
     --parkour-depth-noise-mult > 0 (the --sim2real-validation-cam preset).
+    ``frame_idx`` selects the seeded noise draw (reproducible).
     """
     arr = np.nan_to_num(np.asarray(depth_m, dtype=np.float32),
                         nan=0.0, posinf=0.0, neginf=0.0)
     mm = np.clip(arr * 1000.0, 0.0, 65535.0).astype(np.uint16)
-    noisy_mm = apply_realsense_depth_noise(mm, noise_multiplier=float(noise_multiplier))
+    noisy_mm = apply_realsense_depth_noise(mm, noise_multiplier=float(noise_multiplier),
+                                           frame_idx=int(frame_idx))
     return noisy_mm.astype(np.float32) / 1000.0
 
 def apply_lens_distortion(image: np.ndarray, is_depth: bool = False) -> np.ndarray:
@@ -120,13 +158,18 @@ def apply_lens_distortion(image: np.ndarray, is_depth: bool = False) -> np.ndarr
     interpolation = cv2.INTER_NEAREST if is_depth else cv2.INTER_LINEAR
     return cv2.remap(image, map1, map2, interpolation)
 
-def apply_rgb_perception_noise(rgb: np.ndarray, vx: float, vy: float, wz: float) -> np.ndarray:
-    """Simulate camera motion blur, dynamic exposure fluctuation, and sensor pixel noise."""
+def apply_rgb_perception_noise(rgb: np.ndarray, vx: float, vy: float, wz: float,
+                               frame_idx: int = 0) -> np.ndarray:
+    """Simulate camera motion blur, dynamic exposure fluctuation, and sensor pixel noise.
+
+    ``frame_idx`` drives BOTH the exposure/flicker phase and the seeded pixel-noise
+    draw, so the result is reproducible (identical seed + frame index => identical
+    output) instead of varying with wall clock / host load.
+    """
     import cv2
     import numpy as np
     import math
-    import time
-    
+
     if rgb is None or rgb.size == 0:
         return rgb
         
@@ -161,15 +204,18 @@ def apply_rgb_perception_noise(rgb: np.ndarray, vx: float, vy: float, wz: float)
         kernel /= np.sum(kernel)
         noisy_rgb = cv2.filter2D(noisy_rgb, -1, kernel)
         
-    # 2. Dynamic exposure fluctuation and ambient lighting variation
-    t = time.monotonic()
+    # 2. Dynamic exposure fluctuation and ambient lighting variation. Phase advances
+    # with frame index (reproducible); the flicker is drawn from a seeded per-frame
+    # Generator rather than the unseeded global np.random.
+    t = float(frame_idx)
     exposure = 1.0 + 0.025 * math.sin(0.4 * t) + 0.008 * math.cos(3.5 * t)
-    flicker = np.random.normal(0, 0.6)
+    flicker_rng = np.random.default_rng((int(_PERCEPTION_SEED) & 0x7FFFFFFF) ^ (int(frame_idx) & 0x7FFFFFFF))
+    flicker = float(flicker_rng.normal(0, 0.6))
     noisy_rgb = noisy_rgb * exposure + flicker
-    
-    # 3. Sensor pixel noise (Gaussian color noise) from cache
-    noise_pool = get_cached_random_normal(noisy_rgb.shape, 0.0, 1.4, count=32)
-    noise_idx = int(time.monotonic() * 100) % 32
+
+    # 3. Sensor pixel noise (Gaussian color noise) from the seeded, frame-indexed pool
+    noise_pool = get_cached_random_normal(noisy_rgb.shape, 0.0, 1.4, count=_NOISE_POOL_COUNT)
+    noise_idx = int(frame_idx) % _NOISE_POOL_COUNT
     noise = noise_pool[noise_idx]
     noisy_rgb += noise
     

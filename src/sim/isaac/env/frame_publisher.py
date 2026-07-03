@@ -3,6 +3,7 @@ import json
 import logging
 import numpy as np
 import socket
+import threading
 import time
 from sim_logging_utils import log_event
 
@@ -20,30 +21,31 @@ from .perception_noise import apply_lens_distortion, apply_realsense_depth_noise
 # only the encode cost changes, not the field name or format.
 _DEPTH_ZLIB_LEVEL = 5
 
-class FramePublisher:
-    """Encodes RGB + depth frames and sends over UDP to SimCameraCapture.
+# Frame-envelope schema/protocol versions. `PROTO_VERSION` is bumped only on a
+# wire-incompatible envelope change; `FRAME_SCHEMA_VERSION` stamps the persisted
+# sidecar schema (task: schema versioning on persisted streams).
+PROTO_VERSION = 1
+FRAME_SCHEMA_VERSION = 1
 
-    The encoded JSON payload is split into sub-MTU UDP CHUNKS (see send) so it
-    survives Docker Desktop's UDP port-forward, which drops the large fragmented
-    single datagram the old one-shot protocol used. SimCameraCapture reassembles
-    the chunks by sequence number.
+class FramePublisher:
+    """Encodes RGB + depth frames and sends over a length-prefixed TCP stream to
+    SimCameraCapture.
+
+    Frames cross host->container over TCP (4-byte big-endian length prefix +
+    JSON payload), which survives Docker Desktop's published-port forwarding
+    (host->container UDP is dropped on some engine versions). Because TCP is a
+    length-prefixed stream there is NO datagram size limit, so the frame is sent
+    at ONE pinned resolution -- the old 65 KB UDP cap + 7-rung resize/re-encode
+    ladder (which double-encoded ~19% of frames down to 512x288) is gone.
     """
 
-    MAX_UDP_PAYLOAD_BYTES = 65000
-    # Per-chunk JSON payload (bytes), kept under a typical 1500-byte MTU minus the
-    # 12-byte chunk header + IP/UDP headers, so each datagram is unfragmented.
-    CHUNK_PAYLOAD_BYTES = 1400
-    CHUNK_MAGIC = b"FCHK"
-    PUBLISH_ATTEMPTS = (
-        (640, 360, 320, 180, 58),
-        (512, 288, 256, 144, 66),
-        (448, 252, 224, 126, 70),
-        (384, 216, 192, 108, 74),
-        (320, 180, 160, 90, 70),
-        (256, 144, 128, 72, 60),
-        (224, 126, 112, 63, 50),
-    )
-    
+    # Single pinned publish resolution (no resize ladder): RGB 640x360, depth 320x180.
+    PUBLISH_RGB_W = 640
+    PUBLISH_RGB_H = 360
+    PUBLISH_DEPTH_W = 320
+    PUBLISH_DEPTH_H = 180
+    PUBLISH_JPEG_QUALITY = 58
+
     def __init__(self, host: str, port: int) -> None:
         # Frames cross host->container over TCP (length-prefixed). Docker Desktop's
         # published-port UDP forwarding drops 100% of host->container UDP on some engine
@@ -61,8 +63,14 @@ class FramePublisher:
         # command arrives (proving the WSL2 port proxy is fully established).  On first
         # boot this stays False (no warm reset fires before the initial episode).
         self._frame_send_gated = False
+        # Guards the cross-thread _frame_send_gated flag: the UDP command-receiver
+        # thread in isaac_env clears it while the render thread reads it in send().
+        self._gate_lock = threading.Lock()
         self._suppressed_warnings = {}
-        first_rgb_w, first_rgb_h, first_depth_w, first_depth_h, first_quality = self.PUBLISH_ATTEMPTS[0]
+        # One-time startup log: enumerate the sidecar keys this run publishes so a
+        # run visibly reports which ground-truth it leaks and which sensor_* signals
+        # exist. Emitted lazily on the first send (the schema keys are fixed).
+        self._sidecar_keys_logged = False
         log_event(
             env_state.LOGGER,
             logging.INFO,
@@ -70,11 +78,13 @@ class FramePublisher:
             "Camera frame publisher is ready",
             host=host,
             port=int(port),
-            rgb_width=int(first_rgb_w),
-            rgb_height=int(first_rgb_h),
-            depth_width=int(first_depth_w),
-            depth_height=int(first_depth_h),
-            jpeg_quality=int(first_quality),
+            proto_version=int(PROTO_VERSION),
+            schema=int(FRAME_SCHEMA_VERSION),
+            rgb_width=int(self.PUBLISH_RGB_W),
+            rgb_height=int(self.PUBLISH_RGB_H),
+            depth_width=int(self.PUBLISH_DEPTH_W),
+            depth_height=int(self.PUBLISH_DEPTH_H),
+            jpeg_quality=int(self.PUBLISH_JPEG_QUALITY),
         )
 
     def _ensure_connected(self) -> bool:
@@ -110,6 +120,17 @@ class FramePublisher:
             self._connected = False
             return False
 
+    def set_frame_send_gated(self, gated: bool) -> None:
+        """Thread-safe setter for the warm-episode send gate (poked cross-thread by
+        the isaac_env UDP command-receiver thread)."""
+        with self._gate_lock:
+            self._frame_send_gated = bool(gated)
+
+    def is_frame_send_gated(self) -> bool:
+        """Thread-safe read of the warm-episode send gate (read on the render thread)."""
+        with self._gate_lock:
+            return self._frame_send_gated
+
     def _warn_rate_limited(self, event: str, message: str, *, interval_sec: float = 5.0, **fields) -> None:
         now = time.monotonic()
         last = self._warning_times.get(event, 0.0)
@@ -135,84 +156,116 @@ class FramePublisher:
         swing_legs: list = None,
         lidar_profile: dict = None,
         sim_t: float = None,
+        frame_idx: int = None,
+        sensor_imu_pitch: float = None,
+        sensor_odom_vx: float = None,
+        sensor_odom_vy: float = None,
+        sensor_riser_dist_ahead: float = None,
     ) -> None:
         import cv2, base64, zlib
 
         seq = self._seq
-        payload = None
-        payload_meta = {}
-        for rgb_w, rgb_h, depth_w, depth_h, jpeg_quality in self.PUBLISH_ATTEMPTS:
-            small_rgb = cv2.resize(rgb, (rgb_w, rgb_h), interpolation=cv2.INTER_LINEAR)
-            small_depth = cv2.resize(depth, (depth_w, depth_h), interpolation=cv2.INTER_NEAREST)
+        rgb_w, rgb_h = self.PUBLISH_RGB_W, self.PUBLISH_RGB_H
+        depth_w, depth_h = self.PUBLISH_DEPTH_W, self.PUBLISH_DEPTH_H
+        jpeg_quality = self.PUBLISH_JPEG_QUALITY
+        # Frame number drives the SEEDED perception-noise generator (reproducible);
+        # fall back to the monotonic frame sequence when the caller does not pass one.
+        noise_frame_idx = int(frame_idx) if frame_idx is not None else int(seq)
 
-            # Perception realism is gated on the run's environment: the default
-            # "perfect env" publishes clean frames; the --sim2real-validation-cam
-            # "real-simulated env" applies the full RealSense D435 model (lens
-            # distortion + depth-sensor noise + RGB motion-blur/exposure/pixel
-            # noise) to the YOLO/fusion stream. Either way the frame is converted
-            # to BGR for the JPEG encode below.
-            if env_state._perception_realism:
-                small_rgb = apply_lens_distortion(small_rgb, is_depth=False)
-                small_depth = apply_lens_distortion(small_depth, is_depth=True)
-                small_depth = apply_realsense_depth_noise(small_depth)
-                small_rgb_bgr = apply_rgb_perception_noise(small_rgb, vx, vy, wz)
+        small_rgb = cv2.resize(rgb, (rgb_w, rgb_h), interpolation=cv2.INTER_LINEAR)
+        small_depth = cv2.resize(depth, (depth_w, depth_h), interpolation=cv2.INTER_NEAREST)
+
+        # Perception realism is gated on the run's environment: the default
+        # "perfect env" publishes clean frames; the --sim2real-validation-cam
+        # "real-simulated env" applies the full RealSense D435 model (lens
+        # distortion + depth-sensor noise + RGB motion-blur/exposure/pixel
+        # noise) to the YOLO/fusion stream. Either way the frame is converted
+        # to BGR for the JPEG encode below.
+        if env_state._perception_realism:
+            small_rgb = apply_lens_distortion(small_rgb, is_depth=False)
+            small_depth = apply_lens_distortion(small_depth, is_depth=True)
+            small_depth = apply_realsense_depth_noise(small_depth, frame_idx=noise_frame_idx)
+            small_rgb_bgr = apply_rgb_perception_noise(small_rgb, vx, vy, wz, frame_idx=noise_frame_idx)
+        else:
+            if small_rgb.ndim == 3 and small_rgb.shape[2] == 4:
+                small_rgb_bgr = cv2.cvtColor(small_rgb, cv2.COLOR_RGBA2BGR)
             else:
-                if small_rgb.ndim == 3 and small_rgb.shape[2] == 4:
-                    small_rgb_bgr = cv2.cvtColor(small_rgb, cv2.COLOR_RGBA2BGR)
-                else:
-                    small_rgb_bgr = cv2.cvtColor(small_rgb, cv2.COLOR_RGB2BGR)
+                small_rgb_bgr = cv2.cvtColor(small_rgb, cv2.COLOR_RGB2BGR)
 
-            ok, buf = cv2.imencode('.jpg', small_rgb_bgr, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
-            if not ok:
-                continue
-
-            rgb_b64 = base64.b64encode(buf.tobytes()).decode('ascii')
-            depth_b64 = base64.b64encode(
-                zlib.compress(small_depth.astype(np.uint16).tobytes(), level=_DEPTH_ZLIB_LEVEL)
-            ).decode('ascii')
-
-            meta = {
-                "seq": seq,
-                "ts": time.time(),
-                "sim_t": (None if sim_t is None else round(float(sim_t), 4)),
-                "w": rgb_w,
-                "h": rgb_h,
-                "rgb_w": rgb_w,
-                "rgb_h": rgb_h,
-                "depth_w": depth_w,
-                "depth_h": depth_h,
-                "enc": "jpg+zlib",
-                "rgb": rgb_b64,
-                "depth": depth_b64,
-                "gt_patient": gt_patient,
-                "gt_distractor": gt_distractor,
-                "stair_demo": stair_demo or {},
-                "swing_legs": swing_legs or [],
-                "lidar_profile": lidar_profile or {},
-            }
-            candidate_payload = json.dumps(meta).encode("utf-8")
-            payload_meta = {
-                "rgb_width": int(rgb_w),
-                "rgb_height": int(rgb_h),
-                "depth_width": int(depth_w),
-                "depth_height": int(depth_h),
-                "jpeg_quality": int(jpeg_quality),
-                "candidate_payload_bytes": int(len(candidate_payload)),
-            }
-            if len(candidate_payload) <= self.MAX_UDP_PAYLOAD_BYTES:
-                payload = candidate_payload
-                break
-
+        ok, buf = cv2.imencode('.jpg', small_rgb_bgr, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
         self._seq += 1
-        if payload is None:
+        if not ok:
             self._warn_rate_limited(
-                "frame_payload_too_large",
-                "Camera frame payload is too large for UDP packet",
+                "frame_encode_failed",
+                "Camera frame JPEG encode failed",
                 seq=int(seq),
-                max_payload_bytes=int(self.MAX_UDP_PAYLOAD_BYTES),
-                **payload_meta,
             )
             return
+
+        rgb_b64 = base64.b64encode(buf.tobytes()).decode('ascii')
+        depth_b64 = base64.b64encode(
+            zlib.compress(small_depth.astype(np.uint16).tobytes(), level=_DEPTH_ZLIB_LEVEL)
+        ).decode('ascii')
+
+        meta = {
+            "proto_version": int(PROTO_VERSION),
+            "schema": int(FRAME_SCHEMA_VERSION),
+            "seq": seq,
+            "ts": time.time(),
+            "sim_t": (None if sim_t is None else round(float(sim_t), 4)),
+            "w": rgb_w,
+            "h": rgb_h,
+            "rgb_w": rgb_w,
+            "rgb_h": rgb_h,
+            "depth_w": depth_w,
+            "depth_h": depth_h,
+            "enc": "jpg+zlib",
+            "rgb": rgb_b64,
+            "depth": depth_b64,
+            # Ground-truth-only keys. gt_-prefixed duplicates are the canonical
+            # names; the un-prefixed originals are KEPT for backward-compat with
+            # CORE consumers this round.
+            "gt_patient": gt_patient,
+            "gt_distractor": gt_distractor,
+            "gt_stair_demo": stair_demo or {},
+            "gt_swing_legs": swing_legs or [],
+            "gt_lidar_profile": lidar_profile or {},
+            "stair_demo": stair_demo or {},
+            "swing_legs": swing_legs or [],
+            "lidar_profile": lidar_profile or {},
+            # Sim-computed sensor sidecar (mimics hardware): body pitch (rad),
+            # body-frame odom velocity (m/s), nearest riser leading-edge distance (m).
+            # CORE consumers prefer these over the gt_ keys when present.
+            "sensor_imu_pitch": (None if sensor_imu_pitch is None else round(float(sensor_imu_pitch), 5)),
+            "sensor_odom_vx": (None if sensor_odom_vx is None else round(float(sensor_odom_vx), 4)),
+            "sensor_odom_vy": (None if sensor_odom_vy is None else round(float(sensor_odom_vy), 4)),
+            "sensor_riser_dist_ahead": (
+                None if sensor_riser_dist_ahead is None else round(float(sensor_riser_dist_ahead), 4)
+            ),
+        }
+        payload = json.dumps(meta).encode("utf-8")
+        payload_meta = {
+            "rgb_width": int(rgb_w),
+            "rgb_height": int(rgb_h),
+            "depth_width": int(depth_w),
+            "depth_height": int(depth_h),
+            "jpeg_quality": int(jpeg_quality),
+        }
+        if not self._sidecar_keys_logged:
+            self._sidecar_keys_logged = True
+            _gt_keys = sorted(k for k in meta if k.startswith("gt_"))
+            _sensor_keys = sorted(k for k in meta if k.startswith("sensor_"))
+            log_event(
+                env_state.LOGGER,
+                logging.INFO,
+                "frame_sidecar_schema",
+                "Frame sidecar keys enumerated (ground-truth leaked + sensor signals present)",
+                schema=int(FRAME_SCHEMA_VERSION),
+                proto_version=int(PROTO_VERSION),
+                all_keys=sorted(meta.keys()),
+                gt_keys=_gt_keys,
+                sensor_keys=_sensor_keys,
+            )
         import struct
         # Warm-episode gate: do NOT attempt to connect or send until the Docker controller
         # has sent its first command.  Before that, the WSL2 Desktop port proxy for port
@@ -220,8 +273,9 @@ class FramePublisher:
         # succeeds (proxy ACKs) and sendall() completes (data sits in the OS buffer) but
         # Docker's accept() never fires, so the frame is silently dropped.  Once Docker's
         # SimRobotController sends its first packet (proving the proxy is up), the gate is
-        # cleared by the command-receive thread.
-        if self._frame_send_gated:
+        # cleared by the command-receive thread. The flag is poked cross-thread, so read
+        # it under the gate lock.
+        if self.is_frame_send_gated():
             return
         if not self._ensure_connected():
             # Container TCP server not listening yet (or link is down). Drop this frame

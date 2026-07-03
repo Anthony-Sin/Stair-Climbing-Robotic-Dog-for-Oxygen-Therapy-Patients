@@ -12,7 +12,9 @@ FULL_TAG="${IMAGE_NAME}:${TAG}"
 
 # Choose Dockerfile based on architecture
 if [[ "$ARCH" == "x86_64" ]]; then
-    DOCKERFILE="Dockerfile_x86"
+    # The x86 sim Dockerfile is named Dockerfile_x86_sim (the old "Dockerfile_x86" never existed,
+    # so this branch built nothing -- review §12).
+    DOCKERFILE="Dockerfile_x86_sim"
 elif [[ "$ARCH" == "aarch64" ]]; then
     DOCKERFILE="Dockerfile"
 else

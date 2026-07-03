@@ -37,6 +37,8 @@ def _apply_follow_standoff_policy(
     is_walking: bool,
     debug_info: Dict[str, Any],
     state: Dict[str, Any],
+    *,
+    stairs_action_active: bool = False,
 ) -> float:
     # 0. Gap smoothing (CRITICAL). This MUST run before the stair early-return: the stair
     # collision floor consumes standoff_gap_ctrl_m. The old ordering returned first and silently
@@ -98,7 +100,11 @@ def _apply_follow_standoff_policy(
 
     # On stairs, bypass only the go/hold/pace shaping to avoid stalls. Keep the smoothed gap and
     # the correct stair standoff telemetry available to the collision and hold gates.
-    if bool(debug_info.get("stairs_action_active", False)):
+    # incident 8.5: this used to read debug_info["stairs_action_active"], but its only same-frame
+    # producers (_apply_stair_command_policy + the latch overrides) run LATER in the loop, so the
+    # read always got the default (False) and the bypass NEVER fired. It is now passed in explicitly
+    # (compute-then-pass) from main.py -- the caller supplies the freshest genuine stair-action value.
+    if bool(stairs_action_active):
         debug_info["follow_standoff_gate_active"] = False
         debug_info["follow_standoff_skipped_on_stairs"] = True
         return float(trans_x_cmd)
