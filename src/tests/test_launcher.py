@@ -7,13 +7,53 @@ omitted, and that dependent options hide correctly. No GPU/Isaac/TTY.
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import launcher as L  # noqa: E402
 from core.telemetry import term_ui as tu  # noqa: E402
+from launcher_lib import app as A  # noqa: E402
 
 PLAIN = tu.Theme(level=tu.NONE, unicode=True)
+
+
+def _sim_parse(tokens):
+    """Parse console tokens onto a fresh sim config; return (display, errors)."""
+    cfg = L._sim_config()
+    errs = L.parse_tokens(cfg, tokens)
+    display, *_ = L.build_command(cfg)
+    return display, errs
+
+
+class _FakeScreen:
+    """Stand-in for tu.Screen: captures rendered frames, no real terminal."""
+    def __init__(self, *a, **k):
+        self.frames = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def render(self, lines):
+        self.frames.append(list(lines))
+
+
+class _FakeKeys:
+    """Feeds a scripted key sequence, then 'quit' so a loop can never hang."""
+    def __init__(self, seq):
+        self.seq = list(seq)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return self.seq.pop(0) if self.seq else "quit"
 
 
 class TestSimCommand(unittest.TestCase):
@@ -165,6 +205,155 @@ class TestRenderSmoke(unittest.TestCase):
         lines = L.render_dashboard(L._sim_config(), {}, ["x"], 0.0, PLAIN, None, [0],
                                    telemetry=sim, tele_view="mission")
         self.assertTrue(any("mission" in ln for ln in lines))
+
+
+class TestParseLine(unittest.TestCase):
+    def test_bare_word_bool(self):
+        d, errs = _sim_parse(["headless"])
+        self.assertIn("--headless", d)
+        self.assertEqual(errs, [])
+
+    def test_dashed_form(self):
+        d, _ = _sim_parse(["--headless"])
+        self.assertIn("--headless", d)
+
+    def test_choice_key_value(self):
+        d, errs = _sim_parse(["pgtt-level", "level20"])
+        self.assertIn("--pgtt-level level20", d)
+        self.assertEqual(errs, [])
+
+    def test_bare_choice_value(self):
+        d, _ = _sim_parse(["level20"])          # standalone choice value
+        self.assertIn("--pgtt-level level20", d)
+
+    def test_choice_numeric_shorthand(self):
+        d, _ = _sim_parse(["level", "20"])       # 20 -> level20
+        self.assertIn("--pgtt-level level20", d)
+
+    def test_numeric_value_and_clamp(self):
+        d, _ = _sim_parse(["max-run", "300"])
+        self.assertIn("--max-run-time-sec 300", d)
+        d2, _ = _sim_parse(["max-run", "999999"])   # clamps to maximum 3600
+        self.assertIn("--max-run-time-sec 3600", d2)
+
+    def test_multiple_tokens(self):
+        d, errs = _sim_parse(["headless", "o2", "pgtt-level", "level20"])
+        self.assertIn("--headless", d)
+        self.assertIn("--with-o2-payload", d)
+        self.assertIn("--pgtt-level level20", d)
+        self.assertEqual(errs, [])
+
+    def test_unknown_flag_reports_error(self):
+        d, errs = _sim_parse(["frobnicate"])
+        self.assertTrue(errs)
+        self.assertIn("frobnicate", errs[0])
+        self.assertEqual(d, "sim\\run_sim.bat")   # nothing applied
+
+    def test_choice_needs_value(self):
+        _d, errs = _sim_parse(["pgtt-level"])
+        self.assertTrue(errs)
+
+    def test_real_bare_choice_and_bool(self):
+        cfg = L._real_config()
+        errs = L.parse_tokens(cfg, ["lidar", "record"])
+        d, *_ = L.build_command(cfg)
+        self.assertIn("--lidar", d)
+        self.assertIn("--record", d)
+        self.assertEqual(errs, [])
+
+
+class TestComplete(unittest.TestCase):
+    def test_completes_flag_and_command(self):
+        cands = L.complete(L._sim_config(), "he")
+        self.assertIn("headless", cands)
+        self.assertIn("help", cands)          # command word
+
+    def test_completes_choice_values(self):
+        self.assertIn("level20", L.complete(L._sim_config(), "level"))
+
+    def test_target_word(self):
+        self.assertIn("sim", L.complete(L._sim_config(), "s"))
+
+
+class TestPresets(unittest.TestCase):
+    def test_both_targets_have_presets(self):
+        self.assertTrue(L.presets_for("sim"))
+        self.assertTrue(L.presets_for("real"))
+
+    def test_first_sim_preset_is_bare(self):
+        cfg = L.preset_config("sim", L.presets_for("sim")[0])
+        d, *_ = L.build_command(cfg)
+        self.assertEqual(d, "sim\\run_sim.bat")
+
+    def test_headless_preset_applies_flag(self):
+        p = next(p for p in L.presets_for("sim") if "headless" in p.tokens)
+        d, *_ = L.build_command(L.preset_config("sim", p))
+        self.assertIn("--headless", d)
+
+    def test_real_lidar_preset(self):
+        p = next(p for p in L.presets_for("real") if "lidar" in p.tokens)
+        d, *_ = L.build_command(L.preset_config("real", p))
+        self.assertIn("--lidar", d)
+
+
+class TestMenuLoop(unittest.TestCase):
+    """Drive the whole preset menu headlessly with scripted keystrokes."""
+
+    def _run(self, keys, start="sim", dashboard=False):
+        fake_keys = _FakeKeys(keys)
+        real_bc = L.build_command
+
+        def bc(cfg):                       # force 'supported' so argv reflects flags on any OS
+            d, argv, cwd, env, _sup = real_bc(cfg)
+            return d, argv, cwd, env, True
+
+        with mock.patch.object(A, "KeyReader", lambda: fake_keys), \
+                mock.patch.object(A.tu, "Screen", _FakeScreen), \
+                mock.patch.object(A, "build_command", side_effect=bc), \
+                mock.patch.object(A, "_await_return", return_value=False), \
+                mock.patch.object(A, "run_passthrough", return_value=0) as rp, \
+                mock.patch.object(A, "run_with_dashboard", return_value=0) as rd:
+            rc = A.interactive(L._sim_config(), L._real_config(), PLAIN, start,
+                               demo=False, dashboard=dashboard)
+        return rc, rp, rd
+
+    def test_enter_runs_selected_preset(self):
+        rc, rp, rd = self._run(["enter"])                 # preset 0 = full demo
+        self.assertEqual(rc, 0)
+        rp.assert_called_once()
+        rd.assert_not_called()
+        self.assertIn("run_sim.bat", rp.call_args[0][0][-1])
+
+    def test_navigate_then_run_applies_preset(self):
+        _rc, rp, _rd = self._run(["down", "enter"])       # preset 1 = headless
+        self.assertIn("--headless", rp.call_args[0][0])
+
+    def test_edit_toggle_then_run(self):
+        # e -> flag editor; ↓↓↓ to 'headless render'; → toggles it on; ⏎ runs.
+        keys = ["e", "down", "down", "down", "right", "enter"]
+        _rc, rp, _rd = self._run(keys)
+        self.assertIn("--headless", rp.call_args[0][0])
+
+    def test_edit_esc_returns_to_menu(self):
+        # e opens the editor, esc backs out, ⏎ then runs the untouched preset 0.
+        _rc, rp, _rd = self._run(["e", "esc", "enter"])
+        rp.assert_called_once()
+        self.assertNotIn("--headless", rp.call_args[0][0])   # nothing was toggled
+
+    def test_dashboard_flag_uses_dashboard(self):
+        _rc, rp, rd = self._run(["enter"], dashboard=True)
+        rd.assert_called_once()
+        rp.assert_not_called()
+
+    def test_quit_never_launches(self):
+        rc, rp, rd = self._run(["q"])
+        self.assertEqual(rc, 0)
+        rp.assert_not_called()
+        rd.assert_not_called()
+
+    def test_tab_switches_to_real(self):
+        _rc, rp, _rd = self._run(["tab", "enter"])        # real preset 0 -> bash run_real.sh
+        self.assertEqual(rp.call_args[0][0][0], "bash")
 
 
 if __name__ == "__main__":

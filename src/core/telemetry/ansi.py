@@ -17,40 +17,48 @@ from typing import Dict, List, Optional, Tuple
 # Palette (verbatim from DESIGN.md §2)
 # ---------------------------------------------------------------------------
 
-#: Semantic role -> hex. These are the btop "Semantic Roles" table.
+#: Semantic role -> hex, from DESIGN.md §2 "Semantic Roles" (Claude Code theme).
+#: Historical btop role KEYS are all preserved so every call site keeps working;
+#: only the hues moved to the warm terracotta/hot-pink/lavender palette.
+#:   primary   = terracotta brand accent (titles, prompts, stage names, chips)
+#:   secondary = hot pink (the `$` command echo + tool-call borders)
+#:   accent    = lavender (running/in-progress state, selection markers)
 PALETTE: Dict[str, str] = {
-    "bg": "#000000",
-    "fg": "#cccccc",
-    "primary": "#eeeeee",
-    "secondary": "#77ca9b",
-    "accent": "#dc4c4c",
-    "success": "#77ca9b",
-    "warning": "#cbc06c",
-    "error": "#dc4c4c",
-    "muted": "#555555",
-    "surface": "#111111",
-    # extra named hues used by gradients / temperatures
-    "green": "#77ca9b",
-    "yellow": "#cbc06c",
-    "red": "#dc4c4c",
-    "blue": "#4897d4",
-    "pink": "#ff40b6",
+    "bg": "#1a1a1a",
+    "fg": "#e9e9e9",
+    "primary": "#d77757",     # terracotta — Anthropic brand accent
+    "secondary": "#fd5db1",   # hot pink — command echo / tool borders
+    "accent": "#b1b9f9",      # lavender — permission / running state
+    "success": "#4eba65",
+    "warning": "#ffc107",
+    "error": "#ff6b80",
+    "muted": "#888888",
+    "surface": "#373737",
+    # extra named hues used by gradients / temperatures / older call sites
+    "green": "#4eba65",
+    "yellow": "#ffc107",
+    "red": "#ff6b80",
+    "blue": "#b1b9f9",        # remapped to lavender (kept for legacy callers)
+    "pink": "#fd5db1",
+    "shimmer": "#eb9f7f",     # lighter terracotta (spinner shimmer)
+    "auto": "#af87ff",        # purple — auto-accept / YOLO mode
 }
 
-#: Box-specific accents (DESIGN.md §2 "Box-Specific Accents"). The four btop
-#: hues are reused as the accent vocabulary for this project's panels.
+#: Panel-border accents. DESIGN.md keeps content mostly unframed, so these are
+#: muted, warm tints of the palette rather than the four saturated btop hues.
 BOX_ACCENTS: Dict[str, str] = {
-    "cpu": "#556d59",   # muted green
-    "mem": "#6c6c4b",   # olive
-    "net": "#5c588d",   # muted purple
-    "proc": "#805252",  # muted red
+    "cpu": "#d77757",   # terracotta (banner / progress)
+    "mem": "#9a7d55",   # muted tan/gold
+    "net": "#7f86c4",   # muted lavender
+    "proc": "#c44d8c",  # muted hot pink
 }
 
-#: The green → yellow → red severity ramp (DESIGN.md §2 "Gradient Ramps").
+#: The green → amber → red-pink severity ramp (meters + sparklines), tracking
+#: the DESIGN.md success/warning/error hues.
 _GRADIENT_STOPS: List[Tuple[float, Tuple[int, int, int]]] = [
-    (0.0, (0x77, 0xCA, 0x9B)),
-    (0.5, (0xCB, 0xC0, 0x6C)),
-    (1.0, (0xDC, 0x4C, 0x4C)),
+    (0.0, (0x4E, 0xBA, 0x65)),
+    (0.5, (0xFF, 0xC1, 0x07)),
+    (1.0, (0xFF, 0x6B, 0x80)),
 ]
 
 _ESC = "\x1b"

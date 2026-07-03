@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""go2 launcher — a btop-style interface to start the robot stack.
+"""go2 launcher — a Claude-Code-styled preset menu to start the robot stack.
 
-A "cool interface to start the thing" for both the **sim** and the **real**
-robot, styled per the repo's ``DESIGN.md`` (rounded notched boxes, gradient
-meters, dense panels, jewel-tone accents). You pick the flags interactively and
-it builds + runs the equivalent normal command, then shows a live dashboard of
-the launch.
+A menu of ready-to-run launch profiles for both the **sim** and the **real**
+robot, styled per the repo's ``DESIGN.md`` (terracotta accent, dashed input,
+hot-pink command echo). Arrow through the presets and press Enter to run the
+highlighted one; press ``e`` to edit its flags on a dashed input line (tab-
+completes) before running. Either way it runs the equivalent normal command,
+streaming the (restyled) output by default (``dash`` opens the live dashboard).
 
 This is a thin, additive convenience layer. The underlying entry points are
 untouched and you can STILL run them directly with normal commands:
@@ -15,13 +16,14 @@ untouched and you can STILL run them directly with normal commands:
 
 Usage
 -----
-    python launcher.py                # interactive start screen (sim/real)
-    python launcher.py --real         # preselect the real-robot target
+    python launcher.py                # interactive preset menu (sim/real)
+    python launcher.py --real         # start on the real Go2 EDU target
     python launcher.py --preview      # static, non-interactive UI preview (no GPU/TTY)
     python launcher.py --demo         # interactive, but Enter prints the command instead of launching
+    python launcher.py --dashboard    # launches open the live dashboard instead of streaming
     python launcher.py --no-color     # plain ASCII (also respects NO_COLOR)
 
-Keys: ↑/↓ move · ←/→ or Space change · Tab switch sim/real · Enter launch · q quit
+Menu: ↑↓ select · Enter run · e edit the flags · Tab switch sim/real · ? flags · q quit.
 """
 
 from __future__ import annotations
@@ -54,14 +56,21 @@ from core.telemetry import term_ui as tu  # noqa: E402,F401
 # ---------------------------------------------------------------------------
 
 from launcher_lib.config import (  # noqa: E402,F401
+    COMMAND_WORDS,
     Config,
     Option,
+    Preset,
     _REAL_PIPELINE,
     _SIM_PIPELINE,
     _STAGE_RE,
     _real_config,
     _sim_config,
     build_command,
+    catalog,
+    complete,
+    parse_tokens,
+    preset_config,
+    presets_for,
 )
 from launcher_lib.keyreader import KeyReader  # noqa: E402,F401
 from launcher_lib.render import (  # noqa: E402,F401
@@ -80,6 +89,8 @@ from launcher_lib.render import (  # noqa: E402,F401
     _two_col,
     _width,
     render_dashboard,
+    render_help,
+    render_menu,
     render_start,
 )
 from launcher_lib.runner import (  # noqa: E402,F401

@@ -62,13 +62,17 @@ from .ansi import (  # noqa: F401
     gradient_rgb,
 )
 from .components import (  # noqa: F401
+    THINKING_VERBS,
     block_width,
     fit_height,
     hjoin,
+    input_box,
     kv,
     meter,
     panel,
     sparkline,
+    spinner,
+    thinking,
 )
 from .screen import (  # noqa: F401
     Screen,

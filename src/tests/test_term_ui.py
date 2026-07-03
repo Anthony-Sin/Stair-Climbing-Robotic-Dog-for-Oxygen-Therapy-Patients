@@ -139,9 +139,10 @@ class TestLayout(unittest.TestCase):
 
 class TestGradient(unittest.TestCase):
     def test_gradient_endpoints(self):
-        self.assertEqual(tu.gradient_rgb(0.0), (0x77, 0xCA, 0x9B))
-        self.assertEqual(tu.gradient_rgb(1.0), (0xDC, 0x4C, 0x4C))
-        self.assertEqual(tu.gradient_rgb(0.5), (0xCB, 0xC0, 0x6C))
+        # DESIGN.md success -> warning -> error (green -> amber -> red-pink).
+        self.assertEqual(tu.gradient_rgb(0.0), (0x4E, 0xBA, 0x65))
+        self.assertEqual(tu.gradient_rgb(1.0), (0xFF, 0x6B, 0x80))
+        self.assertEqual(tu.gradient_rgb(0.5), (0xFF, 0xC1, 0x07))
 
     def test_gradient_monotone_red_rises(self):
         self.assertLess(tu.gradient_rgb(0.1)[0], tu.gradient_rgb(0.9)[0])
@@ -176,8 +177,11 @@ class TestStatusGlyphs(unittest.TestCase):
             self.assertTrue(tu.state_glyph(state, COLOR))
 
     def test_ascii_glyph_fallback_no_unicode(self):
-        g = tu.state_glyph("ready", PLAIN)
-        self.assertNotIn("✔", g)
+        # PLAIN theme has unicode=True but the point is the ASCII map: the
+        # unicode-only glyph must not leak when a fallback exists.
+        g = tu.state_glyph("ready", tu.Theme(level=tu.NONE, unicode=False))
+        self.assertNotIn("✓", g)
+        self.assertIn("+", g)
 
 
 if __name__ == "__main__":

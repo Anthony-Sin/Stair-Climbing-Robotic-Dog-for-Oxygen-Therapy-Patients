@@ -67,7 +67,8 @@ class KeyReader:
             if ch in ("\x00", "\xe0"):
                 code = msvcrt.getwch()
                 return {"H": "up", "P": "down", "K": "left", "M": "right",
-                        "I": "pgup", "Q": "pgdn", "G": "home", "O": "end"}.get(code, "")
+                        "I": "pgup", "Q": "pgdn", "G": "home", "O": "end",
+                        "S": "del"}.get(code, "")
             return self._classify(ch)
         ch = sys.stdin.read(1)
         if ch == "\x1b":
@@ -82,7 +83,7 @@ class KeyReader:
                             break
                         seq += c
                     return {"5": "pgup", "6": "pgdn", "1": "home", "7": "home",
-                            "4": "end", "8": "end"}.get(seq, "")
+                            "4": "end", "8": "end", "3": "del"}.get(seq, "")
                 return {"A": "up", "B": "down", "C": "right", "D": "left",
                         "H": "home", "F": "end"}.get(code, "")
             return "esc"

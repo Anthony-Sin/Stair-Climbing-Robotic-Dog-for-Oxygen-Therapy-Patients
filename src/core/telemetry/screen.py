@@ -39,11 +39,18 @@ class Screen:
             self._active = False
 
     def render(self, lines: Iterable[str]) -> None:
-        """Repaint from the home position, clearing each line to EOL."""
+        """Repaint from the home position, clearing each line to EOL.
+
+        In alt-screen mode the final line gets NO trailing newline: writing a
+        newline after the last row of a full-height frame scrolls the buffer up
+        one line, pushing the top row (the header) off-screen.
+        """
+        rows = list(lines)
         buf = [f"{_ESC}[H"] if self._active else []
-        for ln in lines:
+        for i, ln in enumerate(rows):
             buf.append(ln + (f"{_ESC}[K" if self._active else ""))
-            buf.append("\n")
+            if not self._active or i < len(rows) - 1:
+                buf.append("\n")
         if self._active:
             buf.append(f"{_ESC}[J")  # clear below
         self.stream.write("".join(buf))

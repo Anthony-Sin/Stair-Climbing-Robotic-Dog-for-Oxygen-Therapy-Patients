@@ -179,5 +179,5 @@ def _print_summary(cfg: Config, rc: int, theme: tu.Theme) -> None:
                               theme, 7, "muted", bold_value=False))
         except Exception:
             pass
-    for ln in tu.panel("done", rows, W, accent="cpu", theme=theme):
+    for ln in tu.panel("done", rows, W, accent="success" if rc == 0 else "proc", theme=theme):
         print(ln)

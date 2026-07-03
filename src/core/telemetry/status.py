@@ -15,24 +15,26 @@ from .theme import Theme, default_theme
 # Status glyphs
 # ---------------------------------------------------------------------------
 
-#: launcher stage states -> (glyph, color). ASCII fallbacks chosen by Theme.
+#: launcher stage states -> (glyph, color), per DESIGN.md §7 icon set.
+#: Running is lavender (in-progress), success green, notice/warning amber,
+#: failure the soft red-pink. ASCII fallbacks chosen by Theme.
 _STATE_STYLE = {
-    "start": ("▶", "blue"),
-    "running": ("▶", "blue"),
-    "notice": ("•", "yellow"),
-    "warning": ("▲", "warning"),
-    "ready": ("✔", "success"),
-    "complete": ("✔", "success"),
-    "ok": ("✔", "success"),
+    "start": ("▸", "accent"),
+    "running": ("▸", "accent"),
+    "notice": ("•", "warning"),
+    "warning": ("⚠", "warning"),
+    "ready": ("✓", "success"),
+    "complete": ("✓", "success"),
+    "ok": ("✓", "success"),
     "cleanup": ("◦", "muted"),
     "pruned": ("◦", "muted"),
     "skipped": ("–", "muted"),
     "dry-run": ("◦", "muted"),
-    "failed": ("✖", "error"),
-    "error": ("✖", "error"),
+    "failed": ("✗", "error"),
+    "error": ("✗", "error"),
 }
 _STATE_ASCII = {
-    "▶": ">", "•": "*", "▲": "!", "✔": "OK", "◦": "-", "–": "-", "✖": "X",
+    "▸": ">", "•": "*", "⚠": "!", "✓": "+", "◦": "-", "–": "-", "✗": "x",
 }
 
 
@@ -65,7 +67,7 @@ def status_line(timestamp: str, stage: str, state: str, message: str,
     theme = theme or default_theme()
     ts = theme.paint(timestamp, fg="muted")
     gl = state_glyph(state, theme)
-    stg = theme.paint(pad(stage, 11), fg="secondary", bold=True)
+    stg = theme.paint(pad(stage, 11), fg="primary", bold=True)
     _, color = _STATE_STYLE.get(state, ("•", "fg"))
     msg = theme.paint(message, fg=color if state in ("failed", "error") else "fg")
     return f"{ts} {gl} {stg} {msg}"

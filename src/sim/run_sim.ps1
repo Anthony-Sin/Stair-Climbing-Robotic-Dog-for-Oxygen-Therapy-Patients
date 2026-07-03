@@ -171,12 +171,14 @@ public static extern bool SetConsoleMode(System.IntPtr hConsoleHandle, uint dwMo
     } catch {}
 }
 
-# DESIGN.md palette (role -> r;g;b)
+# DESIGN.md palette (Claude Code theme; role -> r;g;b). Mirrors
+# core/telemetry/ansi.py so the PowerShell console matches the Python console:
+# primary = terracotta, blue = lavender, green/yellow/red = success/notice/error.
 $script:Pal = @{
-    fg      = "204;204;204"; primary = "238;238;238"; muted = "85;85;85"
-    green   = "119;202;155"; yellow  = "203;192;108";  red   = "220;76;76"
-    blue    = "72;151;212";  cpu     = "85;109;89";     net   = "92;88;141"
-    proc    = "128;82;82";   mem     = "108;108;75"
+    fg      = "233;233;233"; primary = "215;119;87"; muted = "136;136;136"
+    green   = "78;186;101";  yellow  = "255;193;7";   red   = "255;107;128"
+    blue    = "177;185;249"; cpu     = "215;119;87";  net   = "127;134;196"
+    proc    = "196;77;140";  mem     = "154;125;85"
 }
 
 function Use-Paint {
@@ -255,25 +257,41 @@ function Format-KvRow {
 
 function Get-StateGlyph {
     param([string]$State)
-    $map = @{
-        start = @("Run", "blue"); running = @("Run", "blue"); notice = @("...", "yellow")
-        warning = @("!", "yellow"); ready = @("OK", "green"); complete = @("OK", "green")
-        cleanup = @("-", "muted"); pruned = @("-", "muted"); skipped = @("-", "muted")
-        "dry-run" = @("-", "muted"); failed = @("X", "red"); error = @("X", "red")
+    # DESIGN.md §7 icons (unicode) with ASCII fallbacks. Mirrors
+    # core/telemetry/status.py: running = lavender ▸, success = green ✓,
+    # notice/warning = amber, failure = red-pink ✗.
+    if ($script:UseUnicode) {
+        $map = @{
+            start = @([char]0x25B8, "blue"); running = @([char]0x25B8, "blue"); notice = @([char]0x2022, "yellow")
+            warning = @([char]0x26A0, "yellow"); ready = @([char]0x2713, "green"); complete = @([char]0x2713, "green")
+            ok = @([char]0x2713, "green"); cleanup = @([char]0x25E6, "muted"); pruned = @([char]0x25E6, "muted")
+            skipped = @([char]0x2013, "muted"); "dry-run" = @([char]0x25E6, "muted"); failed = @([char]0x2717, "red"); error = @([char]0x2717, "red")
+        }
+        $fallback = @([char]0x2022, "fg")
+    } else {
+        $map = @{
+            start = @(">", "blue"); running = @(">", "blue"); notice = @("*", "yellow")
+            warning = @("!", "yellow"); ready = @("+", "green"); complete = @("+", "green")
+            ok = @("+", "green"); cleanup = @("-", "muted"); pruned = @("-", "muted"); skipped = @("-", "muted")
+            "dry-run" = @("-", "muted"); failed = @("x", "red"); error = @("x", "red")
+        }
+        $fallback = @("*", "fg")
     }
     $entry = $map[$State]
-    if (-not $entry) { $entry = @("*", "fg") }
-    return Use-Paint (Format-VisPad $entry[0] 3) $script:Pal[$entry[1]] -Bold
+    if (-not $entry) { $entry = $fallback }
+    return Use-Paint (Format-VisPad $entry[0] 1) $script:Pal[$entry[1]] -Bold
 }
 
 function Format-StageConsole {
     param([datetime]$Now, [string]$Stage, [string]$State, [string]$Message)
-    $ts = Use-Paint ("[{0:HH:mm:ss}]" -f $Now) $script:Pal.muted
+    # Colored console form only (the plain $line still carries the machine-readable
+    # "[HH:mm:ss] stage state message" the launcher/log parsers depend on).
+    $ts = Use-Paint ("{0:HH:mm:ss}" -f $Now) $script:Pal.muted
     $gl = Get-StateGlyph $State
-    $stg = Use-Paint (Format-VisPad $Stage 12) $script:Pal.green -Bold
+    $stg = Use-Paint (Format-VisPad $Stage 10) $script:Pal.primary -Bold
     $msgColor = if ($State -in @("failed", "error")) { $script:Pal.red } else { $script:Pal.fg }
     $msg = Use-Paint $Message $msgColor
-    return "$ts $gl $stg $msg"
+    return "$ts  $gl  $stg $msg"
 }
 
 $RepoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
@@ -350,12 +368,12 @@ if ($WarmShutdown) {
     exit 0
 }
 
-# btop-style startup banner (console only; logs already capture the same facts).
+# Startup banner (console only; logs already capture the same facts).
 $bannerW = 64
 Write-BtopBox -Title "go2 sim - stair climb" -Width $bannerW -Accent "cpu" -Lines @(
     (Use-Paint "stair-climbing robotic dog - oxygen-therapy patients" $script:Pal.muted),
     (Format-KvRow "run" $Stamp 6 "primary"),
-    (Format-KvRow "tip" "launcher.py for an interactive start screen" 6 "blue")
+    (Format-KvRow "tip" "launch.bat for the interactive console" 6 "blue")
 )
 
 # Clear stale simulation runs (Docker containers and local processes) to release file locks

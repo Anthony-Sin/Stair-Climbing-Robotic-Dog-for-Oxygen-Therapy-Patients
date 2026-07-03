@@ -148,3 +148,77 @@ def sparkline(values: Sequence[float], theme: Optional[Theme] = None,
         idx = min(len(ramp) - 1, int(round(norm * (len(ramp) - 1))))
         out.append(theme.paint(ramp[idx], fg=gradient_rgb(norm)))
     return "".join(out)
+
+
+# ---------------------------------------------------------------------------
+# Claude Code components (DESIGN.md §4–§8): dashed input box + thinking spinner
+# ---------------------------------------------------------------------------
+
+#: Signature reverse-mirror spinner cycle (DESIGN.md §8). ASCII falls back to a
+#: plain rotator.
+_SPIN_FRAMES = "·✢✳✶✻✽✻✶✳✢"
+_SPIN_ASCII = "|/-\\"
+
+#: A handful of the whimsical thinking verbs (DESIGN.md §5). Kept short and
+#: index-selected (no RNG) so renders stay deterministic/testable.
+THINKING_VERBS = (
+    "Percolating", "Cogitating", "Ruminating", "Simmering", "Noodling",
+    "Whirring", "Marinating", "Tinkering", "Conjuring", "Assembling",
+)
+
+
+def spinner(t: float, theme: Optional[Theme] = None) -> str:
+    """One shimmering terracotta spinner frame sampled at time *t* (seconds)."""
+    theme = theme or default_theme()
+    if theme.unicode:
+        return theme.paint(_SPIN_FRAMES[int(t * 8) % len(_SPIN_FRAMES)],
+                           fg="primary", bold=True)
+    return theme.paint(_SPIN_ASCII[int(t * 8) % len(_SPIN_ASCII)], fg="primary", bold=True)
+
+
+def thinking(t: float, theme: Optional[Theme] = None, verb: Optional[str] = None,
+             suffix: str = "") -> str:
+    """Spinner + a whimsical verb, e.g. ``✳ Percolating…  <suffix>``."""
+    theme = theme or default_theme()
+    if verb is None:
+        verb = THINKING_VERBS[int(t) % len(THINKING_VERBS)]
+    line = spinner(t, theme) + " " + theme.paint(f"{verb}…", fg="primary")
+    if suffix:
+        line += "  " + theme.paint(suffix, fg="muted")
+    return line
+
+
+def _dashed(width: int, theme: Theme) -> str:
+    """The DESIGN.md dashed rule (``- - - -``), muted gray — NOT box-drawing."""
+    n = max(1, width // 2)
+    return theme.paint(("- " * n)[:width].rstrip(), fg="muted")
+
+
+def input_box(text: str, cursor: int, theme: Optional[Theme] = None,
+              width: int = 60, prompt: str = "›") -> List[str]:
+    """The signature Claude Code input: dashed border, ``›`` prompt, block cursor.
+
+    Horizontally scrolls so *cursor* stays visible on long lines. Returns three
+    rows (top dash, input, bottom dash).
+    """
+    theme = theme or default_theme()
+    width = max(20, width)
+    cursor = max(0, min(cursor, len(text)))
+    avail = width - 4  # " › " + a trailing cell
+
+    # Scroll a window so the cursor is always shown.
+    start = 0
+    if len(text) > avail:
+        start = max(0, cursor - avail + 1)
+    win = text[start:start + avail]
+    cur = cursor - start
+
+    if cur >= len(win):
+        body = theme.paint(win, fg="fg") + theme.paint(" ", fg="bg", bg="primary")
+    else:
+        body = (theme.paint(win[:cur], fg="fg")
+                + theme.paint(win[cur] or " ", fg="bg", bg="primary")
+                + theme.paint(win[cur + 1:], fg="fg"))
+    line = " " + theme.paint(prompt, fg="primary", bold=True) + " " + body
+    dash = _dashed(width, theme)
+    return [dash, line, dash]
