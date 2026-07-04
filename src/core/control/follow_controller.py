@@ -399,7 +399,8 @@ class PersonFollower:
     def update(self, main_person: Optional[Union[Dict[str, Any], Sequence[float]]], depth_image: np.ndarray,
                frame_shape: Tuple[int, int], depth_mapper: Optional[Any] = None,
                lidar_profile: Optional[Dict[str, Any]] = None,
-               robot_speed: float = 0.0, robot_yaw_speed: float = 0.0) -> Tuple[float, float, Dict[str, Any]]:
+               robot_speed: float = 0.0, robot_yaw_speed: float = 0.0,
+               on_stairs: bool = False) -> Tuple[float, float, Dict[str, Any]]:
         """
         Update person following commands
 
@@ -412,7 +413,13 @@ class PersonFollower:
                 its range at the person's bearing is fused with the depth estimate.
             robot_speed: Last commanded forward velocity (m/s).
             robot_yaw_speed: Last commanded angular velocity (rad/s).
-            
+            on_stairs: True when the robot is committed to climbing (the controller's
+                stairs_action_active latch, previous frame). On the stairs the 2D LiDAR ray
+                at the person's bearing measures the RISER in front of the low camera, not the
+                elevated person, so the LiDAR person-range is dropped from the fusion when it
+                reads clearly nearer than the depth (see the stair-aware gate below). Flat
+                ground (default False) keeps the full depth+LiDAR fusion.
+
         Returns:
             Tuple of (trans_x_command, rotation_command, debug_info)
             Returns (0.0, 0.0, debug_info) if person is lost or depth is invalid
@@ -559,9 +566,31 @@ class PersonFollower:
                         None if bearing is None else round(math.degrees(bearing), 2)
                     )
 
-            if depth_m is not None or lidar_m is not None:
+            # --- Stair-aware LiDAR person-range gate (person-vs-riser discriminator) ----
+            # PROBLEM: on the stairs the 2D LiDAR ray at the person's bearing strikes the
+            # RISER right in front of the low camera (~0.5 m), NOT the person -- who is the
+            # MOVING target, elevated and farther up the steps. fuse_distance's reject_far_depth
+            # guard then trusts that near riser over the (correct, farther) depth, collapsing the
+            # perceived gap so the follow controller BRAKES on a phantom "caught up"
+            # (run_sim_20260703_202548: braked at a false 0.56 m gap while the patient was 4.1 m
+            # ahead up the stairs, with the person detected the whole time).
+            # DISCRIMINATOR (geometry + motion): the depth camera sees OVER the riser and tracks
+            # the person as they walk up, while the LiDAR pins to the static riser. So when
+            # committed to the stairs AND the LiDAR reads clearly NEARER than the depth (the
+            # riser-vs-elevated-person signature), DROP the LiDAR for this frame and let the
+            # person's depth carry the range. On flat ground (on_stairs False) nothing changes --
+            # the LiDAR still guards against the depth background-latch there.
+            _stair_lidar_is_riser = bool(
+                on_stairs
+                and lidar_m is not None and depth_m is not None
+                and float(lidar_m) < 0.75 * float(depth_m)
+            )
+            debug_info['stair_lidar_riser_rejected'] = _stair_lidar_is_riser
+            _fusion_lidar_m = None if _stair_lidar_is_riser else lidar_m
+
+            if depth_m is not None or _fusion_lidar_m is not None:
                 fusion = fuse_distance(
-                    depth_m, lidar_m,
+                    depth_m, _fusion_lidar_m,
                     agree_tol_m=self.config.lidar_agree_tol_m,
                     rel_tol=self.config.lidar_agree_rel_tol,
                     lidar_weight=self.config.lidar_weight,

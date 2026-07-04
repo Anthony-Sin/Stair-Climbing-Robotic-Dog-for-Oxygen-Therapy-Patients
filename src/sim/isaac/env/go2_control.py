@@ -709,6 +709,24 @@ class _Go2StandUp:
         if self.frame >= total:
             self._finish()
 
+    def hold_folded(self) -> None:
+        """Re-apply the folded crouch hold WITHOUT advancing the ramp or teleporting.
+
+        Used to keep the dog stably folded on the floor while WAITING for the Docker
+        controller to come up, so the stand-up ramp runs LATER from a fully-settled state
+        instead of during Isaac's camera-init hitch -- that hitch popped the body ~0.2 m and
+        rolled it ~17 deg mid-ramp (looked like a "respawn"). The stiff position-hold gains
+        installed by seat_folded() remain; this just keeps commanding the folded target so any
+        hitch transient is pulled straight back to the crouch instead of into the visible climb.
+        Does NOT advance self.frame, so ``done`` stays False and the caller keeps scene motion
+        held until the ramp actually runs.
+        """
+        if not self.seated:
+            self.seat_folded()
+            return
+        if self.ok:
+            self._apply_target(self.folded_rad)
+
     def _finish(self) -> None:
         _handoff_drive_gains_to_policy(self.go2)
         self.done = True

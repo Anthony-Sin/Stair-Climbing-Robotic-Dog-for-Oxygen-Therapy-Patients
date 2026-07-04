@@ -454,6 +454,12 @@ def main():
     # value (compute-then-pass, incident 8.5) -- stair state persists across frames, so the one-frame
     # lag is harmless, and this fixes the never-firing on-stairs go/hold bypass.
     _prev_stairs_action_active = False
+    # Previous frame's COMMITTED (latched) stairs_action_active -- i.e. AFTER the climb-persistence
+    # latch (~L1022) and the close-range dropout (~L1475) force it True through a mid-climb detection
+    # dropout. This (NOT the genuine per-frame value above, which drops when the person occludes the
+    # stairs up close) is the right "on stairs" signal for the follow distance fusion's LiDAR-riser
+    # gate: the LiDAR hits the riser precisely during those committed-but-undetected climb frames.
+    _prev_stairs_committed = False
     # Method 1 carrot / virtual-target steering (opt-in via --carrot-follow). Body-frame breadcrumb
     # FIFO of the person; steering aims one standoff behind the newest sample. See _update_carrot_heading.
     carrot_trail: List[List[float]] = []
@@ -653,6 +659,13 @@ def main():
                 lidar_profile=frame_meta.get("lidar_profile"),
                 robot_speed=last_command_trans_x,
                 robot_yaw_speed=last_command_rotation,
+                # Committed-to-climb latch (previous frame -- the depth stair gate that
+                # produces this frame's value runs BELOW, incident 8.5 ordering). Tells the
+                # follow distance fusion the 2D LiDAR is measuring the RISER, not the elevated
+                # person, so it drops the near-LiDAR riser and trusts the person's depth. Uses the
+                # COMMITTED (latched) value, not the genuine one: genuine detection drops mid-climb
+                # when the person occludes the stairs -- exactly when the LiDAR is hitting the riser.
+                on_stairs=_prev_stairs_committed,
             )
             # LIVE stair trigger (sensor-derived): YOLO-World detection on RGB
             # (yolo_stairs_inference) + depth-camera distance below. This is what
@@ -1469,6 +1482,12 @@ def main():
             if _stair_close_dropout:
                 debug_info["stairs_action_active"] = True
             debug_info["stair_close_dropout"] = bool(_stair_close_dropout)
+            # Capture the COMMITTED (latched) stairs_action_active for NEXT frame's follow distance
+            # fusion (the LiDAR-riser gate). Both the climb-persistence latch (~L1022) and the
+            # close-range dropout (just above) have now settled, so this is the true "still on the
+            # stairs" signal even while genuine detection is dropped mid-climb -- unlike the genuine
+            # _prev_stairs_action_active captured earlier this frame.
+            _prev_stairs_committed = bool(debug_info.get("stairs_action_active", False))
             # Stair forward floor for the committed climb through the dropout. RE-ENABLED now
             # that --parkour-mask-fill far removed the near-wall surge that previously (terrain
             # mask, run_sim_20260619_032327) made any stair forward floor over-run to body_vx~1.8

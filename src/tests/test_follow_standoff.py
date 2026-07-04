@@ -666,5 +666,57 @@ class TestLostSearchDirection(unittest.TestCase):
             self.assertEqual(rotation_cmd > 0.0, cmd_positive)
 
 
+class TestStairLidarRiserGate(unittest.TestCase):
+    """On the stairs a 2D LiDAR ray at the person's bearing hits the RISER (~0.5 m) in front of
+    the low camera, NOT the elevated person up the steps. The follow distance fusion must drop
+    that near LiDAR while climbing and trust the person's depth -- otherwise fuse_distance's
+    reject_far_depth guard trusts the riser, the perceived gap collapses, and the controller
+    BRAKES on a phantom 'caught up', freezing with the person still in frame
+    (run_sim_20260703_202548: false 0.56 m gap while the patient was 4.1 m ahead up the stairs)."""
+
+    @staticmethod
+    def _encode_profile(ranges_m, step_deg=3.0):
+        import zlib, base64
+        arr = np.clip(np.asarray(ranges_m, dtype=np.float64) * 1000.0, 0, 65535).astype(np.uint16)
+        blob = base64.b64encode(zlib.compress(arr.tobytes())).decode("ascii")
+        return {"ranges_mm": blob, "n_azimuth": int(arr.shape[0]),
+                "azimuth_step_deg": step_deg, "view_range_m": 6.0, "min_range_m": 0.05}
+
+    def _make_follower(self):
+        from core.control.person_follower import PersonFollower, PersonFollowingConfig
+        cfg = PersonFollowingConfig()
+        cfg.camera_fx = 600.0
+        cfg.camera_cx = 320.0                        # 640-wide frame, principal point centred
+        cfg.lidar_fusion_enabled = True
+        return PersonFollower(cfg)
+
+    def _run(self, on_stairs):
+        f = self._make_follower()
+        frame_shape = (480, 640)
+        depth = np.full((480, 640), 2300.0, dtype=np.float32)   # person at 2.3 m (depth is mm)
+        person = {"bbox": [300, 150, 340, 460], "matched_detection": True}  # centred -> bearing ~0
+        ranges = np.full(120, 5.0)                   # walls at 5 m everywhere...
+        for k in (0, 1, 119):                        # ...except a 0.56 m riser DEAD AHEAD (bearing 0)
+            ranges[k] = 0.56
+        _, _, dbg = f.update(person, depth, frame_shape,
+                             lidar_profile=self._encode_profile(ranges), on_stairs=on_stairs)
+        return dbg
+
+    def test_flat_ground_keeps_lidar_fusion(self):
+        # on_stairs False: unchanged -- reject_far_depth trusts the near LiDAR (this guards the
+        # depth background-latch on flat ground). The stair gate must NOT fire.
+        dbg = self._run(on_stairs=False)
+        self.assertFalse(dbg.get("stair_lidar_riser_rejected"))
+        self.assertIsNotNone(dbg.get("fused_distance_m"))
+        self.assertLess(float(dbg["fused_distance_m"]), 1.0)    # near LiDAR (riser-like) won
+
+    def test_on_stairs_rejects_riser_and_uses_person_depth(self):
+        # on_stairs True: the 0.56 m riser LiDAR is dropped, the person's depth (2.3 m) carries
+        # the range -> the controller sees the person far ahead, no false brake.
+        dbg = self._run(on_stairs=True)
+        self.assertTrue(dbg.get("stair_lidar_riser_rejected"))
+        self.assertGreater(float(dbg["fused_distance_m"]), 1.5)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -313,6 +313,15 @@ _ROBOT_COLLAPSE_TILT_DEG = math.degrees(ROBOT_COLLAPSE_TILT_RAD)  # ~30 deg
 # top riser and steps onto the landing (the off-ramp transition) -- a real
 # topple stays past the threshold far longer, so genuine falls still trip.
 ROBOT_FALL_SUSTAIN_SEC = 1.0
+# Stand-up-from-ground: keep the dog FOLDED (stable, held) until the Docker controller is
+# actually up and streaming, THEN run the stand-up ramp -- so the ramp does not execute during
+# Isaac's camera-init hitch, which popped the body ~0.2 m and rolled it ~17 deg mid-ramp (looked
+# like a "respawn"; run_sim_20260703_193958). This is the FALLBACK wall-clock cap: if the
+# controller never streams within this many seconds, stand up ANYWAY so a slow/absent Docker
+# cannot hang the dog folded forever. The gate is cmd_count>0 (ANY packet, incl. zeros), NOT a
+# nonzero command -- a folded, floor-pointed camera never elicits a nonzero command, so gating on
+# that would deadlock (the documented early-shutdown regression this cap guards against).
+STANDUP_CONTROLLER_WAIT_MAX_SEC = 120.0
 # Stair-waypoint CLIMB-QUALITY gate. Reaching the planar waypoint is NOT enough to
 # pass the climb test: a robot can plow nose-first into the risers and wedge --
 # staying upright (never tripping the 60-deg fall watchdog) yet dragging low and
@@ -3224,6 +3233,10 @@ def main() -> None:
     CMD_TIMEOUT_SEC = 10.0 if args.headless else 2.0
     motion_wait_logged = False
     motion_start_logged = False
+    # Stand-up gating: log once when the dog begins its (deferred) stand-up ramp, and once
+    # when it first parks folded waiting for the controller, so the timeline shows the sequence.
+    standup_ramp_logged = False
+    standup_wait_logged = False
 
     # Parkour depth-camera submit cadence (physics steps between depth submissions,
     # ~parkour_depth_hz). The policy itself only re-encodes every Nth control step.
@@ -3510,10 +3523,20 @@ def main() -> None:
             # freeze/stand-up branch below) until the robot has physically stood up. Applies
             # to the follow demo AND the open-loop modes (self-test/bench/waypoint) which
             # otherwise release motion immediately -- so the dog always stands up first.
-            # The ramp runs immediately at loop entry (proven-stable); it is NOT gated on the
-            # Docker controller -- gating it on the controller (lying folded until the first
-            # command) regressed Isaac into an early shutdown, so we keep the immediate ramp.
+            #
+            # The stand-up RAMP is DEFERRED until the Docker controller is actually up and
+            # streaming (`controller_stream_seen` == cmd_count>0): the dog stays folded (stable,
+            # held by seat_folded's stiff gains) until then, so the ramp does NOT run during
+            # Isaac's camera-init hitch -- which popped the body ~0.2 m / rolled it ~17 deg
+            # mid-ramp and read as a "respawn" (run_sim_20260703_193958). Self-test/bench force
+            # cmd_count>=1, so they still stand up immediately. FALLBACK: after
+            # STANDUP_CONTROLLER_WAIT_MAX_SEC the ramp runs anyway, so a slow/absent Docker cannot
+            # hang the dog folded forever. Gating on cmd_count>0 (ANY packet, incl. zeros) -- NOT
+            # a nonzero command, which a folded floor-pointed camera can never elicit -> deadlock
+            # -- is what avoids the earlier controller-gated early-shutdown regression.
             _standing_up = _standup is not None and not _standup.done
+            _standup_ready = controller_stream_seen or (
+                (time.monotonic() - _episode_wall_start) >= float(STANDUP_CONTROLLER_WAIT_MAX_SEC))
             if _standing_up:
                 scene_motion_allowed = False
             if args.hold_motion_until_command and not scene_motion_released and not motion_wait_logged:
@@ -3610,23 +3633,41 @@ def main() -> None:
 
             _loco_ts = time.monotonic()
             if not scene_motion_allowed:
-                # Two reasons to be here, handled in order:
-                #  1) Standing up from the ground -- advance one step of the stand-up ramp
-                #     (folded -> standing) under the stiff hold gains. This runs on camera
-                #     (the recorders capture this branch) and finishes before any command.
-                #  2) Demo gated waiting for the first controller command -- FREEZE the
+                # Three reasons to be here, handled in order:
+                #  1a) Seated folded, WAITING for the Docker controller to come up -- keep holding
+                #      the folded crouch (stable on the floor) so the stand-up ramp runs LATER from
+                #      a settled state, not during the camera-init hitch (the "respawn" pop).
+                #  1b) Controller is up -- advance one step of the stand-up ramp (folded -> standing)
+                #      under the stiff hold gains. This runs on camera (the recorders capture it).
+                #  2)  Stood up, demo gated waiting for the first controller command -- FREEZE the
                 #     robot at its spawn pose facing the person (+X). A free policy stand has
                 #     no absolute position/yaw feedback, so at zero command it slowly drifts
                 #     and yaws -- turning the forward camera off the person, so YOLO never
                 #     detects it, never sends a command, and the gate never releases
                 #     (deadlock). Freezing keeps the person centred until the first command.
                 if _standing_up:
-                    _standup.tick()
-                    # Startup pose time-series through the stand-up ramp (every ~20 control
-                    # steps) so the fold -> stand motion is verifiable in isaac_env.jsonl
-                    # without a video (the fall_diag x/y stream is still gated off here).
-                    if int(getattr(_standup, "frame", 0)) % 20 == 0:
-                        _log_go2_startup_pose(go2, phase="standup", step=int(getattr(_standup, "frame", 0)))
+                    if _standup_ready:
+                        if not standup_ramp_logged:
+                            standup_ramp_logged = True
+                            log_event(LOGGER, logging.INFO, "go2_standup_begin",
+                                      "Docker controller is streaming; standing the dog up now",
+                                      controller_stream_seen=bool(controller_stream_seen))
+                        _standup.tick()
+                        # Startup pose time-series through the stand-up ramp (every ~20 control
+                        # steps) so the fold -> stand motion is verifiable in isaac_env.jsonl
+                        # without a video (the fall_diag x/y stream is still gated off here).
+                        if int(getattr(_standup, "frame", 0)) % 20 == 0:
+                            _log_go2_startup_pose(go2, phase="standup", step=int(getattr(_standup, "frame", 0)))
+                    else:
+                        # Controller not streaming yet -- stay FOLDED (held) so the ramp runs later
+                        # from a settled state, keeping the camera-init hitch off the visible stand.
+                        _standup.hold_folded()
+                        if not standup_wait_logged:
+                            standup_wait_logged = True
+                            log_event(LOGGER, logging.INFO, "go2_standup_wait_controller",
+                                      "Dog held folded until the Docker controller starts streaming "
+                                      "(then it stands up)")
+                            _log_go2_startup_pose(go2, phase="folded_wait", step=0)
                 else:
                     _freeze_go2_at_spawn(go2)
                 record_go2_telemetry(

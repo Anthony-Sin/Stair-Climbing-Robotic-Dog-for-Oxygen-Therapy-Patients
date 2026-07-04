@@ -20,7 +20,11 @@ param(
     [switch]$NoIsaacReadyWait,
     [int]$IsaacReadyTimeoutSec = 420,
     [int]$KeepRunLogs = 1,
-    [int]$MaxRunTimeSec = 900,
+    # Docker-container watchdog (s). MUST stay ABOVE the episode's own hard cap
+    # (--max-episode-wall-sec, default 900 = 15 min) so the container is not killed
+    # at the same instant the episode ends -- Isaac needs a few seconds after the
+    # cap fires to finalize reports/screenshots/videos. 1080 = 15 min episode + 3 min headroom.
+    [int]$MaxRunTimeSec = 1080,
     # Low-level Go2 controller: 'pgtt' (default, phase-guided heightmap stair policy)
     # or 'parkour' (legacy depth/vision policy + climbers) for A/B. PgttLevel selects
     # the curriculum checkpoint (level03..level20; higher = trained on taller stairs).

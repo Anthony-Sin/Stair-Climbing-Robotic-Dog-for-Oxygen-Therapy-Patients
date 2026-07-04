@@ -82,6 +82,7 @@ class HandoffController:
         # --- vertical-progress watchdog state ---
         self._climb_progress_z: Optional[float] = None  # highest base_z reached this climb
         self._climb_stall_sec = 0.0        # time since the body last gained height
+        self._climb_stall_retries = 0      # mid-incline stall/hard-cap HOLDs (never hand the incline to PGTT)
         # Heading captured the instant stair-commit begins; the commit heading-lock holds
         # THIS (not absolute yaw 0, which is "up +x" in sim but "power-on pose" on the robot).
         self._commit_yaw0: Optional[float] = None
@@ -110,6 +111,7 @@ class HandoffController:
         self._crest_logged = False
         self._climb_progress_z = None
         self._climb_stall_sec = 0.0
+        self._climb_stall_retries = 0
         self._commit_yaw0 = None
         self._post_climb_reacquire = False
 
@@ -305,6 +307,7 @@ class HandoffController:
                     self._climb_elapsed = 0.0
                     self._climb_progress_z = float(base_z) if base_z is not None else None
                     self._climb_stall_sec = 0.0
+                    self._climb_stall_retries = 0
                     if backend not in ("parkour", "blind_rl"):
                         self.climber.reset()
                         # Anti-jolt: seed the IK climber's slew limiter from the CURRENT
@@ -460,6 +463,39 @@ class HandoffController:
             done_egress = self._egress and egress_done and stairs_clear
             hard_cap = elapsed >= float(self.cfg.climb_max_sec)
             abort = tilt >= float(self.cfg.climb_abort_tilt_rad)
+            # --- SAFETY: never hand the INCLINE back to the flat-ground walker (incident 8.8) ----
+            # The two "give up" exits -- the vertical-progress stall watchdog (climb_stuck) and the
+            # runaway hard-cap -- both set state="walk", handing the legs to PGTT. PGTT is a
+            # FLAT-GROUND policy; taking the legs mid-staircase (26 deg incline) topples the dog.
+            # run_sim_20260703_193958 handed back on a mid-stair stall at z=1.607 m -- still UPRIGHT
+            # (14 deg tilt, ~step 9 of 14) -- and flipped 95 s later. So these give-up exits may fire
+            # ONLY once we have POSITIVE evidence the top is reached: `stairs_clear` (BOTH the depth
+            # detector AND the GT terrain read flat ahead, the same debounced crest signal used by
+            # egress; on the real robot stairs_ahead_gt is None so this reduces to the depth clear).
+            # This mirrors the design already applied to `climb_max_sec` (see handoff_config.py).
+            if hard_cap and not stairs_clear:
+                # Runaway backstop is a BACKSTOP, not an event -- suppress it silently on the incline
+                # so a slow-but-progressing long climb runs to the actual crest instead of bailing.
+                hard_cap = False
+            if climb_stuck and not stairs_clear:
+                # Genuinely wedged mid-climb: HOLD the climber (the only controller that can balance
+                # on the stair), reset the progress window for a fresh attempt, and emit a heartbeat
+                # WARNING so a stuck climb is VISIBLE (incident 8.8: a safe-hold must announce itself)
+                # rather than silently surrendering the incline. The dog then keeps trying upright
+                # until it crests or the episode wall-cap ends the run -- both safer than a flip.
+                self._climb_stall_retries += 1
+                log_event(
+                    self.logger, logging.WARNING, "handoff_climb_stall_hold",
+                    "Climb stalled on the incline -- HOLDING the climber (NOT handing back to the "
+                    "flat walker mid-staircase); resetting the progress window and retrying",
+                    retry=int(self._climb_stall_retries),
+                    height_gained_m=round(float(gained), 3),
+                    elapsed_sec=round(float(elapsed), 2), tilt_rad=round(float(tilt), 3),
+                    base_z=(round(float(base_z), 3) if base_z is not None else None),
+                )
+                self._climb_stall_sec = 0.0
+                self._climb_progress_z = float(base_z) if base_z is not None else None
+                climb_stuck = False
             if done_ik or done_egress or abort or climb_stuck or hard_cap:
                 reason = ("riser_climbed" if done_ik else
                           "top_egress_done" if done_egress else
@@ -530,6 +566,7 @@ class HandoffController:
             "handoff_egress_travel_m": round(float(self._egress_travel), 3),
             "handoff_egress_vx_floor": self._egress_vx_floor,
             "handoff_climb_stall_sec": round(float(self._climb_stall_sec), 3),
+            "handoff_climb_stall_retries": int(self._climb_stall_retries),
             "post_climb_reacquire": bool(self._post_climb_reacquire),
         }
         t.update(self.stall.telemetry())

@@ -343,7 +343,14 @@ def test_no_false_crest_between_risers():
 
 
 def test_climb_progress_watchdog():
-    """A still-RISING climb is not cut off; a wedged (no-height-gain) climb hands back."""
+    """A still-RISING climb is not cut off; a wedged (no-height-gain) climb MID-STAIRCASE now
+    HOLDS the climber instead of handing back to the flat-ground PGTT walker.
+
+    SAFETY (incident 8.8): handing the legs to PGTT on a 26 deg incline topples the dog --
+    run_sim_20260703_193958 handed back on a mid-stair stall at z=1.607 m (still upright, 14 deg
+    tilt, ~step 9 of 14) and flipped 95 s later. So on the incline (`stairs_clear` False) the stall
+    watchdog must still FIRE (retry heartbeat increments) but NEVER surrender the incline; the only
+    climb->walk handback is at the crest (egress), covered by the egress/crest tests."""
     cfg = HandoffConfig(climb_attempt=True, climb_engage_standoff_m=0.65, climb_min_room_m=0.40,
                         stair_commit_enabled=True, require_controller_stairs=False,
                         stair_commit_arm_after_secs=0.0,
@@ -364,16 +371,16 @@ def test_climb_progress_watchdog():
         t += 0.05; z += 0.02                  # +0.4 m/s vertical -> always "progressing"
         r = ho.update(now=t, dt=0.05, base_z=z, **base)
     assert r["state"] == "climb", f"a still-rising climb must NOT hand back: {r}"
-    # Now WEDGE it: body height frozen -> watchdog fires within climb_stall_timeout_sec.
-    handed = False
-    for _ in range(40):
+    # Now WEDGE it MID-STAIRCASE (stairs_ahead_gt=True, depth still sees risers -> stairs_clear
+    # False): the body height freezes, so the watchdog fires -- but the climb must HOLD, never hand
+    # the incline to the flat walker, and record a retry heartbeat instead.
+    for _ in range(60):                       # 3.0 s wedged -> several stall windows
         t += 0.05
         r = ho.update(now=t, dt=0.05, base_z=z, **base)   # z frozen
-        if r["state"] == "walk":
-            handed = True
-            break
-    assert handed, "a wedged climb (no height gain) must hand back via the progress watchdog"
-    print("climb_progress_watchdog OK  (rising climb continues; wedged climb hands back)")
+        assert r["state"] == "climb", f"a wedge on the incline must HOLD, never hand back: {r}"
+    assert r["telemetry"]["handoff_climb_stall_retries"] >= 1, \
+        f"the stall watchdog must still FIRE (retry heartbeat) on a wedge: {r['telemetry']}"
+    print("climb_progress_watchdog OK  (rising climb continues; wedged climb HOLDS the incline + retries)")
 
 
 def test_post_climb_reacquire():

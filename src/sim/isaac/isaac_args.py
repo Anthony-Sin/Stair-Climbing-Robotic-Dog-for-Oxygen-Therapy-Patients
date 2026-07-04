@@ -667,7 +667,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "whole run_stair_sweep.ps1 sweep; adjust for a different --stair-preset.")
     parser.add_argument("--stair-waypoint-y", type=float, default=0.0,
                         help="Target Y (m) for the stair waypoint test (0 = staircase centreline).")
-    parser.add_argument("--max-episode-wall-sec", type=float, default=600.0,
+    parser.add_argument("--max-episode-wall-sec", type=float, default=900.0,
                         help="HARD wall-clock cap (s) on one episode, checked every loop step OUTSIDE the "
                              "scene-motion gate so it cannot freeze. The existing DEMO_SIM_TIMEOUT counts "
                              "sim-MOTION seconds and lives under `if scene_motion_allowed`, so a wedged climb "
