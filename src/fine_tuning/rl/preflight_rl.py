@@ -92,11 +92,28 @@ def check(*, logger: Optional[logging.Logger] = None) -> PreflightReport:
     except Exception as exc:
         rep.add("cuda device", WARN, f"GPU probe skipped ({type(exc).__name__}).")
 
-    # 3) IsaacLab stack imports (FAIL if absent -- can't train without them)
+    # 3) IsaacLab stack imports (FAIL if absent -- can't train without them).
+    # Some packages (isaaclab_tasks) transitively import USD's `pxr` (and omni/carb),
+    # which ONLY resolve once the Isaac Sim app/Kit is launched -- the training scripts
+    # start it via AppLauncher, but a bare preflight import can't. So a ModuleNotFoundError
+    # naming one of those runtime-only deps means "installed, loads under the app", NOT missing.
+    _runtime_only = ("pxr", "omni", "carb", "usd", "usdrt")
+
+    def _runtime_miss(exc):
+        name = getattr(exc, "name", "") or ""
+        return any(name == m or name.startswith(m + ".") for m in _runtime_only)
+
     for mod in ("isaacsim", "isaaclab", "isaaclab_tasks", "rsl_rl"):
         try:
             __import__(mod)
             rep.add(f"import {mod}", PASS, "installed")
+        except ModuleNotFoundError as exc:
+            if _runtime_miss(exc):
+                rep.add(f"import {mod}", PASS,
+                        f"installed (deep dep '{exc.name}' loads only under the Isaac Sim app -- OK)")
+            else:
+                rep.add(f"import {mod}", FAIL,
+                        f"missing ({type(exc).__name__}: {exc}); run fine_tuning/rl/runpod_setup_rl.sh on the pod.")
         except Exception as exc:
             rep.add(f"import {mod}", FAIL,
                     f"missing ({type(exc).__name__}); run fine_tuning/rl/runpod_setup_rl.sh on the pod.")
@@ -117,9 +134,17 @@ def check(*, logger: Optional[logging.Logger] = None) -> PreflightReport:
     try:
         import robot_lab  # noqa: F401
         rep.add("import robot_lab", PASS, "installed (pip install -e source/robot_lab)")
+    except ModuleNotFoundError as exc:
+        if _runtime_miss(exc):
+            # robot_lab IS installed; its deep imports (pxr/omni USD from Isaac Sim) resolve
+            # only once the app is launched, which train.py does. Not a blocker.
+            rep.add("import robot_lab", PASS,
+                    f"installed (deep dep '{exc.name}' loads only under the Isaac Sim app -- OK)")
+        else:
+            rep.add("import robot_lab", FAIL if repo.exists() else WARN,
+                    f"not importable ({type(exc).__name__}: {exc}); pip install -e {repo}/source/robot_lab")
     except Exception as exc:
-        rep.add("import robot_lab", FAIL if repo.exists() else WARN,
-                f"not importable ({type(exc).__name__}); pip install -e {repo}/source/robot_lab")
+        rep.add("import robot_lab", WARN, f"import raised {type(exc).__name__}: {exc}")
 
     # 4b) repo pin (reproducibility): a blank FT_RL_REPO_COMMIT tracks the branch TIP,
     # which upstream can move under us between runs. WARN (non-fatal) and recommend the
