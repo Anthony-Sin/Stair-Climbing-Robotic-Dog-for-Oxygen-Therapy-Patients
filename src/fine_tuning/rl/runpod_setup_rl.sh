@@ -8,15 +8,15 @@
 #   bash fine_tuning/rl/runpod_setup_rl.sh
 #
 # VERSION-SENSITIVE: Isaac Sim / IsaacLab / torch must match each other and the GPU
-# driver, AND the Python version is dictated by the Isaac Sim build: 4.5.0 requires
-# python==3.10, 5.x wants 3.11, 6.0 wants 3.12. Since we pin Isaac Sim 4.5.0, the env is
-# python 3.10. robot_lab `main` is a moving target -> version hell, so we DEFAULT-PIN a known-good
-# MATCHED SET (the "working quadruple"):
+# driver, AND the Python version is dictated by the Isaac Sim build: 4.5 requires
+# python==3.10, 5.x wants 3.11, 6.0 wants 3.12. IsaacLab v2.3.2's URDF converter calls
+# 5.x-only importer APIs (e.g. set_merge_fixed_ignore_inertia) -> it needs Isaac Sim 5.1,
+# NOT 4.5. We therefore DEFAULT-PIN this MATCHED SET (the "working quadruple"):
 #
-#   Isaac Sim 4.5.0  /  IsaacLab v2.3.2  /  robot_lab v2.3.2  /  rsl_rl (isaaclab.sh --install)
+#   Isaac Sim 5.1.0  /  IsaacLab v2.3.2  /  robot_lab v2.3.2  /  rsl_rl (isaaclab.sh --install)  [python 3.11]
 #
 # These four move together: robot_lab tag v2.3.2 is built against IsaacLab v2.3.2, which
-# in turn supports Isaac Sim 4.5.0, and rsl_rl is installed at whatever version IsaacLab
+# targets Isaac Sim 5.1 (python 3.11), and rsl_rl is installed at whatever version IsaacLab
 # v2.3.2's `isaaclab.sh --install` pulls. To BUMP: pick a new robot_lab tag, set IsaacLab
 # to the SAME tag, choose an Isaac Sim build that tag supports, and bump all three defaults
 # below together (FT_RL_REPO_COMMIT in .env should track the robot_lab tag). Override any
@@ -27,8 +27,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$HERE/../.." && pwd)"
 
-PYTHON_VERSION="${FT_RL_PYTHON_VERSION:-3.10}"            # Isaac Sim 4.5.0 pip wheel REQUIRES python==3.10 (5.x wants 3.11, 6.0 wants 3.12)
-ISAACSIM_VERSION="${FT_RL_ISAACSIM_VERSION:-4.5.0}"        # Isaac Sim pip build (pinned quadruple)
+PYTHON_VERSION="${FT_RL_PYTHON_VERSION:-3.11}"            # Isaac Sim 5.1 uses python 3.11 (4.5 needs 3.10, 6.0 needs 3.12)
+ISAACSIM_VERSION="${FT_RL_ISAACSIM_VERSION:-5.1.0}"        # 5.1 matches IsaacLab v2.3.2's URDF importer API (4.5 does NOT)
 ISAACLAB_URL="${FT_RL_ISAACLAB_URL:-https://github.com/isaac-sim/IsaacLab.git}"
 ISAACLAB_BRANCH="${FT_RL_ISAACLAB_BRANCH:-v2.3.2}"        # pinned to the working quadruple
 ISAACLAB_DIR="${FT_RL_ISAACLAB_DIR:-$HOME/IsaacLab}"
@@ -56,6 +56,31 @@ else
 fi
 python --version
 pip install --upgrade pip
+
+echo "== GPU graphics libs + Vulkan ICD (Isaac Sim needs a GPU graphics context, even headless) =="
+# Bare CUDA/pytorch pod images ship only compute libs, so Isaac Sim's renderer AND the URDF
+# importer's UI can't init a Vulkan device -> ERROR_INCOMPATIBLE_DRIVER and segfaults. Install
+# the userspace graphics libs and, if the container lacks the NVIDIA Vulkan ICD pointer file,
+# create one pointing at the NVIDIA driver lib that IS mounted. Harmless if already present.
+# (A truly clean fix is to launch the pod with NVIDIA_DRIVER_CAPABILITIES=all.)
+apt-get update -qq 2>/dev/null && apt-get install -y \
+  libglu1-mesa libgl1 libegl1 libvulkan1 vulkan-tools \
+  libxrandr2 libxinerama1 libxcursor1 libxi6 libxkbcommon0 >/dev/null 2>&1 \
+  || echo "  (apt graphics-libs step skipped/failed -- continuing)"
+if [ -f /usr/lib/x86_64-linux-gnu/libGLX_nvidia.so.0 ] \
+   && [ ! -e /usr/share/vulkan/icd.d/nvidia_icd.json ] \
+   && [ ! -e /etc/vulkan/icd.d/nvidia_icd.json ]; then
+  mkdir -p /usr/share/vulkan/icd.d
+  printf '{\n  "file_format_version": "1.0.0",\n  "ICD": { "library_path": "libGLX_nvidia.so.0", "api_version": "1.3.194" }\n}\n' \
+    > /usr/share/vulkan/icd.d/nvidia_icd.json
+  echo "  created /usr/share/vulkan/icd.d/nvidia_icd.json (was missing)"
+fi
+# Force Vulkan to use ONLY the NVIDIA ICD so a duplicate/software (llvmpipe) ICD can't make
+# Isaac Sim see the GPU twice ("Multiple ICDs found -> instability/crash").
+if [ -e /usr/share/vulkan/icd.d/nvidia_icd.json ]; then
+  export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
+  export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/nvidia_icd.json
+fi
 
 echo "== Isaac Sim (pip) $ISAACSIM_VERSION =="
 # Isaac Sim is published on NVIDIA's pip index. The [all] extra pulls every Sim package.
