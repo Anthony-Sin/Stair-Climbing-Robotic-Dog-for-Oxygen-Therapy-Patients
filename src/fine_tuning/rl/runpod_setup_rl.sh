@@ -75,8 +75,20 @@ if [ ! -d "$ISAACLAB_DIR/.git" ]; then
 else
   echo "  $ISAACLAB_DIR already cloned"
 fi
+# Pre-build flatdict (an isaaclab CORE dep): flatdict 4.0.1 has a legacy setup.py that
+# imports pkg_resources, which setuptools>=81 removed -> its ISOLATED wheel build fails and
+# isaaclab.sh --install silently skips the core 'isaaclab' package (leaving `import isaaclab`
+# broken while every other extension installs). Restore an older setuptools + build flatdict
+# WITHOUT isolation so isaaclab.sh then finds it satisfied.
+pip install "setuptools<81" >/dev/null 2>&1 || true
+pip install --no-build-isolation flatdict==4.0.1 || true
+
 # ./isaaclab.sh --install installs the isaaclab extensions + the RL frameworks (rsl_rl).
 ( cd "$ISAACLAB_DIR" && ./isaaclab.sh --install )
+# Belt-and-suspenders: isaaclab.sh does not abort if the core package failed to build, so
+# explicitly (re)install it and fail loudly if it still can't be imported.
+pip install -e "$ISAACLAB_DIR/source/isaaclab"
+python -c "import isaaclab" || { echo "ERROR: isaaclab core still not importable after install." >&2; exit 1; }
 
 echo "== robot_lab (clone + editable install) =="
 if [ ! -d "$REPO_DIR/.git" ]; then
