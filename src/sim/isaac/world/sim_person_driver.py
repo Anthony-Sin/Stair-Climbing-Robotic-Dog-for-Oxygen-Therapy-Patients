@@ -63,7 +63,13 @@ class SimPersonTarget:
     _skel_root_path: str = ""
     last_collider_warning_time: float = 0.0
     suppressed_collider_warnings: int = 0
-    _last_moving_time: float = 0.0
+    # "Last time the patient was moving" for the idle debounce below. Seeded to a large
+    # NEGATIVE sentinel (NOT 0.0) so a patient that has NEVER moved reads as IDLE, not as
+    # "just moved". With 0.0, the very first frames (current_time=0.0 during the pre-Docker
+    # hold + settle) evaluated (0 - 0) < debounce == True and forced a WALKING pose that,
+    # frozen at phase 0, left one foot lifted mid-stride -> the patient appeared to float
+    # before the controller started. Matches the same sentinel in biped_anim state_machine.
+    _last_moving_time: float = -1e9
     last_time: Optional[float] = None
     # Measured vertical distance from this character's SkelRoot origin down to its sole
     # (snap-to-ground calibration). Rigs put the root at the pelvis (Biped_Setup) or at

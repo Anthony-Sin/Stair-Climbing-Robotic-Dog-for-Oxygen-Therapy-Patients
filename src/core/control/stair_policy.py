@@ -216,6 +216,23 @@ def _apply_stair_command_policy(
         debug_info["stairs_action_active"] = False
         return float(trans_x_cmd), float(rotation_cmd)
 
+    # Climb finished -- robot is on the flat TOP LANDING. Release stair mode even with the
+    # person still in view, so the normal follow standoff re-engages on flat ground. While
+    # stairs_action_active stays True the standoff is BYPASSED (incident 8.9) and the RL
+    # climber's lean-on-creep keeps pushing forward with no distance regulation, so the dog
+    # crept right up to the standing patient on the landing (observed GT gap 0.33 m vs the
+    # 1.0 m follow target -- "collided with patient"). The robot's own top-landing phase is
+    # the discriminator: it is DISTINCT from the flat APPROACH (phase "flat_follow", before
+    # the stairs), so this only fires AFTER the climb, not before it. On the robot (no
+    # stair_demo sidecar) this is a no-op and the sensor-crest path below still applies.
+    fm = frame_meta if isinstance(frame_meta, dict) else {}
+    _sd = fm.get("stair_demo")
+    if isinstance(_sd, dict) and _sd.get("phase") == "top_landing":
+        debug_info["stairs_action_active"] = False
+        debug_info["stair_finish_completed"] = True
+        debug_info["stairs_top_landing_released"] = True
+        return float(trans_x_cmd), float(rotation_cmd)
+
     # Gate: stair behavior requires the person to be actively detected -- EXCEPT for a
     # BRIEF loss while the staircase is already latched. On a brief loss we still hold the
     # forward floor (below) so the climb keeps advancing instead of stranding the policy

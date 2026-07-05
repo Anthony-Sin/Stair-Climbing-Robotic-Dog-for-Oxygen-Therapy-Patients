@@ -1066,7 +1066,7 @@ def spawn_obstacles(world: World) -> None:
     # 2.5 m landing gives the dog a real runway at the top.
     # get_terrain_height returns top_height_m for all x >= end_x_m, so only the
     # physical slab size changes — no control or GT logic is affected.
-    visual_landing_depth_m = 2.5
+    visual_landing_depth_m = SIM_LANDING_DEPTH_M
 
     # 1. Physics stair treads — warm oak wood base colour.
     half_depth = s.step_depth_m / 2.0
@@ -1392,6 +1392,12 @@ def spawn_obstacles(world: World) -> None:
 
 _patient_state = None
 _last_gt_patient_pose = None
+# Robot ground-truth (x, y), refreshed each frame from the fall-diag pose read. The patient
+# patrol reads it to PACE itself to the dog -- easing off when the dog falls behind so the
+# patient never outruns the climb and strands the RL climber's person-proxy (incident 8.9
+# wedge). Written after update_person_patrol runs, so the patient uses the PREVIOUS frame's
+# robot pose (a ~1-frame lag, immaterial to pacing).
+_robot_gt_xy = {"x": None, "y": None}
 _last_gt_distractor_pose = None
 _camera_mount_update_warned = False
 _final_scene_wall_camera_update_warned = False
@@ -1650,6 +1656,69 @@ PATIENT_WALK_SPEED_FLAT_MPS = 0.35
 PATIENT_WALK_SPEED_STAIR_MPS = 0.13
 PATIENT_WALK_SPEED_POST_STAIR_MPS = 0.18
 
+# Gap-aware patient pacing (the patient watches the dog and eases off if it falls behind).
+# The dog holds a ~1.0 m follow standoff, so the patient normally leads by ~1.0-1.3 m; only
+# a LARGER lead means the dog is losing ground. Below COMFORT the patient walks full speed;
+# from COMFORT to MAX the speed scales smoothly down to SLOW_FLOOR (a slow near-wait, not a
+# hard stop, so it reads as "waiting for the dog"). This keeps the dog close enough that the
+# RL climber's masked person-proxy stays in view and the climb never wedges (incident 8.9).
+PATIENT_PACE_GAP_COMFORT_M = 1.6   # lead (patient_x - robot_x) below which pace is unaffected
+PATIENT_PACE_GAP_MAX_M = 2.7       # lead at/above which the patient slows to the floor
+PATIENT_PACE_SLOW_FLOOR = 0.12     # min speed scale when the dog is far behind (near-wait)
+# Hard cap on how far the patient may get ahead of the dog: beyond this lead the patient STOPS
+# (speed 0) and waits, so the climber's person-proxy never recedes out of reach and wedges the
+# dog partway up the stairs. Just above PACE_GAP_COMFORT so the patient eases (pacing) then holds.
+PATIENT_HARD_WAIT_LEAD_M = 1.7
+
+# Flat-landing follow HOLD. The RL locomotion policy drifts FORWARD even at commanded vx~=0
+# (lean-on-creep, incident 8.9) and the follow controller's reverse is suppressed + the sim
+# clamps vx>=0, so on the flat top landing the dog cannot hold its standoff against its own
+# creep and drifts into a stopped patient. The main loop brakes the forward creep on the
+# landing whenever the dog's OWN PERCEIVED person gap is within this multiple of the follow
+# standoff, so it HOLDS the perception standoff and keeps following the person, like flat
+# ground. Uses the robot's own odometry (top_landing phase) + perception (gap_m) only.
+LANDING_HOLD_GAP_MULT = 1.15
+# Physical depth (m) of the top-landing slab past end_x_m (the dog's runway). Single-sourced
+# here so the scene slab and any landing logic stay in sync.
+SIM_LANDING_DEPTH_M = 3.5
+
+# Shared start-of-motion ease (SIM seconds, not frames -- see incident 8.6). When scene
+# motion is released after the robot has stood up, BOTH the patient's walk velocity and the
+# robot's applied follow command are ramped up from zero over this window with a smoothstep
+# (accel starts and ends at zero, no jerk), so the pair eases into motion together instead
+# of the patient snapping into a stride and the robot lurching out of its spawn freeze the
+# instant the first command lands.
+STARTUP_MOTION_RAMP_SEC = 0.8
+
+
+def _startup_motion_ramp(elapsed_sec: float) -> float:
+    """Smoothstep 0->1 over STARTUP_MOTION_RAMP_SEC (clamped), for easing motion at start."""
+    a = min(1.0, max(0.0, float(elapsed_sec) / STARTUP_MOTION_RAMP_SEC))
+    return a * a * (3.0 - 2.0 * a)
+
+
+def _ground_patient_feet(person, state, x, y, root_z, heading_yaw):
+    """Lower the visual root so the lowest ANIMATED foot plants on the terrain, then
+    place the mannequin; returns the corrected root_z that was applied.
+
+    Mirrors the walking-path foot-grounding (see update_person_patrol): the root is
+    placed at the bind-pose stand height, but the animated idle/standing pose bends the
+    knees and lifts the feet off that height. Without this correction a STOPPED patient
+    (at the top-landing destination) or one HELD before the Docker controller starts
+    visibly HOVERS. Shares the smoothing state (state._foot_ground_corr) with the walking
+    path so there is no vertical pop at the walk<->stop transition.
+    """
+    _lf = _patient_lowest_foot(person)
+    if _lf is not None:
+        _foot_z, (_fx, _fy) = _lf
+        hover_gap = _foot_z - float(get_terrain_height(_fx, _fy))
+        _corr = getattr(state, "_foot_ground_corr", 0.0)
+        _corr = _corr + 0.7 * (hover_gap - _corr)
+        state._foot_ground_corr = _corr
+        root_z = root_z - _corr
+    person.set_visual_pose(x, y, root_z, heading_yaw)
+    return root_z
+
 
 def update_person_patrol(person, dt: float) -> None:
     global _patient_state, _last_gt_patient_pose
@@ -1704,6 +1773,9 @@ def update_person_patrol(person, dt: float) -> None:
             if state.stop_timer > 0.0:
                 state.stop_timer -= dt
                 state.gait_time += dt
+            # The patient simply stands at its own destination -- it does NOT react to the dog
+            # (no keep-away). Holding the follow standoff on the flat landing is the DOG's job,
+            # done by its perception-follow standoff + the landing creep-brake in the main loop.
             # Hold position: stand idle at standing height on the terrain.
             hold_z = ground_under + _patient_stand_height(person)
             person.set_visual_pose(state.x, state.y, hold_z, state.heading_yaw)
@@ -1711,6 +1783,10 @@ def update_person_patrol(person, dt: float) -> None:
                 position=np.array([state.x, state.y, ground_under + _patient_gait_body_z(person)]),
                 current_time=state.elapsed_time,
             )
+            # Ground the feet: the animated idle pose lifts the feet off the bind-pose
+            # stand height, so without this the STOPPED patient hovers (~0.18 m observed
+            # at the top-landing destination). Runs AFTER drive_patient poses the limbs.
+            hold_z = _ground_patient_feet(person, state, state.x, state.y, hold_z, state.heading_yaw)
             _last_gt_patient_pose = (state.x, state.y, hold_z)
             return
 
@@ -1775,13 +1851,51 @@ def update_person_patrol(person, dt: float) -> None:
         if is_stumbling:
             speed *= 0.5
 
+        # Gap-aware pacing: the patient watches the dog (robot GT pose) and eases off when it
+        # falls behind, so it never outruns the climb and strands the RL climber's person-proxy
+        # (incident 8.9 wedge -- run_sim_20260704_185915: patient reached x=8.12 while the dog
+        # was still wedged at x=4.79). Uses the along-path lead (patient_x - robot_x); smooth
+        # ramp from full speed at <=COMFORT down to SLOW_FLOOR at >=MAX so it reads as the
+        # patient naturally slowing to wait, not a hard stop. No effect in normal following
+        # (the dog holds ~1.0 m, below COMFORT).
+        _rob_x = _robot_gt_xy.get("x")
+        pace_scale = 1.0
+        if _rob_x is not None:
+            lead = float(state.x) - float(_rob_x)
+            if lead > PATIENT_PACE_GAP_COMFORT_M:
+                _t = (lead - PATIENT_PACE_GAP_COMFORT_M) / max(
+                    1e-3, PATIENT_PACE_GAP_MAX_M - PATIENT_PACE_GAP_COMFORT_M)
+                _t = min(1.0, max(0.0, _t))
+                pace_scale = 1.0 - (1.0 - PATIENT_PACE_SLOW_FLOOR) * _t
+                speed *= pace_scale
+        # Hard wait for the dog: if it has fallen more than PATIENT_HARD_WAIT_LEAD_M behind, STOP
+        # and wait (do NOT merely slow to the pacing floor). The blind-RL climber charges a nearby
+        # person-proxy up each riser; if the patient pulls too far ahead the proxy recedes and the
+        # climber WEDGES partway up chasing it. This is LEAD-based (dog's actual position), not a
+        # fixed waypoint: an earlier fixed "wait 1 m past the crest" let the patient stride onto the
+        # landing and pull ~2.3 m ahead of the still-climbing dog before waiting, starving the proxy
+        # and wedging the dog mid-stairs (regression, run_sim_20260704_222348: dog stuck at x~5.1).
+        # Capping the lead keeps the proxy within reach the whole climb. No effect in normal flat
+        # following (the dog holds ~1.0 m, well under the cap); the landing hold is the dog's job
+        # (creep-brake), so the patient never needs to react to the dog on the flat.
+        _hard_wait = (_rob_x is not None
+                      and (float(state.x) - float(_rob_x)) > PATIENT_HARD_WAIT_LEAD_M)
+        if _hard_wait:
+            speed = 0.0
+        state._pace_scale = pace_scale
+        state._pace_lead_m = None if _rob_x is None else (float(state.x) - float(_rob_x))
+        state._wait_at_crest = bool(_hard_wait)
+
         ux = dx / max(1e-9, dist)
         uy = dy / max(1e-9, dist)
         vel_x = ux * speed
         vel_y = uy * speed
 
         # ---- KINEMATIC ROOT INTEGRATION + FOOT-PLANTING LIMB GAIT ----
-        ramp = min(1.0, max(0.0, state.elapsed_time / 0.5))
+        # Smoothstep ease from standstill into the walk (accel starts/ends at zero) so the
+        # patient does not snap into a full stride the instant scene motion is released;
+        # shares the ramp window with the robot's start command so they set off together.
+        ramp = _startup_motion_ramp(state.elapsed_time)
         state.x += vel_x * ramp * dt
         state.y += vel_y * ramp * dt
         target_yaw = math.atan2(uy, ux)
@@ -1865,6 +1979,10 @@ def update_person_patrol(person, dt: float) -> None:
                 dist_to_wp=round(dist, 3),
                 speed=round(speed, 3),
                 measured_speed_mps=round(measured, 3),
+                pace_scale=round(float(getattr(state, "_pace_scale", 1.0)), 3),
+                pace_lead_m=(round(float(state._pace_lead_m), 3)
+                             if getattr(state, "_pace_lead_m", None) is not None else None),
+                wait_at_crest=bool(getattr(state, "_wait_at_crest", False)),
                 anim_source=_anim_source,
                 terrain=_terr,
                 gait_phase=_phase,
@@ -3248,6 +3366,12 @@ def main() -> None:
     _person_positions_over_time = []
     destination_reached_time = None
     destination_reached_sim_sec = None
+    # Robot-settled exit tracking (see ROBOT_SETTLE_* constants). _robot_has_moved arms the
+    # exit only after the dog has actually set off (>1 m from spawn) so the brief pre-walk
+    # pause never trips it; _settle_ref/_settle_since track the stationary window.
+    _robot_has_moved = False
+    _robot_settle_ref = None
+    _robot_settle_since_sim = 0.0
     # Stair waypoint test: sim-time the robot first reached the target waypoint UPRIGHT
     # (None until reached); a 2 s hold past it confirms a clean climb, not a tumble/wedge.
     waypoint_reached_sim_sec = None
@@ -3265,6 +3389,9 @@ def main() -> None:
     _dr_next_push_sec = float(args.dr_push_interval_sec)
     robot_stair_phase_sim_sec = 0.0
     robot_top_landing_seen = False
+    # Sim-time when the robot FIRST reached the top landing; the post-landing dwell below
+    # measures from here so the egress + PGTT settle is recorded. None until first seen.
+    robot_top_landing_sim_sec = None
     robot_stair_visibility_logged = False
     # Live fall watchdog: sim-time at which the robot first looked fallen (None when upright)
     robot_fall_since_sim_sec = None
@@ -3281,8 +3408,18 @@ def main() -> None:
     _raw_starved_logged = False
     _follow_view_starved_logged = False
     # (codec-failure logging now lives inside RecordingWriter)
-    DEMO_SIM_TIMEOUT_SEC = 120.0
+    DEMO_SIM_TIMEOUT_SEC = 180.0
     ROBOT_STAIR_VISIBLE_HOLD_SEC = 8.0
+    # Robot-settled exit. The run ends when the robot has been essentially STATIONARY (moved
+    # less than ROBOT_SETTLE_EPS_M) for ROBOT_SETTLE_EXIT_SEC of SIM time -- i.e. it has
+    # arrived/stopped/wedged -- OR when it falls (handled by the fall watchdog above). This
+    # REPLACES the old "robot reached the top-landing waypoint" exit so the run shows the FULL
+    # end state (the final follow hold, a wedge, or a late collision) instead of cutting off the
+    # moment the dog crests. During any active walking/climbing the dog moves >EPS well within
+    # the window, so this only fires once it genuinely stops. DEMO_SIM_TIMEOUT_SEC stays as a
+    # far backstop for a dog that never settles.
+    ROBOT_SETTLE_EPS_M = 0.08
+    ROBOT_SETTLE_EXIT_SEC = 15.0
     # Wall-clock anchor for the hard episode cap below. Real (monotonic) time, set at loop
     # entry so it CANNOT be frozen by the scene-motion gate (unlike motion_elapsed_sim_sec).
     _episode_wall_start = time.monotonic()
@@ -3683,7 +3820,15 @@ def main() -> None:
                 # DISENGAGE the closed-loop climber mid-climb (run_sim_20260619_210115: climber never
                 # took over, the RL policy reared and stuck at the base). The climber freezes its own
                 # stride when vx<=0.03, so a zero command still pauses safely.
-                _step_go2_locomotion(go2, rl_policy, vx, vy, wz, dt,
+                #
+                # Start-of-motion ease: for the first STARTUP_MOTION_RAMP_SEC after scene motion
+                # releases, scale the APPLIED command up from zero (smoothstep). The gating above
+                # still uses the RAW command, so the policy engages immediately -- it just eases the
+                # robot out of its spawn freeze into a trot instead of lurching the instant the first
+                # follow command lands. Matches the patient's start ramp so they set off in sync.
+                # Fully faded (==1.0) long before the stairs, so the climb is unaffected.
+                _sr = _startup_motion_ramp(motion_elapsed_sim_sec)
+                _step_go2_locomotion(go2, rl_policy, _sr * vx, _sr * vy, _sr * wz, dt,
                                      stairs_detected=stairs_detected, yaw_err=yaw_err,
                                      stairs_action_active=stairs_action_active,
                                      person_bbox=person_bbox, hold=hold,
@@ -3752,14 +3897,43 @@ def main() -> None:
                         # Hold the patient at spawn before YOLO/controller starts. The
                         # position is unchanged each frame, so the procedural gait reads
                         # ~zero speed and settles into its idle pose automatically.
+                        #
+                        # This MUST use the exact same seat-and-ground sequence as the proven
+                        # at-destination hold (update_person_patrol) -- an earlier ad-hoc version
+                        # diverged in two ways that left the patient FLOATING before Docker:
+                        #   1) it fed drive_patient a body_z from _get_person_pose_z(...) instead of
+                        #      ground + _patient_gait_body_z(person); the foot-planting IK reaches
+                        #      each foot DOWN from body_z, so the wrong reference left the mesh feet
+                        #      hovering ~0.15 m even with the root at stand height, and
+                        #   2) it passed a frozen current_time=0.0, so the gait idle/walk crossfade
+                        #      (advanced by dt = now - last_now) stuck in a mid-stride lifted-foot
+                        #      pose.
+                        # Mirror the at-destination branch verbatim (ground_under from the height
+                        # fn, set_visual_pose at stand height, drive with the gait body_z, then
+                        # _ground_patient_feet), driven by the CONTINUOUS sim clock so the crossfade
+                        # can settle. The held patient sits at spawn, so _patient_state.x/y are the
+                        # pose; fall back to the configured spawn if the state is somehow absent.
+                        _hs = _patient_state
+                        _hx = float(_hs.x) if _hs is not None else float(args.person_x)
+                        _hy = float(_hs.y) if _hs is not None else float(args.person_y)
+                        _hyaw = float(_hs.heading_yaw) if _hs is not None else 0.0
+                        _hground = 0.0
+                        if getattr(person, "ground_height_fn", None) is not None:
+                            try:
+                                _hground = float(person.ground_height_fn(_hx, _hy))
+                            except Exception:
+                                _hground = 0.0
+                        _hold_z = _hground + _patient_stand_height(person)
+                        person.set_visual_pose(_hx, _hy, _hold_z, _hyaw)
                         person.drive_patient(
-                            position=np.array([
-                                args.person_x,
-                                args.person_y,
-                                _get_person_pose_z(args.person_x, args.person_y, smooth=True),
-                            ]),
+                            position=np.array([_hx, _hy, _hground + _patient_gait_body_z(person)]),
                             orientation=np.array([1.0, 0.0, 0.0, 0.0]),
-                            current_time=0.0,
+                            current_time=sim_clock_sec,
+                        )
+                        _ground_patient_feet(
+                            person,
+                            _hs if _hs is not None else person,
+                            _hx, _hy, _hold_z, _hyaw,
                         )
                 else:
                     # Even if the person doesn't move, drive the kinematic patient to its
@@ -3920,8 +4094,31 @@ def main() -> None:
                             stair_demo=stair_demo_now,
                         )
                 elif stair_phase_now == "top_landing":
+                    if not robot_top_landing_seen:
+                        robot_top_landing_sim_sec = motion_elapsed_sim_sec
                     robot_top_landing_seen = True
-                
+
+                # Flat-landing follow HOLD (creep brake). On the flat top landing the RL policy
+                # lean-on-creeps forward at commanded vx~=0 and the follow controller cannot
+                # reverse (suppressed + sim vx>=0 clamp), so the dog drifts into a stopped
+                # patient and loses it at close range -- then coasts straight (what looks like
+                # "walking to the waypoint"). When the dog's OWN PERCEIVED person gap has closed
+                # to within LANDING_HOLD_GAP_MULT x the follow standoff, zero the forward
+                # (world +x) creep so it HOLDS the standoff and keeps following the person, like
+                # flat ground. Flat landing only (a stance-hold on the incline topples, 8.9); the
+                # gate uses the robot's own phase + perception, never the patient's GT/waypoint.
+                _landing_hold_active = False
+                if (stair_phase_now == "top_landing" and gap_m is not None
+                        and float(gap_m) <= float(args.target_distance) * LANDING_HOLD_GAP_MULT):
+                    try:
+                        _bv = go2.get_linear_velocity()
+                        if _bv is not None and float(_bv[0]) > 0.0:
+                            go2.set_linear_velocity(
+                                np.array([0.0, float(_bv[1]), float(_bv[2])], dtype=np.float32))
+                            _landing_hold_active = True
+                    except Exception:
+                        pass
+
                 # Query robot position and orientation
                 try:
                     go2_body_path = resolve_go2_body_prim_path(stage)
@@ -3932,6 +4129,9 @@ def main() -> None:
                         rx = float(matrix[3][0])
                         ry = float(matrix[3][1])
                         rz = float(matrix[3][2])
+                        # Publish the robot GT (x, y) for the patient's gap-aware pacing.
+                        _robot_gt_xy["x"] = rx
+                        _robot_gt_xy["y"] = ry
                         roll, pitch, yaw = _extract_roll_pitch_yaw(matrix)
                         # Singularity-free uprightness. The body +Z axis maps to world
                         # row 2 of the transform; its world-Z component is the cosine of
@@ -4126,31 +4326,42 @@ def main() -> None:
                                 )
                                 break
 
-                # Condition 1: reached destination (patient stops)
-                if _patient_state is not None and _patient_state.at_destination:
-                    if destination_reached_time is None:
-                        destination_reached_time = now_mono
-                        destination_reached_sim_sec = motion_elapsed_sim_sec
-                    elif (
-                        destination_reached_sim_sec is not None
-                        and (motion_elapsed_sim_sec - destination_reached_sim_sec) >= 5.0
-                        and robot_top_landing_seen
-                    ):
-                        evaluation_done = True
-                        evaluation_exit_reason = "patient_destination_and_robot_top_landing"
-                        log_event(
-                            LOGGER,
-                            logging.INFO,
-                            "evaluation_exit",
-                            "Evaluation stop condition reached after stair climb visibility",
-                            reason=evaluation_exit_reason,
-                            motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
-                            robot_stair_phase_sim_sec=round(float(robot_stair_phase_sim_sec), 3),
-                            robot_top_landing_seen=bool(robot_top_landing_seen),
-                            stair_phase=stair_phase_now,
-                        )
-                        break
-                
+                # Condition 1: robot SETTLED -- stationary (< ROBOT_SETTLE_EPS_M) for
+                # ROBOT_SETTLE_EXIT_SEC of sim time. This is the primary end condition now
+                # (a fall ends the run via the watchdog above): the run keeps going until the
+                # dog has actually come to rest -- arrived at its follow hold, wedged, or crept
+                # to a stop -- so the FULL end state is recorded instead of cutting off when the
+                # dog crests a waypoint. Armed only after the dog has set off (>1 m from spawn).
+                if not _robot_has_moved and abs(rx - float(args.go2_x)) > 1.0:
+                    _robot_has_moved = True
+                if (_robot_settle_ref is None
+                        or math.hypot(rx - _robot_settle_ref[0], ry - _robot_settle_ref[1]) > ROBOT_SETTLE_EPS_M):
+                    _robot_settle_ref = (rx, ry)
+                    _robot_settle_since_sim = motion_elapsed_sim_sec
+                _robot_idle_sim_sec = motion_elapsed_sim_sec - _robot_settle_since_sim
+                # Do NOT settle-exit while the dog is still ON THE STAIRCASE: it is still trying to
+                # get off (the blind-RL climber keeps driving to walk off the last tread and stand
+                # up), so ending here would cut it off "even though it didn't fall". Only settle on
+                # the flat (approach / top-landing). A truly wedged climb is bounded by the hard
+                # wall-clock episode cap, not this. (A fall still ends the run via the watchdog.)
+                _on_staircase = (stair_phase_now == "staircase")
+                if _robot_has_moved and _robot_idle_sim_sec >= ROBOT_SETTLE_EXIT_SEC and not _on_staircase:
+                    evaluation_done = True
+                    evaluation_exit_reason = "robot_settled"
+                    log_event(
+                        LOGGER,
+                        logging.INFO,
+                        "evaluation_exit",
+                        "Robot has been stationary for the settle window -- ending run",
+                        reason=evaluation_exit_reason,
+                        motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
+                        idle_sec=round(float(_robot_idle_sim_sec), 3),
+                        robot_x=round(float(rx), 3),
+                        robot_top_landing_seen=bool(robot_top_landing_seen),
+                        stair_phase=stair_phase_now,
+                    )
+                    break
+
                 # Condition 2: safety timeout in simulated motion time.
                 if elapsed_motion >= DEMO_SIM_TIMEOUT_SEC:
                     evaluation_done = True

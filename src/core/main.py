@@ -1482,6 +1482,30 @@ def main():
             if _stair_close_dropout:
                 debug_info["stairs_action_active"] = True
             debug_info["stair_close_dropout"] = bool(_stair_close_dropout)
+
+            # FINAL top-landing release. Once the robot is on the flat landing PAST the last
+            # step, the climb is done -- force ALL stair latches off so the normal follow
+            # standoff re-engages on flat ground. This runs AFTER every re-force above (the
+            # climb-persistence latch ~L1030 and the close-range dropout just above) so none of
+            # them can keep the dog in stair mode on the landing. While stairs_action_active
+            # stays True the follow standoff is BYPASSED (incident 8.9) and the RL climber's
+            # lean-on-creep pushes forward with no distance regulation, so the dog crept right
+            # up into the standing patient (observed GT gap 0.33 m vs the 1.0 m target ->
+            # "collided with patient"). The robot's own top_landing phase is DISTINCT from the
+            # flat APPROACH (phase "flat_follow", before the stairs), so this fires only AFTER
+            # the climb. Sim ground-truth signal; a no-op on the robot (no stair_demo sidecar),
+            # where the sensor-crest finish in _apply_stair_command_policy handles the release.
+            _on_top_landing = (
+                isinstance(frame_meta, dict)
+                and isinstance(frame_meta.get("stair_demo"), dict)
+                and frame_meta["stair_demo"].get("phase") == "top_landing"
+            )
+            if _on_top_landing:
+                debug_info["stairs_action_active"] = False
+                debug_info["stair_climbing_latch"] = False
+                debug_info["stairs_top_landing_released"] = True
+                _climbing_persist_until = 0.0
+
             # Capture the COMMITTED (latched) stairs_action_active for NEXT frame's follow distance
             # fusion (the LiDAR-riser gate). Both the climb-persistence latch (~L1022) and the
             # close-range dropout (just above) have now settled, so this is the true "still on the

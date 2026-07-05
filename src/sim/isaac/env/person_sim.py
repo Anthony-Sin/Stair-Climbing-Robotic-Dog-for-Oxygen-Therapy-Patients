@@ -100,14 +100,13 @@ class PatientLocomotionState:
             (_stairs.start_x_m + (i + 0.5) * _stairs.step_depth_m, 0.0)
             for i in range(_stairs.step_count)
         )
-        # Top-landing destination. Placed 1.5 m onto the (2.5 m-deep) landing, NOT
-        # just 0.75 m: the follower holds a ~1.0 m standoff, so at +0.75 m the robot's
-        # follow target (patient_x - 1.0) lands ~0.25 m BELOW the top edge (end_x_m)
-        # and the dog is never pulled off the last tread. At +1.5 m the target sits
-        # ~0.5 m past the crest, so the dog is drawn fully OVER the top step onto the
-        # landing -- letting the run actually show the stair egress. Still well within
-        # the 2.5 m landing depth (end_x_m + 1.5 vs back edge end_x_m + 2.5).
-        self.waypoints.append((_stairs.end_x_m + 1.5, 0.0))  # top landing (pull-off target)
+        # Top-landing destination. Placed 2.5 m onto the (3.5 m-deep) landing so the patient
+        # walks well out onto the landing and the dog must FOLLOW it across the flat -- a real
+        # test that the perception-follow standoff + landing creep-brake hold ~1.0 m without
+        # the dog creeping into the patient. The patient just walks its OWN route and stops
+        # here; holding the standoff on the flat landing is the DOG's job (perception-follow +
+        # the landing creep-brake in isaac_env). Still within the 3.5 m landing (back edge +3.5).
+        self.waypoints.append((_stairs.end_x_m + 2.5, 0.0))  # top landing (pull-off target)
         self.current_wp_idx = min(1, len(self.waypoints) - 1)
         self.wp_direction = 1
 

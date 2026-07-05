@@ -361,6 +361,13 @@ class HandoffController:
                 if (base_z is not None and self._climb_start_z is not None) else 0.0
             )
             tilt = max(abs(float(roll)), abs(float(pitch)))
+            # "Fully off the stairs" requires not just a flat profile ahead but the dog having
+            # LEVELLED OUT -- not still pitched nose-down on the last tread. Per user directive:
+            # keep the blind-RL climber (the only policy that can BOTH drive the dog forward off
+            # the last step AND level the body there) until the dog is clear of stairs AND upright,
+            # THEN switch to PGTT. Handing back while still angled leaves it dragging and stuck one
+            # step short (run_sim_20260704_230322: dog stuck at x=6.26, pitch -12deg, h 0.16 m).
+            crest_level = tilt <= float(getattr(self.cfg, "top_crest_level_tilt_rad", 0.17))
             # SIM-time elapsed (dt-accumulated), NOT wall clock: `now` is wall time and the
             # sim runs ~6x slower, so a wall-time window timed out the climb after only ~3s
             # of SIM climbing and bounced it back to PGTT (run ..203910). dt is the sim step.
@@ -379,7 +386,22 @@ class HandoffController:
             # clear). Debounced by top_clear_debounce_sec.
             det_clear = (not bool(det.get("stair_detected", False))) and int(det.get("stair_count", 0)) == 0
             ray_clear = (stairs_ahead_gt is None) or (stairs_ahead_gt is False)
-            stairs_clear = det_clear and ray_clear
+            # Crest signal. When a GROUND-TRUTH terrain read is available (sim, or any port that
+            # supplies stairs_ahead_gt), TRUST IT ALONE: a flat read ahead genuinely means the top
+            # is reached, because mid-climb there is ALWAYS a riser within a tread ahead, so unlike
+            # the depth detector the GT read has no "transient flat between two risers" false-top.
+            # Requiring det_clear too used to WEDGE the dog on the last riser forever: a nose-down,
+            # dragging climber (incident 8.9) keeps its depth camera framed on the treads it just
+            # climbed, so det_clear never becomes true, the crest is never declared, and the
+            # incident-8.8 safety refuses to hand the (still-"on-stairs") legs back to PGTT -> the
+            # climber retries the top step indefinitely (run_sim_20260704_211236: stuck at x=6.27,
+            # top step 6.27). GT-False is IMPOSSIBLE on the incline (a riser is always ahead), so
+            # trusting GT NEVER hands the incline back to the flat walker (incident 8.8 preserved).
+            # Real robot without a terrain read (stairs_ahead_gt None) falls back to the detector.
+            if stairs_ahead_gt is not None:
+                stairs_clear = bool(ray_clear)
+            else:
+                stairs_clear = det_clear and ray_clear
             egress_on = bool(self.cfg.top_egress_enabled) and is_policy
             if stairs_clear:
                 self._top_clear_sec += float(dt)
@@ -395,7 +417,10 @@ class HandoffController:
                     log_event(self.logger, logging.INFO, "handoff_egress_cancel",
                               "More stairs detected during egress -- resuming climb",
                               stair_count=int(det.get("stair_count", 0)))
-            crest = self._top_clear_sec >= float(self.cfg.top_clear_debounce_sec)
+            # Crest requires BOTH a debounced flat-ahead reading AND the dog being level (see
+            # crest_level above): stay in the climber until it has finished walking off the last
+            # step and stood up, so PGTT only ever inherits an upright dog on the flat.
+            crest = (self._top_clear_sec >= float(self.cfg.top_clear_debounce_sec)) and crest_level
 
             # --- enter egress at a sustained, debounced crest ------------------------------
             if egress_on and crest and not self._egress:
@@ -473,16 +498,22 @@ class HandoffController:
             # detector AND the GT terrain read flat ahead, the same debounced crest signal used by
             # egress; on the real robot stairs_ahead_gt is None so this reduces to the depth clear).
             # This mirrors the design already applied to `climb_max_sec` (see handoff_config.py).
-            if hard_cap and not stairs_clear:
-                # Runaway backstop is a BACKSTOP, not an event -- suppress it silently on the incline
-                # so a slow-but-progressing long climb runs to the actual crest instead of bailing.
+            # The give-up exits may hand back to PGTT ONLY once the dog is FULLY off the stairs:
+            # flat ahead (stairs_clear) AND levelled out (crest_level). While still on the incline
+            # OR still pitched nose-down on the last tread, keep the blind-RL climber driving -- it
+            # is the only policy that can walk the dog forward off the last step and stand it up;
+            # handing back early leaves it dragging (incident 8.8 flip / the last-tread wedge).
+            _fully_off = bool(stairs_clear and crest_level)
+            if hard_cap and not _fully_off:
+                # Runaway backstop is a BACKSTOP, not an event -- suppress it until fully off so a
+                # slow-but-progressing climb runs to the real crest + level instead of bailing.
                 hard_cap = False
-            if climb_stuck and not stairs_clear:
-                # Genuinely wedged mid-climb: HOLD the climber (the only controller that can balance
-                # on the stair), reset the progress window for a fresh attempt, and emit a heartbeat
-                # WARNING so a stuck climb is VISIBLE (incident 8.8: a safe-hold must announce itself)
-                # rather than silently surrendering the incline. The dog then keeps trying upright
-                # until it crests or the episode wall-cap ends the run -- both safer than a flip.
+            if climb_stuck and not _fully_off:
+                # Wedged or still nose-down at the top: HOLD the climber (the only controller that can
+                # balance on the stair AND drive the dog forward off the last tread), reset the
+                # progress window for a fresh attempt, and emit a heartbeat WARNING so a stuck climb is
+                # VISIBLE (incident 8.8: a safe-hold must announce itself) rather than silently
+                # surrendering. The dog keeps trying until it is off + upright or the wall-cap ends it.
                 self._climb_stall_retries += 1
                 log_event(
                     self.logger, logging.WARNING, "handoff_climb_stall_hold",
