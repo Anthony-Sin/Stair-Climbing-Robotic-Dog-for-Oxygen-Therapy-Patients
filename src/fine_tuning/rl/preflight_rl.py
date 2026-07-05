@@ -72,10 +72,12 @@ def check(*, logger: Optional[logging.Logger] = None) -> PreflightReport:
     log = logger or LOGGER
     rep = PreflightReport()
 
-    # 1) interpreter (IsaacLab wants py3.11; newer/older still runs the patchers)
+    # 1) interpreter. The pinned Isaac Sim 4.5.0 pip wheel REQUIRES python==3.10
+    # (5.x wants 3.11, 6.0 wants 3.12); newer/older still runs the pure-python patchers.
     pyver = sys.version.split()[0]
-    rep.add("python", PASS if pyver.startswith("3.11") else WARN,
-            f"{pyver}" + ("" if pyver.startswith("3.11") else "  (IsaacLab/Isaac Sim expects Python 3.11 on the pod)"))
+    ok_py = pyver.startswith("3.10")
+    rep.add("python", PASS if ok_py else WARN,
+            f"{pyver}" + ("" if ok_py else "  (Isaac Sim 4.5.0 pip requires Python 3.10 on the pod)"))
 
     # 2) GPU (best-effort; IsaacLab needs an RTX CUDA GPU on the pod)
     try:

@@ -8,8 +8,9 @@
 #   bash fine_tuning/rl/runpod_setup_rl.sh
 #
 # VERSION-SENSITIVE: Isaac Sim / IsaacLab / torch must match each other and the GPU
-# driver. robot_lab `main` targets Isaac Lab main + Isaac Sim 4.5/5.0/5.1 + Python 3.11,
-# but "main" is a moving target -> version hell. We therefore DEFAULT-PIN a known-good
+# driver, AND the Python version is dictated by the Isaac Sim build: 4.5.0 requires
+# python==3.10, 5.x wants 3.11, 6.0 wants 3.12. Since we pin Isaac Sim 4.5.0, the env is
+# python 3.10. robot_lab `main` is a moving target -> version hell, so we DEFAULT-PIN a known-good
 # MATCHED SET (the "working quadruple"):
 #
 #   Isaac Sim 4.5.0  /  IsaacLab v2.3.2  /  robot_lab v2.3.2  /  rsl_rl (isaaclab.sh --install)
@@ -26,7 +27,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$HERE/../.." && pwd)"
 
-PYTHON_VERSION="${FT_RL_PYTHON_VERSION:-3.11}"
+PYTHON_VERSION="${FT_RL_PYTHON_VERSION:-3.10}"            # Isaac Sim 4.5.0 pip wheel REQUIRES python==3.10 (5.x wants 3.11, 6.0 wants 3.12)
 ISAACSIM_VERSION="${FT_RL_ISAACSIM_VERSION:-4.5.0}"        # Isaac Sim pip build (pinned quadruple)
 ISAACLAB_URL="${FT_RL_ISAACLAB_URL:-https://github.com/isaac-sim/IsaacLab.git}"
 ISAACLAB_BRANCH="${FT_RL_ISAACLAB_BRANCH:-v2.3.2}"        # pinned to the working quadruple
