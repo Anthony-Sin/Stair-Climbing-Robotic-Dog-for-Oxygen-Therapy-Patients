@@ -254,8 +254,11 @@ def main(argv: Optional[list] = None) -> int:
     ap = argparse.ArgumentParser(description="Retrain the blind rl_sar Go2 policy as an O2 stair climber.")
     ap.add_argument("--repo", default=None, help="robot_lab checkout (default: FT_RL_REPO_DIR / ~/robot_lab).")
     ap.add_argument("--task", default=envb.get_str("FT_RL_TASK", STAIR_TASK_ID))
-    ap.add_argument("--exptid", default=envb.get_str("FT_RL_EXPTID", "o2stair"),
-                    help="rsl_rl --experiment_name (the logs/rsl_rl/<exptid>/ folder).")
+    ap.add_argument("--exptid", default=envb.get_str("FT_RL_EXPTID", "unitree_go2_rough"),
+                    help="rsl_rl --experiment_name (the logs/rsl_rl/<exptid>/ folder). Defaults to "
+                         "'unitree_go2_rough' because robot_lab's UnitreeGo2RoughPPORunnerCfg fixes "
+                         "experiment_name to that (see a resumed run's params/agent.yaml) regardless of "
+                         "the CLI value -- so export/find/resume MUST look there or they silently miss.")
     ap.add_argument("--run-name", default=envb.get_str("FT_RL_RUN_NAME"))
     ap.add_argument("--num-envs", type=int, default=envb.get_int("FT_RL_NUM_ENVS", 4096))
     ap.add_argument("--max-iters", type=int, default=envb.get_int("FT_RL_MAX_ITERS", 6000),
