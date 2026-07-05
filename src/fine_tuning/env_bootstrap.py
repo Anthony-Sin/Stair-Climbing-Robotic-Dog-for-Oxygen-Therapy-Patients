@@ -38,7 +38,18 @@ def _minimal_dotenv(path: Path) -> int:
             continue
         key, _, val = line.partition("=")
         key = key.strip()
-        val = val.strip().strip('"').strip("'")
+        val = val.strip()
+        # Strip an UNQUOTED inline comment, matching python-dotenv: a value ends at
+        # the first " #" (whitespace + hash); a value that is only a comment (blank
+        # value followed by a comment) becomes empty. Quoted values keep any '#'.
+        # Without this, a line like `KEY=   # note` parsed to the comment text.
+        if val[:1] not in ("'", '"'):
+            hashpos = val.find(" #")
+            if hashpos != -1:
+                val = val[:hashpos].rstrip()
+            if val.startswith("#"):
+                val = ""
+        val = val.strip('"').strip("'")
         if key and key not in os.environ:  # real env wins over .env, like dotenv
             os.environ[key] = val
             n += 1

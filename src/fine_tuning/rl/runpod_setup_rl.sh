@@ -8,22 +8,35 @@
 #   bash fine_tuning/rl/runpod_setup_rl.sh
 #
 # VERSION-SENSITIVE: Isaac Sim / IsaacLab / torch must match each other and the GPU
-# driver. robot_lab `main` targets Isaac Lab main + Isaac Sim 4.5/5.0/5.1 + Python 3.11
-# (tag v2.3.2 pairs with Isaac Lab v2.3.2). Override the versions/URLs below via env vars
-# if you need a specific pairing. The script stops with a clear message if a step fails.
+# driver. robot_lab `main` targets Isaac Lab main + Isaac Sim 4.5/5.0/5.1 + Python 3.11,
+# but "main" is a moving target -> version hell. We therefore DEFAULT-PIN a known-good
+# MATCHED SET (the "working quadruple"):
+#
+#   Isaac Sim 4.5.0  /  IsaacLab v2.3.2  /  robot_lab v2.3.2  /  rsl_rl (isaaclab.sh --install)
+#
+# These four move together: robot_lab tag v2.3.2 is built against IsaacLab v2.3.2, which
+# in turn supports Isaac Sim 4.5.0, and rsl_rl is installed at whatever version IsaacLab
+# v2.3.2's `isaaclab.sh --install` pulls. To BUMP: pick a new robot_lab tag, set IsaacLab
+# to the SAME tag, choose an Isaac Sim build that tag supports, and bump all three defaults
+# below together (FT_RL_REPO_COMMIT in .env should track the robot_lab tag). Override any
+# one via its env var if you need a different pairing. The script stops with a clear
+# message if a step fails.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$HERE/../.." && pwd)"
 
 PYTHON_VERSION="${FT_RL_PYTHON_VERSION:-3.11}"
-ISAACSIM_VERSION="${FT_RL_ISAACSIM_VERSION:-4.5.0}"        # Isaac Sim pip build
+ISAACSIM_VERSION="${FT_RL_ISAACSIM_VERSION:-4.5.0}"        # Isaac Sim pip build (pinned quadruple)
 ISAACLAB_URL="${FT_RL_ISAACLAB_URL:-https://github.com/isaac-sim/IsaacLab.git}"
-ISAACLAB_BRANCH="${FT_RL_ISAACLAB_BRANCH:-main}"
+ISAACLAB_BRANCH="${FT_RL_ISAACLAB_BRANCH:-v2.3.2}"        # pinned to the working quadruple
 ISAACLAB_DIR="${FT_RL_ISAACLAB_DIR:-$HOME/IsaacLab}"
 REPO_URL="${FT_RL_REPO_URL:-https://github.com/fan-ziqi/robot_lab.git}"
-REPO_BRANCH="${FT_RL_REPO_BRANCH:-main}"
+REPO_BRANCH="${FT_RL_REPO_BRANCH:-v2.3.2}"                 # pinned to the working quadruple
 REPO_DIR="${FT_RL_REPO_DIR:-$HOME/robot_lab}"
+
+echo "== Pinned working quadruple =="
+echo "  Isaac Sim $ISAACSIM_VERSION / IsaacLab $ISAACLAB_BRANCH / robot_lab ${FT_RL_REPO_COMMIT:-$REPO_BRANCH} / rsl_rl (isaaclab.sh --install)"
 
 echo "== GPU =="
 nvidia-smi || { echo "  no nvidia-smi -- IsaacLab training needs a CUDA GPU."; }

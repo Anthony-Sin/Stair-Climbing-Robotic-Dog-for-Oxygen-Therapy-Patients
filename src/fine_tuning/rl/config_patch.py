@@ -63,13 +63,29 @@ END = f"# <<< {PATCH_TAG} <<<"
 
 @dataclass(frozen=True)
 class StairPatchParams:
-    """Tunables for the stair-specialist patch (defaults match the approved plan)."""
+    """Tunables for the stair-specialist patch (defaults match the deep-review plan).
 
-    lin_vel_x_max: float = 0.5            # slow forward walk ceiling (m/s); command-sampled 0..max
+    Field defaults encode the report findings A-G: bracket the real building-code stair
+    (rise 0.15 m, tread 0.305 m, ~26 deg; residential max riser ~0.198 m) with margin,
+    decouple speed from stability, and train the rearward/elevated O2 payload's tip moment.
+    """
+
+    lin_vel_x_max: float = 0.6            # forward walk ceiling (m/s); was 0.5, modest bump (finding B)
     ang_vel_z_max: float = 0.3            # gentle yaw to track the patient up the stairs (rad/s)
     step_height_min: float = 0.05         # curriculum easy edge of the riser height (m)
-    step_height_max: float = 0.18         # curriculum hard edge (commercial riser ~0.15 is in-band)
-    orientation_reward: float = -2.5      # flat_orientation_l2 weight (default 0 == OFF -> anti-fall)
+    step_height_max: float = 0.20         # was 0.18; brackets real 0.15 + residential 0.198 (finding C)
+    step_width_nominal: float = 0.305     # tread depth matching the real target stair (finding C)
+    step_width_min: float = 0.28          # tread-depth randomisation band, narrow edge (finding C)
+    step_width_max: float = 0.34          # tread-depth randomisation band, wide edge (finding C)
+    tall_start_proportion: float = 0.2    # fraction of terrain that is a fixed TALL step (finding C)
+    orientation_reward: float = -1.0      # flat_orientation_l2 weight; was -2.5, eased so climb
+    #                                       PITCH is not over-penalised (finding B)
+    ascent_reward: float = 1.0            # NEW vertical-progress reward weight; 0 disables (finding B)
+    roll_penalty: float = -2.0            # NEW roll-only anti-tip penalty; 0 disables (finding B)
+    crest_reward: float = 0.5             # NEW: reward a level torso on flat (clean dismount off the top); 0 disables
+    com_jitter_m: float = 0.02            # +/- jitter around payload CoM offset for the CoM DR event (finding A)
+    add_com_event: bool = True            # allow disabling the CoM event on an API-lacking IsaacLab (finding A)
+    obs_noise_scale: float = 0.0          # optional obs-noise DR knob; 0 == inherit parent (finding G)
     kp: float = 20.0                      # deployed stiffness (rl_locomotion_policy); robot_lab ships 25
     kd: float = 0.5                       # deployed damping (matches robot_lab default, set for clarity)
 
@@ -80,47 +96,217 @@ def render_stairs_cfg_module(
     """Return the full text of the generated ``o2_stairs_env_cfg.py`` module."""
     lo, hi = payload.added_mass_range()
     com = payload.com_m
+    shift = payload.com_shift_m
+    inertia = payload.inertia_diag
+    cx, cy, cz = payload.com_range(params.com_jitter_m)
+
+    # --- terrain sub-terrain proportions (must sum to 1.0) --------------------
+    # A fixed TALL first-riser sub-terrain drills "starts" (the reported failure is
+    # wedging on the first riser); the remainder is split across three tread widths so
+    # the policy sees the real 0.305 m tread plus a +/- band. Nominal gets the majority.
+    tall_p = float(params.tall_start_proportion)
+    rem = max(0.0, 1.0 - tall_p)
+    nominal_p = round(rem * 0.6, 6)
+    narrow_p = round(rem * 0.2, 6)
+    # wide takes whatever is left so all four proportions sum to EXACTLY 1.0
+    wide_p = round(1.0 - tall_p - nominal_p - narrow_p, 6)
+
+    # --- optional NON-inherited reward functions (finding B) ------------------
+    # Rendered only when their weights are non-zero so the generated module never
+    # defines dead code; the ascent/roll RewTerms below are gated the same way.
+    reward_fns = ""
+    if params.ascent_reward != 0.0:
+        reward_fns += '''
+
+def _reward_ascent_rate(env, asset_cfg=SceneEntityCfg("robot")):
+    """Reward upward world-frame velocity (climbing) -- clamped to non-negative."""
+    asset = env.scene[asset_cfg.name]
+    return asset.data.root_lin_vel_w[:, 2].clamp(min=0.0)
+'''
+    if params.roll_penalty != 0.0:
+        reward_fns += '''
+
+def _reward_roll_l2(env, asset_cfg=SceneEntityCfg("robot")):
+    """Penalize roll (sideways tilt) only -- projected-gravity Y component squared."""
+    asset = env.scene[asset_cfg.name]
+    return asset.data.projected_gravity_b[:, 1] ** 2
+'''
+    if params.crest_reward != 0.0:
+        reward_fns += '''
+
+def _reward_crest_level(env, asset_cfg=SceneEntityCfg("robot")):
+    """Reward a LEVEL torso whenever the robot is NOT actively climbing -- i.e. on the
+    flat base or (crucially) the flat TOP landing. It stays free to pitch mid-climb,
+    but is explicitly paid to flatten out and walk OFF the crest cleanly instead of
+    nose-diving as it tops out. `flat` == projected-gravity XY near zero (level); the
+    vertical-speed gate switches the term OFF during the climb (large |vz|) and ON on
+    flat ground, so it never fights the climbing pitch."""
+    asset = env.scene[asset_cfg.name]
+    flat = torch.exp(-5.0 * torch.sum(torch.square(asset.data.projected_gravity_b[:, :2]), dim=1))
+    on_flat = (asset.data.root_lin_vel_w[:, 2].abs() < 0.1).float()
+    return flat * on_flat
+'''
+
+    # --- body of __post_init__ blocks assembled conditionally -----------------
+    com_event_block = ""
+    if params.add_com_event:
+        com_event_block = f'''
+        # --- payload CoM tip moment (finding A): randomize the trunk CoM ------
+        # The tank's real danger is not its {payload.mass_kg} kg weight but WHERE that
+        # weight sits: rearward (-x) and elevated (+z), a pitch/tip moment. The mass
+        # event above only scales the scalar mass; this event shifts the trunk body's
+        # centre of mass. We centre the per-axis band on how far the payload actually
+        # moves the combined CoM -- com_shift_m ({shift[0]}, {shift[1]}, {shift[2]}) m --
+        # and jitter each axis by +/-{params.com_jitter_m} m for domain randomisation.
+        # IsaacLab's randomize_rigid_body_com samples com_range and ADDS it to the body's
+        # nominal CoM (there is NO operation arg; the add is implicit). Gated by
+        # params.add_com_event so a version lacking this event can be run without it.
+        #
+        # INERTIA NOTE: IsaacLab ships no stock event to SET a rigid body's inertia
+        # tensor to a value (randomize_rigid_body_mass only recompute_inertia's from
+        # geometry). The offset mass + shifted CoM above already capture the DOMINANT
+        # tip moment; the payload's own box inertia_diag {inertia} kg*m^2 is left
+        # approximated rather than inventing a non-stock event (per finding A).
+        self.events.randomize_com_payload = EventTerm(
+            func=mdp.randomize_rigid_body_com,
+            mode="startup",
+            params={{
+                "asset_cfg": SceneEntityCfg("robot", body_names="base"),
+                "com_range": {{
+                    "x": ({cx[0]}, {cx[1]}),
+                    "y": ({cy[0]}, {cy[1]}),
+                    "z": ({cz[0]}, {cz[1]}),
+                }},
+            }},
+        )
+'''
+
+    ascent_term = ""
+    if params.ascent_reward != 0.0:
+        ascent_term = f'''
+        # vertical-progress reward: pays for climbing (upward world velocity), so the
+        # policy is rewarded for gaining height rather than only for forward command
+        # tracking (which stalls when it noses into a riser). (finding B)
+        self.rewards.ascent_rate = RewTerm(func=_reward_ascent_rate, weight={params.ascent_reward})
+'''
+
+    roll_term = ""
+    if params.roll_penalty != 0.0:
+        roll_term = f'''
+        # roll-only anti-tip: punishes SIDEWAYS tilt (projected-gravity Y) but leaves
+        # forward/back CLIMB pitch un-penalised, unlike the full flat_orientation_l2.
+        # (finding B)
+        self.rewards.roll_l2 = RewTerm(func=_reward_roll_l2, weight={params.roll_penalty})
+'''
+
+    crest_term = ""
+    if params.crest_reward != 0.0:
+        crest_term = f'''
+        # crest / dismount reward: pays for a level torso on FLAT ground (the base and
+        # the top landing) so the dog flattens out and walks OFF the top cleanly instead
+        # of face-planting at the crest. Gated OFF during the climb (vertical-speed gate),
+        # so it never fights the climbing pitch. (finding B / dismount)
+        self.rewards.crest_level = RewTerm(func=_reward_crest_level, weight={params.crest_reward})
+'''
+
+    obs_noise_block = ""
+    if params.obs_noise_scale > 0.0:
+        obs_noise_block = f'''
+        # --- optional obs-noise domain randomisation (finding G) -------------
+        # Off by default (obs_noise_scale=0 inherits the parent's noise). When >0 we
+        # scale every policy obs term's existing noise model by this factor to harden
+        # the blind policy against sensor noise. Best-effort: only terms that already
+        # carry a noise cfg are touched, so this can never add noise to a term the
+        # parent left clean or error on a version with a different noise API.
+        _noise_scale = {params.obs_noise_scale}
+        for _term_name in list(vars(self.observations.policy)):
+            _term = getattr(self.observations.policy, _term_name, None)
+            _noise = getattr(_term, "noise", None)
+            if _noise is not None and hasattr(_noise, "n_max") and hasattr(_noise, "n_min"):
+                _noise.n_max = _noise.n_max * _noise_scale
+                _noise.n_min = _noise.n_min * _noise_scale
+'''
+
     return f'''# Auto-generated by fine_tuning/rl/config_patch.py ({PATCH_TAG}) -- DO NOT EDIT BY HAND.
 # Regenerate (idempotent) with:
 #   python -m fine_tuning.rl.config_patch --repo <robot_lab-dir>
 #
-# Retrains the Unitree Go2 velocity policy into a SLOW, O2-payload-stable STAIR climber
-# while preserving the deployed 45-D proprio contract (base_lin_vel + height_scan stay
-# disabled by the parent; obs order/scales, action scales, default pose are inherited).
+# Retrains the Unitree Go2 velocity policy into an O2-payload-stable STAIR climber that
+# brackets the real building-code stair (rise 0.15 m, tread 0.305 m, ~26 deg; residential
+# max riser ~0.198 m) with margin, while preserving the deployed 45-D proprio contract
+# (base_lin_vel + height_scan stay disabled; obs order/scales, action scales, default
+# pose are inherited from the parent). See fine_tuning/rl/config_patch.py for provenance.
 from __future__ import annotations
 
+import torch
+
+import isaaclab.envs.mdp as mdp
 import isaaclab.terrains as terrain_gen
+from isaaclab.managers import EventTermCfg as EventTerm
+from isaaclab.managers import RewardTermCfg as RewTerm
+from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
 from .rough_env_cfg import UnitreeGo2RoughEnvCfg
-
+{reward_fns}
 
 @configclass
 class {STAIRS_CFG_CLASS}(UnitreeGo2RoughEnvCfg):
-    """Go2 rough cfg narrowed to ascending stairs + slow + O2 payload + anti-fall."""
+    """Go2 rough cfg narrowed to ascending stairs + O2 payload CoM + anti-tip."""
 
     def __post_init__(self):
         # Inherit the full Go2 rough setup first (45-D obs, action scales, default
         # pose, the base/others mass + CoM events, all reward weights), then narrow.
         super().__post_init__()
 
-        # --- ascending-stairs-ONLY terrain ------------------------------------
-        # Replace the slope/box/rough/inverted mix with a single upward pyramid-stairs
-        # sub-terrain. With the terrain curriculum on, step_height interpolates from
-        # the easy edge to the hard edge across the generator rows.
+        # --- ascending-stairs terrain bracketing the real stair (finding C) ---
+        # Replace the slope/box/rough/inverted mix with a small set of upward
+        # pyramid-stairs sub-terrains: the nominal 0.305 m tread (majority), a narrow
+        # and a wide tread variant (tread-depth randomisation), and a FIXED-TALL step
+        # sub-terrain that drills mounting a tall first riser (the reported wedge point).
+        # The four proportions sum to 1.0. With the terrain curriculum on, step_height
+        # interpolates easy->hard across the generator rows, and the raised 0.20 m max
+        # plus the tall sub-terrain bias training toward the hard edge.
         gen = self.scene.terrain.terrain_generator
         gen.sub_terrains = {{
             "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
-                proportion=1.0,
+                proportion={nominal_p},
                 step_height_range=({params.step_height_min}, {params.step_height_max}),
-                step_width=0.30,
+                step_width={params.step_width_nominal},
+                platform_width=3.0,
+                border_width=1.0,
+                holes=False,
+            ),
+            "pyramid_stairs_narrow": terrain_gen.MeshPyramidStairsTerrainCfg(
+                proportion={narrow_p},
+                step_height_range=({params.step_height_min}, {params.step_height_max}),
+                step_width={params.step_width_min},
+                platform_width=3.0,
+                border_width=1.0,
+                holes=False,
+            ),
+            "pyramid_stairs_wide": terrain_gen.MeshPyramidStairsTerrainCfg(
+                proportion={wide_p},
+                step_height_range=({params.step_height_min}, {params.step_height_max}),
+                step_width={params.step_width_max},
+                platform_width=3.0,
+                border_width=1.0,
+                holes=False,
+            ),
+            "pyramid_stairs_tall": terrain_gen.MeshPyramidStairsTerrainCfg(
+                proportion={tall_p},
+                step_height_range=({params.step_height_max}, {params.step_height_max}),
+                step_width={params.step_width_nominal},
                 platform_width=3.0,
                 border_width=1.0,
                 holes=False,
             ),
         }}
 
-        # --- slow forward walk; no strafing, gentle yaw -----------------------
+        # --- forward walk; no strafing, gentle yaw ----------------------------
+        # Speed decoupled from stability (finding B): a modest {params.lin_vel_x_max} m/s
+        # ceiling so the climb is not command-starved, with stability carried by the
+        # reward structure below rather than by crawling.
         self.commands.base_velocity.ranges.lin_vel_x = (0.0, {params.lin_vel_x_max})
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-{params.ang_vel_z_max}, {params.ang_vel_z_max})
@@ -131,21 +317,31 @@ class {STAIRS_CFG_CLASS}(UnitreeGo2RoughEnvCfg):
         # The base-mass startup event ADDS a uniform sample in this band to the trunk,
         # so every episode trains carrying at least the tank (plus robustness headroom).
         self.events.randomize_rigid_body_mass_base.params["mass_distribution_params"] = ({lo}, {hi})
-
-        # --- anti-fall: turn ON + stiffen the upright (flat-orientation) penalty
-        # It is 0.0 (pruned) in the stock Go2 cfg; a negative weight punishes tipping.
+{com_event_block}
+        # --- anti-fall reward structure (finding B) ---------------------------
+        # Ease the flat-orientation penalty from -2.5 to {params.orientation_reward} so the
+        # climb PITCH is not over-suppressed (a climbing dog IS pitched up), then add a
+        # roll-only anti-tip term below so sideways toppling is still punished.
         self.rewards.flat_orientation_l2.weight = {params.orientation_reward}
-
+{ascent_term}{roll_term}{crest_term}
         # --- match the DEPLOYED PD gains (rl_locomotion_policy kp={params.kp}, kd={params.kd}) ---
         # robot_lab ships stiffness=25.0; the sim deploys kp=20.0, so align here to keep
         # the retrained policy consistent with the gains it runs under in Isaac.
         self.scene.robot.actuators["legs"].stiffness = {params.kp}
         self.scene.robot.actuators["legs"].damping = {params.kd}
 
+        # --- guarantee the 45-D blind contract explicitly (finding F) ---------
+        # The parent already nulls these; we re-null them defensively so the blind
+        # contract is a guaranteed property of THIS cfg, not an inherited accident.
+        # Guarded by hasattr so it can't error on a version that omits either term.
+        for _blind_term in ("height_scan", "base_lin_vel"):
+            if hasattr(self.observations.policy, _blind_term):
+                setattr(self.observations.policy, _blind_term, None)
+{obs_noise_block}
         # The parent prunes zero-weight rewards ONLY when the class name matches its
         # own (UnitreeGo2RoughEnvCfg/...FlatEnvCfg); our subclass name does not, so the
         # guard is False and we must prune explicitly -- this keeps flat_orientation_l2
-        # (now non-zero) while dropping the terms that are still zero.
+        # and the ascent/roll terms (now non-zero) while dropping still-zero terms.
         self.disable_zero_weight_rewards()
 '''
 
@@ -192,6 +388,55 @@ def go2_config_pkg(repo_dir: os.PathLike | str) -> Path:
     return Path(repo_dir) / GO2_CONFIG_PKG_RELPATH
 
 
+# Attribute/config tokens the generated cfg mutates. If upstream robot_lab (an
+# UN-PINNED branch) renames one, the generated __post_init__ will AttributeError only
+# after Isaac Sim has spun up on the pod -- so preflight scans for these first.
+_CRITICAL_PATCH_TOKENS = (
+    "randomize_rigid_body_mass_base",  # the base-mass DR event we retarget
+    "flat_orientation_l2",             # the anti-fall reward we re-weight
+    "base_velocity",                   # the command term we narrow
+    "terrain_generator",               # the terrain we replace with stairs
+    "disable_zero_weight_rewards",     # the manual prune we re-run
+    "actuators",                       # the actuator group we re-gain
+    '"legs"',                          # ...specifically the "legs" actuator key
+)
+
+
+def verify_patch_targets(repo_dir: os.PathLike | str) -> list[str]:
+    """Best-effort structural guard against upstream drift in robot_lab (finding E).
+
+    robot_lab tracks an UN-PINNED branch, so an upstream rename of any attribute the
+    generated ``__post_init__`` mutates would only surface as an ``AttributeError`` after
+    Isaac Sim has already spun up on the GPU pod -- burning time and money. This is a pure
+    TEXT scan (no imports of robot_lab, no Isaac deps) over every ``*.py`` in the Go2
+    config package: it returns the list of critical tokens NOT found in any scanned file
+    (empty list == all present == OK). It is a heuristic, not a proof -- a token can exist
+    yet be used differently -- but it catches the common "upstream renamed X" break early.
+
+    Sentinels: ``["<pkg-missing>"]`` if the package dir is absent; ``rough_env_cfg.py`` is
+    added to the missing list if that key file (which defines the class we subclass) is gone.
+    """
+    pkg = go2_config_pkg(repo_dir)
+    if not pkg.is_dir():
+        return ["<pkg-missing>"]
+
+    missing: list[str] = []
+    if not (pkg / "rough_env_cfg.py").is_file():
+        missing.append("rough_env_cfg.py")
+
+    blob = ""
+    for py in sorted(pkg.glob("*.py")):
+        try:
+            blob += py.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+
+    for token in _CRITICAL_PATCH_TOKENS:
+        if token not in blob:
+            missing.append(token)
+    return missing
+
+
 def apply_to_repo(
     repo_dir: os.PathLike | str,
     params: StairPatchParams = StairPatchParams(),
@@ -225,13 +470,22 @@ def main(argv: Optional[list] = None) -> int:
     ap.add_argument("--repo", required=True, help="Path to the cloned robot_lab checkout.")
     ap.add_argument("--lin-vel-x-max", type=float, default=StairPatchParams.lin_vel_x_max)
     ap.add_argument("--step-height-max", type=float, default=StairPatchParams.step_height_max)
+    ap.add_argument("--step-width-nominal", type=float, default=StairPatchParams.step_width_nominal,
+                    help="Nominal stair tread depth (m); real target is 0.305.")
     ap.add_argument("--orientation-reward", type=float, default=StairPatchParams.orientation_reward)
+    ap.add_argument("--ascent-reward", type=float, default=StairPatchParams.ascent_reward,
+                    help="Vertical-progress reward weight; 0 disables the term.")
+    ap.add_argument("--roll-penalty", type=float, default=StairPatchParams.roll_penalty,
+                    help="Roll-only anti-tip penalty weight; 0 disables the term.")
     ap.add_argument("--print", action="store_true", help="Print the generated module; do not write.")
     args = ap.parse_args(argv)
     params = StairPatchParams(
         lin_vel_x_max=args.lin_vel_x_max,
         step_height_max=args.step_height_max,
+        step_width_nominal=args.step_width_nominal,
         orientation_reward=args.orientation_reward,
+        ascent_reward=args.ascent_reward,
+        roll_penalty=args.roll_penalty,
     )
     if args.print:
         print(render_stairs_cfg_module(load_payload_numbers(), params))

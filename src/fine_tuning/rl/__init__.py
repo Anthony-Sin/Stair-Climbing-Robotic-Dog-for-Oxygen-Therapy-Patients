@@ -37,6 +37,11 @@ from __future__ import annotations
 # Override via FT_RL_REPO_URL / FT_RL_REPO_BRANCH / FT_RL_REPO_COMMIT in fine_tuning/.env.
 DEFAULT_REPO_URL = "https://github.com/fan-ziqi/robot_lab.git"
 DEFAULT_REPO_BRANCH = "main"
+# Known-good pin. runpod_setup_rl.sh's header states robot_lab tag v2.3.2 pairs with
+# Isaac Lab v2.3.2; tracking the branch tip instead is a reproducibility risk (upstream
+# `main` can move under you between runs). preflight_rl recommends pinning to this, and
+# .env's FT_RL_REPO_COMMIT (blank by default) overrides it.
+DEFAULT_REPO_COMMIT = "v2.3.2"
 # IsaacLab itself (robot_lab is an external project layered on top of an IsaacLab clone).
 DEFAULT_ISAACLAB_URL = "https://github.com/isaac-sim/IsaacLab.git"
 
@@ -52,6 +57,7 @@ PATCH_TAG = "O2_THERAPY_STAIR_PATCH"
 __all__ = [
     "DEFAULT_REPO_URL",
     "DEFAULT_REPO_BRANCH",
+    "DEFAULT_REPO_COMMIT",
     "DEFAULT_ISAACLAB_URL",
     "BASE_TASK_ID",
     "STAIR_TASK_ID",
