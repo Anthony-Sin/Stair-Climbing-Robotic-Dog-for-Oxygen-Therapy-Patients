@@ -10,10 +10,20 @@ handrails (2-3 posts + a sloped top rail) on both sides when stair_spec.handrail
 Ground: a thin slab covering the walk route, top face at z=0 (matching the terrain
 model's flat-ground height of exactly 0.0).
 
-Patient: stylized low-poly mannequin (~1.75 m) -- head sphere, torso capsule, pelvis
-box, 2-segment arms (static, slight swing pose), 2-segment legs (posed per-frame by the
-animation baker, either from logged body_parts IK targets or the synthetic walk-cycle
-procedural swing already baked into synthetic_motion.py's patient pose).
+Patient: NOT built here (2026-07-07: replaced the hand-authored primitive/skinned
+mannequin with a real imported+rigged human model, per user feedback that the
+primitive-derived body "looked bad" and clipped at the joints). "patient_root" is a
+bare transform anchor -- translation+yaw animated per-frame by anim_bake.py exactly
+as before -- with no mesh and no children. The browser (js/main.js) loads a separate
+pre-rigged glTF human (models/vendor/Xbot.glb), parents it under "isaac_world" as a
+sibling of patient_root (copying patient_root's animated world transform onto it each
+frame -- NOT nesting it under patient_root, since a glTF SkinnedMesh's own node
+transform is captured once at bind time and held fixed forever; see
+AGENTS.md's incident ledger for the full explanation), and poses its
+skeleton by retargeting anim_bake.py's per-frame patient_pose angles (hip/knee/torso
+scalars) onto the rig's own bones, layered under its canned "walk" AnimationClip for
+the arm swing/spine sway. See anim_bake.py's module docstring for why the leg pose
+stays data-driven instead of just playing the canned clip through the climb.
 """
 from __future__ import annotations
 
@@ -187,125 +197,14 @@ def build_ground_node(stair_spec: dict, landing_far_x: float = None) -> SceneNod
 
 
 # ---------------------------------------------------------------------------
-# Patient mannequin
+# Patient anchor
 # ---------------------------------------------------------------------------
-
-# Stylized low-poly mannequin dimensions (~1.75 m tall total), all relative to the
-# "patient_root" node's own origin, which sits at the HIP. The baker anchors that
-# node at (logged patient.pos.z, a GROUND height) + HIP_HEIGHT_M per frame -- NOT at
-# raw pos.z (see anim_bake.PATIENT_HIP_HEIGHT_M and the 2026-07-07 incident).
-HEAD_RADIUS_M = 0.10
-TORSO_LEN_M = 0.50            # pelvis-top to shoulder, along the spine
-TORSO_RADIUS_M = 0.13
-PELVIS_HALF_EXTENTS_M = (0.10, 0.09, 0.07)
-UPPER_ARM_LEN_M = 0.30
-LOWER_ARM_LEN_M = 0.27
-ARM_RADIUS_M = 0.045
-UPPER_LEG_LEN_M = 0.44
-LOWER_LEG_LEN_M = 0.44
-LEG_RADIUS_M = 0.055
-FOOT_BOX = (0.24, 0.09, 0.05)
-
-# Heights measured from the GROUND (z=0) up, for a patient standing upright. The
-# patient_root node origin is the HIP; the baker anchors it at (logged terrain z) +
-# HIP_HEIGHT_M (kept in sync with anim_bake.PATIENT_HIP_HEIGHT_M -- the recorder's
-# patient.pos.z is a GROUND height, not a hip height; see the 2026-07-07 patient-rig
-# incident). HEAD_CENTER_HEIGHT_M is enforced by geometry below: pelvis-top offset
-# (0.07) + head_local_z (0.64) + HIP_HEIGHT_M = 1.63, mid-way inside the patient
-# self-check's [1.55, 1.85] head-above-ground band.
-HIP_HEIGHT_M = 0.92
-HEAD_CENTER_HEIGHT_M = 1.63
 
 
 def build_patient_node() -> SceneNode:
-    """Static (unanimated) rest-pose mannequin geometry, hip-centered. The animation
-    baker moves/rotates "patient_root" per-frame (translation+yaw) and, for the legs,
-    additionally rotates the per-leg upper/lower segment nodes (IK'd from logged
-    hip/foot positions, or the synthetic procedural swing) -- see anim_bake.py.
-    """
-    root = SceneNode(name="patient_root")
-
-    pelvis = SceneNode(
-        name="patient_pelvis",
-        local_translation=(0.0, 0.0, 0.0),
-        mesh=geo.box(*[2 * e for e in PELVIS_HALF_EXTENTS_M]),
-    )
-    root.add_child(pelvis)
-
-    torso = SceneNode(
-        name="patient_torso",
-        local_translation=(0.0, 0.0, PELVIS_HALF_EXTENTS_M[2]),
-        mesh=geo.capsule(TORSO_RADIUS_M, TORSO_LEN_M - 2 * TORSO_RADIUS_M, axis="z",
-                          center=(0.0, 0.0, TORSO_LEN_M / 2.0)),
-    )
-    root.add_child(torso)
-
-    # Head center height is DERIVED from the ground-up constants so the mannequin's
-    # proportions and the patient self-check's head band agree by construction:
-    # 1.63 - 0.92 - 0.07 = 0.64 above the torso node (identity torso rotation).
-    head_local_z = HEAD_CENTER_HEIGHT_M - HIP_HEIGHT_M - PELVIS_HALF_EXTENTS_M[2]
-    head = SceneNode(
-        name="patient_head",
-        local_translation=(0.0, 0.0, head_local_z),
-        mesh=geo.sphere(HEAD_RADIUS_M),
-    )
-    torso.add_child(head)
-
-    shoulder_z = TORSO_LEN_M * 0.94
-    for side, label in ((+1.0, "l"), (-1.0, "r")):
-        shoulder_y = side * (TORSO_RADIUS_M + 0.02)
-        upper_arm = SceneNode(
-            name=f"patient_{label}_upper_arm",
-            local_translation=(0.0, shoulder_y, shoulder_z),
-            # Slight outward+forward swing pose (static, per the contract: "static at
-            # slight swing"): tilt the capsule a little off pure -Z.
-            local_rotation_matrix=_tilt_matrix(side * 0.12, 0.15),
-            mesh=geo.capsule(ARM_RADIUS_M, UPPER_ARM_LEN_M - 2 * ARM_RADIUS_M, axis="z",
-                              center=(0.0, 0.0, -UPPER_ARM_LEN_M / 2.0)),
-        )
-        torso.add_child(upper_arm)
-        lower_arm = SceneNode(
-            name=f"patient_{label}_lower_arm",
-            local_translation=(0.0, 0.0, -UPPER_ARM_LEN_M),
-            local_rotation_matrix=_tilt_matrix(0.0, -0.10),
-            mesh=geo.capsule(ARM_RADIUS_M * 0.9, LOWER_ARM_LEN_M - 2 * ARM_RADIUS_M * 0.9, axis="z",
-                              center=(0.0, 0.0, -LOWER_ARM_LEN_M / 2.0)),
-        )
-        upper_arm.add_child(lower_arm)
-
-    for side, label in ((+1.0, "l"), (-1.0, "r")):
-        hip_y = side * (PELVIS_HALF_EXTENTS_M[1] * 0.75)
-        upper_leg = SceneNode(
-            name=f"patient_{label}_upper_leg",
-            local_translation=(0.0, hip_y, -PELVIS_HALF_EXTENTS_M[2]),
-            mesh=geo.capsule(LEG_RADIUS_M, UPPER_LEG_LEN_M - 2 * LEG_RADIUS_M, axis="z",
-                              center=(0.0, 0.0, -UPPER_LEG_LEN_M / 2.0)),
-        )
-        root.add_child(upper_leg)
-        lower_leg = SceneNode(
-            name=f"patient_{label}_lower_leg",
-            local_translation=(0.0, 0.0, -UPPER_LEG_LEN_M),
-            mesh=geo.capsule(LEG_RADIUS_M * 0.85, LOWER_LEG_LEN_M - 2 * LEG_RADIUS_M * 0.85, axis="z",
-                              center=(0.0, 0.0, -LOWER_LEG_LEN_M / 2.0)),
-        )
-        upper_leg.add_child(lower_leg)
-        foot = SceneNode(
-            name=f"patient_{label}_foot",
-            local_translation=(0.04, 0.0, -LOWER_LEG_LEN_M),
-            mesh=geo.box(*FOOT_BOX, center=(FOOT_BOX[0] * 0.15, 0.0, -FOOT_BOX[2] / 2.0)),
-        )
-        lower_leg.add_child(foot)
-
-    return root
-
-
-def _tilt_matrix(yaw: float, pitch: float) -> list:
-    import math
-
-    cy, sy = math.cos(yaw), math.sin(yaw)
-    cp, sp = math.cos(pitch), math.sin(pitch)
-    # Small-angle tilt: rotate about local X (pitch, forward/back swing) then Y (yaw,
-    # in/out swing) -- order doesn't matter much at these small angles for a static pose.
-    rx = [[1, 0, 0], [0, cp, -sp], [0, sp, cp]]
-    ry = [[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]]
-    return [[sum(ry[i][k] * rx[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+    """Bare transform anchor: no mesh, no children. anim_bake.bake_clip animates
+    this node's translation+yaw exactly as before (the patient's world position);
+    everything else about the patient (body shape, limb pose) lives in the
+    imported human model + anim_bake.py's patient_pose scalars -- see this
+    module's docstring."""
+    return SceneNode(name="patient_root")

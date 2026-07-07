@@ -19,7 +19,10 @@ robot_build.py's module docstring for why the official show-quality meshes were
 rejected -- ~197k tris per single link instance, 900+ disconected material islands,
 unusable for a clean low-poly line-art budget even after max-aggression decimation).
 
-Output: models/robot.glb (single embedded-buffer glTF 2.0 binary) + models/robot.meta.json.
+Output: models/robot.glb (single embedded-buffer glTF 2.0 binary) + models/robot.meta.json
++ models/patient_pose.json (per-frame patient limb/torso angles -- js/main.js retargets
+these onto the separately-loaded human model, models/vendor/Xbot.glb; see
+anim_bake.py's module docstring for why).
 """
 from __future__ import annotations
 
@@ -264,13 +267,14 @@ def run_handrail_selfcheck(stair_spec: dict, rail_meshes=None) -> bool:
 
 
 def run_patient_selfcheck(clip: ab.BakedClip) -> bool:
-    """Numeric check of the PATIENT rig over ALL baked frames of a clip (added
+    """Numeric check of the PATIENT'S POSE DATA over ALL baked frames of a clip (added
     2026-07-07 after the recorder's pos.z ground-height semantics were mis-read as a
     hip height, shipping a kneeling/sunken mannequin on flat ground and a
-    legs-dangling-off-the-landing "totem pole" at the top).
-
-    FKs the patient chain from the BAKED tracks (exactly what the glb will play) and
-    asserts, for every frame:
+    legs-dangling-off-the-landing "totem pole" at the top; rewritten the same day to
+    FK from the scalar ``clip.patient_pose`` angles instead of a glTF-node SceneNode
+    tree, since the patient's visible geometry moved to an imported human model that
+    js/main.js retargets those same angles onto -- see anim_bake.py's module
+    docstring). Asserts, for every frame:
       (1) hip->ankle distance <= 0.87 m for both legs (the leg IK's anatomical reach
           cap is 0.86 m, so this holds with margin unless the rig regresses);
       (2) ankle z >= terrain(root_xy) - 0.05, where terrain(root_xy) is recovered as
@@ -279,25 +283,25 @@ def run_patient_selfcheck(clip: ab.BakedClip) -> bool:
       (3) head-center height above that same ground in [1.55, 1.85] m.
     Returns False on any violation; the caller FAILS the bake.
     """
-    from quat_math import quat_mul, quat_rotate_vec, vec_sub
+    from quat_math import quat_from_axis_angle, quat_mul, quat_rotate_vec, vec_sub
 
     hip_h = ab.PATIENT_HIP_HEIGHT_M
     upper_len = ab.PATIENT_UPPER_LEG_M
     lower_len = ab.PATIENT_LOWER_LEG_M
-    head_local_z = sb.HEAD_CENTER_HEIGHT_M - sb.HIP_HEIGHT_M - sb.PELVIS_HALF_EXTENTS_M[2]
-    pelvis_top_z = sb.PELVIS_HALF_EXTENTS_M[2]
+    head_local_z = ab.PATIENT_HEAD_HEIGHT_M - ab.PATIENT_HIP_HEIGHT_M - ab.PATIENT_PELVIS_TOP_M
+    pelvis_top_z = ab.PATIENT_PELVIS_TOP_M
 
     root = clip.tracks.get("patient_root")
+    pose = clip.patient_pose
     if root is None or not root.times:
         print(f"  [{clip.name}] patient self-check: SKIPPED (no patient_root keyframes)")
         return True
-    needed = ["patient_l_upper_leg", "patient_l_lower_leg",
-              "patient_r_upper_leg", "patient_r_lower_leg", "patient_torso"]
-    for name in needed:
-        tr = clip.tracks.get(name)
-        if tr is None or len(tr.times) != len(root.times):
-            print(f"  [{clip.name}] patient self-check: FAIL -- track {name!r} missing or "
-                  f"not in lockstep with patient_root ({len(tr.times) if tr else 0} vs {len(root.times)} keys)")
+    needed = ["hip_pitch_l", "knee_bend_l", "hip_pitch_r", "knee_bend_r", "torso_pitch"]
+    for key in needed:
+        vals = pose.get(key)
+        if vals is None or len(vals) != len(root.times):
+            print(f"  [{clip.name}] patient self-check: FAIL -- patient_pose[{key!r}] missing or "
+                  f"not in lockstep with patient_root ({len(vals) if vals else 0} vs {len(root.times)} keys)")
             return False
 
     n = len(root.times)
@@ -313,9 +317,9 @@ def run_patient_selfcheck(clip: ab.BakedClip) -> bool:
         for side in ("l", "r"):
             attach_local = ab._PATIENT_LEG_HIP_OFFSET[side]
             attach = tuple(rt[k] + quat_rotate_vec(rq, attach_local)[k] for k in range(3))
-            q_upper = quat_mul(rq, clip.tracks[f"patient_{side}_upper_leg"].rotations[i])
+            q_upper = quat_mul(rq, quat_from_axis_angle((0, 1, 0), pose[f"hip_pitch_{side}"][i]))
             knee = tuple(attach[k] + quat_rotate_vec(q_upper, (0.0, 0.0, -upper_len))[k] for k in range(3))
-            q_lower = quat_mul(q_upper, clip.tracks[f"patient_{side}_lower_leg"].rotations[i])
+            q_lower = quat_mul(q_upper, quat_from_axis_angle((0, 1, 0), -pose[f"knee_bend_{side}"][i]))
             ankle = tuple(knee[k] + quat_rotate_vec(q_lower, (0.0, 0.0, -lower_len))[k] for k in range(3))
 
             d = vec_sub(ankle, attach)
@@ -326,8 +330,12 @@ def run_patient_selfcheck(clip: ab.BakedClip) -> bool:
             if hip_foot > 0.87 + 1e-6 or foot_rel < -0.05 - 1e-6:
                 violations += 1
 
-        q_torso = clip.tracks["patient_torso"].rotations[i]
-        head_off = quat_rotate_vec(q_torso, (0.0, 0.0, head_local_z))
+        # torso_pitch is ROOT-LOCAL (pre-root-rotation), matching the old rig's
+        # patient_torso track convention -- rotate the head offset by it, add the
+        # fixed pelvis-top offset (also root-local), THEN rotate the whole thing by
+        # the root's world rotation (rq) and translate by the root's world position.
+        q_torso_local = quat_from_axis_angle((0, 1, 0), pose["torso_pitch"][i])
+        head_off = quat_rotate_vec(q_torso_local, (0.0, 0.0, head_local_z))
         head_local = (head_off[0], head_off[1], head_off[2] + pelvis_top_z)
         head = tuple(rt[k] + quat_rotate_vec(rq, head_local)[k] for k in range(3))
         head_rel = head[2] - ground_z
@@ -590,8 +598,14 @@ def main() -> int:
         return 1
 
     print("\nbaking animation clips...")
-    follow_clip = ab.bake_clip("follow", follow_frames, urdf, dof_names, fps=30.0)
-    climb_clip = ab.bake_clip("climb", climb_frames, urdf, dof_names, fps=30.0)
+    # stair_spec is passed to BOTH clips (not just "climb"): a real recorded "follow"
+    # window can still have the patient's lead position briefly cross onto the first
+    # tread near the clip boundary (observed in practice -- a real approach segment
+    # doesn't cleanly stop at x=start_x), and the gait-driven leg fallback (see
+    # anim_bake._bake_patient_legs) needs the terrain under THAT position, not an
+    # assumed-flat 0.0, to avoid planting a foot through the first riser.
+    follow_clip = ab.bake_clip("follow", follow_frames, urdf, dof_names, fps=30.0, stair_spec=stair_spec)
+    climb_clip = ab.bake_clip("climb", climb_frames, urdf, dof_names, fps=30.0, stair_spec=stair_spec)
     print(f"  follow: duration={follow_clip.duration_s:.3f}s, {len(follow_clip.tracks)} tracks")
     print(f"  climb:  duration={climb_clip.duration_s:.3f}s, {len(climb_clip.tracks)} tracks")
 
@@ -642,7 +656,8 @@ def main() -> int:
     print(f"  robot+payload: {robot_tris:,} tris")
     print(f"  stairs: {stairs_tris:,} tris")
     print(f"  ground: {ground_tris:,} tris")
-    print(f"  patient: {patient_tris:,} tris")
+    print(f"  patient: {patient_tris:,} tris (bare transform anchor -- visible geometry "
+          f"is the separately-loaded human model, see js/main.js)")
     print(f"  TOTAL: {total_tris:,} tris"
           + ("  [OK, under the 350k budget]" if robot_tris <= 350_000 else "  [WARNING: robot exceeds the 350k budget]"))
 
@@ -689,10 +704,22 @@ def main() -> int:
     args.out_dir.mkdir(parents=True, exist_ok=True)
     glb_path = args.out_dir / "robot.glb"
     meta_path = args.out_dir / "robot.meta.json"
+    patient_pose_path = args.out_dir / "patient_pose.json"
 
     document.save_binary(str(glb_path))
     glb_size = glb_path.stat().st_size
     print(f"\nwrote {glb_path}  ({glb_size:,} bytes / {glb_size/1024:.1f} KB)")
+
+    # js/main.js retargets these scalars onto the imported human model's skeleton
+    # every frame (see anim_bake.py's module docstring) -- shipped as a plain JSON
+    # sidecar rather than baked glTF animation channels since they don't drive any
+    # node in robot.glb anymore.
+    with open(patient_pose_path, "w", encoding="utf-8") as fh:
+        json.dump(
+            {"follow": follow_clip.patient_pose, "climb": climb_clip.patient_pose},
+            fh, indent=2,
+        )
+    print(f"wrote {patient_pose_path}")
 
     node_names = [n.name for n in document.nodes]
     meta = {

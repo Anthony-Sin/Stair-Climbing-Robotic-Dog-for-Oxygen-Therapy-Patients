@@ -209,7 +209,12 @@ def validate(glb_path: Path) -> int:
             r.check(n_nan == 0, f"accessor[{i}]: contains {n_nan} NaN value(s)")
             r.check(n_inf == 0, f"accessor[{i}]: contains {n_inf} Inf value(s)")
 
-            if values and acc.min is not None and acc.max is not None:
+            # pygltflib defaults Accessor.min/.max to [] (not None) when never set --
+            # true for any accessor built with compute_minmax=False (e.g. JOINTS_0/
+            # WEIGHTS_0/inverseBindMatrices, where the glTF spec doesn't require
+            # min/max), so an `is not None` check here would try to index into an
+            # empty list below. Truthy checks correctly treat [] as "not set".
+            if values and acc.min and acc.max:
                 cols = [values[k::n_comp] for k in range(n_comp)]
                 recomputed_min = [min(c) for c in cols]
                 recomputed_max = [max(c) for c in cols]

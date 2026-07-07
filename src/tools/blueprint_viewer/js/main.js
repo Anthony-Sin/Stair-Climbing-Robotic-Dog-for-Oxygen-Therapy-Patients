@@ -9,16 +9,17 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { FontLoader } from 'three/addons/loaders/FontLoader.js';
+import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
 
 import { PALETTES, applyPaletteToDom } from './palette.js';
 import { BlueprintEdgesPass } from './BlueprintEdgesPass.js';
 import { buildPlaceholderRobot } from './PlaceholderRobot.js';
 import { PartLabels } from './PartLabels.js';
+import { PatientHuman } from './PatientHuman.js';
 
 // ===========================================================================
 // DOM references
@@ -31,6 +32,7 @@ const phaseFollowBtn = document.getElementById( 'phase-follow' );
 const phaseClimbBtn = document.getElementById( 'phase-climb' );
 const themeToggle = document.getElementById( 'theme-toggle' );
 const trackingToggle = document.getElementById( 'tracking-toggle' );
+const plumbToggle = document.getElementById( 'plumb-toggle' );
 const playToggle = document.getElementById( 'play-toggle' );
 const modelWarning = document.getElementById( 'model-warning' );
 
@@ -66,18 +68,19 @@ controls.autoRotate = false;
 controls.target.set( 0, 0.5, 0 );
 controls.update();
 
-// Lighting: hemisphere + soft directional, for faint tonal separation only
-// (the look is line-art, not a shaded render — the edge pass carries the
-// actual "drawing").
-// Measured against the anime.js reference: fills must stay within ~10% of the
-// paper tone (a near-black hemisphere ground bounce + 0.6 directional read as a
-// clay render, with side faces dropping to ~25% brightness). Intensity 2.6 was
-// calibrated by pixel-sampling a live render: with three's physical light units
-// (hemisphere irradiance is divided by pi) it puts an upward #dad6ce face at
-// ~sRGB 205 against the #d6d2ca (214) paper background.
-const hemiLight = new THREE.HemisphereLight( 0xffffff, 0xd8d4cc, 2.6 );
+// Lighting: hemisphere (unquantized ambient fill) + directional (quantized
+// into the toon gradient bands below) + a shader-injected fresnel rim — see
+// the "Blueprint materials" section for how MeshToonMaterial splits these
+// two lights into a smooth indirect term vs. a banded direct term.
+// dirLight was raised from the old flat-material value (0.15) because the
+// toon gradient map only bands the DIRECTIONAL contribution — at 0.15 it was
+// swamped by hemiLight's ambient fill and no bands were visible at all.
+// Rebalanced by pixel-sampling a live render so the lit face still lands
+// close to the old ~sRGB 205 target against the #d6d2ca (214) paper
+// background, but with visible shadow/mid/lit steps across the form.
+const hemiLight = new THREE.HemisphereLight( 0xffffff, 0xd8d4cc, 1.4 );
 scene.add( hemiLight );
-const dirLight = new THREE.DirectionalLight( 0xffffff, 0.15 );
+const dirLight = new THREE.DirectionalLight( 0xffffff, 1.6 );
 dirLight.position.set( 3, 5, 2 );
 scene.add( dirLight );
 
@@ -114,19 +117,76 @@ function applyTheme( name ) {
 // Blueprint materials
 //
 // Traverse the loaded model, strip all textures/materials, and assign a
-// flat MeshStandardMaterial (color-only, roughness 1 / metalness 0) so the
-// edge pass is the only thing doing "shading". A few named subtrees get a
-// slightly different tint per the design spec (oxygen tank lighter,
-// patient darker) while sharing the same roughness/metalness treatment.
+// cel-shaded (toon) material so the ink edge pass isn't the ONLY thing
+// giving the sculpted mesh (324k tris of rivets/seams/panel lines) a sense
+// of form — on a near-shadeless flat fill, that detail read as pure line
+// clutter ("wired") instead of a shaded surface. A few named subtrees get a
+// slightly different tint per the design spec (oxygen tank lighter, patient
+// darker) while sharing the same toon/rim treatment.
+//
+// MeshToonMaterial quantizes ONLY the directional-light contribution through
+// `gradientMap` (a 3-texel NearestFilter lookup -> hard shadow/mid/lit
+// bands); the hemisphere light stays a smooth ambient fill on top, same as
+// real cel animation (banded key light + flat ambient). A fresnel rim term
+// is injected via onBeforeCompile since three's toon material has no built-in
+// rim light.
 // ===========================================================================
+
+const CEL_GRADIENT_MAP = makeToonGradientMap( [ 0.38, 0.72, 1.0 ] );
+
+const RIM_COLOR = new THREE.Color( 0xffffff );
+const RIM_POWER = 2.4;
+const RIM_INTENSITY = 0.45;
+
+/** Small NearestFilter 1D texture used as MeshToonMaterial's gradientMap: one texel per band, so lighting snaps between bands instead of a smooth ramp. */
+function makeToonGradientMap( levels ) {
+
+	const data = new Uint8Array( levels.length );
+	for ( let i = 0; i < levels.length; i ++ ) data[ i ] = Math.round( THREE.MathUtils.clamp( levels[ i ], 0, 1 ) * 255 );
+
+	const texture = new THREE.DataTexture( data, levels.length, 1, THREE.RedFormat );
+	texture.minFilter = THREE.NearestFilter;
+	texture.magFilter = THREE.NearestFilter;
+	texture.wrapS = THREE.ClampToEdgeWrapping;
+	texture.wrapT = THREE.ClampToEdgeWrapping;
+	texture.generateMipmaps = false;
+	texture.needsUpdate = true;
+	return texture;
+
+}
 
 function makeBlueprintMaterial( colorHex ) {
 
-	return new THREE.MeshStandardMaterial( {
+	const material = new THREE.MeshToonMaterial( {
 		color: colorHex,
-		roughness: 1,
-		metalness: 0,
+		gradientMap: CEL_GRADIENT_MAP,
 	} );
+
+	// Fresnel rim light: `vViewPosition` (view-space) is already declared by
+	// lights_toon_pars_fragment and `vNormal` (view-space) by
+	// normal_pars_fragment, so both are in scope for the injected snippet
+	// below without redeclaring them.
+	material.onBeforeCompile = ( shader ) => {
+
+		shader.uniforms.uRimColor = { value: RIM_COLOR };
+		shader.uniforms.uRimPower = { value: RIM_POWER };
+		shader.uniforms.uRimIntensity = { value: RIM_INTENSITY };
+
+		shader.fragmentShader = shader.fragmentShader
+			.replace(
+				'#define TOON',
+				'#define TOON\nuniform vec3 uRimColor;\nuniform float uRimPower;\nuniform float uRimIntensity;',
+			)
+			.replace(
+				'vec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + totalEmissiveRadiance;',
+				'vec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + totalEmissiveRadiance;\n' +
+				'\tfloat rimFresnel = pow( 1.0 - max( dot( normalize( vNormal ), normalize( vViewPosition ) ), 0.0 ), uRimPower );\n' +
+				'\toutgoingLight += rimFresnel * uRimIntensity * uRimColor;',
+			);
+
+	};
+
+	return material;
 
 }
 
@@ -134,9 +194,12 @@ let bodyMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].materialC
 let oxygenTankMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].oxygenTankColor );
 let patientMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].patientColor );
 
+// "patient_root" is no longer a tint target here: it's a bare transform anchor with
+// no mesh of its own (see scene_build.build_patient_node) -- the patient's visible
+// geometry is the separately-loaded PatientHuman model below, tinted directly by
+// PatientHuman.attachTo().
 const TINTED_NODE_NAMES = {
 	oxygen_tank: () => oxygenTankMaterial,
-	patient_root: () => patientMaterial,
 };
 
 /**
@@ -204,7 +267,16 @@ function applyBlueprintMaterials( root ) {
 }
 
 // ===========================================================================
-// Post-processing: RenderPass -> BlueprintEdgesPass -> FXAA -> OutputPass
+// Post-processing: RenderPass -> BlueprintEdgesPass -> OutputPass
+//
+// No FXAA: it sat after the ink pass and treated every crisp ink stroke as
+// exactly the high-contrast "jaggy" it exists to blur — softening deliberate
+// technical-pen lines into a faint grey smear (measured live: removing FXAA
+// collapsed a faint/dashed seam's ambiguous mid-grey pixel count in a test
+// region from ~1700 to ~30, most of it converting to solid ink). A
+// photorealistic-AA pass fights a line-art aesthetic; the edge pass's own
+// smoothstep already supplies the (now-tightened) anti-aliasing this style
+// wants.
 // ===========================================================================
 
 const composer = new EffectComposer( renderer );
@@ -234,21 +306,8 @@ const edgesPass = new BlueprintEdgesPass( scene, camera, {
 } );
 composer.addPass( edgesPass );
 
-const fxaaPass = new ShaderPass( FXAAShader );
-composer.addPass( fxaaPass );
-
 const outputPass = new OutputPass();
 composer.addPass( outputPass );
-
-function updateFxaaResolution() {
-
-	const pixelRatio = renderer.getPixelRatio();
-	fxaaPass.material.uniforms[ 'resolution' ].value.set(
-		1 / ( canvasHost.clientWidth * pixelRatio ),
-		1 / ( canvasHost.clientHeight * pixelRatio ),
-	);
-
-}
 
 // ===========================================================================
 // Part labels overlay
@@ -285,6 +344,145 @@ let hasLastBasePos = false;
 // Playback (optional "play" chip) state — see PLAYBACK section below.
 let isPlaying = false;
 let lastPlaybackTimestamp = 0;
+
+// Patient: a real imported+rigged human model (see PatientHuman.js), loaded in
+// parallel with robot.glb below and wired up once both are ready. Kicked off here
+// (not inside loadRealModel) so the two loads race instead of serializing.
+const patientHuman = new PatientHuman();
+const patientHumanReady = patientHuman.load();
+
+// ===========================================================================
+// Plumb line: a literal vertical (world-up) reference planted at the patient's
+// own ground point, extending past head height -- added per user request after
+// screenshots of the retargeted patient looked "unnatural" (forward lean / squat)
+// but were hard to judge precisely from a single static camera angle. Mirrors the
+// hand-drawn vertical line the user overlaid on their own reference screenshots:
+// with this rendered IN the scene, any forward/backward lean of the torso/head
+// relative to a true vertical is visible directly, without guessing from
+// perspective. Off by default (toggle chip) -- purely a debug/verification aid,
+// not part of the "real" render.
+// ===========================================================================
+
+// Kept in sync with anim_bake.PATIENT_HIP_HEIGHT_M (0.92) -- the patient_root
+// node's own world height above the patient's ground is exactly that constant
+// (see anim_bake.py's docstring: "the mannequin's hip ... sits at pos.z +
+// PATIENT_HIP_HEIGHT_M"), so subtracting it from the root's world Y recovers the
+// ground point directly under the patient without needing a separate terrain query.
+const PATIENT_HIP_HEIGHT_M = 0.92;
+const PLUMB_LINE_HEIGHT_M = 1.9; // a bit above PATIENT_HEAD_HEIGHT_M (1.63) with margin
+
+// depthTest:false + a high renderOrder: the whole point is comparing the body's
+// silhouette against a TRUE vertical, same as the user's own hand-drawn overlay on
+// their reference screenshots -- an overlay drawn on top of a photo is never
+// occluded by the subject, so a depth-tested 3D line (which mostly hides inside the
+// torso volume it's meant to be compared against) defeats the purpose.
+const plumbLineMaterial = new THREE.MeshBasicMaterial( { color: 0x2255ee, depthTest: false, depthWrite: false } );
+const plumbLine = new THREE.Mesh( new THREE.CylinderGeometry( 0.006, 0.006, PLUMB_LINE_HEIGHT_M, 8 ), plumbLineMaterial );
+plumbLine.name = 'plumb_line';
+plumbLine.visible = false;
+plumbLine.renderOrder = 999;
+plumbLine.frustumCulled = false; // same reasoning as PatientHuman's skinned mesh: this mesh's own node never sits where it's drawn relative to anything culling would track sanely
+scene.add( plumbLine );
+let plumbLineEnabled = false;
+
+const _plumbHipWorld = new THREE.Vector3();
+
+/** Re-plant the plumb line at the patient's current ground point. No-op while disabled or before the patient model has attached. */
+function updatePlumbLine() {
+
+	if ( ! plumbLineEnabled || ! patientHuman._attached ) return;
+
+	patientHuman._patientRootNode.getWorldPosition( _plumbHipWorld );
+	const groundY = _plumbHipWorld.y - PATIENT_HIP_HEIGHT_M;
+	plumbLine.position.set( _plumbHipWorld.x, groundY + PLUMB_LINE_HEIGHT_M / 2, _plumbHipWorld.z );
+
+}
+
+// ===========================================================================
+// Brand label: REAL 3D text geometry, not embossed-mesh crease detection
+//
+// The real Isaac Go2 USD's "unitree" wordmark is sculpted directly into the
+// single fused `base` mesh (no material/UV tag to isolate it) as a shallow
+// relief -- too shallow and too coarsely tessellated for BlueprintEdgesPass's
+// normal-discontinuity edge detector to ever read as clean letterforms (its
+// own dilate/erode "closing" pass exists specifically to bridge that gap and
+// still wasn't enough; a flat SVG callout was tried next and rejected --
+// the brand needs to actually be IN the render, not a UI tag floating over
+// it). Fix: author a completely separate, genuinely sharp-edged text mesh
+// (TextGeometry over a vendored typeface) and sit it on the body like a
+// raised emblem. A flat extrusion's 90-degree side-wall/top-face normal
+// break is exactly the strong, continuous discontinuity the edge pass is
+// built for -- unlike the original scan's smoothly-blended organic relief,
+// this WILL ink as solid, legible strokes at any camera distance.
+// ===========================================================================
+
+const LOGO_TEXT = 'unitree';
+const LOGO_LETTER_HEIGHT = 0.02; // m, cap height
+const LOGO_DEPTH = 0.003; // m, shallow raised-emblem extrusion
+// Local-frame (base link: Z-up, X-forward -- see usd_mesh.py) placement on
+// the real mesh's flat top-rear deck, hand-measured off the baked robot.glb
+// (`robot_base` primitive) by clustering vertices near the surface's global
+// z-max: the deck is a ~0.13x0.10 m flat plateau spanning x in
+// [0.121, 0.252], y in [-0.052, 0.051], topping out at z ~= 0.089. Biased
+// toward the low-x (rear) end of that range -- at the default 0.025 cap
+// height the word's high-x end visibly wrapped onto the neck's curved
+// surface (verified live via a bird's-eye + 3/4 preview render).
+const LOGO_LOCAL_POSITION = new THREE.Vector3( 0.17, 0, 0.0905 );
+
+function loadLogoFont() {
+
+	return fetch( './vendor/fonts/helvetiker_bold.typeface.json' )
+		.then( ( res ) => res.json() )
+		.then( ( json ) => new FontLoader().parse( json ) )
+		.catch( ( error ) => {
+
+			console.warn( '[blueprint-viewer] logo font failed to load, skipping brand label:', error );
+			return null;
+
+		} );
+
+}
+
+const logoFontReady = loadLogoFont();
+
+function buildLogoMesh( font ) {
+
+	const geometry = new TextGeometry( LOGO_TEXT, {
+		font,
+		size: LOGO_LETTER_HEIGHT,
+		depth: LOGO_DEPTH,
+		curveSegments: 6,
+		bevelEnabled: false,
+	} );
+	geometry.center();
+
+	const mesh = new THREE.Mesh( geometry, bodyMaterial );
+	mesh.name = 'logo_label';
+	mesh.position.copy( LOGO_LOCAL_POSITION );
+	return mesh;
+
+}
+
+/**
+ * Attach (or replace) the real 3D brand-label mesh under the given real-mesh
+ * robot_base node. Only meaningful for the real GLB -- the placeholder robot
+ * uses three's own Y-up/Z-forward convention and has no equivalent deck.
+ */
+function attachLogoLabel( baseNode, font ) {
+
+	if ( ! font || ! baseNode ) return;
+
+	const existing = baseNode.getObjectByName( 'logo_label' );
+	if ( existing ) {
+
+		existing.geometry?.dispose();
+		existing.parent.remove( existing );
+
+	}
+
+	baseNode.add( buildLogoMesh( font ) );
+
+}
 
 // ===========================================================================
 // Camera fit — frame the robot_base subtree's bbox at t=0 on load
@@ -402,6 +600,7 @@ function setPhase( phaseName, { resetSlider = true } = {} ) {
 
 	}
 
+	patientHuman.sync( phaseName, phaseActions.get( phaseName ).time );
 	updateTimeReadout();
 
 }
@@ -451,6 +650,7 @@ function scrubToPercent( pct ) {
 
 	action.time = t;      // (1)+(2) above: set the authoritative scrub time
 	mixer.update( 0 );    // (3) above: force pose re-evaluation, advance nothing
+	patientHuman.sync( currentPhase, t );
 
 	scrubber.value = String( pct );
 	updateTimeReadout();
@@ -525,6 +725,7 @@ function stepPlayback( nowMs ) {
 
 	action.time = nextTime;
 	mixer.update( 0 ); // scrub-authoritative: never mixer.update(dtSec)
+	patientHuman.sync( currentPhase, nextTime );
 
 	const pct = clip.duration > 0 ? ( nextTime / clip.duration ) * 100 : 0;
 	scrubber.value = String( pct );
@@ -569,6 +770,16 @@ trackingToggle.addEventListener( 'click', () => {
 	trackingToggle.textContent = `tracking · ${ trackingEnabled ? 'on' : 'off' }`;
 	trackingToggle.setAttribute( 'aria-pressed', trackingEnabled ? 'true' : 'false' );
 	if ( trackingEnabled ) hasLastBasePos = false; // resync delta baseline on re-enable
+
+} );
+
+plumbToggle.addEventListener( 'click', () => {
+
+	plumbLineEnabled = ! plumbLineEnabled;
+	plumbLine.visible = plumbLineEnabled;
+	plumbToggle.textContent = `plumb line · ${ plumbLineEnabled ? 'on' : 'off' }`;
+	plumbToggle.setAttribute( 'aria-pressed', plumbLineEnabled ? 'true' : 'false' );
+	if ( plumbLineEnabled ) updatePlumbLine();
 
 } );
 
@@ -644,7 +855,28 @@ function loadRealModel() {
 				const baseNode = root.getObjectByName( 'robot_base' ) || root;
 				finishModelSetup( root, gltf.animations || [], baseNode );
 
-				resolve();
+				// Real mesh only (see attachLogoLabel doc comment) — races against
+				// the GLTF load same as the patient human below.
+				logoFontReady.then( ( font ) => attachLogoLabel( baseNode, font ) );
+
+				// Wait for the (concurrently-loading) patient human model too, so the
+				// first rendered frame never shows the robot without its patient —
+				// resolves either way (PatientHuman.load() catches its own errors and
+				// just leaves .ready false, degrading to "no patient shown").
+				patientHumanReady.then( () => {
+
+					const isaacWorldNode = root.getObjectByName( 'isaac_world' );
+					const patientRootNode = root.getObjectByName( 'patient_root' );
+					if ( isaacWorldNode && patientRootNode ) {
+
+						patientHuman.attachTo( isaacWorldNode, patientRootNode, patientMaterial );
+						patientHuman.sync( currentPhase, phaseActions.get( currentPhase )?.time ?? 0 );
+
+					}
+
+					resolve();
+
+				} );
 
 			},
 			undefined,
@@ -681,8 +913,6 @@ function handleResize() {
 
 	camera.aspect = width / height;
 	camera.updateProjectionMatrix();
-
-	updateFxaaResolution();
 
 }
 
@@ -761,6 +991,8 @@ function renderFrame() {
 	controls.update();
 
 	partLabels.update( canvasHost.clientWidth, canvasHost.clientHeight );
+
+	updatePlumbLine();
 
 	composer.render();
 
@@ -846,7 +1078,7 @@ window.__viewer = {
 	 * (e.g. tuning light intensities or edge-pass uniforms in-page without a
 	 * reload cycle). Not a stable public API.
 	 */
-	_internals: { scene, camera, renderer, composer, hemiLight, dirLight, edgesPass },
+	_internals: { scene, camera, renderer, composer, hemiLight, dirLight, edgesPass, patientHuman, controls },
 };
 
 // ===========================================================================
@@ -859,10 +1091,8 @@ applyTheme( currentThemeName );
 // construction above) — canvasHost should have a committed layout by the
 // time this module's top-level code finishes running, but guard anyway:
 // if it's somehow still 0x0, the ResizeObserver below will catch the next
-// genuine size change, and handleResize() itself also calls
-// updateFxaaResolution() so that stays in sync too.
+// genuine size change.
 handleResize();
-updateFxaaResolution();
 
 loadRealModel().then( () => {
 

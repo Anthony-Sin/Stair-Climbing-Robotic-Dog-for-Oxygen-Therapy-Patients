@@ -12,9 +12,12 @@ Node hierarchy (exact names per the contract):
         head                                        (if present)
       stairs
       ground
-      patient_root
-        patient_pelvis, patient_torso -> patient_head, patient_*_upper_arm -> ...,
-        patient_*_upper_leg -> patient_*_lower_leg -> patient_*_foot
+      patient_root                                 (bare transform anchor, no mesh/
+                                                       children -- see scene_build.py;
+                                                       js/main.js loads a separate
+                                                       imported human model and
+                                                       positions it by copying this
+                                                       node's animated world transform)
 
 All mesh/joint positions stay in raw Isaac Z-up coordinates under isaac_world -- only
 isaac_world itself carries the axis-conversion rotation (contract: "No other axis
@@ -28,7 +31,7 @@ import pygltflib as gltf
 
 from anim_bake import BakedClip
 from gltf_buffer import BufferPacker
-from quat_math import wxyz_to_xyzw
+from quat_math import quat_from_matrix, wxyz_to_xyzw
 from robot_build import SceneNode
 
 ISAAC_WORLD_ROTATION_XYZW: Tuple[float, float, float, float] = (
@@ -54,10 +57,8 @@ def _mesh_to_gltf_mesh(document: gltf.GLTF2, packer: BufferPacker, mesh, name: s
         idx_idx = packer.add_accessor(mesh.indices, gltf.UNSIGNED_INT, "SCALAR",
                                        target=gltf.ELEMENT_ARRAY_BUFFER, compute_minmax=True)
 
-    primitive = gltf.Primitive(
-        attributes=gltf.Attributes(POSITION=pos_idx, NORMAL=nrm_idx),
-        indices=idx_idx, mode=gltf.TRIANGLES,
-    )
+    attributes = gltf.Attributes(POSITION=pos_idx, NORMAL=nrm_idx)
+    primitive = gltf.Primitive(attributes=attributes, indices=idx_idx, mode=gltf.TRIANGLES)
     gltf_mesh = gltf.Mesh(primitives=[primitive], name=name)
     document.meshes.append(gltf_mesh)
     return len(document.meshes) - 1
@@ -154,7 +155,10 @@ def build_gltf_document(
     """Assemble the complete document. Returns (document, glb_bytes) -- the caller
     (bake_gltf.py) writes glb_bytes to disk (or lets pygltflib's save_binary do it
     directly from the fully-wired document, whichever is more convenient -- see the
-    CLI's usage of this function)."""
+    CLI's usage of this function). ``patient_scene`` is now just the bare
+    "patient_root" transform anchor (see scene_build.build_patient_node) -- the
+    patient's visible geometry is a separate imported human model loaded and posed by
+    js/main.js, not part of this document."""
     document = gltf.GLTF2()
     document.asset = gltf.Asset(version="2.0", generator="blueprint_viewer/pipeline/bake_gltf.py")
     document.buffers.append(gltf.Buffer())

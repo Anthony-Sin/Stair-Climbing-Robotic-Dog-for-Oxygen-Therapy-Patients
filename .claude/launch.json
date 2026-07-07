@@ -4,8 +4,9 @@
     {
       "name": "blueprint-viewer",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["src/tools/blueprint_viewer/serve.py", "8741"],
-      "port": 8741
+      "runtimeArgs": ["src/tools/blueprint_viewer/serve.py"],
+      "port": 8741,
+      "autoPort": true
     }
   ]
 }

@@ -1,5 +1,5 @@
 {
-  "source": "log\\run_sim_20260707_103917_032\\debug\\robot_frames.jsonl",
+  "source": "C:\\Users\\antho\\Downloads\\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\\log\\run_sim_20260707_183410_928\\debug\\robot_frames.jsonl",
   "mesh_source": "isaac_go2_usd",
   "mesh_sources_per_link": {
     "base": "usd",
@@ -22,14 +22,14 @@
   },
   "clips": {
     "follow": {
-      "duration_s": 20.0,
-      "t0": 3.0,
-      "t1": 23.0
+      "duration_s": 23.6,
+      "t0": 0.005,
+      "t1": 23.635
     },
     "climb": {
-      "duration_s": 38.4,
-      "t0": 27.515,
-      "t1": 65.925
+      "duration_s": 42.7333,
+      "t0": 23.64,
+      "t1": 66.4
     }
   },
   "nodes": [
@@ -55,38 +55,25 @@
     "stairs",
     "ground",
     "patient_root",
-    "patient_pelvis",
-    "patient_torso",
-    "patient_head",
-    "patient_l_upper_arm",
-    "patient_l_lower_arm",
-    "patient_r_upper_arm",
-    "patient_r_lower_arm",
-    "patient_l_upper_leg",
-    "patient_l_lower_leg",
-    "patient_l_foot",
-    "patient_r_upper_leg",
-    "patient_r_lower_leg",
-    "patient_r_foot",
     "isaac_world"
   ],
   "stair_spec": {
     "name": "commercial",
     "start_x_m": 2.0,
-    "step_height_m": 0.13,
+    "step_height_m": 0.145,
     "step_depth_m": 0.305,
     "step_count": 14,
     "half_width_m": 0.7,
     "landing_depth_m": 1.0,
     "handrail": true
   },
-  "landing_far_x_m": 8.593,
+  "landing_far_x_m": 8.4924,
   "triangle_counts": {
     "robot": 323922,
     "stairs": 756,
     "ground": 12,
-    "patient": 2148,
-    "total": 326838
+    "patient": 0,
+    "total": 324690
   },
-  "generated_utc": "2026-07-07T18:59:23.591053+00:00"
+  "generated_utc": "2026-07-07T23:25:38.127522+00:00"
 }

@@ -8,6 +8,7 @@ edit (observed live: js/main.js served 0.55 while the page ran the cached
 which is what a dev server should do; unchanged files still 304.
 
 Usage: python serve.py [port]   (default 8741, serves this file's directory)
+A $PORT env var, if set, overrides both (lets tooling auto-assign a free port).
 """
 import functools
 import http.server
@@ -22,7 +23,7 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
 
 
 def main() -> None:
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8741
+    port = int(os.environ.get("PORT") or (sys.argv[1] if len(sys.argv) > 1 else 8741))
     directory = os.path.dirname(os.path.abspath(__file__))
     handler = functools.partial(NoCacheHandler, directory=directory)
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), handler)
