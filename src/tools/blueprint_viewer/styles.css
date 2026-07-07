@@ -1,0 +1,371 @@
+/* styles.css
+ *
+ * Blueprint / anime.js-hero aesthetic. Colors are driven by CSS custom
+ * properties set from js/palette.js (applyPaletteToDom) so the DOM chrome
+ * and the three.js scene never disagree about the active theme. Defaults
+ * below match the "light" palette so the page looks correct even for the
+ * first paint before JS runs.
+ */
+
+:root {
+	--backdrop: #1b1b18;
+	--sheet: #d6d2ca;
+	--sheet-border: rgba(0, 0, 0, .25);
+	--ink: #2f2c28;
+	--headline: #262320;
+
+	--font-display: 'Segoe UI', Inter, system-ui, -apple-system, sans-serif;
+	--font-mono: 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
+
+	--sheet-margin: 14px;
+	--sheet-radius: 22px;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html, body {
+	margin: 0;
+	padding: 0;
+	width: 100%;
+	height: 100%;
+	overflow: hidden;
+	background: var(--backdrop);
+}
+
+body {
+	font-family: var(--font-display);
+	color: var(--ink);
+}
+
+button {
+	font: inherit;
+	color: inherit;
+}
+
+#backdrop {
+	position: fixed;
+	inset: 0;
+	background: var(--backdrop);
+	transition: background 200ms ease;
+}
+
+#sheet {
+	position: absolute;
+	inset: var(--sheet-margin);
+	border-radius: var(--sheet-radius);
+	background: var(--sheet);
+	border: 1px solid var(--sheet-border);
+	overflow: hidden; /* clips the canvas' rounded corners */
+	transition: background 200ms ease, border-color 200ms ease;
+}
+
+#canvas-host {
+	position: absolute;
+	inset: 0;
+}
+
+#canvas-host canvas {
+	position: absolute;
+	inset: 0;
+	display: block;
+	width: 100%;
+	height: 100%;
+}
+
+/* ---------------------------------------------------------------------
+   UI overlay: DOM chrome living on top of the WebGL canvas. Only the
+   interactive controls take pointer events, so OrbitControls still
+   receives drag/scroll everywhere else.
+--------------------------------------------------------------------- */
+
+#ui-overlay {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	z-index: 10;
+}
+
+#headline-block {
+	position: absolute;
+	top: clamp(20px, 3.4vw, 40px);
+	left: clamp(20px, 3.4vw, 40px);
+	max-width: 34ch;
+	pointer-events: none;
+}
+
+#headline {
+	margin: 0;
+	font-family: var(--font-display);
+	font-weight: 800;
+	font-size: clamp(30px, 3.6vw, 52px);
+	line-height: 1.05;
+	color: var(--headline);
+	letter-spacing: -0.01em;
+}
+
+#subtitle {
+	margin: 10px 0 0;
+	font-size: 16px;
+	line-height: 1.5;
+	font-weight: 400;
+	color: var(--ink);
+	max-width: 34ch;
+}
+
+#phase-buttons {
+	display: flex;
+	gap: 10px;
+	margin-top: 18px;
+	pointer-events: auto;
+}
+
+.phase-chip {
+	font-family: var(--font-mono);
+	font-size: 13px;
+	line-height: 1;
+	padding: 8px 14px;
+	border-radius: 8px;
+	border: 1px solid var(--ink);
+	background: transparent;
+	color: var(--ink);
+	cursor: pointer;
+	transition: background 120ms ease, color 120ms ease, opacity 120ms ease;
+	text-transform: lowercase;
+}
+
+.phase-chip:hover {
+	opacity: 0.75;
+}
+
+.phase-chip[aria-pressed="true"] {
+	background: var(--ink);
+	color: var(--sheet);
+}
+
+/* Generic small chip (theme toggle, tracking toggle, play, warnings) */
+.chip {
+	font-family: var(--font-mono);
+	font-size: 13px;
+	padding: 7px 12px;
+	border-radius: 8px;
+	border: 1px solid var(--ink);
+	background: transparent;
+	color: var(--ink);
+	cursor: pointer;
+	pointer-events: auto;
+	transition: background 120ms ease, color 120ms ease, opacity 120ms ease;
+	white-space: nowrap;
+}
+
+.chip:hover {
+	opacity: 0.75;
+}
+
+.chip[aria-pressed="true"] {
+	background: var(--ink);
+	color: var(--sheet);
+}
+
+#top-right-chips {
+	position: absolute;
+	top: clamp(20px, 3.4vw, 40px);
+	right: clamp(20px, 3.4vw, 40px);
+	display: flex;
+	gap: 8px;
+	pointer-events: none;
+}
+
+#model-warning.warning-chip {
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	transform: translate(-50%, -50%);
+	pointer-events: none;
+	background: var(--sheet);
+	opacity: 0.95;
+	cursor: default;
+}
+
+/* ---------------------------------------------------------------------
+   Scrubber (bottom-right, the anime.js signature element)
+--------------------------------------------------------------------- */
+
+#scrub-bar {
+	position: absolute;
+	right: clamp(16px, 3vw, 32px);
+	bottom: clamp(16px, 3vw, 32px);
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	pointer-events: none;
+	max-width: 92vw;
+}
+
+#time-readout {
+	font-family: var(--font-mono);
+	font-size: 13px;
+	color: var(--ink);
+	white-space: nowrap;
+	pointer-events: none;
+}
+
+#play-toggle {
+	flex: none;
+}
+
+#scrubber {
+	-webkit-appearance: none;
+	appearance: none;
+	width: 420px;
+	max-width: 46vw;
+	height: 44px;
+	border-radius: 10px;
+	background:
+		/* fine vertical tick marks, centered ~40% height */
+		repeating-linear-gradient(
+			to right,
+			#6f6c66 0px,
+			#6f6c66 1px,
+			transparent 1px,
+			transparent 7px
+		) center / 100% 40% no-repeat,
+		#1e1d1a;
+	outline: none;
+	cursor: pointer;
+	pointer-events: auto;
+	margin: 0;
+}
+
+#scrubber:focus-visible {
+	box-shadow: 0 0 0 2px var(--sheet), 0 0 0 4px var(--ink);
+}
+
+/* Chrome / Edge / Safari */
+#scrubber::-webkit-slider-runnable-track {
+	-webkit-appearance: none;
+	appearance: none;
+	height: 100%;
+	background: transparent;
+	border: none;
+}
+
+#scrubber::-webkit-slider-thumb {
+	-webkit-appearance: none;
+	appearance: none;
+	width: 4px;
+	height: 22px;
+	border-radius: 2px;
+	background: #e5484d;
+	border: none;
+	margin-top: 0;
+	cursor: pointer;
+	box-shadow: 0 0 0 6px rgba(229, 72, 77, 0.12);
+}
+
+/* Firefox */
+#scrubber::-moz-range-track {
+	height: 100%;
+	background: transparent;
+	border: none;
+}
+
+#scrubber::-moz-range-thumb {
+	width: 4px;
+	height: 22px;
+	border-radius: 2px;
+	background: #e5484d;
+	border: none;
+	cursor: pointer;
+	box-shadow: 0 0 0 6px rgba(229, 72, 77, 0.12);
+}
+
+#scrubber::-moz-range-progress {
+	background: transparent;
+}
+
+/* ---------------------------------------------------------------------
+   Footer
+--------------------------------------------------------------------- */
+
+#footer-line {
+	position: absolute;
+	left: clamp(20px, 3.4vw, 40px);
+	bottom: clamp(16px, 2.4vw, 26px);
+	margin: 0;
+	font-family: var(--font-mono);
+	font-size: 12px;
+	color: var(--ink);
+	opacity: 0.6;
+	pointer-events: none;
+}
+
+/* ---------------------------------------------------------------------
+   Part label SVG overlay (created by js/PartLabels.js)
+--------------------------------------------------------------------- */
+
+.part-labels-svg {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+}
+
+.part-labels-svg text {
+	font-family: var(--font-mono);
+	font-size: 13px;
+}
+
+/* ---------------------------------------------------------------------
+   Responsive: mobile layout — title may shrink further, scrubber goes
+   full-width along the bottom instead of floating bottom-right.
+--------------------------------------------------------------------- */
+
+@media (max-width: 640px) {
+
+	:root {
+		--sheet-margin: 8px;
+		--sheet-radius: 16px;
+	}
+
+	#headline-block {
+		max-width: calc(100% - 40px);
+	}
+
+	#subtitle {
+		max-width: 40ch;
+	}
+
+	#top-right-chips {
+		flex-direction: column;
+		align-items: flex-end;
+	}
+
+	#scrub-bar {
+		left: 12px;
+		right: 12px;
+		bottom: 12px;
+		max-width: none;
+		flex-wrap: wrap;
+	}
+
+	#scrubber {
+		width: 100%;
+		max-width: none;
+		flex: 1 1 100%;
+		order: 3;
+	}
+
+	#time-readout {
+		order: 1;
+	}
+
+	#play-toggle {
+		order: 2;
+	}
+
+	#footer-line {
+		display: none;
+	}
+
+}

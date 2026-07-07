@@ -1,0 +1,92 @@
+{
+  "source": "log\\run_sim_20260707_103917_032\\debug\\robot_frames.jsonl",
+  "mesh_source": "isaac_go2_usd",
+  "mesh_sources_per_link": {
+    "base": "usd",
+    "FL_hip": "usd",
+    "FL_thigh": "usd",
+    "FL_calf": "usd",
+    "FL_foot": "usd",
+    "FR_hip": "usd",
+    "FR_thigh": "usd",
+    "FR_calf": "usd",
+    "FR_foot": "usd",
+    "RL_hip": "usd",
+    "RL_thigh": "usd",
+    "RL_calf": "usd",
+    "RL_foot": "usd",
+    "RR_hip": "usd",
+    "RR_thigh": "usd",
+    "RR_calf": "usd",
+    "RR_foot": "usd"
+  },
+  "clips": {
+    "follow": {
+      "duration_s": 20.0,
+      "t0": 3.0,
+      "t1": 23.0
+    },
+    "climb": {
+      "duration_s": 38.4,
+      "t0": 27.515,
+      "t1": 65.925
+    }
+  },
+  "nodes": [
+    "robot_base",
+    "FL_hip",
+    "FL_thigh",
+    "FL_calf",
+    "FL_foot",
+    "FR_hip",
+    "FR_thigh",
+    "FR_calf",
+    "FR_foot",
+    "RL_hip",
+    "RL_thigh",
+    "RL_calf",
+    "RL_foot",
+    "RR_hip",
+    "RR_thigh",
+    "RR_calf",
+    "RR_foot",
+    "oxygen_tank",
+    "cradle_rails",
+    "stairs",
+    "ground",
+    "patient_root",
+    "patient_pelvis",
+    "patient_torso",
+    "patient_head",
+    "patient_l_upper_arm",
+    "patient_l_lower_arm",
+    "patient_r_upper_arm",
+    "patient_r_lower_arm",
+    "patient_l_upper_leg",
+    "patient_l_lower_leg",
+    "patient_l_foot",
+    "patient_r_upper_leg",
+    "patient_r_lower_leg",
+    "patient_r_foot",
+    "isaac_world"
+  ],
+  "stair_spec": {
+    "name": "commercial",
+    "start_x_m": 2.0,
+    "step_height_m": 0.13,
+    "step_depth_m": 0.305,
+    "step_count": 14,
+    "half_width_m": 0.7,
+    "landing_depth_m": 1.0,
+    "handrail": true
+  },
+  "landing_far_x_m": 8.593,
+  "triangle_counts": {
+    "robot": 323922,
+    "stairs": 756,
+    "ground": 12,
+    "patient": 2148,
+    "total": 326838
+  },
+  "generated_utc": "2026-07-07T18:59:23.591053+00:00"
+}

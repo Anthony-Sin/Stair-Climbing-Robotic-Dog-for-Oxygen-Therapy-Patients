@@ -1,0 +1,45 @@
+{
+    "stamp":  "20260705_203945",
+    "mode":  "follow",
+    "heights":  [
+                    0.12,
+                    0.13,
+                    0.14,
+                    0.15,
+                    0.175,
+                    0.198
+                ],
+    "climb_backend":  "blind_rl",
+    "episodes":  [
+                     {
+                         "height":  0.13,
+                         "label":  "custom",
+                         "run_dir":  "C:\\Users\\antho\\Downloads\\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\\log\\run_sim_20260705_205138_302",
+                         "follow_reach":  "REACHED TOP"
+                     },
+                     {
+                         "height":  0.14,
+                         "label":  "custom",
+                         "run_dir":  "C:\\Users\\antho\\Downloads\\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\\log\\run_sim_20260705_210246_360",
+                         "follow_reach":  "REACHED TOP"
+                     },
+                     {
+                         "height":  0.15,
+                         "label":  "commercial: schools/hospitals/uni (~6in, ADA)",
+                         "run_dir":  "C:\\Users\\antho\\Downloads\\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\\log\\run_sim_20260705_211333_147",
+                         "follow_reach":  "REACHED TOP"
+                     },
+                     {
+                         "height":  0.175,
+                         "label":  "custom",
+                         "run_dir":  "C:\\Users\\antho\\Downloads\\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\\log\\run_sim_20260705_212719_781",
+                         "follow_reach":  "DID NOT REACH"
+                     },
+                     {
+                         "height":  0.198,
+                         "label":  "steep code-max (~7.75in)",
+                         "run_dir":  "C:\\Users\\antho\\Downloads\\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\\log\\run_sim_20260705_213738_475",
+                         "follow_reach":  "DID NOT REACH"
+                     }
+                 ]
+}

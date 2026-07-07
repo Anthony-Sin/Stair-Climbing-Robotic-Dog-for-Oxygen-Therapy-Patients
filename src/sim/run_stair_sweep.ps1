@@ -260,6 +260,7 @@ foreach ($h in $Heights) {
         # Warm: one Kit reused across heights. run_sim.ps1 posts the begin + returns after
         # world_ready (it does NOT block on episode end in reuse), so we poll for completion.
         $simArgs.WarmIsaac   = $true
+        $simArgs.WarmDocker  = $true
         $simArgs.WarmMaxRuns = ($Heights.Count + 5)   # avoid a mid-sweep self-reboot
         $rs0 = 0
         $st0 = Get-WarmStatus
@@ -303,6 +304,8 @@ foreach ($h in $Heights) {
             Write-Host "Shutting down warm Isaac (pid $($stEnd.pid)) so the next sweep boots fresh..." -ForegroundColor DarkGray
             & $Launcher -WarmShutdown | Out-Null
         }
+        Write-Host "Shutting down warm Docker container so the next sweep boots fresh..." -ForegroundColor DarkGray
+        & wsl.exe -e bash -c "docker rm -f go2-warm-sim >/dev/null 2>&1"
     }
 }
 

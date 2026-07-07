@@ -13,6 +13,13 @@ import cv2
 import numpy as np
 import base64, zlib
 
+# TCP handshake magic: Docker sends this immediately after accept() so Isaac's
+# FramePublisher can distinguish a REAL container connection from a Docker
+# Desktop port-forward proxy that accepts-but-doesn't-forward. Without this,
+# Isaac's connect() + sendall() succeed against the proxy, data goes into a
+# black hole, and the container never receives frames (90s timeout).
+TCP_HANDSHAKE_MAGIC = b"ISAC"
+
 
 class SimDepthFrame:
     def __init__(self, depth_data: np.ndarray, units: float = 0.001) -> None:
@@ -302,6 +309,20 @@ class SimCameraCapture:
                     print(f"[SimCameraCapture] accept error: {exc}", flush=True)
                 return None
             conn.settimeout(0.5)
+            # Send the TCP handshake magic BEFORE accepting frame data. Isaac's
+            # FramePublisher waits for this after connect() to verify the TCP
+            # link reaches the real container (not just Docker Desktop's proxy
+            # which accepts but silently drops data on stale port-forwards).
+            try:
+                conn.sendall(TCP_HANDSHAKE_MAGIC)
+            except Exception as hs_exc:
+                if self.verbose:
+                    print(f"[SimCameraCapture] handshake send failed: {hs_exc}", flush=True)
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                return None
             self._conn = conn
             if self.verbose:
                 print(f"[SimCameraCapture] Isaac frame link connected from {peer[0]}", flush=True)

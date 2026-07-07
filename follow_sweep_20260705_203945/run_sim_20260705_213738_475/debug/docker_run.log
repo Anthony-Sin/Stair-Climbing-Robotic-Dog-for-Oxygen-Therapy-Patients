@@ -1,0 +1,27 @@
+﻿==========
+== CUDA ==
+==========
+CUDA Version 12.6.0
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+╭─┐ go2 controller ┌─────────────────────────────────────────╮
+│ mode     sim · Isaac                                       │
+│ follow   pid  target 1.00 m  kp 1.1                        │
+╰────────────────────────────────────────────────────────────╯
+╭─┐ perception / io ┌────────────────────────────────────────╮
+│ pose     /models/yolo/yolo11n-pose-fp16.trt                │
+│ stairs   src/sim/models/yolo/yolov8x-worldv2.pt            │
+│ io       frame :52002  cmd host.docker.internal:52100      │
+╰───────────────────────────────────────────────┐ headless ┌─╯
+[main] Sim mode: using SimCameraCapture
+[SimCameraCapture] TCP server bound to 0.0.0.0:52002 - waiting for Isaac to connect...
+WARNING ⚠️ user config directory '/tmp/ultralytics/Ultralytics' is not writable, using '/tmp/Ultralytics'. Set YOLO_CONFIG_DIR to override.
+Creating new Ultralytics Settings v0.0.6 file ✅
+View Ultralytics Settings with 'yolo settings' or at '/tmp/Ultralytics/settings.json'
+Update Settings with 'yolo settings key=value', i.e. 'yolo settings runs_dir=path/to/dir'. For help see https://docs.ultralytics.com/quickstart/#ultralytics-settings.
+[main] Sim mode: using SimRobotController
+01:39:09 INFO    [sim_robot_controller] SimRobotController sending commands to host.docker.internal:52100
+01:44:47 INFO    [sim_robot_controller] SimRobotController shutting down

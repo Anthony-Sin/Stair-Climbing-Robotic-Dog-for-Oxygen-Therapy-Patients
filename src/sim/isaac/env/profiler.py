@@ -99,7 +99,7 @@ class _StepProfiler:
             fields[f"{p}_ms"] = round(means_ms[p], 2)
             fields[f"{p}_pct"] = pcts[p]
         try:
-            self._log_event(self._logger, logging.INFO, "step_profile",
+            self._log_event(self._logger, logging.DEBUG, "step_profile",
                             "Per-phase step timing (mean ms and pct of loop over window)", **fields)
         except Exception:
             pass

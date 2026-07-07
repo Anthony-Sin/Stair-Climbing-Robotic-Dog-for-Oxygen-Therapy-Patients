@@ -375,6 +375,7 @@ def main():
     preview_fps           = 0.0
     preview_save_count    = 0
     frame_idx             = 0
+    frames_received_count = 0
     sim_frame_failure_since: Optional[float] = None
     # Stairs-detected latch expressed in WALL-SECONDS (incident 8.6): a frame counter meant a
     # different physical hold on every platform (~10 s headless sim vs ~1.3 s on the robot for the
@@ -508,10 +509,15 @@ def main():
                     target_exporter.maybe_send(None, None, valid=False, force=True)
                 motion_start_ts     = None
                 last_motion_allowed = False
-                if args.sim and args.sim_frame_timeout_exit_sec > 0.0:
-                    if sim_frame_failure_since is None:
-                        sim_frame_failure_since = now
-                    elapsed = now - sim_frame_failure_since
+                if args.sim:
+                    if hasattr(cam, "_running") and not cam._running and frames_received_count > 0:
+                        print("[main] Isaac closed the TCP stream (end of episode). Exiting immediately.", flush=True)
+                        raise SystemExit(0)
+                        
+                    if args.sim_frame_timeout_exit_sec > 0.0:
+                        if sim_frame_failure_since is None:
+                            sim_frame_failure_since = now
+                        elapsed = now - sim_frame_failure_since
                     if elapsed >= args.sim_frame_timeout_exit_sec:
                         message = (
                             "Sim camera did not receive Isaac frames for "
@@ -532,11 +538,16 @@ def main():
                             ),
                         )
                         print(f"[main] {message}", flush=True)
-                        raise SystemExit(2)
+                        if frames_received_count > 0:
+                            print("[main] Frames were previously received. Assuming Isaac closed the stream at the end of the episode.", flush=True)
+                            raise SystemExit(0)
+                        else:
+                            raise SystemExit(2)
                 time.sleep(0.01)
                 continue
 
             sim_frame_failure_since = None
+            frames_received_count += 1
             depth_img = depths[0]
             yolo_stairs.update_frame(img)
 

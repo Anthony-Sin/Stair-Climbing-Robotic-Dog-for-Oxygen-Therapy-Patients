@@ -11,6 +11,12 @@ from env import env_state
 
 from .perception_noise import apply_lens_distortion, apply_realsense_depth_noise, apply_rgb_perception_noise
 
+# TCP handshake magic: must match sim_camera_capture.TCP_HANDSHAKE_MAGIC.
+# Docker sends this immediately after accept(); Isaac waits for it after
+# connect() to verify the link reaches the real container.
+TCP_HANDSHAKE_MAGIC = b"ISAC"
+TCP_HANDSHAKE_TIMEOUT_SEC = 3.0
+
 # ---------------------------------------------------------------------------
 # Frame publisher
 # ---------------------------------------------------------------------------
@@ -94,6 +100,11 @@ class FramePublisher:
         frame port). Returns True when a live connection is available. Never raises --
         a failed connect just returns False and is retried on the next frame, so Isaac
         can start sending before the container is listening.
+
+        After the TCP handshake completes, the method waits for Docker's 4-byte magic
+        (``TCP_HANDSHAKE_MAGIC``) to verify the connection reaches the real container
+        and not just Docker Desktop's port-forward proxy (which accepts but silently
+        drops data on stale forwards).
         """
         if self._connected and self._sock is not None:
             return True
@@ -103,6 +114,29 @@ class FramePublisher:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 22)
             s.settimeout(1.0)
             s.connect(self._dest)
+            # Wait for Docker's handshake magic. If the TCP connection reached
+            # the real container, SimCameraCapture sends b"ISAC" immediately
+            # after accept(). If this is a stale Docker Desktop proxy, the
+            # recv will timeout (proxy accepts but never forwards data).
+            s.settimeout(TCP_HANDSHAKE_TIMEOUT_SEC)
+            try:
+                hs = s.recv(len(TCP_HANDSHAKE_MAGIC))
+            except (socket.timeout, OSError):
+                hs = b""
+            if hs != TCP_HANDSHAKE_MAGIC:
+                # Stale proxy or wrong endpoint — close and retry next frame.
+                try:
+                    s.close()
+                except Exception:
+                    pass
+                self._warn_rate_limited(
+                    "frame_handshake_failed",
+                    "TCP connected but Docker handshake not received (stale proxy?); will retry",
+                    dest_host=self._host,
+                    dest_port=self._port,
+                    received=repr(hs),
+                )
+                return False
             s.settimeout(2.0)
             self._sock = s
             self._connected = True
@@ -110,7 +144,7 @@ class FramePublisher:
                 env_state.LOGGER,
                 logging.INFO,
                 "frame_link_connected",
-                "Camera frame TCP link connected to SimCameraCapture",
+                "Camera frame TCP link connected to SimCameraCapture (handshake verified)",
                 dest_host=self._host,
                 dest_port=self._port,
             )

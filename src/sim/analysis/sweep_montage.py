@@ -122,8 +122,11 @@ def render_montage(eps, stats_card, out_path, montage_seconds, mode, fit):
     else:
         log("WARNING: no system font found; captions may not render")
 
-    # fixed 5 riser cells (ascending) + stats card in cell 5
-    grid = list(eps[:5]) + [None] * (5 - len(eps))
+    # Use up to 6 riser cells (ascending). If 6 episodes, all 6 cells are videos.
+    has_stats_card = stats_card and os.path.exists(stats_card) and len(eps) <= 5
+    num_video_slots = 5 if has_stats_card else 6
+    
+    grid = list(eps[:num_video_slots]) + [None] * (num_video_slots - min(len(eps), num_video_slots))
     durs = [e["video_dur_s"] if (e and e.get("video")) else None for e in grid]
     ms, pads = _compute_speeds(durs, montage_seconds, mode)
 
@@ -151,14 +154,17 @@ def render_montage(eps, stats_card, out_path, montage_seconds, mode, fit):
             tiles.append({"kind": "placeholder", "input_index": None, "x": x, "y": y,
                           "caption": f"cap{i}.txt", "font": font_rel})
 
-    # stats card -> cell 5
-    sx, sy = (5 % COLS) * CELL_W, (5 // COLS) * CELL_H
-    if stats_card and os.path.exists(stats_card):
+    # stats card -> cell 5, only if we have 5 or fewer video slots
+    if has_stats_card and num_video_slots < 6:
+        sx, sy = (5 % COLS) * CELL_W, (5 // COLS) * CELL_H
         idx = len(inputs)
         inputs.append(os.path.abspath(stats_card))
         tiles.append({"kind": "image", "input_index": idx, "x": sx, "y": sy})
-    else:
-        tiles.append({"kind": "placeholder", "input_index": None, "x": sx, "y": sy})
+    elif num_video_slots < 6:
+        # fill remaining empty cells
+        for i in range(num_video_slots, 6):
+            sx, sy = (i % COLS) * CELL_W, (i // COLS) * CELL_H
+            tiles.append({"kind": "placeholder", "input_index": None, "x": sx, "y": sy})
 
     fg = build_filtergraph(tiles, montage_seconds)
 

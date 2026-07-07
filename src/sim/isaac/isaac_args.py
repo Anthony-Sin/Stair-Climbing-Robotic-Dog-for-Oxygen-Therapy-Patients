@@ -210,9 +210,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--handoff-stair-min-count", type=int, default=2,
                         help="Hand off only when at least this many stairs are detected ahead "
                              "(Task-2 spec: >=2). Climb is one stair at a time.")
-    parser.add_argument("--handoff-stair-min-riser", type=float, default=0.08,
+    parser.add_argument("--handoff-stair-min-riser", type=float, default=0.05,
                         help="Min riser height (m) above ground for a tread to count as a stair "
-                             "(the robot's leg-clearance threshold; default = GO2_LEG_CLEARANCE_M).")
+                             "(lowered to 0.05m to detect 0.08m shallow sweeps).")
     parser.add_argument("--handoff-stair-max-range", type=float, default=1.60,
                         help="Only consider stair structure within this forward range (m) in the "
                              "depth detector.")
