@@ -492,31 +492,69 @@ function buildLogoMesh( font ) {
 
 function buildSideLogoMesh( font, textStr, isLeft ) {
 
-	const geometry = new TextGeometry( textStr, {
+	const group = new THREE.Group();
+	group.name = isLeft ? 'logo_label_side_l' : 'logo_label_side_r';
+
+	const size = 0.033; // both sides are the same physical height on the robot
+	const chars = textStr.split('');
+	const geometries = chars.map( char => new TextGeometry( char, {
 		font,
-		size: isLeft ? 0.022 : 0.028, // different sizes for Unitree (longer word) vs GO2
+		size,
 		depth: 0.003,
 		curveSegments: 6,
 		bevelEnabled: false,
+	} ) );
+
+	const widths = geometries.map( geom => {
+
+		geom.computeBoundingBox();
+		const w = geom.boundingBox.max.x - geom.boundingBox.min.x;
+		geom.center();
+		return w;
+
 	} );
-	geometry.center();
 
-	const mesh = new THREE.Mesh( geometry, logoMaterial );
-	mesh.name = isLeft ? 'logo_label_side_l' : 'logo_label_side_r';
+	const kerning = size * 0.08;
+	let totalWidth = 0;
+	for ( let i = 0; i < chars.length; i ++ ) {
 
-	if ( isLeft ) {
-
-		mesh.position.set( -0.007, 0.0976, 0.0178 ); // center of Unitree on left side
-		mesh.rotation.set( Math.PI / 2, Math.PI, 0 );
-
-	} else {
-
-		mesh.position.set( -0.002, -0.0976, 0.0173 ); // center of GO2 on right side
-		mesh.rotation.set( Math.PI / 2, 0, 0 );
+		totalWidth += widths[ i ];
+		if ( i < chars.length - 1 ) totalWidth += kerning;
 
 	}
 
-	return mesh;
+	let currentX = -totalWidth / 2;
+	const R = 1.25; // radius of curvature
+
+	for ( let i = 0; i < chars.length; i ++ ) {
+
+		const charWidth = widths[ i ];
+		const x_local = currentX + charWidth / 2;
+		currentX += charWidth + kerning;
+
+		const mesh = new THREE.Mesh( geometries[ i ], logoMaterial );
+		const y_offset = ( x_local * x_local ) / ( 2 * R );
+
+		mesh.position.set( x_local, 0, -y_offset );
+		mesh.rotation.set( 0, -x_local / R, 0 );
+
+		group.add( mesh );
+
+	}
+
+	if ( isLeft ) {
+
+		group.position.set( -0.007, 0.0962, 0.034 ); // center of Unitree on left side
+		group.rotation.set( Math.PI / 2, Math.PI, 0 );
+
+	} else {
+
+		group.position.set( 0.008, -0.0962, 0.035 ); // center of Go2 on right side
+		group.rotation.set( Math.PI / 2, 0, 0 );
+
+	}
+
+	return group;
 
 }
 
@@ -548,7 +586,7 @@ function attachLogoLabel( baseNode, font ) {
 
 	baseNode.add( buildLogoMesh( font ) );
 	baseNode.add( buildSideLogoMesh( font, 'Unitree', true ) );
-	baseNode.add( buildSideLogoMesh( font, 'GO2', false ) );
+	baseNode.add( buildSideLogoMesh( font, 'Go2', false ) );
 
 }
 
