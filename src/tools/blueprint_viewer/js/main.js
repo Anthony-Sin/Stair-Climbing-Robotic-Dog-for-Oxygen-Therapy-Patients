@@ -494,7 +494,7 @@ function buildSideLogoMesh( font, textStr, isLeft ) {
 
 	const geometry = new TextGeometry( textStr, {
 		font,
-		size: 0.026,
+		size: 0.035, // match the physical logo height
 		depth: 0.003,
 		curveSegments: 6,
 		bevelEnabled: false,
@@ -506,12 +506,12 @@ function buildSideLogoMesh( font, textStr, isLeft ) {
 
 	if ( isLeft ) {
 
-		mesh.position.set( 0.16, 0.053, 0.045 );
+		mesh.position.set( 0.002, 0.0976, -0.005 ); // center of physical logo on left side
 		mesh.rotation.set( Math.PI / 2, 0, 0 );
 
 	} else {
 
-		mesh.position.set( 0.16, -0.053, 0.045 );
+		mesh.position.set( 0.002, -0.0976, -0.005 ); // center of physical logo on right side
 		mesh.rotation.set( -Math.PI / 2, 0, Math.PI );
 
 	}
