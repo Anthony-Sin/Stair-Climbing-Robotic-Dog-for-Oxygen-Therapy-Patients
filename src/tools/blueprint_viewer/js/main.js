@@ -494,7 +494,7 @@ function buildSideLogoMesh( font, textStr, isLeft ) {
 
 	const geometry = new TextGeometry( textStr, {
 		font,
-		size: 0.035, // match the physical logo height
+		size: isLeft ? 0.022 : 0.028, // different sizes for Unitree (longer word) vs GO2
 		depth: 0.003,
 		curveSegments: 6,
 		bevelEnabled: false,
@@ -506,13 +506,13 @@ function buildSideLogoMesh( font, textStr, isLeft ) {
 
 	if ( isLeft ) {
 
-		mesh.position.set( 0.002, 0.0976, -0.005 ); // center of physical logo on left side
-		mesh.rotation.set( Math.PI / 2, 0, 0 );
+		mesh.position.set( -0.007, 0.0976, 0.0178 ); // center of Unitree on left side
+		mesh.rotation.set( Math.PI / 2, Math.PI, 0 );
 
 	} else {
 
-		mesh.position.set( 0.002, -0.0976, -0.005 ); // center of physical logo on right side
-		mesh.rotation.set( -Math.PI / 2, 0, Math.PI );
+		mesh.position.set( -0.002, -0.0976, 0.0173 ); // center of GO2 on right side
+		mesh.rotation.set( Math.PI / 2, 0, 0 );
 
 	}
 
@@ -547,7 +547,7 @@ function attachLogoLabel( baseNode, font ) {
 	}
 
 	baseNode.add( buildLogoMesh( font ) );
-	baseNode.add( buildSideLogoMesh( font, 'GO2', true ) );
+	baseNode.add( buildSideLogoMesh( font, 'Unitree', true ) );
 	baseNode.add( buildSideLogoMesh( font, 'GO2', false ) );
 
 }
