@@ -19,11 +19,12 @@ export const PALETTES = {
 		headline: '#262320',
 		// three.js
 		sceneBackground: 0xd6d2ca,
-		materialColor: 0x151515,
-		oxygenTankColor: 0x282828, // "a touch lighter" dark grey
+		materialColor: 0xdad6ce,
+		oxygenTankColor: 0xe4e0d8, // "a touch lighter"
 		patientColor: 0xb0552f, // warm terracotta accent -- the patient is the one
 		// thing in the scene allowed actual color (per design direction), so it
 		// reads as a person against the otherwise monochrome blueprint robot/set.
+		legColor: 0x151515,
 		inkColorGl: 0x2f2c28,
 	},
 	dark: {
@@ -36,10 +37,11 @@ export const PALETTES = {
 		headline: '#e8e4dc',
 		// three.js
 		sceneBackground: 0x2a2925,
-		materialColor: 0x151515,
-		oxygenTankColor: 0x282828,
+		materialColor: 0x3a3934,
+		oxygenTankColor: 0x46453f,
 		patientColor: 0xc96a3f, // brighter terracotta so the accent still reads
 		// against the darker theme's paper tone (same hue as light, lifted value).
+		legColor: 0x151515,
 		inkColorGl: 0xd8d4cc,
 	},
 };

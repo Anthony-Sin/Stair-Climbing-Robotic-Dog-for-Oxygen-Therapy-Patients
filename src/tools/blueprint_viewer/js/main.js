@@ -102,7 +102,7 @@ function applyTheme( name ) {
 	if ( bodyMaterial ) bodyMaterial.color.set( palette.materialColor );
 	if ( oxygenTankMaterial ) oxygenTankMaterial.color.set( palette.oxygenTankColor );
 	if ( patientMaterial ) patientMaterial.color.set( palette.patientColor );
-	if ( logoMaterial ) logoMaterial.color.set( 0xffffff );
+	if ( legMaterial ) legMaterial.color.set( palette.legColor );
 
 	if ( edgesPass ) edgesPass.setInkColor( palette.inkColorGl );
 	if ( partLabels ) partLabels.setInkColor( palette.ink );
@@ -194,7 +194,7 @@ function makeBlueprintMaterial( colorHex ) {
 let bodyMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].materialColor );
 let oxygenTankMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].oxygenTankColor );
 let patientMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].patientColor );
-let logoMaterial = makeBlueprintMaterial( 0xffffff );
+let legMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].legColor );
 
 // "patient_root" is no longer a tint target here: it's a bare transform anchor with
 // no mesh of its own (see scene_build.build_patient_node) -- the patient's visible
@@ -202,6 +202,10 @@ let logoMaterial = makeBlueprintMaterial( 0xffffff );
 // PatientHuman.attachTo().
 const TINTED_NODE_NAMES = {
 	oxygen_tank: () => oxygenTankMaterial,
+	FL_hip: () => legMaterial,
+	FR_hip: () => legMaterial,
+	RL_hip: () => legMaterial,
+	RR_hip: () => legMaterial,
 };
 
 /**
@@ -476,7 +480,7 @@ function buildLogoMesh( font ) {
 	} );
 	geometry.center();
 
-	const mesh = new THREE.Mesh( geometry, logoMaterial );
+	const mesh = new THREE.Mesh( geometry, bodyMaterial );
 	mesh.name = 'logo_label';
 	mesh.position.copy( LOGO_LOCAL_POSITION );
 	return mesh;
