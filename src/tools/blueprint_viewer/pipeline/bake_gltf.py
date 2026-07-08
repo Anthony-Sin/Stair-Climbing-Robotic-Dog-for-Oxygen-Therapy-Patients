@@ -645,16 +645,19 @@ def main() -> int:
     print("\nbuilding scene geometry...")
     robot_scene = build_robot_scene(urdf, visual_meshes)
     stairs_node = sb.build_stairs_node(stair_spec, landing_far_x=landing_far_x)
+    handrails_node = sb.build_handrails_node(stair_spec)
     ground_node = sb.build_ground_node(stair_spec, landing_far_x=landing_far_x)
     patient_scene = sb.build_patient_node()
 
     robot_tris = sum(n.mesh.triangle_count() for n in flatten_scene(robot_scene) if n.mesh)
     stairs_tris = stairs_node.mesh.triangle_count() if stairs_node.mesh else 0
+    handrails_tris = handrails_node.mesh.triangle_count() if handrails_node.mesh else 0
     ground_tris = ground_node.mesh.triangle_count() if ground_node.mesh else 0
     patient_tris = sum(n.mesh.triangle_count() for n in flatten_scene(patient_scene) if n.mesh)
-    total_tris = robot_tris + stairs_tris + ground_tris + patient_tris
+    total_tris = robot_tris + stairs_tris + handrails_tris + ground_tris + patient_tris
     print(f"  robot+payload: {robot_tris:,} tris")
     print(f"  stairs: {stairs_tris:,} tris")
+    print(f"  handrails: {handrails_tris:,} tris")
     print(f"  ground: {ground_tris:,} tris")
     print(f"  patient: {patient_tris:,} tris (bare transform anchor -- visible geometry "
           f"is the separately-loaded human model, see js/main.js)")
@@ -697,8 +700,8 @@ def main() -> int:
 
     print("\nassembling glTF document...")
     document, blob = build_gltf_document(
-        robot_scene=robot_scene, stairs_node=stairs_node, ground_node=ground_node,
-        patient_scene=patient_scene, clips=[follow_clip, climb_clip],
+        robot_scene=robot_scene, stairs_node=stairs_node, handrails_node=handrails_node,
+        ground_node=ground_node, patient_scene=patient_scene, clips=[follow_clip, climb_clip],
     )
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -734,8 +737,8 @@ def main() -> int:
         "stair_spec": stair_spec,
         "landing_far_x_m": round(landing_far_x, 4),
         "triangle_counts": {
-            "robot": robot_tris, "stairs": stairs_tris, "ground": ground_tris,
-            "patient": patient_tris, "total": total_tris,
+            "robot": robot_tris, "stairs": stairs_tris, "handrails": handrails_tris,
+            "ground": ground_tris, "patient": patient_tris, "total": total_tris,
         },
         "generated_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }

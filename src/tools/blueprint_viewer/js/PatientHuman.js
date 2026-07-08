@@ -322,6 +322,7 @@ export class PatientHuman {
 			v0: new THREE.Vector3(), v1: new THREE.Vector3(), v2: new THREE.Vector3(),
 			q0: new THREE.Quaternion(), q1: new THREE.Quaternion(),
 			rootQuatInv: new THREE.Quaternion(),
+			qFreeze: new THREE.Quaternion(),
 		};
 
 	}
@@ -509,7 +510,11 @@ export class PatientHuman {
 			}
 
 			node.material = tintMaterial;
-			node.castShadow = false;
+			// 2026-07-10 lighting pass: the patient now casts a shadow (adds real
+			// depth/grounding to the scene) but still doesn't receive one --
+			// self-shadowing a skinned mesh from one directional key light reads as
+			// noisy speckle across the limbs rather than believable form.
+			node.castShadow = true;
 			node.receiveShadow = false;
 
 			// Same SkinnedMesh frustum-culling gotcha as this viewer's old custom
@@ -721,7 +726,54 @@ export class PatientHuman {
 		const b = this._bones;
 		const scratch = this._scratch;
 
-		const pose = poseAt( schedule, this._terrain, timeSec );
+		// --- End-of-clip walk-on + freeze ---
+		//
+		// The recorded patient_root path keeps GLIDING forward after the patient's feet
+		// have taken their last real step (on the climb clip the last footfall lands
+		// ~29.25 s but the root track drifts another ~1.5 m forward until the clip ends at
+		// 42.73 s -- and the climbing robot ends up right on top of the patient's stopping
+		// spot). poseAt() already holds the FEET planted at that last footfall, so simply
+		// tracking the gliding root would drag the hip out ahead of the frozen feet and
+		// recline the body ("falls over / bends at the top of the stairs").
+		//
+		// Instead PatientGait.buildSchedule synthesizes a short forward "walk-on" tail
+		// (schedule.tail): a few real steps that carry the patient a bit further forward,
+		// then a stand-still (see _buildWalkOn). Here we drive the ANCHOR to match:
+		//   - before tail.startT: track the live recorded root node (normal playback);
+		//   - across [startT, freezeT]: glide the root straight from tail.rootStart to
+		//     tail.rootEnd (the synthesized footfalls, replayed by poseAt at tq=timeSec,
+		//     track this glide so the hip stays over the feet -- reach-safe, no recline);
+		//   - after freezeT: hold the root frozen at tail.rootEnd (stand still).
+		// rootStart equals the recorded root at startT and rootEnd equals where both the
+		// glide and the final footfall end, so both hand-offs are pop-free. A zero-length
+		// tail (startT === freezeT, e.g. the follow clip) degrades to "freeze in place".
+		const tail = schedule.tail;
+		let rootPosX, rootPosY, rootPosZ, rootQuat, tq;
+		if ( ! tail || timeSec <= tail.startT ) {
+
+			rootPosX = root.position.x; rootPosY = root.position.y; rootPosZ = root.position.z;
+			rootQuat = root.quaternion;
+			tq = timeSec;
+
+		} else if ( timeSec >= tail.freezeT ) {
+
+			rootPosX = tail.rootEnd.x; rootPosY = tail.rootEnd.y; rootPosZ = tail.rootEnd.zRoot;
+			rootQuat = scratch.qFreeze.setFromAxisAngle( _UP_Z, tail.rootEnd.yaw );
+			tq = tail.freezeT;
+
+		} else {
+
+			const a = ( timeSec - tail.startT ) / ( tail.freezeT - tail.startT );
+			rootPosX = tail.rootStart.x + ( tail.rootEnd.x - tail.rootStart.x ) * a;
+			rootPosY = tail.rootStart.y + ( tail.rootEnd.y - tail.rootStart.y ) * a;
+			rootPosZ = tail.rootStart.zRoot + ( tail.rootEnd.zRoot - tail.rootStart.zRoot ) * a;
+			const yaw = tail.rootStart.yaw + ( tail.rootEnd.yaw - tail.rootStart.yaw ) * a;
+			rootQuat = scratch.qFreeze.setFromAxisAngle( _UP_Z, yaw );
+			tq = timeSec;
+
+		}
+
+		const pose = poseAt( schedule, this._terrain, tq );
 
 		// --- 1) Anchor placement ---
 		//
@@ -739,13 +791,13 @@ export class PatientHuman {
 		// approach) assumed both feet needed the identical vertical shift. Dropping
 		// this term is therefore not an accidental regression; it's the offset
 		// moving to the (correct, per-foot) place it belongs.
-		scratch.v0.set( root.position.x, root.position.y, root.position.z - this._hipsHeightM );
+		scratch.v0.set( rootPosX, rootPosY, rootPosZ - this._hipsHeightM );
 
 		// Gait bob: phase-locked (freezes when steps stop, per PatientGait's own
 		// gaitPhase contract -- see poseAt's doc).
 		scratch.v0.z += this._gaitParams.bobAmplitude * Math.sin( 4 * Math.PI * pose.gaitPhase );
 
-		this.anchor.quaternion.copy( root.quaternion ).multiply( B_PLACEMENT );
+		this.anchor.quaternion.copy( rootQuat ).multiply( B_PLACEMENT );
 
 		// --- Pelvis reachability (computed BEFORE finalizing anchor.position, since
 		// lowering the anchor changes how far away a FIXED-in-P-frame ankle target
@@ -755,7 +807,7 @@ export class PatientHuman {
 		// correction). Two-pass: solve once at the nominal anchor height to measure
 		// the worst-case excess reach, then re-solve (below, in step 4) at the
 		// final, possibly-lowered anchor height. ---
-		const rootQuatInv = scratch.rootQuatInv.copy( root.quaternion ).invert();
+		const rootQuatInv = scratch.rootQuatInv.copy( rootQuat ).invert();
 
 		/** Convert a P-frame world point to anchor-local, using the anchor position passed in (NOT necessarily this.anchor.position yet, since this is called once pre-lowering and once post-lowering) -- explicit quaternion math per the task spec, never Object3D.worldToLocal/matrixWorld mid-sync. */
 		const toAnchorLocal = ( pWorld, anchorPos, out ) => {
@@ -933,13 +985,30 @@ export class PatientHuman {
 			scratch.q1.setFromAxisAngle( PITCH_AXIS, legLocalAngle ),
 		);
 
-		// Desired anchor-local orientation for a world-flat sole at footPose.yaw:
-		// P-frame absolute yaw about +Z -> anchor-local via B_PLACEMENT_INV *
-		// rootQuatInv (same conversion direction as position targets, just applied
-		// to a pure-yaw quaternion instead of a point).
+		// Desired foot-bone orientation for a world-flat sole pointing at footPose.yaw.
+		//
+		// A flat foot is the BIND pose rotated by footPose.yaw about world-up (+Z). The
+		// foot bone's flat/bind orientation in the P-frame is B_PLACEMENT ITSELF, not
+		// identity -- confirmed empirically (2026-07-08): with the whole leg chain left
+		// at identity (Xbot's flat-footed bind pose) the LeftFoot/RightFoot bone's own
+		// local +Y axis points P-frame +Z (sole normal up) and its local +Z points
+		// P-frame +X (toe forward), i.e. exactly the axis map B_PLACEMENT encodes. So the
+		// desired P-frame foot orientation is R_z(yaw) * B_PLACEMENT, and the anchor-local
+		// value is B_PLACEMENT_INV * rootQuatInv * R_z(yaw) * B_PLACEMENT (the outer
+		// B_PLACEMENT_INV * rootQuatInv * ... is the SAME P-frame->anchor-local conversion
+		// the position targets use; the trailing right-hand B_PLACEMENT is the bind factor).
+		//
+		// BUG FIXED HERE (user-reported "feet render upside down / twisted"): the prior
+		// version dropped that trailing B_PLACEMENT and used R_z(yaw) alone, treating the
+		// foot's flat orientation as P-frame identity. That left every foot rotated by a
+		// full axis permutation from flat -- sole facing sideways, toe pointing straight
+		// up. Measured directly: posed foot local +Y pointed P-frame +Y (lateral) instead
+		// of +Z (up). The IK self-check never caught it because it only checks ANKLE
+		// POSITION (distanceTo the target), never foot orientation.
 		const desiredWorldQuat = scratch.q1.setFromAxisAngle( _UP_Z, footPose.yaw );
-		const desiredAnchorLocal = scratch.rootQuatInv.clone().multiply( desiredWorldQuat ); // rootQuatInv * desiredWorldQuat -- see below for the B_PLACEMENT_INV factor
-		desiredAnchorLocal.premultiply( B_PLACEMENT_INV );
+		const desiredAnchorLocal = scratch.rootQuatInv.clone().multiply( desiredWorldQuat ); // rootQuatInv * R_z(yaw)
+		desiredAnchorLocal.premultiply( B_PLACEMENT_INV ); // B_PLACEMENT_INV * rootQuatInv * R_z(yaw)
+		desiredAnchorLocal.multiply( B_PLACEMENT ); // ... * B_PLACEMENT -> anchor-local orientation of the flat bind foot, yawed
 
 		let footLocal = shinAnchorLocalQuat.clone().invert().multiply( desiredAnchorLocal );
 

@@ -32,6 +32,7 @@ const phaseFollowBtn = document.getElementById( 'phase-follow' );
 const phaseClimbBtn = document.getElementById( 'phase-climb' );
 const themeToggle = document.getElementById( 'theme-toggle' );
 const trackingToggle = document.getElementById( 'tracking-toggle' );
+const cinematicToggle = document.getElementById( 'cinematic-toggle' );
 const plumbToggle = document.getElementById( 'plumb-toggle' );
 const playToggle = document.getElementById( 'play-toggle' );
 const modelWarning = document.getElementById( 'model-warning' );
@@ -68,10 +69,18 @@ controls.autoRotate = false;
 controls.target.set( 0, 0.5, 0 );
 controls.update();
 
-// Lighting: hemisphere (unquantized ambient fill) + directional (quantized
-// into the toon gradient bands below) + a shader-injected fresnel rim — see
-// the "Blueprint materials" section for how MeshToonMaterial splits these
-// two lights into a smooth indirect term vs. a banded direct term.
+// Lighting: hemisphere (unquantized ambient fill) + a warm KEY directional
+// light (quantized into the toon gradient bands below, and the only light
+// that casts shadows) + a cool, dimmer, unshadowed FILL directional light
+// from the opposite side + a shader-injected fresnel rim — see the
+// "Blueprint materials" section for how MeshToonMaterial splits the two
+// directional lights' combined contribution into banded direct terms, with
+// hemiLight staying a smooth ambient term on top.
+//
+// 2026-07-10 lighting pass ("should look better than the sim version"):
+// added the fill light and warm/cool color split (classic complementary
+// key+fill toon grading -- a warm key against a cool fill/ambient reads far
+// richer than a single flat white light) and enabled real-time shadows.
 // dirLight was raised from the old flat-material value (0.15) because the
 // toon gradient map only bands the DIRECTIONAL contribution — at 0.15 it was
 // swamped by hemiLight's ambient fill and no bands were visible at all.
@@ -80,9 +89,44 @@ controls.update();
 // background, but with visible shadow/mid/lit steps across the form.
 const hemiLight = new THREE.HemisphereLight( 0xffffff, 0xd8d4cc, 1.4 );
 scene.add( hemiLight );
-const dirLight = new THREE.DirectionalLight( 0xffffff, 1.6 );
+const dirLight = new THREE.DirectionalLight( 0xfff2df, 1.6 ); // warm key light
 dirLight.position.set( 3, 5, 2 );
 scene.add( dirLight );
+
+const fillLight = new THREE.DirectionalLight( 0xb9d3ff, 0.55 ); // cool fill, opposite side, no shadow
+fillLight.position.set( -3.5, 2.2, -2.4 );
+scene.add( fillLight );
+
+// ---------------------------------------------------------------------------
+// Shadows: dirLight (the key light) casts; a tight, moving orthographic
+// shadow frustum re-centers on the robot's current world position every
+// frame (see renderFrame() below) so a fixed small mapSize still gets good
+// texel density anywhere along the ~18 m follow+climb route, instead of
+// needing one giant frustum covering the whole course at low resolution.
+// PCFSoftShadowMap for a softer edge that sits better with the toon/ink look
+// than a hard shadow-map edge would.
+// ---------------------------------------------------------------------------
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+dirLight.castShadow = true;
+dirLight.shadow.mapSize.set( 2048, 2048 );
+dirLight.shadow.camera.near = 0.5;
+dirLight.shadow.camera.far = 14;
+dirLight.shadow.camera.left = -3.5;
+dirLight.shadow.camera.right = 3.5;
+dirLight.shadow.camera.top = 3.5;
+dirLight.shadow.camera.bottom = -3.5;
+dirLight.shadow.bias = -0.0015;
+dirLight.shadow.normalBias = 0.02;
+dirLight.shadow.camera.updateProjectionMatrix();
+scene.add( dirLight.target );
+
+// Fixed offset from the shadow-follow target to the key light (same vector as
+// the light's initial position above) -- recomputed each frame relative to
+// the robot's CURRENT position instead of the world origin, see renderFrame().
+const DIR_LIGHT_OFFSET = new THREE.Vector3( 3, 5, 2 );
+const _shadowFollowPos = new THREE.Vector3();
 
 // ===========================================================================
 // Palette / theme
@@ -97,10 +141,18 @@ function applyTheme( name ) {
 	const palette = PALETTES[ name ];
 
 	applyPaletteToDom( palette );
-	scene.background = new THREE.Color( palette.sceneBackground );
+	if ( scene.background && scene.background.isTexture ) scene.background.dispose();
+	scene.background = makeBackgroundGradient( palette.bgGradientTop, palette.bgGradientBottom );
 
 	if ( bodyMaterial ) bodyMaterial.color.set( palette.materialColor );
 	if ( oxygenTankMaterial ) oxygenTankMaterial.color.set( palette.oxygenTankColor );
+	if ( cradleRailsMaterial ) cradleRailsMaterial.color.set( palette.cradleRailsColor );
+	if ( stairsMaterial ) stairsMaterial.color.set( palette.stairsColor );
+	if ( handrailMaterial ) handrailMaterial.color.set( palette.handrailColor );
+	// groundMaterial.color deliberately NOT re-tinted here: its tile colors are baked
+	// into groundMaterial.map (see makeGroundTileTexture) and the material's own
+	// .color stays neutral white always (set once at creation) so the toon shading
+	// modulates the texture's own colors instead of double-tinting them.
 	if ( patientMaterial ) patientMaterial.color.set( palette.patientColor );
 	if ( robotMaterial ) robotMaterial.color.set( palette.robotColor );
 	if ( logoMaterial ) logoMaterial.color.set( palette.logoColor );
@@ -134,11 +186,25 @@ function applyTheme( name ) {
 // rim light.
 // ===========================================================================
 
-const CEL_GRADIENT_MAP = makeToonGradientMap( [ 0.38, 0.72, 1.0 ] );
+// Three deliberately-separated cel bands (deep shadow / mid / lit). Pulled a
+// little darker/wider apart than the prior [0.38,0.72,1.0] so the banding is
+// clearly visible as stylized anime shading -- the large flat faces (stair
+// side wall, robot body) were previously reading as one near-flat tone with
+// barely-perceptible steps. The lit band stays 1.0 so the calibrated lit-face
+// brightness against the paper background is unchanged.
+const CEL_GRADIENT_MAP = makeToonGradientMap( [ 0.30, 0.60, 1.0 ] );
+
+// Flatter gradient reserved for the wood (stairs). The punchy 3-band CEL map
+// above made the lit tread-tops and the shadowed risers/side-walls read as TWO
+// distinct wood colors (a light tan vs a darker orange-brown) -- user wanted a
+// single wood tone. Lifting the shadow/mid bands close to the lit band keeps
+// the wood essentially one color with only a hint of form, while the per-step
+// black outlines (from the edge pass) still define the staircase geometry.
+const WOOD_GRADIENT_MAP = makeToonGradientMap( [ 0.86, 0.94, 1.0 ] );
 
 const RIM_COLOR = new THREE.Color( 0xffffff );
-const RIM_POWER = 2.4;
-const RIM_INTENSITY = 0.45;
+const RIM_POWER = 2.2;
+const RIM_INTENSITY = 0.6; // brighter fresnel edge-glow for anime "pop" along silhouettes
 
 /** Small NearestFilter 1D texture used as MeshToonMaterial's gradientMap: one texel per band, so lighting snaps between bands instead of a smooth ramp. */
 function makeToonGradientMap( levels ) {
@@ -157,27 +223,61 @@ function makeToonGradientMap( levels ) {
 
 }
 
-function makeBlueprintMaterial( colorHex ) {
+function makeBlueprintMaterial( colorHex, options = {} ) {
 
 	const material = new THREE.MeshToonMaterial( {
 		color: colorHex,
-		gradientMap: CEL_GRADIENT_MAP,
+		gradientMap: options.gradientMap ?? CEL_GRADIENT_MAP,
 	} );
+
+	// Force a distinct compiled program for grain vs non-grain materials. For a
+	// BUILT-IN material (shaderID 'toon'), three's program cache key ignores the
+	// onBeforeCompile-modified source entirely and keys only on material params +
+	// customProgramCacheKey() (defaults to '') -- so without this every toon
+	// material collides on one cache key and reuses whichever program compiled
+	// FIRST (the rim-only body material), silently dropping the grain injection
+	// below on the stairs material. Keying on the grain flag gives the grain
+	// material its own program.
+	material.customProgramCacheKey = () => ( options.grainTexture ? 'bp-grain' : 'bp-plain' );
 
 	// Fresnel rim light: `vViewPosition` (view-space) is already declared by
 	// lights_toon_pars_fragment and `vNormal` (view-space) by
 	// normal_pars_fragment, so both are in scope for the injected snippet
 	// below without redeclaring them.
+	//
+	// options.grainTexture (optional): a neutral (mean ~1.0) grayscale
+	// multiplier map applied TRIPLANAR from world position -- used to give the
+	// wood a stylized grain so the big flat stair faces read as anime/game wood
+	// planks instead of a dead-flat fill, with no per-mesh UVs needed (the baked
+	// stairs mesh has none). Sampled on all three world planes and blended by
+	// the world normal so vertical side walls, horizontal treads, and risers all
+	// get grain without streak-smearing.
 	material.onBeforeCompile = ( shader ) => {
 
 		shader.uniforms.uRimColor = { value: RIM_COLOR };
 		shader.uniforms.uRimPower = { value: RIM_POWER };
 		shader.uniforms.uRimIntensity = { value: RIM_INTENSITY };
 
+		if ( options.grainTexture ) {
+
+			shader.uniforms.uGrain = { value: options.grainTexture };
+			shader.uniforms.uGrainScale = { value: options.grainScale ?? 1.6 }; // texture repeats per world metre
+			shader.uniforms.uGrainAmount = { value: options.grainAmount ?? 1.0 }; // 0 = off, 1 = full modulation
+
+			shader.vertexShader = shader.vertexShader
+				.replace( '#include <common>', '#include <common>\nvarying vec3 vGrainWorldPos;\nvarying vec3 vGrainWorldNrm;' )
+				.replace( '#include <begin_vertex>', '#include <begin_vertex>\n\tvGrainWorldPos = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;' )
+				.replace( '#include <beginnormal_vertex>', '#include <beginnormal_vertex>\n\tvGrainWorldNrm = mat3( modelMatrix ) * objectNormal;' );
+
+		}
+
 		shader.fragmentShader = shader.fragmentShader
 			.replace(
 				'#define TOON',
-				'#define TOON\nuniform vec3 uRimColor;\nuniform float uRimPower;\nuniform float uRimIntensity;',
+				'#define TOON\nuniform vec3 uRimColor;\nuniform float uRimPower;\nuniform float uRimIntensity;'
+				+ ( options.grainTexture
+					? '\nvarying vec3 vGrainWorldPos;\nvarying vec3 vGrainWorldNrm;\nuniform sampler2D uGrain;\nuniform float uGrainScale;\nuniform float uGrainAmount;'
+					: '' ),
 			)
 			.replace(
 				'vec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + totalEmissiveRadiance;',
@@ -186,14 +286,220 @@ function makeBlueprintMaterial( colorHex ) {
 				'\toutgoingLight += rimFresnel * uRimIntensity * uRimColor;',
 			);
 
+		if ( options.grainTexture ) {
+
+			// Multiply the base color by the triplanar grain right after
+			// <color_fragment> populates diffuseColor (map * material color), so
+			// the grain feeds through the toon banding + rim like the base tint.
+			shader.fragmentShader = shader.fragmentShader.replace(
+				'#include <color_fragment>',
+				'#include <color_fragment>\n'
+				+ '\tvec3 grnW = abs( normalize( vGrainWorldNrm ) );\n'
+				+ '\tgrnW /= ( grnW.x + grnW.y + grnW.z + 1e-5 );\n'
+				+ '\tfloat grain = texture2D( uGrain, vGrainWorldPos.zy * uGrainScale ).r * grnW.x\n'
+				+ '\t            + texture2D( uGrain, vGrainWorldPos.xz * uGrainScale ).r * grnW.y\n'
+				+ '\t            + texture2D( uGrain, vGrainWorldPos.xy * uGrainScale ).r * grnW.z;\n'
+				+ '\tdiffuseColor.rgb *= mix( 1.0, grain, uGrainAmount );',
+			);
+
+		}
+
 	};
 
 	return material;
 
 }
 
+// ---------------------------------------------------------------------------
+// Backdrop gradient: a tall 1px-wide CanvasTexture (top color -> bottom color)
+// used as scene.background instead of a flat fill. Rendered by three as a
+// screen-filling backdrop, so it reads as a soft vertical "studio" falloff
+// behind the set -- a small, cheap depth/vibe cue over a dead-flat color.
+// Endpoints are kept close to the theme's paper tone (see palette bgGradient*)
+// so the canvas still blends into the surrounding DOM sheet at its corners.
+// ---------------------------------------------------------------------------
+function makeBackgroundGradient( topHex, bottomHex ) {
+
+	const canvas = document.createElement( 'canvas' );
+	canvas.width = 2;
+	canvas.height = 256;
+	const ctx = canvas.getContext( '2d' );
+
+	const grad = ctx.createLinearGradient( 0, 0, 0, canvas.height );
+	grad.addColorStop( 0, `#${ new THREE.Color( topHex ).getHexString() }` );
+	grad.addColorStop( 1, `#${ new THREE.Color( bottomHex ).getHexString() }` );
+	ctx.fillStyle = grad;
+	ctx.fillRect( 0, 0, canvas.width, canvas.height );
+
+	const texture = new THREE.CanvasTexture( canvas );
+	texture.colorSpace = THREE.SRGBColorSpace;
+	texture.minFilter = THREE.LinearFilter;
+	texture.magFilter = THREE.LinearFilter;
+	texture.generateMipmaps = false;
+	return texture;
+
+}
+
+// ---------------------------------------------------------------------------
+// Wood grain: a neutral (near-white, mean ~1.0) grayscale multiplier map of
+// irregular horizontal streaks, sampled TRIPLANAR from world position (see
+// makeBlueprintMaterial's grainTexture option). Only darkens (streaks dip below
+// 1.0, base stays 1.0) so it modulates the toon wood color without lightening
+// it. Stored as NoColorSpace data so the sampled .r is the raw multiplier.
+// This is what turns the big flat stair side wall from a cardboard fill into a
+// stylized wood surface without needing UVs on the baked stairs mesh.
+// ---------------------------------------------------------------------------
+function makeWoodGrainTexture() {
+
+	const size = 256;
+	const canvas = document.createElement( 'canvas' );
+	canvas.width = canvas.height = size;
+	const ctx = canvas.getContext( '2d' );
+	const img = ctx.createImageData( size, size );
+	const data = img.data;
+
+	// Per-row streak base: layered irregular sines so grain lines are uneven,
+	// with only the positive peaks darkening (mostly-light wood, occasional
+	// darker grain line).
+	const rowVal = new Float32Array( size );
+	for ( let y = 0; y < size; y ++ ) {
+
+		const yy = y / size;
+		const s = 0.5 * Math.sin( yy * Math.PI * 2 * 7 + Math.sin( yy * Math.PI * 2 * 2 ) * 1.5 )
+			+ 0.3 * Math.sin( yy * Math.PI * 2 * 17 + 1.3 )
+			+ 0.2 * Math.sin( yy * Math.PI * 2 * 31 + 2.1 );
+		const d = Math.max( 0, s );
+		rowVal[ y ] = 1.0 - 0.16 * Math.pow( d, 1.5 );
+
+	}
+
+	for ( let y = 0; y < size; y ++ ) {
+
+		for ( let x = 0; x < size; x ++ ) {
+
+			// gentle along-grain waviness so streaks aren't perfectly straight
+			const wy = y + Math.sin( ( x / size ) * Math.PI * 2 * 2 ) * 2.0;
+			const yi = ( ( Math.round( wy ) % size ) + size ) % size;
+			let v = rowVal[ yi ] - Math.random() * 0.03;
+			v = Math.max( 0.78, Math.min( 1.0, v ) );
+
+			const b = Math.round( v * 255 );
+			const i = ( y * size + x ) * 4;
+			data[ i ] = data[ i + 1 ] = data[ i + 2 ] = b;
+			data[ i + 3 ] = 255;
+
+		}
+
+	}
+
+	ctx.putImageData( img, 0, 0 );
+
+	const texture = new THREE.CanvasTexture( canvas );
+	texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+	texture.colorSpace = THREE.NoColorSpace;
+	texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+	return texture;
+
+}
+
+// ---------------------------------------------------------------------------
+// Ground tile texture: a procedural CanvasTexture (soft tile fill + a thin,
+// muted grout border that tiles seamlessly edge-to-edge) rather than a flat
+// fill color, per explicit user feedback that a solid-color ground read as
+// "a full blue platform" rather than a floor. GROUND_TILE_SIZE_M matches
+// isaac_env.py's own TILE_SIZE (0.60 m grout pitch) so the tiling reads at
+// the same real-world scale as the sim's floor grid.
+//
+// 2026-07-10, revised same day: the first version's per-tile off-center
+// radial highlight gradient was a mistake for a REPEATING texture -- baked
+// into every single tile repeat, it read as a grid of bright blobs once
+// tiled across the floor ("too bold... two big [blobs]", per direct user
+// feedback), not a subtle sheen. Removed entirely. Also thinned the grout
+// (5% of tile -> 1.8%) and pulled both the tile fill and the grout color
+// toward EACH OTHER (see softTile/softGrout below) so the grid reads as a
+// gentle seam rather than a stark, high-contrast checkerboard -- flat fully-
+// saturated color fields next to near-black lines is what "bold/cartoonish"
+// usually means; blending them toward a shared mid-tone is what "nice"
+// usually means.
+// ---------------------------------------------------------------------------
+const GROUND_TILE_SIZE_M = 0.60;
+
+function makeGroundTileTexture( tileColorHex, groutColorHex ) {
+
+	const size = 256;
+	const canvas = document.createElement( 'canvas' );
+	canvas.width = canvas.height = size;
+	const ctx = canvas.getContext( '2d' );
+
+	const tileColor = new THREE.Color( tileColorHex );
+	const groutColor = new THREE.Color( groutColorHex );
+
+	// Soften both toward each other and toward white: less saturated fill, less
+	// near-black grout -- a calmer, lower-contrast pairing than the raw palette
+	// values (which are tuned for the flat-color robot/stairs/etc, not a large
+	// repeating floor field where high contrast reads as busy/bold).
+	const softTile = tileColor.clone().lerp( new THREE.Color( 0xffffff ), 0.30 );
+	const softGrout = groutColor.clone().lerp( tileColor, 0.45 );
+
+	ctx.fillStyle = `#${ softTile.getHexString() }`;
+	ctx.fillRect( 0, 0, size, size );
+
+	// Grout: a thin stroked border inset by half its own width, so adjacent tiles'
+	// borders butt together into one continuous grid line once repeated. Drawn at
+	// less than full opacity for a soft seam rather than a hard-edged line.
+	const groutW = size * 0.018;
+	ctx.globalAlpha = 0.75;
+	ctx.strokeStyle = `#${ softGrout.getHexString() }`;
+	ctx.lineWidth = groutW;
+	ctx.strokeRect( groutW / 2, groutW / 2, size - groutW, size - groutW );
+	ctx.globalAlpha = 1;
+
+	const texture = new THREE.CanvasTexture( canvas );
+	texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+	texture.colorSpace = THREE.SRGBColorSpace;
+	texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+	return texture;
+
+}
+
+/**
+ * Bake per-vertex tile UVs onto the "ground" mesh from its own local-space
+ * (x, y) positions (already true world/route meters -- the "ground" SceneNode
+ * has zero local translation/rotation, see scene_build.build_ground_node), so
+ * RepeatWrapping tiles the texture at the physical GROUND_TILE_SIZE_M scale
+ * with no per-bake Python step needed. geo.box() (pipeline/geometry.py)
+ * emits no UV attribute at all, so this is the mesh's ONLY uv data --
+ * harmless for any other mesh reusing the same box() builder since they have
+ * no .map to sample it.
+ */
+function addGroundTileUVs( root ) {
+
+	const groundMesh = root.getObjectByName( 'ground' );
+	if ( ! groundMesh || ! groundMesh.isMesh ) return;
+
+	const posAttr = groundMesh.geometry.getAttribute( 'position' );
+	if ( ! posAttr ) return;
+
+	const uvArray = new Float32Array( posAttr.count * 2 );
+	for ( let i = 0; i < posAttr.count; i ++ ) {
+
+		uvArray[ i * 2 ] = posAttr.getX( i ) / GROUND_TILE_SIZE_M;
+		uvArray[ i * 2 + 1 ] = posAttr.getY( i ) / GROUND_TILE_SIZE_M;
+
+	}
+
+	groundMesh.geometry.setAttribute( 'uv', new THREE.BufferAttribute( uvArray, 2 ) );
+
+}
+
 let bodyMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].materialColor );
 let oxygenTankMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].oxygenTankColor );
+let cradleRailsMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].cradleRailsColor );
+const woodGrainTexture = makeWoodGrainTexture();
+let stairsMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].stairsColor, { grainTexture: woodGrainTexture, grainScale: 1.4, grainAmount: 0.8, gradientMap: WOOD_GRADIENT_MAP } );
+let handrailMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].handrailColor );
+let groundMaterial = makeBlueprintMaterial( 0xffffff ); // neutral -- tile colors live in .map, see makeGroundTileTexture
+groundMaterial.map = makeGroundTileTexture( PALETTES[ currentThemeName ].groundColor, PALETTES[ currentThemeName ].groundGroutColor );
 let patientMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].patientColor );
 let robotMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].robotColor );
 let logoMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].logoColor );
@@ -202,8 +508,17 @@ let logoMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].logoColor
 // no mesh of its own (see scene_build.build_patient_node) -- the patient's visible
 // geometry is the separately-loaded PatientHuman model below, tinted directly by
 // PatientHuman.attachTo().
+//
+// "stairs" and "handrails" are separate top-level scene nodes (2026-07-10 pipeline
+// change, see scene_build.build_handrails_node) specifically so the wood treads/
+// landing and the iron rails can carry different toon colors -- they used to be one
+// merged "stairs" mesh with a single material.
 const TINTED_NODE_NAMES = {
 	oxygen_tank: () => oxygenTankMaterial,
+	cradle_rails: () => cradleRailsMaterial,
+	stairs: () => stairsMaterial,
+	handrails: () => handrailMaterial,
+	ground: () => groundMaterial,
 	robot_base: () => robotMaterial,
 	FL_hip: () => robotMaterial,
 	FR_hip: () => robotMaterial,
@@ -211,42 +526,77 @@ const TINTED_NODE_NAMES = {
 	RR_hip: () => robotMaterial,
 };
 
+// Per-subtree shadow role (2026-07-10 lighting pass), looked up by the same
+// nearest-tagged-ancestor walk as TINTED_NODE_NAMES above. Ground only
+// receives (a razor-thin slab casting its own shadow is pointless); the
+// robot/payload only cast (self-shadowing a 324k-tri mesh from one key light
+// reads as noisy speckle, not form); stairs/handrails do both, so the
+// staircase believably shadows itself and the ground below it. Anything
+// untagged (falls back to bodyMaterial) defaults to both.
+const SHADOW_ROLES = {
+	ground: { cast: false, receive: true },
+	stairs: { cast: true, receive: true },
+	handrails: { cast: true, receive: true },
+	oxygen_tank: { cast: true, receive: false },
+	cradle_rails: { cast: true, receive: false },
+	robot_base: { cast: true, receive: false },
+	FL_hip: { cast: true, receive: false },
+	FR_hip: { cast: true, receive: false },
+	RL_hip: { cast: true, receive: false },
+	RR_hip: { cast: true, receive: false },
+};
+const DEFAULT_SHADOW_ROLE = { cast: true, receive: true };
+
 /**
  * Strip all textures/materials from a loaded model's meshes and replace
- * them with the flat blueprint palette, disposing the originals. Named
- * subtrees (oxygen tank, patient) get their slightly-tinted variant;
- * everything else gets the shared body material.
+ * them with the flat toon palette, disposing the originals. Named subtrees
+ * (oxygen tank, cradle rails, stairs, handrails, ground, patient) get their
+ * own tint; everything else falls back to the shared body material.
+ *
+ * Walks UP from the mesh, testing each ancestor's OWN name against
+ * TINTED_NODE_NAMES and returning on the FIRST (i.e. nearest/most specific)
+ * match. This must be nearest-wins, not "first tagged name found by a
+ * root-down traversal": a prior version pre-collected every tagged node via
+ * root.traverse (which visits parents before children) and, for each mesh,
+ * scanned that traversal-ordered list checking whether ANY of the mesh's
+ * ancestors matched -- so a coarse ancestor tag discovered earlier (e.g.
+ * "robot_base") always won over a more specific tag on one of its own
+ * children (e.g. "oxygen_tank"/"cradle_rails", both direct children of
+ * robot_base). That silently made the O2 tank and its cradle always render
+ * as plain robot color; invisible under the old near-monochrome scheme
+ * (both were dark), glaring once the two got genuinely different colors
+ * (2026-07-10 toon repaint) -- confirmed live by reading each mesh's
+ * resolved material.color in the running scene.
  */
 function applyBlueprintMaterials( root ) {
 
-	// Find tinted-subtree roots first so their descendants inherit the tint
-	// even if the tint node itself isn't a Mesh.
-	const tintedAncestors = [];
-	root.traverse( ( node ) => {
-
-		if ( TINTED_NODE_NAMES[ node.name ] ) {
-
-			tintedAncestors.push( { node, materialFn: TINTED_NODE_NAMES[ node.name ] } );
-
-		}
-
-	} );
-
 	function tintFor( mesh ) {
 
-		for ( const { node, materialFn } of tintedAncestors ) {
+		let p = mesh;
+		while ( p ) {
 
-			let p = mesh;
-			while ( p ) {
-
-				if ( p === node ) return materialFn();
-				p = p.parent;
-
-			}
+			const materialFn = TINTED_NODE_NAMES[ p.name ];
+			if ( materialFn ) return materialFn();
+			p = p.parent;
 
 		}
 
 		return bodyMaterial;
+
+	}
+
+	function shadowRoleFor( mesh ) {
+
+		let p = mesh;
+		while ( p ) {
+
+			const role = SHADOW_ROLES[ p.name ];
+			if ( role ) return role;
+			p = p.parent;
+
+		}
+
+		return DEFAULT_SHADOW_ROLE;
 
 	}
 
@@ -268,8 +618,9 @@ function applyBlueprintMaterials( root ) {
 		}
 
 		node.material = tintFor( node );
-		node.castShadow = false;
-		node.receiveShadow = false;
+		const role = shadowRoleFor( node );
+		node.castShadow = role.cast;
+		node.receiveShadow = role.receive;
 
 	} );
 
@@ -297,10 +648,20 @@ const edgesPass = new BlueprintEdgesPass( scene, camera, {
 	inkColor: PALETTES[ currentThemeName ].inkColorGl,
 	// 0.4 was tuned on the primitive-built robot; the real Isaac Go2 mesh
 	// (324k tris of sculpted surface detail) saturates into dark speckle at
-	// viewing distance with it. 0.55 was chosen by A/B captures at the
-	// climb-summit wide shot: distance noise gone, close-up creases (logo,
-	// panel lines) intact. 0.7 starts erasing leg interior definition.
-	normalThreshold: 0.55,
+	// viewing distance with it. 0.55 kept close-up creases intact but showed
+	// a dense pile of interior lines. Raised to 0.66 per user feedback ("I
+	// don't want multiple lines"): only the STRONGER seams (logos, main body
+	// panels, leg joints) ink, so the body reads as a FEW clean lines rather
+	// than a mesh of them, at every distance -- fewer strong lines also can't
+	// pile into a blob far away, which is why the fade band below can be
+	// pushed out so those lines survive to normal viewing distance.
+	normalThreshold: 0.66,
+	// Interior-crease fade band (view-space metres). Pushed out from the
+	// original 2.0/6.5 so the (now-sparser) body lines PERSIST at close/medium
+	// viewing distance instead of the body going to bare outline the moment you
+	// step back -- they only thin out once the robot is genuinely far.
+	interiorFadeNear: 4.0,
+	interiorFadeFar: 10.0,
 	// NOTE: this was originally 0.0025 and looked correct in code review,
 	// but empirically (see debug captures during development) it was WAY
 	// too tight for a real depth texture's quantization noise at these
@@ -311,7 +672,10 @@ const edgesPass = new BlueprintEdgesPass( scene, camera, {
 	// checkering, while normalThreshold independently and correctly
 	// covers interior creases (see BlueprintEdgesPass.js class doc).
 	depthThreshold: 0.025,
-	thickness: 1.2,
+	// 1.2 -> 1.4: a bit bolder/thicker ink so the outline reads as a more
+	// notable line (user: "make the black a bit more bold/bigger"). Kept modest
+	// so nearby interior lines still don't fatten into each other.
+	thickness: 1.4,
 } );
 composer.addPass( edgesPass );
 
@@ -349,6 +713,133 @@ const _curBaseWorldPos = new THREE.Vector3();
 const _baseDelta = new THREE.Vector3();
 let trackingEnabled = true;
 let hasLastBasePos = false;
+
+// ---------------------------------------------------------------------------
+// Cinematic two-subject follow-cam (opt-in via the "cinematic" chip; OFF by
+// default). A distinct mode from the default robot-only orbit-follow above:
+// when enabled it takes FULL control of the camera and keeps BOTH the robot
+// and the patient framed in one shot -- aims at the point between them, pulls
+// back just far enough that both fit with margin, and rides a slow side/above
+// trailing angle with a gentle sway so it reads as a moving, "alive" camera
+// rather than a locked orbit. Everything is critically damped (frame-rate-
+// independent lerps) so the robot's stop-and-go pacing glides instead of
+// jerking the frame.
+//
+// While active, OrbitControls is disabled and its update() is skipped (its
+// update() otherwise reasserts the camera from its own spherical/target state
+// every frame -- see blueprint-viewer memory); on the way out the control's
+// target is re-synced so handing back to manual orbit doesn't snap.
+// ---------------------------------------------------------------------------
+
+let cinematicEnabled = false;
+let cineNeedsInit = false; // snap the smoothed look-target on the first active frame
+let cineTime = 0;          // seconds since this mode was last enabled, drives the sway
+
+// Framing angle in three.js SCENE space. The -90deg-about-X isaac_world
+// rotation maps the pipeline's Z-up/X-forward frame to three's Y-up, so here:
+//   +X = travel / up-the-stairs direction, +Y = world up, +Z = the near side.
+// The camera sits behind-side-above and looks forward/down at the pair, which
+// shows the climbing profile and the stairs ahead while staying over open
+// space -- a leading shot (camera ahead) risks clipping into the handrails
+// during the climb.
+const CINE_BASE_AZ = 118 * Math.PI / 180; // azimuth measured from +X in the XZ (ground) plane
+const CINE_BASE_EL = 24 * Math.PI / 180;  // elevation above the ground plane
+const CINE_SWAY_AZ = 9 * Math.PI / 180;   // slow left/right drift amplitude
+const CINE_SWAY_EL = 4 * Math.PI / 180;   // slow rise/fall amplitude
+const CINE_SWAY_AZ_PERIOD = 13;           // s, one full left-right sway
+const CINE_SWAY_EL_PERIOD = 19;           // s, one full rise-fall sway
+
+const CINE_SUBJECT_PAD = 0.95;   // half-a-body of extra framing radius so neither subject kisses the frame edge (m)
+const CINE_FRAME_MARGIN = 1.16;  // >1 leaves breathing room around the pair
+const CINE_MIN_DIST = 2.3;       // never dolly closer than this (m)
+const CINE_MAX_DIST = 7.5;       // never drift further than this (m)
+const CINE_TARGET_UP_BIAS = 0.15; // aim a touch above the base/hip midpoint so the pair sits mid-frame, not along the bottom (m)
+
+// Frame-rate-independent smoothing bases for `1 - base^dt`: smaller = snappier.
+// Position eases a touch floatier than the look-target so quick subject moves
+// read as the camera gliding to catch up.
+const CINE_POS_SMOOTH_BASE = 0.0030;
+const CINE_TGT_SMOOTH_BASE = 0.0015;
+
+const _cineRobotPos = new THREE.Vector3();
+const _cinePatientPos = new THREE.Vector3();
+const _cineTargetGoal = new THREE.Vector3();
+const _cinePosGoal = new THREE.Vector3();
+const _cineOffsetDir = new THREE.Vector3();
+const _cineLookTarget = new THREE.Vector3(); // smoothed look-at point actually fed to camera.lookAt
+
+/**
+ * Drive the camera for one frame in cinematic mode. Frames the robot + patient
+ * together, glides toward a swaying side/above trailing angle, and keeps
+ * controls.target in sync for a snap-free handoff back to manual orbit.
+ * Assumes `robotBase` is non-null (guarded by the caller).
+ */
+function updateCinematicCamera( dtSec ) {
+
+	robotBase.getWorldPosition( _cineRobotPos );
+
+	if ( patientHuman._attached && patientHuman._patientRootNode ) {
+
+		patientHuman._patientRootNode.getWorldPosition( _cinePatientPos );
+
+	} else {
+
+		// Patient not attached yet (still loading): frame on the robot alone so
+		// the mode still does something sane rather than aiming at the origin.
+		_cinePatientPos.copy( _cineRobotPos );
+
+	}
+
+	// Look target: midpoint of the two subjects, nudged up a little so they sit
+	// in the middle of frame rather than along the bottom edge.
+	_cineTargetGoal.addVectors( _cineRobotPos, _cinePatientPos ).multiplyScalar( 0.5 );
+	_cineTargetGoal.y += CINE_TARGET_UP_BIAS;
+
+	if ( cineNeedsInit ) {
+
+		// First active frame: snap the smoothed look-target onto the real one so
+		// the camera doesn't swing in from wherever _cineLookTarget last sat
+		// (the camera POSITION still glides in from its current spot -- a nice
+		// reveal -- but the look direction locks onto the subjects immediately).
+		_cineLookTarget.copy( _cineTargetGoal );
+		cineNeedsInit = false;
+
+	}
+
+	// Distance: pull back just far enough that both subjects (plus a body-sized
+	// pad) fit inside the vertical FOV, with margin; clamped so it never gets
+	// uncomfortably close or drifts far away.
+	const sep = _cineRobotPos.distanceTo( _cinePatientPos );
+	const radius = 0.5 * sep + CINE_SUBJECT_PAD;
+	const halfFov = THREE.MathUtils.degToRad( camera.fov ) * 0.5;
+	let dist = ( radius / Math.tan( halfFov ) ) * CINE_FRAME_MARGIN;
+	dist = THREE.MathUtils.clamp( dist, CINE_MIN_DIST, CINE_MAX_DIST );
+
+	// Slow sway on the framing angle so the camera feels hand-held/alive rather
+	// than mechanically locked. Two different periods (and a phase offset on the
+	// elevation term) keep the motion from looking like a simple circle.
+	cineTime += dtSec;
+	const az = CINE_BASE_AZ + CINE_SWAY_AZ * Math.sin( cineTime * ( 2 * Math.PI / CINE_SWAY_AZ_PERIOD ) );
+	const el = CINE_BASE_EL + CINE_SWAY_EL * Math.sin( cineTime * ( 2 * Math.PI / CINE_SWAY_EL_PERIOD ) + 1.3 );
+
+	const cosEl = Math.cos( el );
+	_cineOffsetDir.set( cosEl * Math.cos( az ), Math.sin( el ), cosEl * Math.sin( az ) );
+
+	_cinePosGoal.copy( _cineTargetGoal ).addScaledVector( _cineOffsetDir, dist );
+
+	const posLerp = Math.min( 1, 1 - Math.pow( CINE_POS_SMOOTH_BASE, dtSec ) );
+	const tgtLerp = Math.min( 1, 1 - Math.pow( CINE_TGT_SMOOTH_BASE, dtSec ) );
+
+	camera.position.lerp( _cinePosGoal, posLerp );
+	_cineLookTarget.lerp( _cineTargetGoal, tgtLerp );
+
+	camera.lookAt( _cineLookTarget );
+
+	// Keep OrbitControls' target in sync so switching cinematic OFF resumes
+	// manual orbit from exactly here, with no snap.
+	controls.target.copy( _cineLookTarget );
+
+}
 
 // Playback (optional "play" chip) state — see PLAYBACK section below.
 let isPlaying = false;
@@ -879,6 +1370,35 @@ trackingToggle.addEventListener( 'click', () => {
 
 } );
 
+cinematicToggle.addEventListener( 'click', () => {
+
+	cinematicEnabled = ! cinematicEnabled;
+	cinematicToggle.textContent = `cinematic · ${ cinematicEnabled ? 'on' : 'off' }`;
+	cinematicToggle.setAttribute( 'aria-pressed', cinematicEnabled ? 'true' : 'false' );
+
+	if ( cinematicEnabled ) {
+
+		// Take full control of the camera. OrbitControls is disabled (so drags
+		// don't fight the shot) and its update() is skipped in renderFrame while
+		// active; cineNeedsInit snaps the look-target onto the subjects on the
+		// first active frame so the shot doesn't swing in from the origin.
+		cineTime = 0;
+		cineNeedsInit = true;
+		controls.enabled = false;
+
+	} else {
+
+		// Hand back to manual orbit from exactly where the cinematic cam left off,
+		// then let the robot-only tracking follow-cam resync its delta baseline.
+		controls.enabled = true;
+		controls.target.copy( _cineLookTarget );
+		hasLastBasePos = false;
+		controls.update();
+
+	}
+
+} );
+
 plumbToggle.addEventListener( 'click', () => {
 
 	plumbLineEnabled = ! plumbLineEnabled;
@@ -918,6 +1438,7 @@ function finishModelSetup( root, clips, baseNode ) {
 	robotBase = baseNode || root.getObjectByName( 'robot_base' ) || root;
 
 	applyBlueprintMaterials( root );
+	addGroundTileUVs( root );
 	scene.add( root );
 
 	mixer = new THREE.AnimationMixer( root );
@@ -1076,12 +1597,26 @@ function renderFrame() {
 	const nowMs = performance.now();
 	stepPlayback( nowMs );
 
-	// Follow-cam: because the robot travels metres during a clip, lerp the
-	// OrbitControls target toward the robot_base world position and
-	// translate the camera by the SAME delta each frame — this orbits
-	// around a moving target instead of re-framing/snapping.
-	if ( trackingEnabled && robotBase ) {
+	// One authoritative clock delta per frame, shared by whichever camera mode
+	// runs below (calling clock.getDelta() more than once per frame would split
+	// the real elapsed time between the calls).
+	const dtSec = clock.getDelta();
 
+	// Cinematic mode takes precedence over the default robot-only follow: it
+	// drives the camera fully (see updateCinematicCamera) and OrbitControls is
+	// left disabled + its update() skipped this frame.
+	const cinematicActive = cinematicEnabled && robotBase;
+
+	if ( cinematicActive ) {
+
+		updateCinematicCamera( dtSec || 0.016 );
+
+	} else if ( trackingEnabled && robotBase ) {
+
+		// Follow-cam: because the robot travels metres during a clip, lerp the
+		// OrbitControls target toward the robot_base world position and
+		// translate the camera by the SAME delta each frame — this orbits
+		// around a moving target instead of re-framing/snapping.
 		robotBase.getWorldPosition( _curBaseWorldPos );
 
 		if ( ! hasLastBasePos ) {
@@ -1103,18 +1638,31 @@ function renderFrame() {
 		// Gentle extra lerp toward the base so any accumulated drift (e.g.
 		// after a phase switch resets time to 0) settles smoothly rather
 		// than snapping.
-		const lerpFactor = 1 - Math.pow( 0.001, clock.getDelta() || 0.016 );
+		const lerpFactor = 1 - Math.pow( 0.001, dtSec || 0.016 );
 		controls.target.lerp( _curBaseWorldPos, Math.min( 1, lerpFactor ) );
 
 		_lastBaseWorldPos.copy( _curBaseWorldPos );
 
-	} else {
+	}
 
-		clock.getDelta(); // keep the clock's internal timer sane even when unused
+	// Shadow-follow: recenter the key light's (tight, high-res) shadow frustum on
+	// the robot's CURRENT world position every frame, independent of the
+	// tracking-toggle above -- shadows should stay sharp near the action even when
+	// the user has camera-tracking off and is orbiting freely. Same offset vector
+	// as the light's own initial (3,5,2) position, so the light's direction (and
+	// therefore shadow angle) never changes, only its world position does.
+	if ( robotBase ) {
+
+		robotBase.getWorldPosition( _shadowFollowPos );
+		dirLight.target.position.copy( _shadowFollowPos );
+		dirLight.position.copy( _shadowFollowPos ).add( DIR_LIGHT_OFFSET );
 
 	}
 
-	controls.update();
+	// Skip OrbitControls.update() while cinematic drives the camera directly:
+	// its update() would reassert camera.position from its own spherical/target
+	// state and stomp the shot we just set (blueprint-viewer memory).
+	if ( ! cinematicActive ) controls.update();
 
 	partLabels.update( canvasHost.clientWidth, canvasHost.clientHeight );
 

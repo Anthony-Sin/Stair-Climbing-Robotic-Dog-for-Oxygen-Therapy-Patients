@@ -1,5 +1,5 @@
 {
-  "source": "C:\\Users\\antho\\Downloads\\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\\log\\run_sim_20260707_183410_928\\debug\\robot_frames.jsonl",
+  "source": "..\\..\\..\\..\\log\\run_sim_20260707_183410_928\\debug\\robot_frames.jsonl",
   "mesh_source": "isaac_go2_usd",
   "mesh_sources_per_link": {
     "base": "usd",
@@ -53,6 +53,7 @@
     "oxygen_tank",
     "cradle_rails",
     "stairs",
+    "handrails",
     "ground",
     "patient_root",
     "isaac_world"
@@ -70,10 +71,11 @@
   "landing_far_x_m": 8.4924,
   "triangle_counts": {
     "robot": 323922,
-    "stairs": 756,
+    "stairs": 180,
+    "handrails": 576,
     "ground": 12,
     "patient": 0,
     "total": 324690
   },
-  "generated_utc": "2026-07-07T23:25:38.127522+00:00"
+  "generated_utc": "2026-07-08T04:47:30.831676+00:00"
 }

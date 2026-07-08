@@ -100,6 +100,11 @@ export class PartLabels {
 			line.setAttribute( 'fill', 'none' );
 			line.setAttribute( 'stroke', this.inkColor );
 			line.setAttribute( 'stroke-width', '1' );
+			// Held at reduced opacity so these technical callout leader-lines read
+			// as subtle guides rather than bold ink crossing the whole scene --
+			// full-strength they clash with the anime/game render. The text label
+			// itself stays fully opaque (below) for legibility.
+			line.setAttribute( 'stroke-opacity', '0.4' );
 			this.svg.appendChild( line );
 
 			const text = document.createElementNS( SVG_NS, 'text' );

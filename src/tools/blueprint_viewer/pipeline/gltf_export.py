@@ -11,6 +11,7 @@ Node hierarchy (exact names per the contract):
         cradle_rails
         head                                        (if present)
       stairs
+      handrails
       ground
       patient_root                                 (bare transform anchor, no mesh/
                                                        children -- see scene_build.py;
@@ -148,6 +149,7 @@ def build_gltf_document(
     *,
     robot_scene: SceneNode,
     stairs_node: SceneNode,
+    handrails_node: SceneNode,
     ground_node: SceneNode,
     patient_scene: SceneNode,
     clips: List[BakedClip],
@@ -169,6 +171,7 @@ def build_gltf_document(
     top_level_indices: List[int] = []
     top_level_indices.append(_add_scene_node(document, packer, robot_scene, node_index_by_name))
     top_level_indices.append(_add_scene_node(document, packer, stairs_node, node_index_by_name))
+    top_level_indices.append(_add_scene_node(document, packer, handrails_node, node_index_by_name))
     top_level_indices.append(_add_scene_node(document, packer, ground_node, node_index_by_name))
     top_level_indices.append(_add_scene_node(document, packer, patient_scene, node_index_by_name))
 

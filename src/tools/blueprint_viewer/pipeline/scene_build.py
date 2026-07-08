@@ -37,12 +37,15 @@ from robot_build import SceneNode
 # ---------------------------------------------------------------------------
 
 def build_stairs_node(stair_spec: dict, landing_far_x: float = None) -> SceneNode:
-    """Staircase + top landing (+ handrails). ``landing_far_x``: world-x far edge of
-    the top platform. Defaults to end_x + landing_depth; the baker passes a
-    DATA-DRIVEN value (max actor x over both clips + margin) because the recorder's
-    sim world has floor past the nominal landing (the real patient walks to x~=7.8
-    while end_x + landing_depth = 7.27 -- rendering only the nominal slab left the
-    patient standing on air in the final climb seconds; 2026-07-07 coordinator fix).
+    """Staircase + top landing (wood treads/landing only -- handrails are a separate
+    "handrails" SceneNode, see build_handrails_node(), so the viewer can tint the
+    wood structure and the iron rails with different materials). ``landing_far_x``:
+    world-x far edge of the top platform. Defaults to end_x + landing_depth; the
+    baker passes a DATA-DRIVEN value (max actor x over both clips + margin) because
+    the recorder's sim world has floor past the nominal landing (the real patient
+    walks to x~=7.8 while end_x + landing_depth = 7.27 -- rendering only the nominal
+    slab left the patient standing on air in the final climb seconds; 2026-07-07
+    coordinator fix).
     """
     start_x = stair_spec["start_x_m"]
     step_h = stair_spec["step_height_m"]
@@ -50,7 +53,6 @@ def build_stairs_node(stair_spec: dict, landing_far_x: float = None) -> SceneNod
     step_count = stair_spec["step_count"]
     half_w = stair_spec["half_width_m"]
     landing_depth = stair_spec["landing_depth_m"]
-    handrail = stair_spec.get("handrail", True)
 
     meshes: List[geo.Mesh] = []
 
@@ -75,11 +77,19 @@ def build_stairs_node(stair_spec: dict, landing_far_x: float = None) -> SceneNod
     landing_cx = top_x0 + landing_len / 2.0
     meshes.append(geo.box(landing_len, 2.0 * half_w, top_h, center=(landing_cx, 0.0, top_h / 2.0)))
 
-    if handrail:
-        meshes.extend(build_handrails(stair_spec))
-
     combined = geo.combine(*meshes)
     return SceneNode(name="stairs", local_translation=(0.0, 0.0, 0.0), mesh=combined)
+
+
+def build_handrails_node(stair_spec: dict) -> SceneNode:
+    """Handrails (posts + sloped/landing rails, both sides) as their own top-level
+    SceneNode, split out of build_stairs_node() so the viewer can tint the iron rails
+    a different color than the wood treads/landing (they used to be merged into one
+    "stairs" mesh with a single material). Mesh-less (no positions) when
+    stair_spec.handrail is False, same convention as patient_root's bare anchor."""
+    meshes = build_handrails(stair_spec) if stair_spec.get("handrail", True) else []
+    combined = geo.combine(*meshes)
+    return SceneNode(name="handrails", local_translation=(0.0, 0.0, 0.0), mesh=combined)
 
 
 HANDRAIL_HEIGHT_M = 0.90   # rail centerline height above the tread/nosing line

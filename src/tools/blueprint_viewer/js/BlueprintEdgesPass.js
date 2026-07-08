@@ -72,6 +72,16 @@ const BlueprintMaskShader = {
 		uThickness: { value: 1.2 }, // pixels
 		uCameraNear: { value: 0.1 },
 		uCameraFar: { value: 100 },
+		// Distance (view-space, world units) over which INTERIOR (normal-
+		// discontinuity) edges fade out. The dense panel-seam/rivet crease
+		// lines on the 324k-tri robot are separated and legible up close, but
+		// once the mesh is far enough that many of them land within a few
+		// pixels they pile into a solid black smudge ("all the little lines
+		// combined make one big black line"). Fading them by distance leaves
+		// distant geometry with only its clean silhouette (depth) edges while
+		// keeping full crease detail up close. See the fragment tail.
+		uInteriorFadeNear: { value: 2.0 }, // full interior detail nearer than this
+		uInteriorFadeFar: { value: 6.5 },  // interior creases fully gone past this
 	},
 
 	vertexShader: /* glsl */ `
@@ -91,6 +101,8 @@ const BlueprintMaskShader = {
 		uniform float uThickness;
 		uniform float uCameraNear;
 		uniform float uCameraFar;
+		uniform float uInteriorFadeNear;
+		uniform float uInteriorFadeFar;
 
 		varying vec2 vUv;
 
@@ -145,6 +157,22 @@ const BlueprintMaskShader = {
 			// stayed clean on a flat panel test region while still snapping
 			// real edges to solid ink.
 			depthEdge = smoothstep( uDepthThreshold, uDepthThreshold * 3.0, depthEdge );
+
+			// --- Distance level-of-detail (the fix for "little lines merge into
+			// one big black blob far away") ---
+			// refDepth is this fragment's view-space distance in world units. The
+			// two edge types are treated differently on purpose, matching "keep a
+			// clean black outline, drop the dense clustered lines":
+			//   * depthEdge = the SILHOUETTE / occlusion outline (a clean isolated
+			//     boundary). Kept at FULL ink strength at every distance, so the
+			//     robot and patient always read with a clear solid-black outline.
+			//   * normalEdge = the dense INTERIOR surface creases (panel seams,
+			//     rivets) that pile into a black smudge far away. These fade to
+			//     nothing across uInteriorFadeNear..uInteriorFadeFar, leaving the
+			//     toon shading (the "gray") inside the outline. Up close every
+			//     crease is still drawn.
+			float distFade = smoothstep( uInteriorFadeNear, uInteriorFadeFar, refDepth );
+			normalEdge *= ( 1.0 - distFade );
 
 			float edge = clamp( max( normalEdge, depthEdge ), 0.0, 1.0 );
 
@@ -329,6 +357,8 @@ export class BlueprintEdgesPass extends Pass {
 		if ( options.normalThreshold !== undefined ) this._maskMaterial.uniforms.uNormalThreshold.value = options.normalThreshold;
 		if ( options.depthThreshold !== undefined ) this._maskMaterial.uniforms.uDepthThreshold.value = options.depthThreshold;
 		if ( options.thickness !== undefined ) this._maskMaterial.uniforms.uThickness.value = options.thickness;
+		if ( options.interiorFadeNear !== undefined ) this._maskMaterial.uniforms.uInteriorFadeNear.value = options.interiorFadeNear;
+		if ( options.interiorFadeFar !== undefined ) this._maskMaterial.uniforms.uInteriorFadeFar.value = options.interiorFadeFar;
 		this.setCloseRadius( options.closeRadius !== undefined ? options.closeRadius : 1.5 );
 
 		this._fsQuad = new FullScreenQuad( this._material );

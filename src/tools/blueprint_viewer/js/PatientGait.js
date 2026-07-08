@@ -62,6 +62,18 @@ export const DEFAULT_GAIT_PARAMS = {
 	leanBase: 0.02,
 	leanSpeedK: 0.05,
 	leanSlopeK: 0.55,
+	// "Walk-on" tail (see _buildWalkOn): after the recorded gait stops stepping, carry
+	// the patient a few steps further FORWARD along its own facing, then stand still.
+	// Needed because the recorded root keeps GLIDING ~1.5 m across the top landing after
+	// the last real footfall (the climbing robot ends up right on top of the patient's
+	// frozen spot -- these steps move the patient clear of it). The advance is a smooth
+	// straight glide the synthesized feet track, so the hip stays over the feet the
+	// whole time (reach-safe, no recline) and the subsequent freeze is pop-free.
+	walkOnSteps: 3, // number of forward steps to synthesize
+	walkOnAdvance: 0.55, // m the hip travels forward over those steps
+	walkOnStepDur: 0.65, // s per step (swing+stance); total walk-on time = walkOnSteps*this
+	walkOnFootAhead: 0.13, // m each footfall lands ahead of the hip (a natural stride reach)
+	walkOnMinRecordedForward: 0.30, // m -- only walk on if the recorded path itself still travels at least this far forward past the last footfall (skips the follow clip's negligible ~0.1 m tail)
 };
 
 // ===========================================================================
@@ -629,6 +641,12 @@ export function buildSchedule( samples, terrain, params = DEFAULT_GAIT_PARAMS ) 
 
 	}
 
+	// Synthesize the forward "walk-on" tail (a few steps ahead of the last real footfall,
+	// then stand still -- see _buildWalkOn / the walkOn* params). Appends its steps to
+	// `events` BEFORE the phase timeline is derived so the anchor bob + upper-body walk
+	// clip animate through the walk-on and freeze with it.
+	const tail = _buildWalkOn( samples, events, terrain, p );
+
 	// Derive the phase timeline from the finished event lists (see the comment on
 	// phaseAtSampleIdx's declaration above for why this is a separate pass).
 	_fillPhaseTimeline( phaseAtSampleIdx, samples, events );
@@ -636,7 +654,139 @@ export function buildSchedule( samples, terrain, params = DEFAULT_GAIT_PARAMS ) 
 	return {
 		samples, events, phaseAtSampleIdx,
 		params: p,
+		tail,
 	};
+
+}
+
+/**
+ * Build the forward "walk-on" tail and APPEND its steps to `events`. Returns a `tail`
+ * descriptor `{ startT, freezeT, rootStart, rootEnd }` (rootStart/rootEnd are P-frame
+ * {x,y,zRoot,yaw} root poses) that PatientHuman.sync() uses to drive the anchor: track
+ * the recorded root up to `startT`, glide it straight from rootStart->rootEnd across
+ * [startT, freezeT] (the patient stepping forward), then hold it frozen at rootEnd.
+ *
+ * WHY (product ask, 2026-07-08): the recorded root keeps GLIDING forward for ~13 s /
+ * ~1.5 m after the patient's last real footfall (on the climb clip), and the climbing
+ * robot ends up right on top of the patient's frozen spot. Rather than chase the
+ * recorded track (its slow, pausing pace won't pass the gait's own step-commit gates,
+ * and letting the hip glide while the feet stay planted is exactly the recline bug this
+ * tail replaces), synthesize a short, deliberate forward walk: a smooth straight hip
+ * glide of `walkOnAdvance` metres that `walkOnSteps` synthesized footfalls track, each
+ * landing `walkOnFootAhead` ahead of the gliding hip. Because hip and feet advance
+ * together the leg reach stays bounded (no recline/over-reach) and, since rootEnd is
+ * where both the glide and the final footfall end up, the freeze into rootEnd is
+ * pop-free. Skipped (startT === freezeT, a zero-length tail = "freeze in place at the
+ * last footfall") when the recorded path doesn't itself continue forward far enough to
+ * justify it -- e.g. the follow clip's ~0.1 m tail.
+ *
+ * The top landing is flat, so these are plain flat-ground steps (heightAt is constant
+ * there); the code still queries terrain.heightAt per foot so it degrades sanely if a
+ * future clip's walk-on ever started before the terrain leveled off.
+ */
+function _buildWalkOn( samples, events, terrain, p ) {
+
+	const n = samples.length;
+	const lastEv = ( f ) => ( events[ f ].length ? events[ f ][ events[ f ].length - 1 ] : null );
+
+	const startT = Math.max(
+		events.left.length ? events.left[ events.left.length - 1 ].tLand : samples[ 0 ].t,
+		events.right.length ? events.right[ events.right.length - 1 ].tLand : samples[ 0 ].t,
+	);
+
+	const rootStart = _sampleRootAt( samples, startT ); // {t,x,y,zRoot,yaw}
+	const yaw = rootStart.yaw;
+	const fwdX = Math.cos( yaw ), fwdY = Math.sin( yaw );
+	const latX = - Math.sin( yaw ), latY = Math.cos( yaw );
+
+	// How far forward (along the current facing) the recorded root itself still travels
+	// after startT. If it barely moves, there's nothing to walk onto -- return a
+	// zero-length tail so sync() simply freezes in place at the last footfall.
+	const rootEndRec = samples[ n - 1 ];
+	const recordedForward = ( rootEndRec.x - rootStart.x ) * fwdX + ( rootEndRec.y - rootStart.y ) * fwdY;
+
+	const noTail = {
+		startT, freezeT: startT,
+		rootStart,
+		rootEnd: { x: rootStart.x, y: rootStart.y, zRoot: rootStart.zRoot, yaw },
+	};
+	if ( recordedForward < p.walkOnMinRecordedForward ) return noTail;
+
+	// Never walk past where the recorded patient actually went (leave a small margin).
+	const advance = Math.min( p.walkOnAdvance, recordedForward - 0.1 );
+	if ( advance <= 0 ) return noTail;
+
+	const nSteps = Math.max( 1, Math.round( p.walkOnSteps ) );
+	const dur = nSteps * p.walkOnStepDur;
+	const freezeT = startT + dur;
+
+	const hipAt = ( frac ) => ( {
+		x: rootStart.x + fwdX * advance * frac,
+		y: rootStart.y + fwdY * advance * frac,
+	} );
+	const endHip = hipAt( 1 );
+	const rootEnd = {
+		x: endHip.x, y: endHip.y,
+		zRoot: terrain.heightAt( endHip.x ) + PATIENT_HIP_HEIGHT_M,
+		yaw,
+	};
+
+	// Current planted state per foot (start point of each foot's first synthesized swing).
+	const plant = {};
+	for ( const f of [ 'left', 'right' ] ) {
+
+		const e = lastEv( f );
+		if ( e ) {
+
+			plant[ f ] = { x: e.to.x, y: e.to.y, z: e.to.z, yaw: e.toYaw, land: e.tLand };
+
+		} else {
+
+			const nm = _nominalAt( samples[ 0 ], f === 'left' ? + 1 : - 1, p.footLateral, terrain );
+			plant[ f ] = { x: nm.x, y: nm.y, z: nm.z, yaw: samples[ 0 ].yaw, land: samples[ 0 ].t };
+
+		}
+
+	}
+
+	// Step the foot that has been planted longer (landed earlier) first.
+	let foot = plant.left.land <= plant.right.land ? 'left' : 'right';
+
+	for ( let k = 1; k <= nSteps; k ++ ) {
+
+		const sign = foot === 'left' ? + 1 : - 1;
+		const tLand = startT + k * p.walkOnStepDur;
+		const tLift = Math.max( plant[ foot ].land + 1e-3, tLand - p.swingDur );
+
+		const hip = hipAt( k / nSteps );
+		// Footfall lands walkOnFootAhead ahead of the hip, offset to this foot's side.
+		const toX = hip.x + fwdX * p.walkOnFootAhead + latX * ( sign * p.footLateral );
+		const toY = hip.y + fwdY * p.walkOnFootAhead + latY * ( sign * p.footLateral );
+		const toZ = terrain.heightAt( toX );
+
+		const from = { x: plant[ foot ].x, y: plant[ foot ].y, z: plant[ foot ].z };
+		const to = { x: toX, y: toY, z: toZ };
+		const clearance = p.swingClearance;
+		const apexZ = Math.max( from.z, to.z ) + clearance;
+		// Flat landing: a 2-point running-max profile (start height, end height) is exact
+		// for poseAt's ceil-indexed non-penetration clamp.
+		const clampProfile = new Float64Array( [
+			Math.max( from.z, terrain.heightAt( from.x ) ),
+			Math.max( from.z, to.z, terrain.heightAt( to.x ) ),
+		] );
+
+		events[ foot ].push( {
+			foot, tLift, tLand, from, to,
+			fromYaw: plant[ foot ].yaw, toYaw: yaw,
+			apexZ, clearance, clampProfile,
+		} );
+
+		plant[ foot ] = { x: toX, y: toY, z: toZ, yaw, land: tLand };
+		foot = foot === 'left' ? 'right' : 'left';
+
+	}
+
+	return { startT, freezeT, rootStart, rootEnd };
 
 }
 

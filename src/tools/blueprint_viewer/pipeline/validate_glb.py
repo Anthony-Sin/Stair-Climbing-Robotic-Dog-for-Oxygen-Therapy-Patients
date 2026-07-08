@@ -256,7 +256,7 @@ def validate(glb_path: Path) -> int:
         "FR_hip", "FR_thigh", "FR_calf", "FR_foot",
         "RL_hip", "RL_thigh", "RL_calf", "RL_foot",
         "RR_hip", "RR_thigh", "RR_calf", "RR_foot",
-        "oxygen_tank", "cradle_rails", "stairs", "ground", "patient_root",
+        "oxygen_tank", "cradle_rails", "stairs", "handrails", "ground", "patient_root",
     }
     missing = required_exact - node_names
     r.check(not missing, f"missing required node names: {sorted(missing)}")
