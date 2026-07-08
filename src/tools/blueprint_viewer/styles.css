@@ -25,18 +25,23 @@
 	box-sizing: border-box;
 }
 
+html {
+	scroll-behavior: smooth;
+}
+
 html, body {
 	margin: 0;
 	padding: 0;
 	width: 100%;
-	height: 100%;
-	overflow: hidden;
 	background: var(--backdrop);
 }
 
 body {
 	font-family: var(--font-display);
 	color: var(--ink);
+	/* The page now scrolls vertically through two acts (hero platform ->
+	   interactive viewer); only horizontal overflow is clipped. */
+	overflow-x: hidden;
 }
 
 button {
@@ -49,6 +54,7 @@ button {
 	inset: 0;
 	background: var(--backdrop);
 	transition: background 200ms ease;
+	z-index: 0; /* sits behind both scroll acts (which are z-index: 1) */
 }
 
 #sheet {
@@ -366,6 +372,586 @@ button {
 
 	#footer-line {
 		display: none;
+	}
+
+}
+
+/* =====================================================================
+   ACT 1 — hero "platform" section
+   ---------------------------------------------------------------------
+   Two columns inside a framed paper "sheet": LEFT = an animated 3D stage
+   (robot spins / walks in place / climbs, per chapter — js/hero.js) with a
+   couple of leader-line callouts to parts; RIGHT = a chaptered explainer
+   panel (nav, paragraph, policy SVG diagram, mp4 clip). Sits above the
+   interactive viewer (ACT 2); scroll reveals it.
+   ===================================================================== */
+
+#hero-section {
+	position: relative;
+	z-index: 1;
+	height: 100vh;
+	height: 100dvh;
+	display: flex;
+	padding: var(--sheet-margin);
+}
+
+#hero-inner {
+	position: relative;
+	flex: 1;
+	min-height: 0;
+	display: grid;
+	grid-template-columns: 1.5fr 1fr;
+	border-radius: var(--sheet-radius);
+	background: var(--sheet);
+	border: 1px solid var(--sheet-border);
+	overflow: hidden;
+	box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+	transition: background 200ms ease, border-color 200ms ease;
+}
+
+/* --- LEFT: the animated 3D stage --- */
+
+#hero-stage {
+	position: relative;
+	overflow: hidden;
+	background: var(--sheet);
+}
+
+#hero-stage canvas {
+	position: absolute;
+	inset: 0;
+	display: block;
+	width: 100%;
+	height: 100%;
+}
+
+/* Leader lines + target/anchor nodes */
+
+#hero-leaders {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	pointer-events: none;
+	z-index: 4;
+	overflow: visible;
+}
+
+.hero-leader {
+	fill: none;
+	stroke: var(--ink);
+	stroke-width: 1.3;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+	opacity: 0.82;
+	stroke-dasharray: 1;
+	stroke-dashoffset: 1;
+	transition: stroke-dashoffset 520ms ease;
+}
+
+.hero-leader.drawn {
+	stroke-dashoffset: 0;
+}
+
+.hero-leader-dot {
+	fill: var(--ink);
+	stroke: var(--sheet);
+	stroke-width: 1.2;
+}
+
+.hero-leader-anchor {
+	fill: var(--ink);
+}
+
+/* Callout cards (LEFT gutter only — the panel takes the right) */
+
+#hero-callouts {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	z-index: 5;
+}
+
+.hero-callout {
+	position: absolute;
+	transform: translateY(-50%);
+	max-width: clamp(120px, 13vw, 180px);
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	padding: 8px 12px;
+	border-radius: 9px;
+	background: color-mix(in srgb, var(--sheet) 82%, transparent);
+	border: 1px solid var(--sheet-border);
+	backdrop-filter: blur(2px);
+	box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+}
+
+.hero-callout.side-left {
+	left: clamp(14px, 2vw, 30px);
+	text-align: left;
+}
+
+.hero-callout.side-right {
+	right: clamp(14px, 2vw, 30px);
+	text-align: right;
+}
+
+.hero-callout-label {
+	font-family: var(--font-display);
+	font-size: 14px;
+	font-weight: 700;
+	color: var(--headline);
+	line-height: 1.2;
+}
+
+.hero-callout-sub {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--ink);
+	opacity: 0.62;
+	line-height: 1.25;
+}
+
+/* Stage corner chrome */
+
+#hero-stage-tag {
+	position: absolute;
+	left: clamp(16px, 2vw, 26px);
+	bottom: clamp(14px, 2vw, 22px);
+	z-index: 6;
+	font-family: var(--font-mono);
+	font-size: 12px;
+	color: var(--ink);
+	opacity: 0.6;
+	pointer-events: none;
+}
+
+#hero-zoom {
+	position: absolute;
+	right: clamp(16px, 2vw, 26px);
+	bottom: clamp(14px, 2vw, 22px);
+	z-index: 6;
+	display: flex;
+	gap: 6px;
+}
+
+.hero-zoombtn {
+	width: 34px;
+	height: 34px;
+	display: grid;
+	place-items: center;
+	border-radius: 8px;
+	border: 1px solid var(--ink);
+	background: color-mix(in srgb, var(--sheet) 78%, transparent);
+	cursor: pointer;
+	pointer-events: auto;
+	transition: background 130ms ease;
+}
+
+.hero-zoombtn svg {
+	width: 18px;
+	height: 18px;
+	fill: none;
+	stroke: var(--ink);
+	stroke-width: 2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+	transition: stroke 130ms ease;
+}
+
+.hero-zoombtn:hover {
+	background: var(--ink);
+}
+
+.hero-zoombtn:hover svg {
+	stroke: var(--sheet);
+}
+
+/* --- RIGHT: the explainer panel --- */
+
+#hero-panel {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	gap: clamp(12px, 1.5vw, 18px);
+	padding: clamp(22px, 2.6vw, 42px);
+	border-left: 1px solid var(--sheet-border);
+	overflow: auto;
+}
+
+#hero-nav {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+}
+
+.hero-navarrow {
+	width: 36px;
+	height: 36px;
+	flex: none;
+	display: grid;
+	place-items: center;
+	border-radius: 50%;
+	border: 1px solid var(--ink);
+	background: transparent;
+	cursor: pointer;
+	pointer-events: auto;
+	transition: background 130ms ease, transform 130ms ease;
+}
+
+.hero-navarrow svg {
+	width: 17px;
+	height: 17px;
+	fill: none;
+	stroke: var(--ink);
+	stroke-width: 2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+	transition: stroke 130ms ease;
+}
+
+.hero-navarrow:hover {
+	background: var(--ink);
+}
+
+.hero-navarrow:hover svg {
+	stroke: var(--sheet);
+}
+
+.hero-navarrow:active {
+	transform: scale(0.94);
+}
+
+#hero-nav-label {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	transition: opacity 180ms ease;
+}
+
+#hero-chapter-index {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	letter-spacing: 0.14em;
+	color: var(--ink);
+	opacity: 0.55;
+}
+
+#hero-chapter-title {
+	font-family: var(--font-display);
+	font-size: clamp(20px, 2.1vw, 28px);
+	font-weight: 800;
+	letter-spacing: -0.015em;
+	line-height: 1.05;
+	color: var(--headline);
+}
+
+#hero-dots {
+	display: flex;
+	gap: 8px;
+}
+
+.hero-dot {
+	width: 8px;
+	height: 8px;
+	padding: 0;
+	border-radius: 50%;
+	border: 1px solid var(--ink);
+	background: transparent;
+	cursor: pointer;
+	pointer-events: auto;
+	opacity: 0.5;
+	transition: opacity 130ms ease, background 130ms ease;
+}
+
+.hero-dot:hover {
+	opacity: 0.85;
+}
+
+.hero-dot.active {
+	background: var(--ink);
+	opacity: 1;
+}
+
+#hero-body {
+	margin: 0;
+	font-size: 15px;
+	line-height: 1.62;
+	color: var(--ink);
+	opacity: 0.9;
+	transition: opacity 180ms ease;
+}
+
+/* Policy SVG diagram (theme-aware via currentColor) */
+
+#hero-diagram {
+	color: var(--ink);
+	border: 1px solid var(--sheet-border);
+	border-radius: 12px;
+	padding: 10px 14px;
+	background: color-mix(in srgb, var(--sheet) 60%, transparent);
+	transition: opacity 180ms ease;
+}
+
+#hero-diagram svg {
+	width: 100%;
+	height: auto;
+	display: block;
+}
+
+.dg-box, .dg-ln, .dg-ah {
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 1.4;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+.dg-x {
+	stroke: currentColor;
+	stroke-width: 1.6;
+	opacity: 0.75;
+}
+
+.dg-t {
+	fill: currentColor;
+	font-family: var(--font-mono);
+	font-size: 11px;
+}
+
+.dg-c {
+	fill: currentColor;
+	font-family: var(--font-mono);
+	font-size: 10px;
+	opacity: 0.6;
+}
+
+/* mp4 clip card */
+
+.hero-clip {
+	margin: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	transition: opacity 180ms ease;
+}
+
+.hero-clip-frame {
+	position: relative;
+	aspect-ratio: 16 / 9;
+	border-radius: 12px;
+	border: 1.5px solid var(--ink);
+	background:
+		radial-gradient(135% 110% at 50% 0%, rgba(255, 255, 255, 0.12), rgba(0, 0, 0, 0.06) 82%),
+		var(--sheet);
+	box-shadow: 0 10px 24px rgba(0, 0, 0, 0.14);
+	display: grid;
+	place-items: center;
+	overflow: hidden;
+}
+
+.hero-clip-play {
+	width: 46px;
+	height: 46px;
+	border-radius: 50%;
+	border: 1.5px solid var(--ink);
+	background: var(--sheet);
+	display: grid;
+	place-items: center;
+	cursor: pointer;
+	pointer-events: auto;
+	transition: transform 140ms ease, background 140ms ease;
+}
+
+.hero-clip-play svg {
+	width: 19px;
+	height: 19px;
+	margin-left: 2px;
+	fill: var(--ink);
+	transition: fill 140ms ease;
+}
+
+.hero-clip-play:hover {
+	transform: scale(1.09);
+	background: var(--ink);
+}
+
+.hero-clip-play:hover svg {
+	fill: var(--sheet);
+}
+
+.hero-clip-badge {
+	position: absolute;
+	top: 9px;
+	left: 9px;
+	font-family: var(--font-mono);
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.09em;
+	padding: 3px 8px;
+	border-radius: 6px;
+	background: var(--ink);
+	color: var(--sheet);
+	opacity: 0.85;
+}
+
+.hero-clip-dur {
+	position: absolute;
+	bottom: 9px;
+	right: 9px;
+	font-family: var(--font-mono);
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	color: var(--ink);
+	opacity: 0.5;
+}
+
+.hero-clip figcaption {
+	font-family: var(--font-mono);
+	font-size: 12px;
+	line-height: 1.4;
+	color: var(--ink);
+	opacity: 0.7;
+}
+
+/* Crossfade on chapter switch (both the stage overlay and the panel content) */
+
+#hero-inner.switching #hero-callouts,
+#hero-inner.switching #hero-leaders,
+#hero-inner.switching #hero-nav-label,
+#hero-inner.switching #hero-body,
+#hero-inner.switching #hero-diagram,
+#hero-inner.switching .hero-clip {
+	opacity: 0;
+}
+
+#hero-callouts,
+#hero-leaders {
+	transition: opacity 180ms ease;
+}
+
+/* --- Scroll cue --- */
+
+#scroll-cue {
+	position: absolute;
+	left: 50%;
+	bottom: calc(var(--sheet-margin) + 12px);
+	transform: translateX(-50%);
+	z-index: 6;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 3px;
+	font-family: var(--font-mono);
+	font-size: 11px;
+	letter-spacing: 0.12em;
+	text-transform: lowercase;
+	text-decoration: none;
+	color: var(--ink);
+	opacity: 0.5;
+	pointer-events: auto;
+}
+
+#scroll-cue:hover {
+	opacity: 0.85;
+}
+
+#scroll-cue svg {
+	width: 20px;
+	height: 20px;
+	fill: none;
+	stroke: var(--ink);
+	stroke-width: 2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+	animation: cueBob 1.8s ease-in-out infinite;
+}
+
+@keyframes cueBob {
+	0%, 100% { transform: translateY(0); }
+	50% { transform: translateY(5px); }
+}
+
+/* =====================================================================
+   ACT 2 wrapper — the existing interactive viewer, now a scroll section.
+   ===================================================================== */
+
+#viewer-section {
+	position: relative;
+	z-index: 1;
+	height: 100vh;
+	height: 100dvh;
+}
+
+/* =====================================================================
+   Scroll-driven reveal (progressive enhancement).
+   ===================================================================== */
+
+@media (prefers-reduced-motion: no-preference) {
+	@supports (animation-timeline: view()) {
+
+		#hero-inner {
+			animation: heroExit linear both;
+			animation-timeline: view();
+			animation-range: exit 0% exit 92%;
+		}
+
+		@keyframes heroExit {
+			to {
+				opacity: 0.3;
+				transform: translateY(-24px) scale(0.99);
+			}
+		}
+
+		#sheet {
+			animation: sheetReveal linear both;
+			animation-timeline: view();
+			animation-range: entry 4% entry 62%;
+		}
+
+		@keyframes sheetReveal {
+			from {
+				opacity: 0;
+				transform: translateY(42px) scale(0.985);
+			}
+			to {
+				opacity: 1;
+				transform: none;
+			}
+		}
+
+	}
+}
+
+/* =====================================================================
+   Hero responsive: stack the panel under the stage; drop the leader
+   lines / gutter callouts (no side gutters on narrow screens).
+   ===================================================================== */
+
+@media (max-width: 820px) {
+
+	#hero-section {
+		height: auto;
+		min-height: 100dvh;
+	}
+
+	#hero-inner {
+		grid-template-columns: 1fr;
+		grid-template-rows: minmax(300px, 52vh) auto;
+	}
+
+	#hero-leaders,
+	#hero-callouts {
+		display: none;
+	}
+
+	#hero-panel {
+		justify-content: flex-start;
+		border-left: none;
+		border-top: 1px solid var(--sheet-border);
 	}
 
 }

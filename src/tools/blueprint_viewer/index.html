@@ -21,7 +21,82 @@
 	</script>
 </head>
 <body>
-	<div id="backdrop">
+	<!-- Fixed dark frame behind every scroll act (the paper "sheets" sit on it). -->
+	<div id="backdrop"></div>
+
+	<!-- =====================================================================
+	     ACT 1 — the "platform". Left: an animated 3D stage (the robot spins /
+	     walks in place / climbs the stairs depending on the chapter, driven by
+	     js/hero.js). Right: a chaptered explainer panel (text + policy diagram
+	     + clip). A couple of leader lines point from the robot to key parts.
+	     Scroll down to reveal ACT 2 (the full interactive rollout).
+	     ================================================================== -->
+	<section id="hero-section" aria-label="Overview">
+		<div id="hero-inner">
+			<div id="hero-stage">
+				<!-- hero three.js canvas is inserted here by js/hero.js -->
+				<svg id="hero-leaders" aria-hidden="true"></svg>
+				<div id="hero-callouts"></div>
+
+				<div id="hero-stage-tag">unitree go2 · o2 payload</div>
+
+				<div id="hero-zoom" role="group" aria-label="Zoom">
+					<button type="button" class="hero-zoombtn" id="hero-zoom-out" aria-label="Zoom out">
+						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg>
+					</button>
+					<button type="button" class="hero-zoombtn" id="hero-zoom-reset" aria-label="Reset view">
+						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
+					</button>
+					<button type="button" class="hero-zoombtn" id="hero-zoom-in" aria-label="Zoom in">
+						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+					</button>
+				</div>
+			</div>
+
+			<aside id="hero-panel">
+				<div id="hero-nav">
+					<button type="button" id="hero-prev" class="hero-navarrow" aria-label="Previous chapter">
+						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7" /></svg>
+					</button>
+					<div id="hero-nav-label">
+						<span id="hero-chapter-index">01 / 03</span>
+						<span id="hero-chapter-title">System architecture</span>
+					</div>
+					<button type="button" id="hero-next" class="hero-navarrow" aria-label="Next chapter">
+						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7" /></svg>
+					</button>
+				</div>
+				<div id="hero-dots" role="tablist" aria-label="Chapters"></div>
+
+				<p id="hero-body"></p>
+
+				<div id="hero-diagram" aria-hidden="true"></div>
+
+				<figure class="hero-clip">
+					<div class="hero-clip-frame" role="img" aria-label="Video clip placeholder">
+						<button type="button" class="hero-clip-play" aria-label="Play clip">
+							<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+						</button>
+						<span class="hero-clip-badge" id="hero-clip-badge">clip 01</span>
+						<span class="hero-clip-dur">mp4</span>
+					</div>
+					<figcaption id="hero-clip-cap">Lorem ipsum clip caption.</figcaption>
+				</figure>
+			</aside>
+		</div>
+
+		<a href="#viewer-section" id="scroll-cue" aria-label="Scroll to the interactive viewer">
+			<span>scroll</span>
+			<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+		</a>
+	</section>
+
+	<!-- =====================================================================
+	     ACT 2 — the existing interactive viewer. Everything inside #sheet is
+	     unchanged (driven by js/main.js); it is only wrapped in a scroll
+	     section so it becomes the second act of the page.
+	     ================================================================== -->
+	<section id="viewer-section">
 		<main id="sheet">
 			<div id="canvas-host">
 				<!-- three.js canvas is inserted here by js/main.js -->
@@ -38,6 +113,7 @@
 					</header>
 
 					<div id="top-right-chips">
+						<button type="button" class="chip" id="cinematic-toggle" aria-pressed="false">cinematic · off</button>
 						<button type="button" class="chip" id="tracking-toggle" aria-pressed="true">tracking · on</button>
 						<button type="button" class="chip" id="plumb-toggle" aria-pressed="false">plumb line · off</button>
 						<button type="button" class="chip" id="theme-toggle" aria-pressed="false">light</button>
@@ -55,8 +131,9 @@
 				</div>
 			</div>
 		</main>
-	</div>
+	</section>
 
+	<script type="module" src="./js/hero.js"></script>
 	<script type="module" src="./js/main.js"></script>
 </body>
 </html>
