@@ -21,7 +21,7 @@ export const PALETTES = {
 		sceneBackground: 0xd6d2ca,
 		materialColor: 0xdad6ce,
 		oxygenTankColor: 0xe4e0d8, // "a touch lighter"
-		patientColor: 0xb0552f, // warm terracotta accent -- the patient is the one
+		patientColor: 0x000000, // toon black -- the patient is the one
 		// thing in the scene allowed actual color (per design direction), so it
 		// reads as a person against the otherwise monochrome blueprint robot/set.
 		inkColorGl: 0x2f2c28,
@@ -38,7 +38,7 @@ export const PALETTES = {
 		sceneBackground: 0x2a2925,
 		materialColor: 0x3a3934,
 		oxygenTankColor: 0x46453f,
-		patientColor: 0xc96a3f, // brighter terracotta so the accent still reads
+		patientColor: 0x000000, // toon black so the accent still reads
 		// against the darker theme's paper tone (same hue as light, lifted value).
 		inkColorGl: 0xd8d4cc,
 	},
