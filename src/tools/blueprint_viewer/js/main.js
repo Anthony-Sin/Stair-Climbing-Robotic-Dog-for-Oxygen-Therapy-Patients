@@ -351,6 +351,24 @@ let lastPlaybackTimestamp = 0;
 const patientHuman = new PatientHuman();
 const patientHumanReady = patientHuman.load();
 
+// robot.meta.json: this pipeline's own stair_spec/landing_far_x_m (see the file
+// itself — start_x_m/step_height_m/step_depth_m/step_count/landing_depth_m), needed
+// by patientHuman.buildGait() to build the procedural gait's terrain model (see
+// PatientGait.buildTerrain). Fetched here (racing the GLB loads, same pattern as
+// patientHumanReady above) rather than inside loadRealModel, so a slow/failed fetch
+// doesn't serialize behind the (much larger) robot.glb download. On failure: loudly
+// console.error and degrade exactly like an Xbot load failure (no patient gait built
+// — patientHuman.buildGait() is simply never called below, so the human stays
+// un-posed rather than silently falling back to some invented default staircase).
+const robotMetaReady = fetch( './models/robot.meta.json' )
+	.then( ( r ) => r.json() )
+	.catch( ( error ) => {
+
+		console.error( '[blueprint-viewer] failed to load ./models/robot.meta.json — patient gait will not be built:', error );
+		return null;
+
+	} );
+
 // ===========================================================================
 // Plumb line: a literal vertical (world-up) reference planted at the patient's
 // own ground point, extending past head height -- added per user request after
@@ -859,17 +877,37 @@ function loadRealModel() {
 				// the GLTF load same as the patient human below.
 				logoFontReady.then( ( font ) => attachLogoLabel( baseNode, font ) );
 
-				// Wait for the (concurrently-loading) patient human model too, so the
-				// first rendered frame never shows the robot without its patient —
-				// resolves either way (PatientHuman.load() catches its own errors and
-				// just leaves .ready false, degrading to "no patient shown").
-				patientHumanReady.then( () => {
+				// Wait for the (concurrently-loading) patient human model AND
+				// robot.meta.json too, so the first rendered frame never shows the
+				// robot without its patient — resolves either way (PatientHuman.
+				// load() catches its own errors and just leaves .ready false,
+				// degrading to "no patient shown"; robotMetaReady catches its own
+				// fetch error and resolves null, degrading to "no patient gait
+				// built" — see robotMetaReady's own comment).
+				Promise.all( [ patientHumanReady, robotMetaReady ] ).then( ( [ , meta ] ) => {
 
 					const isaacWorldNode = root.getObjectByName( 'isaac_world' );
 					const patientRootNode = root.getObjectByName( 'patient_root' );
 					if ( isaacWorldNode && patientRootNode ) {
 
 						patientHuman.attachTo( isaacWorldNode, patientRootNode, patientMaterial );
+
+						if ( meta ) {
+
+							// phaseClips (module-level Map, populated by
+							// setupActionsFromClips inside the finishModelSetup call
+							// above, which already ran synchronously before this
+							// async continuation) — buildGait needs the RAW
+							// THREE.AnimationClip objects (to read patient_root's own
+							// position/quaternion KeyframeTracks), not the
+							// AnimationAction wrappers phaseActions holds.
+							patientHuman.buildGait(
+								{ follow: phaseClips.get( 'follow' ), climb: phaseClips.get( 'climb' ) },
+								meta.stair_spec, meta.landing_far_x_m,
+							);
+
+						}
+
 						patientHuman.sync( currentPhase, phaseActions.get( currentPhase )?.time ?? 0 );
 
 					}
@@ -1074,11 +1112,243 @@ window.__viewer = {
 
 	},
 	/**
+	 * Patient-gait acceptance-bar diagnostic: sweeps BOTH phase clips at `dt`,
+	 * driving the REAL path (action.time + mixer.update(0) + patientHuman.sync(...),
+	 * exactly like scrubToPercent — no shortcuts that could diverge from what a user
+	 * actually sees), reads REAL bone world positions, computes the metrics the
+	 * orchestrator's acceptance bars check, and restores the viewer to whatever
+	 * phase/time/slider it was at before this call ran (this is a read-only
+	 * diagnostic, not a mode switch — a caller scrubbing afterward should see no
+	 * trace this ran).
+	 */
+	patientDiag( { dt = 0.05 } = {} ) {
+
+		if ( ! patientHuman._attached || ! patientHuman._schedules || ! modelRoot ) {
+
+			return { perClip: {}, violations: [], ikSelfCheck: patientHuman.ikSelfCheckFailed, error: 'patient not ready' };
+
+		}
+
+		const isaacWorldNode = modelRoot.getObjectByName( 'isaac_world' );
+		if ( ! isaacWorldNode ) return { perClip: {}, violations: [], ikSelfCheck: patientHuman.ikSelfCheckFailed, error: 'isaac_world node not found' };
+
+		// Save prior state (phase, per-phase action times, scrubber value) to restore
+		// after the sweep.
+		const priorPhase = currentPhase;
+		const priorTimes = new Map();
+		for ( const [ name, action ] of phaseActions ) priorTimes.set( name, action.time );
+		const priorScrubberValue = scrubber.value;
+
+		const bones = patientHuman._bones;
+		const violations = [];
+		const perClip = {};
+
+		const _tmpWorld = new THREE.Vector3();
+		const _tmpLocal = new THREE.Vector3();
+
+		/** getWorldPosition() then convert into isaac_world's own LOCAL frame (AGENTS.md incident #5's diagnostic pitfall: raw scene-space coordinates under isaac_world have already been rotated -90deg about X (Z-up -> Y-up), so comparing scene-space .z directly against this pipeline's native Z-up convention is apples-to-oranges). Returns a plain {x,y,z} in P-frame (isaac_world-local) meters. */
+		function worldToPframe( bone ) {
+
+			bone.getWorldPosition( _tmpWorld );
+			isaacWorldNode.worldToLocal( _tmpLocal.copy( _tmpWorld ) );
+			return { x: _tmpLocal.x, y: _tmpLocal.y, z: _tmpLocal.z };
+
+		}
+
+		function pushViolation( clip, t, metric, value ) {
+
+			violations.push( { clip, t, metric, value } );
+
+		}
+
+		for ( const clipName of [ 'follow', 'climb' ] ) {
+
+			const clip = phaseClips.get( clipName );
+			const action = phaseActions.get( clipName );
+			const schedule = patientHuman._schedules[ clipName ];
+			if ( ! clip || ! action || ! schedule ) continue;
+
+			// setPhase (not just setting action.time) is REQUIRED here: every
+			// phase's AnimationAction is always .play()'d/paused (see
+			// setupActionsFromClips's own comment), with weight=1 for the ACTIVE
+			// phase and weight=0 for the inactive one — three.js's own
+			// AnimationMixer._updateWeight/AnimationAction._update never even
+			// EVALUATES an action's interpolants when its weight is 0 (confirmed by
+			// reading vendor/three.module.js's own AnimationAction._update: `if
+			// (weight > 0) { ...evaluate... }`), so merely setting climb.time while
+			// climb's weight is still 0 (follow active) would silently have ZERO
+			// effect on patient_root's actual transform. setPhase makes this
+			// clipName's action the weight=1 one before the sweep below sets its time.
+			setPhase( clipName, { resetSlider: false } );
+
+			const duration = clip.duration;
+			const terrain = patientHuman._terrain;
+
+			let maxPenetration = 0; // terrain.heightAt(toe.x) - toe.z, clamped to >=0 (positive = penetrating)
+			let minSoleClearance = Infinity; // toe.z - terrain.heightAt(toe.x), can go negative (penetration)
+			let plantedDriftMax = 0;
+			let idleFootMotionMax = 0;
+			let fkErrorMax = 0;
+			let maxToeStepM = 0;
+			let minHipAboveTerrain = Infinity, maxHipAboveTerrain = - Infinity;
+			const stanceKneeBendDegs = [];
+			let maxKneeBendDeg = 0;
+
+			let prevLeftToe = null, prevRightToe = null;
+			let plantedAnchorLeft = null, plantedAnchorRight = null; // {x,y} the CURRENT stance run started at, for plantedDriftMax
+			let wasLeftPlanted = null, wasRightPlanted = null;
+
+			for ( let t = 0; t <= duration + 1e-9; t += dt ) {
+
+				const tt = Math.min( t, duration );
+
+				action.time = tt;
+				mixer.update( 0 );
+				patientHuman.sync( clipName, tt );
+
+				const leftToe = worldToPframe( bones.leftToeBase );
+				const rightToe = worldToPframe( bones.rightToeBase );
+				const leftFootP = worldToPframe( bones.leftFoot );
+				const rightFootP = worldToPframe( bones.rightFoot );
+
+				for ( const [ toe, footName ] of [ [ leftToe, 'leftToe' ], [ rightToe, 'rightToe' ] ] ) {
+
+					const th = terrain.heightAt( toe.x );
+					const penetration = th - toe.z; // positive = below terrain (bad)
+					const clearance = toe.z - th;
+					maxPenetration = Math.max( maxPenetration, penetration );
+					minSoleClearance = Math.min( minSoleClearance, clearance );
+					if ( penetration > 0.005 && violations.length < 40 ) pushViolation( clipName, tt, `penetration.${footName}`, penetration );
+
+				}
+
+				// plantedDriftMax: horizontal drift of a foot bone WHILE it stays
+				// planted (per PatientGait's own pose.leftFoot.planted flag from the
+				// most recent sync() — captured in patientHuman._lastSync).
+				const ls = patientHuman._lastSync;
+				if ( ls ) {
+
+					if ( ls.leftPlanted ) {
+
+						if ( wasLeftPlanted && plantedAnchorLeft ) {
+
+							const d = Math.hypot( leftFootP.x - plantedAnchorLeft.x, leftFootP.y - plantedAnchorLeft.y );
+							plantedDriftMax = Math.max( plantedDriftMax, d );
+
+						} else {
+
+							plantedAnchorLeft = { x: leftFootP.x, y: leftFootP.y };
+
+						}
+
+					} else plantedAnchorLeft = null;
+					wasLeftPlanted = ls.leftPlanted;
+
+					if ( ls.rightPlanted ) {
+
+						if ( wasRightPlanted && plantedAnchorRight ) {
+
+							const d = Math.hypot( rightFootP.x - plantedAnchorRight.x, rightFootP.y - plantedAnchorRight.y );
+							plantedDriftMax = Math.max( plantedDriftMax, d );
+
+						} else {
+
+							plantedAnchorRight = { x: rightFootP.x, y: rightFootP.y };
+
+						}
+
+					} else plantedAnchorRight = null;
+					wasRightPlanted = ls.rightPlanted;
+
+					if ( plantedDriftMax > 0.01 && violations.length < 40 ) pushViolation( clipName, tt, 'plantedDrift', plantedDriftMax );
+
+					// fkErrorMax: achieved Foot bone (ankle) P-frame position vs the
+					// IK target sync() just solved for.
+					const leftAnkleErr = Math.hypot(
+						leftFootP.x - ls.leftAnkleTargetWorld.x, leftFootP.y - ls.leftAnkleTargetWorld.y, leftFootP.z - ls.leftAnkleTargetWorld.z,
+					);
+					const rightAnkleErr = Math.hypot(
+						rightFootP.x - ls.rightAnkleTargetWorld.x, rightFootP.y - ls.rightAnkleTargetWorld.y, rightFootP.z - ls.rightAnkleTargetWorld.z,
+					);
+					fkErrorMax = Math.max( fkErrorMax, leftAnkleErr, rightAnkleErr );
+					if ( Math.max( leftAnkleErr, rightAnkleErr ) > 0.012 && violations.length < 40 ) pushViolation( clipName, tt, 'fkError', Math.max( leftAnkleErr, rightAnkleErr ) );
+
+					// kneeBendDeg
+					stanceKneeBendDegs.push( ls.leftPlanted ? ls.leftKneeBendDeg : null );
+					stanceKneeBendDegs.push( ls.rightPlanted ? ls.rightKneeBendDeg : null );
+					maxKneeBendDeg = Math.max( maxKneeBendDeg, ls.leftKneeBendDeg, ls.rightKneeBendDeg );
+
+					// idleFootMotionMax: max per-sample foot displacement while root
+					// speed < 0.02 m/s.
+					if ( prevLeftToe && ls.speed < 0.02 ) {
+
+						const mL = Math.hypot( leftToe.x - prevLeftToe.x, leftToe.y - prevLeftToe.y, leftToe.z - prevLeftToe.z );
+						const mR = Math.hypot( rightToe.x - prevRightToe.x, rightToe.y - prevRightToe.y, rightToe.z - prevRightToe.z );
+						const m = Math.max( mL, mR );
+						idleFootMotionMax = Math.max( idleFootMotionMax, m );
+						if ( m > 0.002 && violations.length < 40 ) pushViolation( clipName, tt, 'idleFootMotion', m );
+
+					}
+
+				}
+
+				if ( prevLeftToe ) {
+
+					const stepL = Math.hypot( leftToe.x - prevLeftToe.x, leftToe.y - prevLeftToe.y, leftToe.z - prevLeftToe.z );
+					const stepR = Math.hypot( rightToe.x - prevRightToe.x, rightToe.y - prevRightToe.y, rightToe.z - prevRightToe.z );
+					maxToeStepM = Math.max( maxToeStepM, stepL, stepR );
+
+				}
+				prevLeftToe = leftToe; prevRightToe = rightToe;
+
+				// hipHeightAboveTerrain: patient_root's own P-frame Z (world hip
+				// height) minus terrain height under the root's own X.
+				const rootLocal = worldToPframe( patientHuman._patientRootNode );
+				const hipAbove = rootLocal.z - terrain.heightAt( rootLocal.x );
+				minHipAboveTerrain = Math.min( minHipAboveTerrain, hipAbove );
+				maxHipAboveTerrain = Math.max( maxHipAboveTerrain, hipAbove );
+
+				if ( tt >= duration ) break;
+
+			}
+
+			const stanceVals = stanceKneeBendDegs.filter( ( v ) => v !== null ).sort( ( a, b ) => a - b );
+			const stanceMedian = stanceVals.length ? stanceVals[ Math.floor( stanceVals.length / 2 ) ] : 0;
+
+			perClip[ clipName ] = {
+				minSoleClearance, maxPenetration: Math.max( 0, maxPenetration ),
+				plantedDriftMax, idleFootMotionMax, fkErrorMax,
+				kneeBendDeg: { stanceMedian, max: maxKneeBendDeg },
+				maxToeStepM, hipHeightAboveTerrain: { min: minHipAboveTerrain, max: maxHipAboveTerrain },
+			};
+
+		}
+
+		// Restore prior state.
+		for ( const [ name, t ] of priorTimes ) {
+
+			const action = phaseActions.get( name );
+			if ( action ) action.time = t;
+
+		}
+		setPhase( priorPhase, { resetSlider: false } );
+		mixer.update( 0 );
+		patientHuman.sync( priorPhase, phaseActions.get( priorPhase )?.time ?? 0 );
+		scrubber.value = priorScrubberValue;
+		updateTimeReadout();
+
+		return { perClip, violations: violations.slice( 0, 40 ), ikSelfCheck: patientHuman.ikSelfCheckFailed };
+
+	},
+	/**
 	 * Live references for headless verification/calibration tooling only
 	 * (e.g. tuning light intensities or edge-pass uniforms in-page without a
 	 * reload cycle). Not a stable public API.
 	 */
-	_internals: { scene, camera, renderer, composer, hemiLight, dirLight, edgesPass, patientHuman, controls },
+	_internals: {
+		scene, camera, renderer, composer, hemiLight, dirLight, edgesPass, patientHuman, controls,
+		get patientGait() { return { terrain: patientHuman._terrain, schedules: patientHuman._schedules, params: patientHuman._gaitParams }; },
+	},
 };
 
 // ===========================================================================
