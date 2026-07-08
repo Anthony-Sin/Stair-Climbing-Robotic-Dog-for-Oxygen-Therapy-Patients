@@ -102,7 +102,8 @@ function applyTheme( name ) {
 	if ( bodyMaterial ) bodyMaterial.color.set( palette.materialColor );
 	if ( oxygenTankMaterial ) oxygenTankMaterial.color.set( palette.oxygenTankColor );
 	if ( patientMaterial ) patientMaterial.color.set( palette.patientColor );
-	if ( legMaterial ) legMaterial.color.set( palette.legColor );
+	if ( robotMaterial ) robotMaterial.color.set( palette.robotColor );
+	if ( logoMaterial ) logoMaterial.color.set( palette.logoColor );
 
 	if ( edgesPass ) edgesPass.setInkColor( palette.inkColorGl );
 	if ( partLabels ) partLabels.setInkColor( palette.ink );
@@ -194,7 +195,8 @@ function makeBlueprintMaterial( colorHex ) {
 let bodyMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].materialColor );
 let oxygenTankMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].oxygenTankColor );
 let patientMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].patientColor );
-let legMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].legColor );
+let robotMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].robotColor );
+let logoMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].logoColor );
 
 // "patient_root" is no longer a tint target here: it's a bare transform anchor with
 // no mesh of its own (see scene_build.build_patient_node) -- the patient's visible
@@ -202,10 +204,11 @@ let legMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].legColor )
 // PatientHuman.attachTo().
 const TINTED_NODE_NAMES = {
 	oxygen_tank: () => oxygenTankMaterial,
-	FL_hip: () => legMaterial,
-	FR_hip: () => legMaterial,
-	RL_hip: () => legMaterial,
-	RR_hip: () => legMaterial,
+	robot_base: () => robotMaterial,
+	FL_hip: () => robotMaterial,
+	FR_hip: () => robotMaterial,
+	RL_hip: () => robotMaterial,
+	RR_hip: () => robotMaterial,
 };
 
 /**
@@ -480,9 +483,39 @@ function buildLogoMesh( font ) {
 	} );
 	geometry.center();
 
-	const mesh = new THREE.Mesh( geometry, bodyMaterial );
+	const mesh = new THREE.Mesh( geometry, logoMaterial );
 	mesh.name = 'logo_label';
 	mesh.position.copy( LOGO_LOCAL_POSITION );
+	return mesh;
+
+}
+
+function buildSideLogoMesh( font, textStr, isLeft ) {
+
+	const geometry = new TextGeometry( textStr, {
+		font,
+		size: 0.026,
+		depth: 0.003,
+		curveSegments: 6,
+		bevelEnabled: false,
+	} );
+	geometry.center();
+
+	const mesh = new THREE.Mesh( geometry, logoMaterial );
+	mesh.name = isLeft ? 'logo_label_side_l' : 'logo_label_side_r';
+
+	if ( isLeft ) {
+
+		mesh.position.set( 0.16, 0.053, 0.045 );
+		mesh.rotation.set( Math.PI / 2, 0, 0 );
+
+	} else {
+
+		mesh.position.set( 0.16, -0.053, 0.045 );
+		mesh.rotation.set( -Math.PI / 2, 0, Math.PI );
+
+	}
+
 	return mesh;
 
 }
@@ -496,15 +529,26 @@ function attachLogoLabel( baseNode, font ) {
 
 	if ( ! font || ! baseNode ) return;
 
-	const existing = baseNode.getObjectByName( 'logo_label' );
-	if ( existing ) {
+	const toRemove = [];
+	baseNode.traverse( ( child ) => {
 
-		existing.geometry?.dispose();
-		existing.parent.remove( existing );
+		if ( child.name === 'logo_label' || child.name === 'logo_label_side_l' || child.name === 'logo_label_side_r' ) {
+
+			toRemove.push( child );
+
+		}
+
+	} );
+	for ( const child of toRemove ) {
+
+		child.geometry?.dispose();
+		child.parent.remove( child );
 
 	}
 
 	baseNode.add( buildLogoMesh( font ) );
+	baseNode.add( buildSideLogoMesh( font, 'GO2', true ) );
+	baseNode.add( buildSideLogoMesh( font, 'GO2', false ) );
 
 }
 
