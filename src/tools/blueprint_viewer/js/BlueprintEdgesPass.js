@@ -82,6 +82,13 @@ const BlueprintMaskShader = {
 		// keeping full crease detail up close. See the fragment tail.
 		uInteriorFadeNear: { value: 2.0 }, // full interior detail nearer than this
 		uInteriorFadeFar: { value: 6.5 },  // interior creases fully gone past this
+		// Global multiplier on the INTERIOR (normal-discontinuity) crease lines,
+		// independent of the distance fade above. 1 = normal (interior creases inked
+		// per the fade band); 0 = interior creases fully suppressed at ALL distances,
+		// leaving ONLY the clean silhouette (depth) outline. The cinematic view sets
+		// this to 0 for a clean "one solid black outline, no busy interior lines" look
+		// (see main.js's cinematic toggle); the default orbit view keeps it at 1.
+		uInteriorStrength: { value: 1.0 },
 	},
 
 	vertexShader: /* glsl */ `
@@ -103,6 +110,7 @@ const BlueprintMaskShader = {
 		uniform float uCameraFar;
 		uniform float uInteriorFadeNear;
 		uniform float uInteriorFadeFar;
+		uniform float uInteriorStrength;
 
 		varying vec2 vUv;
 
@@ -173,10 +181,32 @@ const BlueprintMaskShader = {
 			//     crease is still drawn.
 			float distFade = smoothstep( uInteriorFadeNear, uInteriorFadeFar, refDepth );
 			normalEdge *= ( 1.0 - distFade );
+			// Global interior-crease strength (0 in cinematic -> only the
+			// silhouette/depth outline survives; see uInteriorStrength above).
+			normalEdge *= uInteriorStrength;
+
+			// Grazing-angle suppression (the main "respawning outline" fix): fade
+			// interior normal-edges on faces nearly EDGE-ON to the camera (view-space
+			// normal z ~ 0). Such faces (the payload box's side, the sides of the
+			// cylindrical leg links) spray a dense, unstable cluster of crease lines
+			// that pop in/out and change count as the body rotates a hair during the
+			// walk -- exactly the flicker complaint. Their real boundary is already
+			// drawn by the depth silhouette edge, so dropping their interior creases
+			// removes the shimmer with no loss of outline. n0 is the view-space normal
+			// of the first Roberts-cross tap. Applies in every view (a pure quality
+			// win); silhouette/depth edges are untouched.
+			float facing = abs( n0.z );
+			normalEdge *= smoothstep( 0.20, 0.45, facing );
 
 			float edge = clamp( max( normalEdge, depthEdge ), 0.0, 1.0 );
 
-			gl_FragColor = vec4( edge, edge, edge, 1.0 );
+			// .r = combined edge (the ONLY channel the downstream dilate/erode +
+			// composite consume). .g/.b expose the depth (silhouette) and normal
+			// (interior, post uInteriorStrength) components SEPARATELY so the
+			// edge-coverage probe (main.js __viewer.edgeCoverage) can tell whether a
+			// given part boundary is being inked by a silhouette edge vs an interior
+			// crease. Purely diagnostic -- .g/.b never affect the rendered image.
+			gl_FragColor = vec4( edge, depthEdge, normalEdge, 1.0 );
 		}
 	`,
 };
@@ -291,12 +321,22 @@ export class BlueprintEdgesPass extends Pass {
 		depthTexture.minFilter = NearestFilter;
 		depthTexture.magFilter = NearestFilter;
 
+		// samples: 4 -> MSAA on the normal+depth geometry buffer the edge detector
+		// samples. The beauty pass is already MSAA'd (renderer antialias:true), but
+		// the EDGE mask was computed from an aliased normal/depth buffer, so thin
+		// MOVING features (swinging legs, feet) had jagged, shimmering, "respawning"
+		// outlines during the walk. Multisampling the geometry buffer (WebGL2
+		// resolves both color and the attached depth texture on read) gives the
+		// Roberts-cross smooth normals/depth to difference, killing most of that
+		// per-frame edge jitter. Only this buffer needs it; the mask/dilate/composite
+		// targets stay single-sampled.
 		this._normalTarget = new WebGLRenderTarget( 1, 1, {
 			minFilter: LinearFilter,
 			magFilter: LinearFilter,
 			format: RGBAFormat,
 			type: HalfFloatType,
 			depthTexture,
+			samples: 4,
 		} );
 		this._normalTarget.texture.name = 'BlueprintEdgesPass.normal';
 
@@ -359,6 +399,7 @@ export class BlueprintEdgesPass extends Pass {
 		if ( options.thickness !== undefined ) this._maskMaterial.uniforms.uThickness.value = options.thickness;
 		if ( options.interiorFadeNear !== undefined ) this._maskMaterial.uniforms.uInteriorFadeNear.value = options.interiorFadeNear;
 		if ( options.interiorFadeFar !== undefined ) this._maskMaterial.uniforms.uInteriorFadeFar.value = options.interiorFadeFar;
+		if ( options.interiorStrength !== undefined ) this._maskMaterial.uniforms.uInteriorStrength.value = options.interiorStrength;
 		this.setCloseRadius( options.closeRadius !== undefined ? options.closeRadius : 1.5 );
 
 		this._fsQuad = new FullScreenQuad( this._material );
@@ -383,6 +424,39 @@ export class BlueprintEdgesPass extends Pass {
 	setInkColor( colorLike ) {
 
 		this._material.uniforms.uInkColor.value.set( colorLike );
+
+	}
+
+	/**
+	 * Interior-crease strength: 1 = normal (interior normal-discontinuity lines
+	 * inked per the distance-fade band), 0 = interior creases fully suppressed at
+	 * every distance, leaving ONLY the clean silhouette (depth) outline. The
+	 * cinematic view sets this to 0 for a clean single-outline render.
+	 */
+	setInteriorStrength( strength ) {
+
+		this._maskMaterial.uniforms.uInteriorStrength.value = strength;
+
+	}
+
+	/**
+	 * Normal-discontinuity (interior crease) threshold: HIGHER = only the
+	 * strongest structural creases ink (fewer lines); LOWER = more surface detail.
+	 * Cinematic raises this so the robot keeps a few strong "robotic" structure
+	 * lines (leg-body joins, the camera mount, major panel seams) without the busy
+	 * rivet/seam clutter -- see main.js's cinematic edge style.
+	 */
+	setNormalThreshold( threshold ) {
+
+		this._maskMaterial.uniforms.uNormalThreshold.value = threshold;
+
+	}
+
+	/** Interior-crease distance-fade band (view-space metres): creases fade from full at `near` to gone at `far`. Pushed far out in cinematic so the (now sparse) structural lines survive at the pulled-back framing distance. */
+	setInteriorFade( near, far ) {
+
+		this._maskMaterial.uniforms.uInteriorFadeNear.value = near;
+		this._maskMaterial.uniforms.uInteriorFadeFar.value = far;
 
 	}
 

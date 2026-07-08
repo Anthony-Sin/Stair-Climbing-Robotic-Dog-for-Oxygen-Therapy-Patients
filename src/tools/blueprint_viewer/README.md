@@ -57,7 +57,6 @@ js/main.js                    Scene/camera/renderer setup, model loading, scrub/
 js/palette.js                 Single source of truth for the light/dark color palette (DOM + WebGL)
 js/BlueprintEdgesPass.js      Custom EffectComposer Pass: normal+depth capture -> edge-detection shader
 js/PlaceholderRobot.js        Procedural placeholder robot + "follow"/"climb" AnimationClip builders
-js/PartLabels.js              SVG leader-line part-callout overlay
 vendor/                       Locally vendored three.js r170 (three.module.js + examples/jsm addons)
 models/                       robot.glb (+ .meta.json sidecar) — NOT owned by this viewer, see above
 pipeline/                     Model-baking scripts — NOT owned by this viewer

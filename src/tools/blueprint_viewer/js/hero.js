@@ -27,8 +27,9 @@ import { BlueprintEdgesPass } from './BlueprintEdgesPass.js';
 // ===========================================================================
 // Chapters. `motion` selects the stage behaviour; `points` are the leader
 // callouts, split between the stage's left/right gutters (mostly base-mounted
-// parts so they stay steady). `clip` may be null (no mp4 for that chapter).
-// Text is lorem placeholder.
+// parts so they stay steady). `clip` may be null (no mp4 for that chapter);
+// `clip.src` is a real Isaac Sim rollout cut from log/.../scene_view.mp4.
+// `fx` names the stage overlay effect (camera-scan / feel), null for none.
 // ===========================================================================
 
 const CHAPTERS = [
@@ -36,8 +37,9 @@ const CHAPTERS = [
 		id: 'architecture',
 		title: 'System architecture',
 		motion: 'spin',
-		body: 'Lorem ipsum dolor sit amet, consectetur adipiscing elit. A Unitree Go2 carries a patient oxygen concentrator on a shock-isolated cradle; a Jetson Orin fuses the onboard sensors and drives twelve joint actuators — three per leg — in a single closed loop.',
-		clip: null, // no clip for this chapter yet
+		fx: null,
+		body: 'A Unitree Go2 carries a patient’s oxygen concentrator on a shock-isolated cradle. The entire control stack — perception plus the learned policy — runs inside one Docker container on a Jetson Orin: the same container whether Isaac Sim or the real robot feeds it. Only the sensor source is swapped at the container boundary, so a policy proven in simulation is expected to hold on hardware.',
+		clip: null, // no clip for this chapter
 		points: [
 			{ node: 'oxygen_tank', side: 'right', label: 'O₂ concentrator', sub: 'patient payload' },
 			{ node: 'cradle_rails', side: 'right', label: 'payload cradle', sub: 'shock-isolated' },
@@ -49,8 +51,9 @@ const CHAPTERS = [
 		id: 'walking',
 		title: 'Walking policy',
 		motion: 'walk',
-		body: 'Lorem ipsum dolor sit amet. On flat ground a learned gait tracks the patient while holding the oxygen payload level, rejecting the disturbances of a shifting load and an uneven floor at every step.',
-		clip: { badge: 'clip 01', cap: 'Lorem ipsum — flat-ground follow gait.' },
+		fx: 'scan',
+		body: 'On flat ground the robot follows the patient by sight: a YOLO-World detector locates the person in every camera frame, and a learned trot gait steers to keep pace while holding the oxygen payload level — rejecting the disturbances of a shifting load and an uneven floor at each step.',
+		clip: { badge: 'clip 01', cap: 'Isaac Sim rollout — flat-ground follow gait.', src: './assets/clips/walk.mp4' },
 		points: [
 			{ node: 'robot_base', side: 'left', label: 'gait controller', sub: 'trot clock' },
 			{ node: 'FL_hip', side: 'left', label: 'hip abduction', sub: 'lateral balance' },
@@ -62,10 +65,11 @@ const CHAPTERS = [
 		id: 'blind-rl',
 		title: 'Blind RL policy',
 		motion: 'climb',
-		body: 'Lorem ipsum dolor sit amet. The staircase is climbed with no camera — the policy relies only on proprioception and foot contact to find each riser and drive the payload upward, step after step.',
-		clip: { badge: 'clip 02', cap: 'Lorem ipsum — blind stair traversal.' },
+		fx: 'feel',
+		body: 'The staircase is climbed on feel alone. Cameras can’t see the steps underfoot, so a reinforcement-learning policy leans entirely on proprioception and foot contact — sensing each riser as a paw lands — to place its feet and drive the payload upward, step after step, while keeping the concentrator upright on the incline.',
+		clip: { badge: 'clip 02', cap: 'Isaac Sim rollout — blind stair traversal.', src: './assets/clips/stairs.mp4' },
 		points: [
-			{ node: 'robot_base', side: 'left', label: 'IMU · no camera', sub: 'body attitude' },
+			{ node: 'robot_base', side: 'left', label: 'IMU · body attitude', sub: 'stays upright' },
 			{ node: 'FR_hip', side: 'left', label: 'joint feedback', sub: 'proprioception' },
 			{ node: 'oxygen_tank', side: 'right', label: 'payload upright', sub: 'on the incline' },
 			{ node: 'cradle_rails', side: 'right', label: 'kept level', sub: 'active balancing' },
@@ -76,18 +80,21 @@ const CHAPTERS = [
 // Policy SVG schematics — richer than a bare 3-box flow, still clean line-art.
 // Theme-aware: strokes/text use currentColor (#hero-diagram sets color: var(--ink)).
 const DIAGRAMS = {
-	architecture: `<svg viewBox="0 0 320 178" role="img" aria-label="System architecture diagram">
-		<rect class="dg-box" x="116" y="6" width="88" height="24" rx="5"/><text class="dg-t" x="160" y="22" text-anchor="middle">O₂ payload</text>
-		<path class="dg-ln" d="M160 30 V52"/><path class="dg-ah" d="M156 46l4 6 4-6"/>
-		<rect class="dg-box" x="6" y="40" width="84" height="24" rx="5"/><text class="dg-t" x="48" y="56" text-anchor="middle">IMU</text>
-		<rect class="dg-box" x="6" y="72" width="84" height="24" rx="5"/><text class="dg-t" x="48" y="88" text-anchor="middle">joint encoders</text>
-		<rect class="dg-box" x="6" y="104" width="84" height="24" rx="5"/><text class="dg-t" x="48" y="120" text-anchor="middle">foot contact</text>
-		<rect class="dg-box" x="116" y="54" width="88" height="52" rx="6"/><text class="dg-t" x="160" y="76" text-anchor="middle">Jetson Orin</text><text class="dg-c" x="160" y="92" text-anchor="middle">perception + policy</text>
-		<rect class="dg-box" x="236" y="60" width="80" height="40" rx="5"/><text class="dg-t" x="276" y="78" text-anchor="middle">12× joint</text><text class="dg-t" x="276" y="92" text-anchor="middle">actuators</text>
-		<path class="dg-ln" d="M90 52 H114"/><path class="dg-ln" d="M90 84 H114"/><path class="dg-ln" d="M90 116 H108 V92 H114"/>
-		<path class="dg-ah" d="M108 76l6 4-6 4"/>
-		<path class="dg-ln" d="M204 80 H234"/><path class="dg-ah" d="M228 76l6 4-6 4"/>
-		<text class="dg-c" x="160" y="150" text-anchor="middle">closed loop · ~50 Hz on Jetson Orin</text>
+	architecture: `<svg viewBox="0 0 320 178" role="img" aria-label="Docker / simulation split architecture diagram">
+		<rect class="dg-box" x="6" y="44" width="86" height="28" rx="5"/><text class="dg-t" x="49" y="62" text-anchor="middle">Isaac Sim</text>
+		<rect class="dg-box" x="6" y="98" width="86" height="28" rx="5"/><text class="dg-t" x="49" y="116" text-anchor="middle">real Go2</text>
+		<path class="dg-ln" d="M92 58 H102 V71 H116"/>
+		<path class="dg-ln" d="M92 112 H102 V71 H116"/>
+		<path class="dg-ah" d="M110 67l6 4-6 4"/>
+		<text class="dg-c" x="174" y="40" text-anchor="middle">docker container</text>
+		<rect class="dg-dock" x="108" y="46" width="130" height="82" rx="8"/>
+		<rect class="dg-box" x="116" y="58" width="116" height="26" rx="5"/><text class="dg-t" x="174" y="75" text-anchor="middle">perception</text>
+		<rect class="dg-box" x="116" y="94" width="116" height="26" rx="5"/><text class="dg-t" x="174" y="111" text-anchor="middle">policy π · frozen</text>
+		<path class="dg-ln" d="M174 84 V94"/><path class="dg-ah" d="M170 90l4 4 4-4"/>
+		<rect class="dg-box" x="252" y="92" width="64" height="30" rx="5"/><text class="dg-t" x="284" y="111" text-anchor="middle">12× joints</text>
+		<path class="dg-ln" d="M232 107 H250"/><path class="dg-ah" d="M244 103l6 4-6 4"/>
+		<text class="dg-c" x="160" y="150" text-anchor="middle">identical container · sim ⇄ real</text>
+		<text class="dg-c" x="160" y="165" text-anchor="middle">only the sensor source is swapped</text>
 	</svg>`,
 	walking: `<svg viewBox="0 0 320 178" role="img" aria-label="Walking control loop diagram">
 		<rect class="dg-box" x="6" y="26" width="76" height="38" rx="5"/><text class="dg-t" x="44" y="49" text-anchor="middle">state est.</text>
@@ -101,18 +108,20 @@ const DIAGRAMS = {
 		<text class="dg-c" x="235" y="96" text-anchor="middle">torque</text>
 		<text class="dg-c" x="66" y="96" text-anchor="middle">imu · contacts</text>
 	</svg>`,
-	'blind-rl': `<svg viewBox="0 0 320 178" role="img" aria-label="Blind RL policy diagram">
-		<rect class="dg-box" x="6" y="14" width="96" height="22" rx="5"/><text class="dg-t" x="54" y="30" text-anchor="middle">proprioception ×N</text>
-		<rect class="dg-box" x="6" y="42" width="96" height="22" rx="5"/><text class="dg-t" x="54" y="58" text-anchor="middle">foot contact</text>
-		<rect class="dg-box" x="6" y="70" width="96" height="22" rx="5"/><text class="dg-t" x="54" y="86" text-anchor="middle">velocity command</text>
-		<rect class="dg-box" x="132" y="34" width="74" height="44" rx="6"/><text class="dg-t" x="169" y="53" text-anchor="middle">policy π</text><text class="dg-c" x="169" y="67" text-anchor="middle">MLP</text>
-		<rect class="dg-box" x="236" y="42" width="80" height="30" rx="5"/><text class="dg-t" x="276" y="61" text-anchor="middle">joint targets</text>
-		<path class="dg-ln" d="M102 25 H118 V50 H130"/><path class="dg-ln" d="M102 53 H130"/><path class="dg-ln" d="M102 81 H118 V60 H130"/>
-		<path class="dg-ah" d="M124 50l6 4-6 4"/>
-		<path class="dg-ln" d="M206 57 H234"/><path class="dg-ah" d="M228 53l6 4-6 4"/>
-		<rect class="dg-box" x="120" y="112" width="86" height="30" rx="5"/><text class="dg-t" x="163" y="131" text-anchor="middle">camera</text>
-		<line class="dg-x" x1="124" y1="114" x2="202" y2="140"/><line class="dg-x" x1="202" y1="114" x2="124" y2="140"/>
-		<text class="dg-c" x="256" y="131" text-anchor="middle">blind · no vision</text>
+	'blind-rl': `<svg viewBox="0 0 320 178" role="img" aria-label="Blind RL closed-loop policy diagram">
+		<rect class="dg-box" x="16" y="14" width="108" height="22" rx="5"/><text class="dg-t" x="70" y="30" text-anchor="middle">proprioception ×N</text>
+		<rect class="dg-box" x="16" y="42" width="108" height="22" rx="5"/><text class="dg-t" x="70" y="58" text-anchor="middle">foot contact</text>
+		<rect class="dg-box" x="16" y="70" width="108" height="22" rx="5"/><text class="dg-t" x="70" y="86" text-anchor="middle">velocity command</text>
+		<rect class="dg-box" x="140" y="34" width="64" height="44" rx="6"/><text class="dg-t" x="172" y="53" text-anchor="middle">policy π</text><text class="dg-c" x="172" y="67" text-anchor="middle">MLP</text>
+		<rect class="dg-box" x="224" y="42" width="88" height="30" rx="5"/><text class="dg-t" x="268" y="61" text-anchor="middle">joint targets</text>
+		<path class="dg-ln" d="M124 25 H132 V50 H140"/><path class="dg-ln" d="M124 53 H140"/><path class="dg-ln" d="M124 81 H132 V60 H140"/>
+		<path class="dg-ah" d="M134 50l6 4-6 4"/>
+		<path class="dg-ln" d="M204 56 H222"/><path class="dg-ah" d="M216 52l6 4-6 4"/>
+		<rect class="dg-box" x="120" y="112" width="96" height="30" rx="5"/><text class="dg-t" x="168" y="131" text-anchor="middle">Go2 on stairs</text>
+		<path class="dg-ln" d="M268 72 V127 H216"/><path class="dg-ah" d="M222 123l-6 4 6 4"/>
+		<path class="dg-ln" d="M120 127 H8 V25 H16"/><path class="dg-ah" d="M10 21l6 4-6 4"/>
+		<text class="dg-c" x="64" y="108" text-anchor="middle">feels each riser</text>
+		<text class="dg-c" x="164" y="164" text-anchor="middle">closed proprioceptive loop · climbs by feel</text>
 	</svg>`,
 };
 
@@ -281,6 +290,186 @@ function boot( host ) {
 	const clipBadgeEl = document.getElementById( 'hero-clip-badge' );
 	const clipCapEl = document.getElementById( 'hero-clip-cap' );
 	const dotsEl = document.getElementById( 'hero-dots' );
+	const clipVideo = document.getElementById( 'hero-clip-video' );
+	const clipFrame = document.getElementById( 'hero-clip-frame' );
+	const clipPlayBtn = document.getElementById( 'hero-clip-play' );
+	const clipDurEl = document.getElementById( 'hero-clip-dur' );
+	const fxEl = document.getElementById( 'hero-fx' );
+
+	// -------------------------------------------------------------------
+	// Inline mp4 clip (real Isaac Sim rollout, cut per chapter) — muted +
+	// looped so it plays inline; the corner button toggles play/pause.
+	// -------------------------------------------------------------------
+	function setClip( src ) {
+
+		if ( ! clipVideo || ! src ) return;
+		const abs = new URL( src, location.href ).href;
+		if ( clipVideo.src !== abs ) clipVideo.src = src;
+		try { clipVideo.currentTime = 0; } catch ( e ) { /* not seekable yet */ }
+		const p = clipVideo.play();
+		if ( p && p.catch ) p.catch( () => {} ); // autoplay may be blocked; button still works
+		updateClipButton();
+
+	}
+
+	function stopClip() { if ( clipVideo ) clipVideo.pause(); }
+
+	function updateClipButton() {
+
+		if ( clipFrame && clipVideo ) clipFrame.classList.toggle( 'playing', ! clipVideo.paused && ! clipVideo.ended );
+
+	}
+
+	if ( clipVideo && clipPlayBtn ) {
+
+		clipPlayBtn.addEventListener( 'click', () => {
+
+			if ( clipVideo.paused ) { const p = clipVideo.play(); if ( p && p.catch ) p.catch( () => {} ); }
+			else clipVideo.pause();
+			updateClipButton();
+
+		} );
+		clipVideo.addEventListener( 'play', updateClipButton );
+		clipVideo.addEventListener( 'pause', updateClipButton );
+		clipVideo.addEventListener( 'loadedmetadata', () => {
+
+			if ( clipDurEl && isFinite( clipVideo.duration ) ) clipDurEl.textContent = Math.round( clipVideo.duration ) + 's';
+
+		} );
+
+	}
+
+	// -------------------------------------------------------------------
+	// Per-policy stage FX overlay: built once, toggled via a class on
+	// #hero-fx (set in applyMotion), and positioned each frame (updateFx).
+	//   walk  -> a scan cone projected in FRONT of the robot (+ YOLO HUD)
+	//   climb -> orange proprioceptive "feeling" waves at EACH foot
+	// -------------------------------------------------------------------
+	let currentFx = null;
+	let fxConfEl = null, fxFeet = [];
+	let fxConeSvg = null, fxConeFill = null, fxConeSweep = null, fxConeGrad = null;
+	let fxConf = 0.94, fxConfTarget = 0.94, fxConfAccum = 0, fxConeT = 0;
+	const _fxBox = new THREE.Box3();
+	const FX_FEET = [ 'FL_foot', 'FR_foot', 'RL_foot', 'RR_foot' ];
+	const _cA = new THREE.Vector3(), _cB = new THREE.Vector3(), _cC = new THREE.Vector3(), _cD = new THREE.Vector3();
+	const _cFwd = new THREE.Vector3(), _cApex = new THREE.Vector3(), _cFar = new THREE.Vector3();
+
+	buildFx();
+
+	function buildFx() {
+
+		if ( ! fxEl ) return;
+		fxEl.innerHTML =
+			// walk: a scan cone projected in front of the robot + YOLO HUD
+			'<svg class="fx-cone" aria-hidden="true">' +
+				'<defs><linearGradient id="fxConeGrad" gradientUnits="userSpaceOnUse">' +
+					'<stop class="fx-cone-s0" offset="0"/><stop class="fx-cone-s1" offset="1"/>' +
+				'</linearGradient></defs>' +
+				'<polygon class="fx-cone-fill"/><line class="fx-cone-sweep"/>' +
+			'</svg>' +
+			'<div class="fx-hud fx-hud-yolo"><span class="fx-hud-dot"></span>YOLO-World<span class="fx-hud-conf">person 0.00</span></div>' +
+			// climb: orange proprioceptive "feeling" waves at each foot + sense HUD
+			'<div class="fx-feet">' + FX_FEET.map( ( id ) => `<div class="fx-foot" data-leg="${ id }"><span></span><span></span><span></span></div>` ).join( '' ) + '</div>' +
+			'<div class="fx-hud fx-hud-sense"><span class="fx-hud-dot"></span>proprioception · contact sensing</div>';
+		fxConeSvg = fxEl.querySelector( '.fx-cone' );
+		fxConeFill = fxEl.querySelector( '.fx-cone-fill' );
+		fxConeSweep = fxEl.querySelector( '.fx-cone-sweep' );
+		fxConeGrad = fxEl.querySelector( '#fxConeGrad' );
+		fxConfEl = fxEl.querySelector( '.fx-hud-conf' );
+		fxFeet = [ ...fxEl.querySelectorAll( '.fx-foot' ) ].map( ( el ) => ( { el, node: null, id: el.dataset.leg } ) );
+
+	}
+
+	function updateFx( dt ) {
+
+		if ( ! fxEl || ! currentFx ) return;
+		const sr = host.getBoundingClientRect();
+		const W = sr.width, H = sr.height;
+
+		if ( currentFx === 'scan' ) {
+
+			updateCone( dt, W, H );
+
+			// Wander the "confidence" so the YOLO HUD reads live (not a real score).
+			fxConfAccum += dt;
+			if ( fxConfAccum > 0.55 ) { fxConfAccum = 0; fxConfTarget = 0.9 + Math.random() * 0.09; }
+			fxConf += ( fxConfTarget - fxConf ) * Math.min( 1, dt * 4 );
+			if ( fxConfEl ) fxConfEl.textContent = 'person ' + fxConf.toFixed( 2 );
+
+		} else if ( currentFx === 'feel' ) {
+
+			// Orange "feeling" waves ripple out from EACH foot as it senses a riser.
+			for ( const foot of fxFeet ) {
+
+				if ( ! foot.node ) foot.node = scene.getObjectByName( foot.id );
+				if ( ! foot.node ) { foot.el.classList.add( 'fx-off' ); continue; }
+				foot.node.getWorldPosition( _tmpVec );
+				const p = _tmpVec.project( camera );
+				if ( p.z > 1 || Math.abs( p.x ) > 1 || Math.abs( p.y ) > 1 ) { foot.el.classList.add( 'fx-off' ); continue; }
+				foot.el.classList.remove( 'fx-off' );
+				foot.el.style.left = ( ( p.x * 0.5 + 0.5 ) * W ) + 'px';
+				foot.el.style.top = ( ( - p.y * 0.5 + 0.5 ) * H ) + 'px';
+
+			}
+
+		}
+
+	}
+
+	// Scan cone: apex at the front of the robot, fanning forward along its
+	// facing (front-feet minus rear-feet). Rebuilds the polygon, the gradient
+	// axis and a sweeping bar (apex -> far) every frame.
+	function updateCone( dt, W, H ) {
+
+		if ( ! fxConeSvg ) return;
+
+		for ( const f of fxFeet ) if ( ! f.node ) f.node = scene.getObjectByName( f.id );
+		if ( ! robotBase || fxFeet.some( ( f ) => ! f.node ) ) { fxConeSvg.classList.add( 'fx-off' ); return; }
+
+		fxFeet[ 0 ].node.getWorldPosition( _cA ); // FL
+		fxFeet[ 1 ].node.getWorldPosition( _cB ); // FR
+		fxFeet[ 2 ].node.getWorldPosition( _cC ); // RL
+		fxFeet[ 3 ].node.getWorldPosition( _cD ); // RR
+		_cFwd.copy( _cA ).add( _cB ).sub( _cC ).sub( _cD ).multiplyScalar( 0.5 ).setY( 0 ); // front mid - rear mid
+		if ( _cFwd.lengthSq() < 1e-6 ) { fxConeSvg.classList.add( 'fx-off' ); return; }
+		_cFwd.normalize();
+
+		robotBase.getWorldPosition( _cA ); // reuse as base
+		_cApex.copy( _cA ).addScaledVector( _cFwd, 0.3 ); _cApex.y += 0.07; // at the front sensor/camera (nose), not mid-body
+		_cFar.copy( _cApex ).addScaledVector( _cFwd, 0.8 );
+
+		_cApex.project( camera );
+		_cFar.project( camera );
+		if ( _cApex.z > 1 || _cFar.z > 1 ) { fxConeSvg.classList.add( 'fx-off' ); return; }
+
+		const ax = ( _cApex.x * 0.5 + 0.5 ) * W, ay = ( - _cApex.y * 0.5 + 0.5 ) * H;
+		const fxp = ( _cFar.x * 0.5 + 0.5 ) * W, fyp = ( - _cFar.y * 0.5 + 0.5 ) * H;
+		let dx = fxp - ax, dy = fyp - ay;
+		const L = Math.hypot( dx, dy );
+		if ( L < 2 ) { fxConeSvg.classList.add( 'fx-off' ); return; }
+		dx /= L; dy /= L;
+		const nx = - dy, ny = dx, halfW = L * 0.42; // perpendicular + cone half-width
+		const c1x = fxp + nx * halfW, c1y = fyp + ny * halfW;
+		const c2x = fxp - nx * halfW, c2y = fyp - ny * halfW;
+
+		fxConeSvg.classList.remove( 'fx-off' );
+		// Fade with view angle: when the view direction aligns with the cone's
+		// forward axis (looking head-on / from behind), a flat cone reads badly,
+		// so fade it out; full opacity when the view is side-on.
+		const align = Math.abs( _cFwd.dot( camera.getWorldDirection( _cB ) ) );
+		fxConeSvg.style.opacity = THREE.MathUtils.clamp( ( 1 - align ) / 0.35, 0, 1 ).toFixed( 3 );
+		fxConeSvg.setAttribute( 'viewBox', `0 0 ${ W } ${ H }` );
+		fxConeFill.setAttribute( 'points', `${ ax },${ ay } ${ c1x },${ c1y } ${ c2x },${ c2y }` );
+		fxConeGrad.setAttribute( 'x1', ax ); fxConeGrad.setAttribute( 'y1', ay );
+		fxConeGrad.setAttribute( 'x2', fxp ); fxConeGrad.setAttribute( 'y2', fyp );
+
+		fxConeT += dt;
+		const s = 0.2 + 0.78 * ( 0.5 + 0.5 * Math.sin( fxConeT * 2.4 ) ); // sweep phase
+		const spx = ax + dx * L * s, spy = ay + dy * L * s, sw = halfW * s;
+		fxConeSweep.setAttribute( 'x1', spx + nx * sw ); fxConeSweep.setAttribute( 'y1', spy + ny * sw );
+		fxConeSweep.setAttribute( 'x2', spx - nx * sw ); fxConeSweep.setAttribute( 'y2', spy - ny * sw );
+
+	}
 
 	// -------------------------------------------------------------------
 	// Scene / animation state
@@ -358,7 +547,7 @@ function boot( host ) {
 			robotTarget = rbox.getCenter( new THREE.Vector3() );
 			const robotMaxDim = Math.max( rSize.x, rSize.y, rSize.z ) || 1;
 			robotDist = fitDist( robotMaxDim, 1.25 );
-			climbDist = robotDist * 1.35;
+			climbDist = robotDist * 1.5; // frames the robot large enough that the leader arrows read on the stairs, without the old too-tight crop
 
 			const feetY = rbox.min.y;
 			const footprint = Math.max( rSize.x, rSize.z ) * 0.62 + 0.12;
@@ -432,8 +621,11 @@ function boot( host ) {
 			.filter( ( e ) => e.node );
 		const left = resolved.filter( ( e ) => e.pt.side !== 'right' );
 		const right = resolved.filter( ( e ) => e.pt.side === 'right' );
-		const leftTops = linspace( 22, 76, left.length );
-		const rightTops = linspace( 22, 76, right.length );
+		// Bottom bound kept well clear of the bottom-third #hero-body caption
+		// (which can grow to several lines on the longer chapters) so leader
+		// callouts never sit underneath it.
+		const leftTops = linspace( 20, 62, left.length );
+		const rightTops = linspace( 20, 62, right.length );
 		let li = 0, ri = 0;
 
 		for ( const { pt, node } of resolved ) {
@@ -483,10 +675,12 @@ function boot( host ) {
 				clipFigureEl.style.display = '';
 				clipBadgeEl.textContent = chapter.clip.badge;
 				clipCapEl.textContent = chapter.clip.cap;
+				setClip( chapter.clip.src );
 
 			} else {
 
 				clipFigureEl.style.display = 'none';
+				stopClip();
 
 			}
 			syncDots();
@@ -506,7 +700,7 @@ function boot( host ) {
 		};
 
 		if ( immediate ) build();
-		else { heroInner.classList.add( 'switching' ); setTimeout( build, 190 ); }
+		else { heroInner.classList.add( 'switching' ); setTimeout( build, 230 ); }
 
 	}
 
@@ -517,6 +711,14 @@ function boot( host ) {
 
 		const motion = chapter.motion;
 		climbFollow = ( motion === 'climb' );
+
+		currentFx = chapter.fx || null;
+		if ( fxEl ) {
+
+			fxEl.classList.toggle( 'fx-mode-scan', currentFx === 'scan' );
+			fxEl.classList.toggle( 'fx-mode-feel', currentFx === 'feel' );
+
+		}
 
 		if ( motion === 'climb' ) {
 
@@ -555,7 +757,7 @@ function boot( host ) {
 		} else { // walk — right-side 3/4 so the gait reads
 
 			dir = new THREE.Vector3( 0.32, 0.32, 1 ).normalize();
-			dist = robotDist * 1.05;
+			dist = robotDist * 1.35; // pulled back so the leader callouts aren't cramped (was 1.05, too tight)
 
 		}
 
@@ -641,7 +843,7 @@ function boot( host ) {
 	}
 	document.getElementById( 'hero-zoom-in' ).addEventListener( 'click', () => zoomBy( 0.82 ) );
 	document.getElementById( 'hero-zoom-out' ).addEventListener( 'click', () => zoomBy( 1.22 ) );
-	document.getElementById( 'hero-zoom-reset' ).addEventListener( 'click', () => { climbDist = robotDist * 1.35; applyMotion( CHAPTERS[ chapterIdx ] ); } );
+	document.getElementById( 'hero-zoom-reset' ).addEventListener( 'click', () => { climbDist = robotDist * 1.5; applyMotion( CHAPTERS[ chapterIdx ] ); } );
 
 	// -------------------------------------------------------------------
 	// Theme sync
@@ -727,6 +929,7 @@ function boot( host ) {
 		}
 
 		updateLeaders();
+		updateFx( dt );
 		composer.render();
 
 	}
@@ -737,6 +940,8 @@ function boot( host ) {
 		materials: { robotMaterial, oxygenTankMaterial, cradleRailsMaterial, stairsMaterial, plinthMaterial },
 		goToChapter, get chapterIdx() { return chapterIdx; }, get motion() { return currentMotion; },
 		get baseZ() { return robotBase ? robotBase.getWorldPosition( new THREE.Vector3() ) : null; },
+		get robotTarget() { return robotTarget; }, get robotDist() { return robotDist; },
+		_robotAABB() { _fxBox.setFromObject( robotBase ); return { min: _fxBox.min.toArray(), max: _fxBox.max.toArray() }; },
 		_tick( dt ) {
 
 			if ( ! mixer ) return;
@@ -744,6 +949,7 @@ function boot( host ) {
 			if ( currentMotion !== 'climb' ) pinBase();
 
 		},
+		_fx( dt ) { updateFx( dt || 0.016 ); }, // manual FX pump (rAF is paused when tab is hidden)
 		_actions() {
 
 			return {

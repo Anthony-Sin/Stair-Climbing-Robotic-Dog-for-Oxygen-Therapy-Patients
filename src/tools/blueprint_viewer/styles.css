@@ -308,21 +308,6 @@ button {
 }
 
 /* ---------------------------------------------------------------------
-   Part label SVG overlay (created by js/PartLabels.js)
---------------------------------------------------------------------- */
-
-.part-labels-svg {
-	position: absolute;
-	inset: 0;
-	pointer-events: none;
-}
-
-.part-labels-svg text {
-	font-family: var(--font-mono);
-	font-size: 13px;
-}
-
-/* ---------------------------------------------------------------------
    Responsive: mobile layout — title may shrink further, scrubber goes
    full-width along the bottom instead of floating bottom-right.
 --------------------------------------------------------------------- */
@@ -574,9 +559,13 @@ button {
 	position: relative;
 	display: flex;
 	flex-direction: column;
-	justify-content: center;
-	gap: clamp(12px, 1.5vw, 18px);
-	padding: clamp(22px, 2.6vw, 42px);
+	/* `safe center` centres the content when it fits, but falls back to
+	   start-alignment when it OVERFLOWS — otherwise a tall chapter (one with
+	   a clip) centres and pushes the nav arrows off the top where they can't
+	   be scrolled to (a flexbox overflow footgun). */
+	justify-content: safe center;
+	gap: clamp(10px, 1.3vw, 14px);
+	padding: clamp(18px, 2vw, 26px);
 	border-left: 1px solid var(--sheet-border);
 	overflow: auto;
 }
@@ -628,7 +617,7 @@ button {
 	display: flex;
 	flex-direction: column;
 	gap: 2px;
-	transition: opacity 180ms ease;
+	transition: opacity 240ms ease, transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 #hero-chapter-index {
@@ -675,13 +664,31 @@ button {
 	opacity: 1;
 }
 
+/* Chapter body copy — a lower-third caption over the bottom of the stage
+   (moved out of the panel so the diagram + clip fit without scrolling). It
+   sits above the stage-tag/zoom row and clears the side gutter callouts.
+   Width is capped well short of the left/right callout gutters (each up to
+   ~180px + edge offset) so the longest chapter body never overlaps them. */
 #hero-body {
+	position: absolute;
+	left: 50%;
+	bottom: clamp(46px, 6vh, 72px);
+	transform: translateX(-50%);
+	z-index: 6;
+	width: min(62%, 600px);
 	margin: 0;
-	font-size: 15px;
-	line-height: 1.62;
+	padding: 13px 20px;
+	border-radius: 13px;
+	background: color-mix(in srgb, var(--sheet) 84%, transparent);
+	backdrop-filter: blur(5px);
+	border: 1px solid var(--sheet-border);
+	box-shadow: 0 12px 30px rgba(0, 0, 0, 0.16);
+	font-size: 14px;
+	line-height: 1.55;
 	color: var(--ink);
-	opacity: 0.9;
-	transition: opacity 180ms ease;
+	text-align: center;
+	pointer-events: none;
+	transition: opacity 240ms ease, transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 /* Policy SVG diagram (theme-aware via currentColor) */
@@ -690,14 +697,18 @@ button {
 	color: var(--ink);
 	border: 1px solid var(--sheet-border);
 	border-radius: 12px;
-	padding: 10px 14px;
+	padding: 8px 14px;
+	display: flex;
+	justify-content: center;
 	background: color-mix(in srgb, var(--sheet) 60%, transparent);
-	transition: opacity 180ms ease;
+	transition: opacity 240ms ease, transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 #hero-diagram svg {
-	width: 100%;
+	width: auto;
+	max-width: 100%;
 	height: auto;
+	max-height: clamp(120px, 27vh, 220px);
 	display: block;
 }
 
@@ -713,6 +724,15 @@ button {
 	stroke: currentColor;
 	stroke-width: 1.6;
 	opacity: 0.75;
+}
+
+/* Dashed "docker container" boundary (architecture diagram) */
+.dg-dock {
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 1.3;
+	stroke-dasharray: 5 3;
+	opacity: 0.7;
 }
 
 .dg-t {
@@ -734,12 +754,14 @@ button {
 	margin: 0;
 	display: flex;
 	flex-direction: column;
-	gap: 8px;
-	transition: opacity 180ms ease;
+	align-items: center;
+	gap: 6px;
+	transition: opacity 240ms ease, transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .hero-clip-frame {
 	position: relative;
+	width: clamp(220px, 46vh, 100%);
 	aspect-ratio: 16 / 9;
 	border-radius: 12px;
 	border: 1.5px solid var(--ink);
@@ -810,6 +832,8 @@ button {
 }
 
 .hero-clip figcaption {
+	width: clamp(220px, 46vh, 100%);
+	text-align: center;
 	font-family: var(--font-mono);
 	font-size: 12px;
 	line-height: 1.4;
@@ -817,20 +841,217 @@ button {
 	opacity: 0.7;
 }
 
-/* Crossfade on chapter switch (both the stage overlay and the panel content) */
+/* Inline clip video + play/pause toggle */
+
+.hero-clip-video {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	display: block;
+	background: #12110f;
+}
+
+.hero-clip-ic-pause {
+	display: none;
+}
+
+.hero-clip-frame.playing .hero-clip-ic-play {
+	display: none;
+}
+
+.hero-clip-frame.playing .hero-clip-ic-pause {
+	display: block;
+}
+
+/* When playing, the button recedes so the footage shows; returns on hover. */
+.hero-clip-frame.playing .hero-clip-play {
+	opacity: 0;
+}
+
+.hero-clip-frame.playing:hover .hero-clip-play {
+	opacity: 1;
+}
+
+.hero-clip-play {
+	transition: transform 140ms ease, background 140ms ease, opacity 220ms ease;
+}
+
+/* =====================================================================
+   Per-policy stage FX overlay (#hero-fx, built by js/hero.js)
+   walk  -> a scan cone projected in FRONT of the robot + YOLO HUD
+   climb -> orange proprioceptive "feeling" waves at EACH foot + sensing HUD
+   The overlay never takes pointer events (OrbitControls still gets drags).
+   ===================================================================== */
+
+#hero-fx {
+	position: absolute;
+	inset: 0;
+	z-index: 3;
+	pointer-events: none;
+	overflow: hidden;
+	transition: opacity 180ms ease;
+	--fx-scan: #0e9b8e; /* teal — vision / YOLO instrument colour */
+	--fx-feel: #3a7ce5; /* cool blue — blind "feeling" / contact colour, kept off the warm oak-stair orange */
+}
+
+/* Hidden unless the matching mode class is present */
+.fx-cone, .fx-hud, .fx-feet {
+	display: none;
+}
+
+#hero-fx.fx-mode-scan .fx-cone { display: block; }
+#hero-fx.fx-mode-scan .fx-hud-yolo { display: flex; }
+#hero-fx.fx-mode-feel .fx-feet { display: block; }
+#hero-fx.fx-mode-feel .fx-hud-sense { display: flex; }
+
+/* JS hides the cone / a foot origin when it is off-screen */
+.fx-cone.fx-off, .fx-foot.fx-off { display: none !important; }
+
+/* --- walk: scan cone projected in FRONT of the robot. The polygon points +
+       gradient axis are recomputed each frame in js/hero.js from the robot's
+       facing; a bright bar sweeps apex -> far like a radar ping. --- */
+.fx-cone {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	overflow: visible;
+	/* opacity is driven per-frame in js/hero.js: the cone fades out as the
+	   view rotates head-on (where a flat 2D cone would collapse to a sliver). */
+}
+
+.fx-cone-fill {
+	fill: url(#fxConeGrad);
+	stroke: var(--fx-scan);
+	stroke-width: 1.5;
+	stroke-opacity: 0.5;
+	stroke-linejoin: round;
+}
+
+.fx-cone-s0 { stop-color: var(--fx-scan); stop-opacity: 0.4; }
+.fx-cone-s1 { stop-color: var(--fx-scan); stop-opacity: 0; }
+
+.fx-cone-sweep {
+	stroke: var(--fx-scan);
+	stroke-width: 2.5;
+	stroke-linecap: round;
+	stroke-opacity: 0.9;
+	filter: drop-shadow(0 0 4px var(--fx-scan));
+}
+
+/* --- HUD chips (top-left) --- */
+.fx-hud {
+	position: absolute;
+	top: 14px;
+	left: 14px;
+	align-items: center;
+	gap: 7px;
+	font-family: var(--font-mono);
+	font-size: 11px;
+	letter-spacing: 0.03em;
+	padding: 5px 10px;
+	border-radius: 7px;
+	color: #f4f2ee;
+	background: rgba(18, 18, 16, 0.74);
+	backdrop-filter: blur(3px);
+}
+
+.fx-hud-dot {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--fx-scan);
+	box-shadow: 0 0 8px 1px var(--fx-scan);
+	animation: fxBlink 1.1s steps(1, end) infinite;
+}
+
+.fx-hud-sense .fx-hud-dot {
+	background: var(--fx-feel);
+	box-shadow: 0 0 8px 1px var(--fx-feel);
+}
+
+@keyframes fxBlink {
+	0%, 60% { opacity: 1; }
+	61%, 100% { opacity: 0.2; }
+}
+
+.fx-hud-conf {
+	margin-left: 3px;
+	padding-left: 8px;
+	border-left: 1px solid rgba(255, 255, 255, 0.22);
+	color: var(--fx-scan);
+	font-variant-numeric: tabular-nums;
+}
+
+/* --- climb: orange proprioceptive "feeling" waves at EACH foot (per-foot
+       origins positioned each frame in js/hero.js) --- */
+.fx-feet {
+	position: absolute;
+	inset: 0;
+}
+
+.fx-foot {
+	position: absolute;
+	width: 0;
+	height: 0;
+}
+
+.fx-foot span {
+	position: absolute;
+	left: 0;
+	top: 0;
+	width: 18px;
+	height: 18px;
+	margin: -9px 0 0 -9px;
+	border-radius: 50%;
+	border: 2px solid var(--fx-feel);
+	transform: scale(0.3);
+	opacity: 0;
+	animation: fxFootRipple 1.9s ease-out infinite;
+}
+
+.fx-foot span:nth-child(2) { animation-delay: 0.63s; }
+.fx-foot span:nth-child(3) { animation-delay: 1.26s; }
+
+@keyframes fxFootRipple {
+	0%   { transform: scale(0.3); opacity: 0; }
+	14%  { opacity: 0.8; }
+	100% { transform: scale(3.6); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.fx-hud-dot, .fx-foot span {
+		animation: none;
+	}
+	.fx-foot span:nth-child(1) { opacity: 0.55; transform: scale(2.4); }
+}
+
+/* Chapter switch: the stage overlays just crossfade; the panel content and
+   the body caption also slide up a touch as they fade, for a softer swap. */
 
 #hero-inner.switching #hero-callouts,
 #hero-inner.switching #hero-leaders,
+#hero-inner.switching #hero-fx {
+	opacity: 0;
+}
+
 #hero-inner.switching #hero-nav-label,
-#hero-inner.switching #hero-body,
 #hero-inner.switching #hero-diagram,
 #hero-inner.switching .hero-clip {
 	opacity: 0;
+	transform: translateY(14px);
+}
+
+#hero-inner.switching #hero-body {
+	opacity: 0;
+	transform: translateX(-50%) translateY(14px);
 }
 
 #hero-callouts,
 #hero-leaders {
-	transition: opacity 180ms ease;
+	transition: opacity 240ms ease;
 }
 
 /* --- Scroll cue --- */

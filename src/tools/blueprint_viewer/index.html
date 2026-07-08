@@ -38,6 +38,15 @@
 				<svg id="hero-leaders" aria-hidden="true"></svg>
 				<div id="hero-callouts"></div>
 
+				<!-- Per-policy stage FX (built by js/hero.js): walk = camera-scan
+				     cone + YOLO HUD; climb = per-foot proprioceptive "feeling"
+				     waves. Toggled by a fx-mode-* class on this element. -->
+				<div id="hero-fx" aria-hidden="true"></div>
+
+				<!-- Chapter body copy lives here (a lower-third over the stage)
+				     so the panel has room for the diagram + clip without scroll. -->
+				<p id="hero-body"></p>
+
 				<div id="hero-stage-tag">unitree go2 · o2 payload</div>
 
 				<div id="hero-zoom" role="group" aria-label="Zoom">
@@ -68,19 +77,21 @@
 				</div>
 				<div id="hero-dots" role="tablist" aria-label="Chapters"></div>
 
-				<p id="hero-body"></p>
-
 				<div id="hero-diagram" aria-hidden="true"></div>
 
 				<figure class="hero-clip">
-					<div class="hero-clip-frame" role="img" aria-label="Video clip placeholder">
-						<button type="button" class="hero-clip-play" aria-label="Play clip">
-							<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+					<div class="hero-clip-frame" id="hero-clip-frame">
+						<!-- Real Isaac Sim rollout footage, cut per chapter (js/hero.js
+						     sets the src). Muted + looped so it plays inline. -->
+						<video class="hero-clip-video" id="hero-clip-video" muted loop playsinline preload="metadata"></video>
+						<button type="button" class="hero-clip-play" id="hero-clip-play" aria-label="Play or pause clip">
+							<svg class="hero-clip-ic-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+							<svg class="hero-clip-ic-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3v14H7zM14 5h3v14h-3z" /></svg>
 						</button>
 						<span class="hero-clip-badge" id="hero-clip-badge">clip 01</span>
-						<span class="hero-clip-dur">mp4</span>
+						<span class="hero-clip-dur" id="hero-clip-dur">mp4</span>
 					</div>
-					<figcaption id="hero-clip-cap">Lorem ipsum clip caption.</figcaption>
+					<figcaption id="hero-clip-cap">Isaac Sim rollout — flat-ground follow gait.</figcaption>
 				</figure>
 			</aside>
 		</div>

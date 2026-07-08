@@ -18,7 +18,6 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { PALETTES, applyPaletteToDom } from './palette.js';
 import { BlueprintEdgesPass } from './BlueprintEdgesPass.js';
 import { buildPlaceholderRobot } from './PlaceholderRobot.js';
-import { PartLabels } from './PartLabels.js';
 import { PatientHuman } from './PatientHuman.js';
 
 // ===========================================================================
@@ -158,7 +157,6 @@ function applyTheme( name ) {
 	if ( logoMaterial ) logoMaterial.color.set( palette.logoColor );
 
 	if ( edgesPass ) edgesPass.setInkColor( palette.inkColorGl );
-	if ( partLabels ) partLabels.setInkColor( palette.ink );
 
 	themeToggle.textContent = name;
 	themeToggle.setAttribute( 'aria-pressed', name === 'dark' ? 'true' : 'false' );
@@ -644,6 +642,28 @@ const composer = new EffectComposer( renderer );
 const renderPass = new RenderPass( scene, camera );
 composer.addPass( renderPass );
 
+// Default (orbit-view) edge style, and the cinematic override applied by the
+// cinematic toggle. Kept as named constants (not magic numbers scattered across
+// the toggle) since both places must agree, and they were tuned together via
+// __viewer.edgeCoverage. Cinematic keeps the FULL silhouette but RAISES the
+// normal threshold so only the strongest structural creases ink (a few
+// "robotic" lines -- leg-body joins, camera mount, major panel seams -- not the
+// busy rivet mesh) and pushes the interior fade far out so those few lines
+// survive at the pulled-back framing distance. See cinematicToggle handler.
+const EDGE_NORMAL_THRESHOLD = 0.66;
+const EDGE_INTERIOR_FADE_NEAR = 4.0;
+const EDGE_INTERIOR_FADE_FAR = 10.0;
+// 0.9 (vs the orbit view's 0.66): only the strong structural creases ink -- a
+// FEW robotic lines (leg-body joins, the camera-mount box, major panel seams),
+// not the busy rivet/seam mesh. Verified via __viewer.edgeCoverage: at 0.9 the
+// robot's per-part silhouette stays ~90-100% covered (legs/feet/mount all keep
+// their outline, unlike the earlier over-flattened "interior strength 0") while
+// interior-line density on the body drops to ~12% -- a clean but still-machined
+// read. See the cinematic toggle handler.
+const CINE_NORMAL_THRESHOLD = 0.9;
+const CINE_INTERIOR_FADE_NEAR = 6.0;
+const CINE_INTERIOR_FADE_FAR = 32.0;
+
 const edgesPass = new BlueprintEdgesPass( scene, camera, {
 	inkColor: PALETTES[ currentThemeName ].inkColorGl,
 	// 0.4 was tuned on the primitive-built robot; the real Isaac Go2 mesh
@@ -655,13 +675,13 @@ const edgesPass = new BlueprintEdgesPass( scene, camera, {
 	// than a mesh of them, at every distance -- fewer strong lines also can't
 	// pile into a blob far away, which is why the fade band below can be
 	// pushed out so those lines survive to normal viewing distance.
-	normalThreshold: 0.66,
+	normalThreshold: EDGE_NORMAL_THRESHOLD,
 	// Interior-crease fade band (view-space metres). Pushed out from the
 	// original 2.0/6.5 so the (now-sparser) body lines PERSIST at close/medium
 	// viewing distance instead of the body going to bare outline the moment you
 	// step back -- they only thin out once the robot is genuinely far.
-	interiorFadeNear: 4.0,
-	interiorFadeFar: 10.0,
+	interiorFadeNear: EDGE_INTERIOR_FADE_NEAR,
+	interiorFadeFar: EDGE_INTERIOR_FADE_FAR,
 	// NOTE: this was originally 0.0025 and looked correct in code review,
 	// but empirically (see debug captures during development) it was WAY
 	// too tight for a real depth texture's quantization noise at these
@@ -683,13 +703,6 @@ const outputPass = new OutputPass();
 composer.addPass( outputPass );
 
 // ===========================================================================
-// Part labels overlay
-// ===========================================================================
-
-const partLabels = new PartLabels( canvasHost, camera );
-partLabels.setInkColor( PALETTES[ currentThemeName ].ink );
-
-// ===========================================================================
 // Model state (shared across load/placeholder/phase-switch/scrub)
 // ===========================================================================
 
@@ -705,6 +718,20 @@ let phaseActions = new Map(); // phaseName -> action
 let phaseClips = new Map();
 let currentPhase = 'follow';
 let usingPlaceholder = false;
+
+// ---------------------------------------------------------------------------
+// Unified timeline: the "follow" and "climb" clips are concatenated into ONE
+// continuous scrub timeline (they come from contiguous windows of the same
+// Isaac recording, so the robot + patient are spatially continuous across the
+// seam -- verified ~5-8 mm of drift at the join). `segments` is the ordered
+// list [{ name, clip, action, start, duration }]; `totalDuration` is the sum;
+// `globalTime` is the single authoritative playhead in [0, totalDuration].
+// The two phase chips become jump-to-segment shortcuts (not mode switches),
+// and the scrubber/play/readout all speak globalTime. See applyGlobalTime().
+// ---------------------------------------------------------------------------
+let segments = [];
+let totalDuration = 0;
+let globalTime = 0;
 
 // Follow-cam bookkeeping: last known robot_base world position, used to
 // translate the camera by the same delta the target moves each frame.
@@ -1171,34 +1198,115 @@ function setupActionsFromClips( clips ) {
 
 	}
 
+	// Build the unified timeline: concatenate whichever of follow/climb exist,
+	// in that order, into one continuous playhead. Each segment records its
+	// start offset on the global timeline so applyGlobalTime() can map a global
+	// time back to (segment, local time). See the module-state comment above.
+	segments = [];
+	let acc = 0;
+	for ( const name of [ 'follow', 'climb' ] ) {
+
+		const clip = phaseClips.get( name );
+		const action = phaseActions.get( name );
+		if ( ! clip || ! action ) continue;
+		segments.push( { name, clip, action, start: acc, duration: clip.duration } );
+		acc += clip.duration;
+
+	}
+	totalDuration = acc;
+	globalTime = 0;
+
 }
 
+/**
+ * Resolve a global timeline position to its segment + local (within-clip) time.
+ * The last segment whose start <= t wins; local time is clamped to that clip.
+ */
+function segmentAtGlobalTime( t ) {
+
+	t = THREE.MathUtils.clamp( t, 0, totalDuration );
+	let seg = segments[ 0 ] || null;
+	for ( const s of segments ) if ( t >= s.start - 1e-9 ) seg = s;
+	const local = seg ? THREE.MathUtils.clamp( t - seg.start, 0, seg.duration ) : 0;
+	return { seg, local };
+
+}
+
+/**
+ * Make `name`'s action the sole weighted (visible) one. Pure weight swap +
+ * phase-chip highlight; no time/slider change. Split out from applyGlobalTime
+ * so the patient-gait diagnostic (setPhase below, resetSlider:false) can
+ * activate a clip's weight before driving its time directly.
+ */
+function setActivePhase( name ) {
+
+	if ( ! phaseActions.has( name ) ) return;
+
+	currentPhase = name;
+
+	for ( const [ n, action ] of phaseActions ) action.weight = n === name ? 1 : 0;
+
+	phaseFollowBtn.setAttribute( 'aria-pressed', name === 'follow' ? 'true' : 'false' );
+	phaseClimbBtn.setAttribute( 'aria-pressed', name === 'climb' ? 'true' : 'false' );
+
+}
+
+/**
+ * THE single authoritative "show this instant of the unified timeline" call.
+ * Maps a global time to (segment, local), activates that segment, sets its
+ * action.time, forces a zero-delta pose re-eval (see the scrubbing comment
+ * block below), and syncs the patient at the SAME local time. Optionally
+ * updates the slider position to match.
+ */
+function applyGlobalTime( t, { updateSlider = true } = {} ) {
+
+	if ( ! mixer || segments.length === 0 ) return;
+
+	globalTime = THREE.MathUtils.clamp( t, 0, totalDuration );
+
+	const { seg, local } = segmentAtGlobalTime( globalTime );
+	if ( ! seg ) return;
+
+	setActivePhase( seg.name );
+	seg.action.time = local;
+	mixer.update( 0 );
+	patientHuman.sync( seg.name, local );
+
+	if ( updateSlider ) scrubber.value = String( totalDuration > 0 ? ( globalTime / totalDuration ) * 100 : 0 );
+	updateTimeReadout();
+
+}
+
+/** Jump the unified playhead to the start of a named segment (phase-chip click). */
+function jumpToSegment( name ) {
+
+	const seg = segments.find( ( s ) => s.name === name );
+	if ( ! seg ) return;
+	if ( isPlaying ) setPlaying( false );
+	applyGlobalTime( seg.start, { updateSlider: true } );
+
+}
+
+/**
+ * Back-compat shim for the patient-gait diagnostic (window.__viewer.patientDiag),
+ * which drives one clip's action.time directly and needs that clip weighted.
+ * resetSlider:true re-homes the unified playhead to the segment start (matching
+ * the old "reset to 0" semantics for that phase); resetSlider:false is a pure
+ * weight swap that leaves the caller's own time/slider handling intact.
+ */
 function setPhase( phaseName, { resetSlider = true } = {} ) {
 
 	if ( ! phaseActions.has( phaseName ) ) return;
 
-	currentPhase = phaseName;
-
-	for ( const [ name, action ] of phaseActions ) {
-
-		action.weight = name === phaseName ? 1 : 0;
-
-	}
-
-	phaseFollowBtn.setAttribute( 'aria-pressed', phaseName === 'follow' ? 'true' : 'false' );
-	phaseClimbBtn.setAttribute( 'aria-pressed', phaseName === 'climb' ? 'true' : 'false' );
-
 	if ( resetSlider ) {
 
-		const action = phaseActions.get( phaseName );
-		action.time = 0;
-		scrubber.value = '0';
-		if ( mixer ) mixer.update( 0 );
+		jumpToSegment( phaseName );
+
+	} else {
+
+		setActivePhase( phaseName );
 
 	}
-
-	patientHuman.sync( phaseName, phaseActions.get( phaseName ).time );
-	updateTimeReadout();
 
 }
 
@@ -1239,29 +1347,20 @@ function scrubToPercent( pct ) {
 
 	pct = THREE.MathUtils.clamp( pct, 0, 100 );
 
-	const action = phaseActions.get( currentPhase );
-	if ( ! action || ! mixer ) return;
-
-	const clip = phaseClips.get( currentPhase );
-	const t = ( pct / 100 ) * clip.duration;
-
-	action.time = t;      // (1)+(2) above: set the authoritative scrub time
-	mixer.update( 0 );    // (3) above: force pose re-evaluation, advance nothing
-	patientHuman.sync( currentPhase, t );
+	// pct now spans the WHOLE unified timeline (follow + climb), not one clip.
+	// applyGlobalTime picks the right segment/local time and drives everything.
+	applyGlobalTime( ( pct / 100 ) * totalDuration, { updateSlider: false } );
 
 	scrubber.value = String( pct );
-	updateTimeReadout();
 
 }
 
 function updateTimeReadout() {
 
-	const action = phaseActions.get( currentPhase );
-	const clip = phaseClips.get( currentPhase );
-	if ( ! action || ! clip ) return;
+	if ( totalDuration <= 0 ) return;
 
-	const t = action.time.toFixed( 2 ).padStart( 5, '0' );
-	const total = clip.duration.toFixed( 2 ).padStart( 5, '0' );
+	const t = globalTime.toFixed( 2 ).padStart( 5, '0' );
+	const total = totalDuration.toFixed( 2 ).padStart( 5, '0' );
 	timeReadout.textContent = `t ${t} / ${total} s · ${currentPhase}`;
 
 }
@@ -1276,18 +1375,23 @@ scrubber.addEventListener( 'input', () => {
 } );
 
 // ===========================================================================
-// Phase buttons
+// Phase buttons — now jump-to-segment shortcuts on the single unified timeline
+// (follow starts at t=0, climb starts at the follow clip's end), not mode
+// switches. The active chip is highlighted by applyGlobalTime as the playhead
+// crosses the seam, so scrubbing/playing past the join re-lights the chips too.
 // ===========================================================================
 
-phaseFollowBtn.addEventListener( 'click', () => setPhase( 'follow' ) );
-phaseClimbBtn.addEventListener( 'click', () => setPhase( 'climb' ) );
+phaseFollowBtn.addEventListener( 'click', () => jumpToSegment( 'follow' ) );
+phaseClimbBtn.addEventListener( 'click', () => jumpToSegment( 'climb' ) );
 
 // ===========================================================================
 // Optional play/pause chip
 //
-// Advances activeAction.time itself from rAF timestamp deltas, then calls
-// mixer.update(0) (never mixer.update(dt)) and syncs the slider each
-// frame — see the big comment block above for why. Stops at clip end.
+// Advances the GLOBAL playhead itself from rAF timestamp deltas, then routes
+// through applyGlobalTime (mixer.update(0), never mixer.update(dt)) so the same
+// single authoritative pose path drives dragging and playing alike. Plays
+// straight through the follow->climb seam and stops at the end of the whole
+// unified timeline.
 // ===========================================================================
 
 function setPlaying( shouldPlay ) {
@@ -1304,29 +1408,20 @@ playToggle.addEventListener( 'click', () => setPlaying( ! isPlaying ) );
 function stepPlayback( nowMs ) {
 
 	if ( ! isPlaying ) return;
-
-	const action = phaseActions.get( currentPhase );
-	const clip = phaseClips.get( currentPhase );
-	if ( ! action || ! clip || ! mixer ) return;
+	if ( ! mixer || segments.length === 0 ) return;
 
 	const dtSec = Math.max( 0, ( nowMs - lastPlaybackTimestamp ) / 1000 );
 	lastPlaybackTimestamp = nowMs;
 
-	let nextTime = action.time + dtSec;
-	if ( nextTime >= clip.duration ) {
+	let nextTime = globalTime + dtSec;
+	if ( nextTime >= totalDuration ) {
 
-		nextTime = clip.duration;
+		nextTime = totalDuration;
 		setPlaying( false );
 
 	}
 
-	action.time = nextTime;
-	mixer.update( 0 ); // scrub-authoritative: never mixer.update(dtSec)
-	patientHuman.sync( currentPhase, nextTime );
-
-	const pct = clip.duration > 0 ? ( nextTime / clip.duration ) * 100 : 0;
-	scrubber.value = String( pct );
-	updateTimeReadout();
+	applyGlobalTime( nextTime, { updateSlider: true } );
 
 }
 
@@ -1375,6 +1470,20 @@ cinematicToggle.addEventListener( 'click', () => {
 	cinematicEnabled = ! cinematicEnabled;
 	cinematicToggle.textContent = `cinematic · ${ cinematicEnabled ? 'on' : 'off' }`;
 	cinematicToggle.setAttribute( 'aria-pressed', cinematicEnabled ? 'true' : 'false' );
+
+	// Cinematic gets a cleaner ink treatment: KEEP the full silhouette outline
+	// (depth edges, always on) but RAISE the interior-crease threshold so only a
+	// few strong structural "robotic" lines survive (leg-body joins, the camera
+	// mount, major panel seams) instead of the busy rivet/seam mesh -- and push
+	// the interior fade far out so those few lines don't wash away at the
+	// pulled-back framing. Restores the orbit-view style on the way out. Interior
+	// strength stays 1 in both (the earlier "strength 0" over-flattened the robot
+	// -- it also killed the structural silhouettes the outline needs).
+	edgesPass.setNormalThreshold( cinematicEnabled ? CINE_NORMAL_THRESHOLD : EDGE_NORMAL_THRESHOLD );
+	edgesPass.setInteriorFade(
+		cinematicEnabled ? CINE_INTERIOR_FADE_NEAR : EDGE_INTERIOR_FADE_NEAR,
+		cinematicEnabled ? CINE_INTERIOR_FADE_FAR : EDGE_INTERIOR_FADE_FAR,
+	);
 
 	if ( cinematicEnabled ) {
 
@@ -1444,9 +1553,7 @@ function finishModelSetup( root, clips, baseNode ) {
 	mixer = new THREE.AnimationMixer( root );
 	setupActionsFromClips( clips );
 
-	partLabels.setSceneRoot( root );
-
-	setPhase( 'follow', { resetSlider: true } );
+	applyGlobalTime( 0, { updateSlider: true } );
 
 	hasLastBasePos = false;
 	fitCameraToObject( robotBase );
@@ -1664,8 +1771,6 @@ function renderFrame() {
 	// state and stomp the shot we just set (blueprint-viewer memory).
 	if ( ! cinematicActive ) controls.update();
 
-	partLabels.update( canvasHost.clientWidth, canvasHost.clientHeight );
-
 	updatePlumbLine();
 
 	composer.render();
@@ -1693,16 +1798,17 @@ window.__viewer = {
 	},
 	getState() {
 
+		// timeSec/duration/pct now describe the UNIFIED timeline (follow+climb);
+		// `phase` is which segment the playhead is currently in, and
+		// `segmentTimeSec` is the local time within that segment's own clip.
 		const action = phaseActions.get( currentPhase );
-		const clip = phaseClips.get( currentPhase );
-		const timeSec = action ? action.time : 0;
-		const duration = clip ? clip.duration : 0;
 
 		return {
 			phase: currentPhase,
-			timeSec,
-			duration,
-			pct: duration > 0 ? ( timeSec / duration ) * 100 : 0,
+			timeSec: globalTime,
+			duration: totalDuration,
+			pct: totalDuration > 0 ? ( globalTime / totalDuration ) * 100 : 0,
+			segmentTimeSec: action ? action.time : 0,
 			usingPlaceholder,
 			theme: currentThemeName,
 		};
@@ -1974,6 +2080,178 @@ window.__viewer = {
 		updateTimeReadout();
 
 		return { perClip, violations: violations.slice( 0, 40 ), ikSelfCheck: patientHuman.ikSelfCheckFailed };
+
+	},
+	/**
+	 * EDGE-COVERAGE PROBE (the "what's in the outline and what isn't" diagnostic).
+	 *
+	 * For the CURRENT camera/frame, measures per robot part how much of its
+	 * on-screen silhouette boundary is actually being inked by the edge pass, and
+	 * by which edge TYPE (depth/silhouette vs normal/interior crease), plus how
+	 * dense the interior lines are. This is the objective signal used to tune the
+	 * cinematic edge style (see the cinematic toggle): the goal is ~full boundary
+	 * coverage on every part (legs/feet/body all outlined) with only a MODEST
+	 * interior-line density (a few structural "robotic" lines, not a busy mesh).
+	 *
+	 * Method: (1) render one composer frame with the real materials to populate
+	 * the edge mask, read it back (its .r=combined, .g=depth, .b=normal channels,
+	 * see BlueprintEdgesPass); (2) re-render the scene with each mesh flat-colored
+	 * by a per-PART id (unlit, tone-mapping off, into a linear RT so the id reads
+	 * back exactly), read that back; (3) for each part, a pixel is a BOUNDARY
+	 * pixel if any 4-neighbour belongs to a different part/background -- count how
+	 * many boundary pixels have ink within `radius` px, split by edge type, and
+	 * separately count interior (non-boundary) inked pixels. Read-only: restores
+	 * every swapped material before returning.
+	 *
+	 * @returns per-part { areaPx, boundaryPx, silhouetteCovPct (any edge),
+	 *   depthCovPct (depth edge only), interiorInkPct }.
+	 */
+	edgeCoverage( { edgeThresh = 0.35, radius = 1 } = {} ) {
+
+		if ( ! modelRoot ) return { error: 'no model loaded' };
+
+		const w = edgesPass._maskTarget.width;
+		const h = edgesPass._maskTarget.height;
+
+		// --- part bucketing: nearest named ancestor -> bucket ---
+		const legLinks = [];
+		for ( const q of [ 'FL', 'FR', 'RL', 'RR' ] ) for ( const seg of [ 'hip', 'thigh', 'calf', 'foot' ] ) legLinks.push( `${q}_${seg}` );
+		const buckets = [ 'body', ...legLinks, 'payload', 'patient', 'structure', 'ground' ];
+		const idOf = new Map( buckets.map( ( b, i ) => [ b, i + 1 ] ) );
+
+		const bucketFor = ( mesh ) => {
+
+			let p = mesh;
+			while ( p ) {
+
+				if ( legLinks.includes( p.name ) ) return p.name;
+				if ( p.name === 'robot_base' ) return 'body';
+				if ( p.name === 'oxygen_tank' || p.name === 'cradle_rails' ) return 'payload';
+				if ( p.name === 'patient_human_anchor' ) return 'patient';
+				if ( p.name === 'stairs' || p.name === 'handrails' ) return 'structure';
+				if ( p.name === 'ground' ) return 'ground';
+				p = p.parent;
+
+			}
+			return null;
+
+		};
+
+		// --- 1) mask (real materials) ---
+		composer.render();
+		const maskBuf = new Uint8Array( w * h * 4 );
+		renderer.readRenderTargetPixels( edgesPass._maskTarget, 0, 0, w, h, maskBuf );
+
+		// --- 2) per-part id render ---
+		const idMats = new Map();
+		const idMat = ( id ) => {
+
+			if ( ! idMats.has( id ) ) {
+
+				const m = new THREE.MeshBasicMaterial();
+				m.toneMapped = false;
+				m.color.setRGB( id / 255, 0, 0 ); // linear working space -> reads back as `id` in the R byte
+				idMats.set( id, m );
+
+			}
+			return idMats.get( id );
+
+		};
+
+		const idRT = new THREE.WebGLRenderTarget( w, h, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter } );
+
+		const restore = [];
+		scene.traverse( ( n ) => {
+
+			if ( ! n.isMesh ) return;
+			restore.push( [ n, n.material ] );
+			const b = bucketFor( n );
+			n.material = idMat( b ? idOf.get( b ) : 0 );
+
+		} );
+
+		const prevBg = scene.background;
+		const prevRT = renderer.getRenderTarget();
+		const prevClear = new THREE.Color();
+		renderer.getClearColor( prevClear );
+		const prevAlpha = renderer.getClearAlpha();
+
+		scene.background = null;
+		renderer.setRenderTarget( idRT );
+		renderer.setClearColor( 0x000000, 1 );
+		renderer.clear( true, true, false );
+		renderer.render( scene, camera );
+
+		const idBuf = new Uint8Array( w * h * 4 );
+		renderer.readRenderTargetPixels( idRT, 0, 0, w, h, idBuf );
+
+		// restore
+		renderer.setRenderTarget( prevRT );
+		renderer.setClearColor( prevClear, prevAlpha );
+		scene.background = prevBg;
+		for ( const [ n, mat ] of restore ) n.material = mat;
+		idRT.dispose();
+		for ( const m of idMats.values() ) m.dispose();
+
+		// --- 3) coverage stats ---
+		const idAt = ( x, y ) => ( x < 0 || y < 0 || x >= w || y >= h ) ? 0 : Math.round( idBuf[ ( y * w + x ) * 4 ] );
+		const chanMax = ( off, x, y ) => {
+
+			let m = 0;
+			for ( let dy = - radius; dy <= radius; dy ++ ) for ( let dx = - radius; dx <= radius; dx ++ ) {
+
+				const xx = x + dx, yy = y + dy;
+				if ( xx >= 0 && yy >= 0 && xx < w && yy < h ) m = Math.max( m, maskBuf[ ( yy * w + xx ) * 4 + off ] );
+
+			}
+			return m / 255;
+
+		};
+
+		const stats = {};
+		for ( const b of buckets ) stats[ b ] = { area: 0, boundary: 0, inkedAny: 0, inkedDepth: 0, interior: 0, interiorInked: 0 };
+
+		for ( let y = 0; y < h; y ++ ) for ( let x = 0; x < w; x ++ ) {
+
+			const id = idAt( x, y );
+			if ( id === 0 ) continue;
+			const b = buckets[ id - 1 ];
+			if ( ! b ) continue;
+			const st = stats[ b ];
+			st.area ++;
+
+			const isBoundary = idAt( x + 1, y ) !== id || idAt( x - 1, y ) !== id || idAt( x, y + 1 ) !== id || idAt( x, y - 1 ) !== id;
+			if ( isBoundary ) {
+
+				st.boundary ++;
+				if ( chanMax( 0, x, y ) >= edgeThresh ) st.inkedAny ++;
+				if ( chanMax( 1, x, y ) >= edgeThresh ) st.inkedDepth ++;
+
+			} else {
+
+				st.interior ++;
+				if ( maskBuf[ ( y * w + x ) * 4 ] / 255 >= edgeThresh ) st.interiorInked ++;
+
+			}
+
+		}
+
+		const parts = {};
+		for ( const b of buckets ) {
+
+			const s = stats[ b ];
+			if ( s.area === 0 ) continue;
+			parts[ b ] = {
+				areaPx: s.area,
+				boundaryPx: s.boundary,
+				silhouetteCovPct: + ( 100 * s.inkedAny / Math.max( 1, s.boundary ) ).toFixed( 1 ),
+				depthCovPct: + ( 100 * s.inkedDepth / Math.max( 1, s.boundary ) ).toFixed( 1 ),
+				interiorInkPct: + ( 100 * s.interiorInked / Math.max( 1, s.interior ) ).toFixed( 1 ),
+			};
+
+		}
+
+		return { w, h, edgeThresh, radius, parts };
 
 	},
 	/**
