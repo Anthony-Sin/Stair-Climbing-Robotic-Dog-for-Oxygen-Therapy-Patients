@@ -265,7 +265,7 @@ log_event(
         else "(ground_truth: analytic terrain height)")),
     pgtt_height_backend=_pgtt_backend,
 )
-from go2_locomotion.go2_locomotion_utils import PARKOUR_DEFAULT_POSE, PGTT_DEFAULT_POSE, GO2_FOLDED_POSE, classify_dof, get_dof_names, quat_to_matrix
+from go2_locomotion.go2_locomotion_utils import PARKOUR_DEFAULT_POSE, PGTT_DEFAULT_POSE, GO2_FOLDED_POSE, classify_dof, get_dof_names, quat_to_matrix, safe_joint_vector
 from go2_locomotion.locomotion_arbiter import (
     ClimbWzInputs, arbitrate_climb_wz, arbitrate_climb_vx,
 )
@@ -447,6 +447,11 @@ def _cmd_receiver_thread(port: int) -> None:
         try:
             data, _ = sock.recvfrom(1024)
             payload = json.loads(data.decode("utf-8"))
+            
+            with _cmd_lock:
+                if _cmd_vel.get("count", 0) == 0:
+                    last_cmd_seq = -1
+                    
             # Drop a reordered old command datagram (seq older than the last applied).
             # Datagrams without a seq (older senders) are always accepted.
             _cmd_seq = payload.get("seq")
@@ -2741,6 +2746,7 @@ from env.go2_control import _active_default_pose, _active_spawn_z, _body_rp_rate
 from env.perception_noise import apply_parkour_depth_noise
 from env.person_sim import PatientLocomotionState, _patient_body_log, _patient_gait_body_z, _patient_lowest_foot, _patient_stand_height, _read_final_scene_robot_pose, ensure_person_animation_loaded
 from env.profiler import _StepProfiler
+from env.robot_frame_recorder import _RobotFrameRecorder
 from env.scene_build import _set_xform_ops, setup_scene_lighting, spawn_scene_visual_details, update_scene_lighting
 from env.terrain_queries import _collapse_height_threshold, _get_person_pose_z, _person_visual_z, _pgtt_raycast_height, _physx_raycast_distance, get_terrain_height
 from env.world_setup import Go2SceneHandle, _resolve_go2_usd, build_world, resolve_go2_body_prim_path
@@ -3203,6 +3209,12 @@ def main() -> None:
     if args.warm_isaac:
         if _warm_publisher is None:
             _warm_publisher = FramePublisher(host=args.frame_host, port=args.frame_port)
+            # Gate the FIRST warm episode too (not just resets between episodes).
+            # Without this, episode 1 races into Docker Desktop's stale TCP proxy
+            # before the container's port-forward is wired, and frames go into a
+            # black hole (90s timeout). The gate clears when Docker's first UDP
+            # command arrives at the cmd_receiver_thread (line ~529).
+            _warm_publisher.set_frame_send_gated(True)
         publisher = _warm_publisher
     else:
         publisher = FramePublisher(host=args.frame_host, port=args.frame_port)
@@ -3437,6 +3449,35 @@ def main() -> None:
                   ramp_steps=_standup.ramp_steps, floor_hold=_standup.floor_hold_steps,
                   top_hold=_standup.top_hold_steps, folded_z=round(_standup.folded_z, 3),
                   joint_ramp=bool(_standup.ok))
+
+    # Opt-in per-physics-step robot-state recorder. Reads SIM_ROBOT_FRAMES ONCE here (a
+    # local, not module-global, instance so warm-mode episodes each get a fresh recorder
+    # pointed at THIS episode's debug dir -- LOGGER is already retargeted per-episode by
+    # _warm_retarget_logger before main() is called, see that function). When the flag is
+    # unset, `enabled` is False and everything below the "if" is skipped -- zero extra
+    # work (no dof_names/stair_spec read, no file open) beyond this one construction.
+    _robot_frame_recorder = _RobotFrameRecorder(
+        enabled=(os.environ.get("SIM_ROBOT_FRAMES") == "1"),
+        debug_dir=os.path.dirname(str(getattr(LOGGER, "sim_log_path", "") or "")),
+        logger=LOGGER, log_event_fn=log_event,
+    )
+    _robot_frame_dof_names = []
+    if _robot_frame_recorder.enabled:
+        _robot_frame_dof_names = get_dof_names(go2)
+        _active_stair_spec = get_active_stairs()
+        _robot_frame_recorder.write_header(
+            dof_names=_robot_frame_dof_names,
+            stair_spec={
+                "name": _active_stair_spec.name,
+                "start_x_m": round(float(_active_stair_spec.start_x_m), 5),
+                "step_height_m": round(float(_active_stair_spec.step_height_m), 5),
+                "step_depth_m": round(float(_active_stair_spec.step_depth_m), 5),
+                "step_count": int(_active_stair_spec.step_count),
+                "half_width_m": round(float(_active_stair_spec.half_width_m), 5),
+                "landing_depth_m": round(float(_active_stair_spec.landing_depth_m), 5),
+                "handrail": bool(_active_stair_spec.handrail),
+            },
+        )
 
     try:
         while simulation_app.is_running():
@@ -4169,7 +4210,48 @@ def main() -> None:
                         "pos": (px, py, pz),
                         "yaw": float(getattr(person, "yaw_rad", 0.0))
                     })
-                
+
+                # Opt-in per-step robot-frame recording (SIM_ROBOT_FRAMES=1). Placed here so
+                # every value read below was produced EARLIER in this same loop iteration (see
+                # CLAUDE.md 8.5 -- never read a same-frame value before its producer runs):
+                #   - stair_phase_now: set at L4119 (stair_phase_now = str(stair_demo_now...))
+                #   - stairs_action_active: set at L3596, inside the L3576 "with _cmd_lock:" block
+                #   - _go2_locomotion_state.handoff: (re)assigned inside _step_go2_locomotion(),
+                #     called at L3868 (nonzero-command branch) / L3878 (hold branch) -- both
+                #     precede this point in the same iteration; may be stale-by-one-frame ONLY
+                #     on the spawn-freeze branch (L3846 record_go2_telemetry, no .handoff write),
+                #     a pre-existing property of this dict (same staleness the L4343 fall_diag
+                #     "handoff=_go2_locomotion_state.handoff" read already lives with), not
+                #     something introduced here.
+                #   - px, py, pz: computed just above in this same patient block (L4201-4203).
+                if _robot_frame_recorder.enabled:
+                    try:
+                        _rf_pos, _rf_quat = go2.get_world_pose()
+                        _rf_handoff = _go2_locomotion_state.handoff
+                        _rf_patient = None
+                        if _patient_state is not None:
+                            _rf_patient = {
+                                "pos": [px, py, pz],
+                                "yaw_rad": float(getattr(_patient_state, "heading_yaw", 0.0)),
+                            }
+                        _robot_frame_recorder.write_frame(
+                            t=motion_elapsed_sim_sec,
+                            step=step_count,
+                            base_pos=_rf_pos,
+                            base_quat_wxyz=_rf_quat,
+                            dof_pos=safe_joint_vector(go2, ("get_joint_positions",), len(_robot_frame_dof_names)),
+                            handoff_state=(_rf_handoff.get("handoff_state") if _rf_handoff else None),
+                            stair_phase=stair_phase_now,
+                            stairs_action_active=stairs_action_active,
+                            patient=_rf_patient,
+                        )
+                    except Exception as _rf_exc:
+                        _robot_frame_recorder.note_failure(
+                            "robot_frame_recorder_step_failed",
+                            "SIM_ROBOT_FRAMES per-step data gathering raised; disabling for the rest of this run",
+                            error=str(_rf_exc),
+                        )
+
                 # Monitor end conditions
                 now_mono = time.monotonic()
                 elapsed_motion = motion_elapsed_sim_sec
@@ -4375,6 +4457,44 @@ def main() -> None:
                         motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
                         robot_stair_phase_sim_sec=round(float(robot_stair_phase_sim_sec), 3),
                         robot_top_landing_seen=bool(robot_top_landing_seen),
+                        stair_phase=stair_phase_now,
+                    )
+                    break
+
+                # Condition 3: failed to start. If the robot never moved 1m after 60s, it's stuck.
+                if not _robot_has_moved and motion_elapsed_sim_sec > 60.0:
+                    evaluation_done = True
+                    evaluation_exit_reason = "failed_to_start"
+                    log_event(
+                        LOGGER,
+                        logging.WARNING,
+                        "evaluation_exit",
+                        "Robot failed to move >1m within 60s of motion release; stopping run early",
+                        reason=evaluation_exit_reason,
+                        motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
+                        stair_phase=stair_phase_now,
+                    )
+                    break
+
+                # Condition 4: climb stalled on the staircase.
+                # If the dual-policy handoff controller declares the climb STALLED, we exit.
+                # When the blind RL policy gets wedged on a stair and issues a stall heartbeat,
+                # there's no reason to retry for 90s in a sweep. Fail fast.
+                _handoff_stalled = False
+                if _PGTT_HANDOFF is not None and getattr(_PGTT_HANDOFF.cfg, "enabled", False):
+                    if _go2_locomotion_state.handoff and _go2_locomotion_state.handoff.get("handoff_climb_stall_retries", 0) > 0:
+                        _handoff_stalled = True
+                
+                if _handoff_stalled:
+                    evaluation_done = True
+                    evaluation_exit_reason = "climb_stalled"
+                    log_event(
+                        LOGGER,
+                        logging.WARNING,
+                        "evaluation_exit",
+                        "Climb stalled mid-staircase with no vertical progress; stopping run early",
+                        reason=evaluation_exit_reason,
+                        motion_elapsed_sim_sec=round(float(motion_elapsed_sim_sec), 3),
                         stair_phase=stair_phase_now,
                     )
                     break
@@ -4724,6 +4844,10 @@ def main() -> None:
                               empty_record_ticks=int(_follow_view_empty_record_ticks))
             except Exception:
                 pass
+        # Close robot_frames.jsonl (SIM_ROBOT_FRAMES=1) unconditionally, same reasoning as
+        # the video writers above: each episode (including every warm-mode episode) must
+        # finalize its own file, not just the last one before Kit shuts down.
+        _robot_frame_recorder.close()
         if not args.warm_isaac:
             simulation_app.close()
             log_event(LOGGER, logging.INFO, "simulation_shutdown", "Simulation shutdown completed")

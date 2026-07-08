@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Person-Follow Sweep</title>
+<style>
+  body { background:#0d1117; color:#e6edf3; font-family:sans-serif; margin:0; padding:16px; }
+  h1 { font-size:1.4em; color:#58a6ff; margin:0 0 4px; }
+  .subtitle { color:#8b949e; font-size:.9em; margin:0 0 16px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(400px,1fr)); gap:16px; }
+  .card { background:#161b22; border-radius:8px; overflow:hidden; border:1px solid #30363d; }
+  .label { padding:8px 12px; font-weight:bold; font-size:.95em; border-bottom:1px solid #30363d; }
+  video { width:100%; display:block; background:#000; max-height:280px; }
+  .meta { padding:8px 12px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .pill { padding:3px 10px; border-radius:12px; font-size:.8em; font-weight:bold; color:#fff; }
+  .verdict { color:#8b949e; font-size:.85em; }
+  .steps { color:#8b949e; font-size:.85em; margin-left:auto; }
+</style>
+</head>
+<body>
+<h1>Person-Follow Sweep</h1>
+<p class="subtitle">PGTT walk &middot; blind-RL climb &middot; YOLO person-follow &middot; +O&sup2; payload</p>
+<div class="grid">
+  <div class="card">
+    <div class="label">0.130 m  ~5in</div>
+    <video controls preload="metadata">
+      <source src="../../run_sim_20260705_205138_302/videos/scene_view.mp4" type="video/mp4">
+    </video>
+    <div class="meta">
+      <span class="pill" style="background:#2e7d32">REACHED TOP</span>
+      <span class="verdict">COLLIDED</span>
+      <span class="steps">13.9 / 14 steps</span>
+    </div>
+  </div>
+  <div class="card">
+    <div class="label">0.140 m  ~6in</div>
+    <video controls preload="metadata">
+      <source src="../../run_sim_20260705_210246_360/videos/scene_view.mp4" type="video/mp4">
+    </video>
+    <div class="meta">
+      <span class="pill" style="background:#2e7d32">REACHED TOP</span>
+      <span class="verdict">COLLIDED</span>
+      <span class="steps">13.9 / 14 steps</span>
+    </div>
+  </div>
+  <div class="card">
+    <div class="label">0.150 m  6"  ADA maximum</div>
+    <video controls preload="metadata">
+      <source src="../../run_sim_20260705_211333_147/videos/scene_view.mp4" type="video/mp4">
+    </video>
+    <div class="meta">
+      <span class="pill" style="background:#2e7d32">REACHED TOP</span>
+      <span class="verdict">COLLIDED</span>
+      <span class="steps">14.0 / 14 steps</span>
+    </div>
+  </div>
+  <div class="card">
+    <div class="label">0.175 m  7"  IBC standard</div>
+    <video controls preload="metadata">
+      <source src="../../run_sim_20260705_212719_781/videos/scene_view.mp4" type="video/mp4">
+    </video>
+    <div class="meta">
+      <span class="pill" style="background:#546e7a">DID NOT REACH</span>
+      <span class="verdict">COLLIDED</span>
+      <span class="steps">4.4 / 14 steps</span>
+    </div>
+  </div>
+  <div class="card">
+    <div class="label">0.198 m  7.75"  comm. max</div>
+    <video controls preload="metadata">
+      <source src="../../run_sim_20260705_213738_475/videos/scene_view.mp4" type="video/mp4">
+    </video>
+    <div class="meta">
+      <span class="pill" style="background:#546e7a">DID NOT REACH</span>
+      <span class="verdict">NO REACH</span>
+      <span class="steps">0.0 / 14 steps</span>
+    </div>
+  </div>
+</div>
+</body>
+</html>

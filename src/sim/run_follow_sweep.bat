@@ -34,6 +34,8 @@ if /i "%~1"=="--timeout"             ( set "TIMEOUT=%~2"          & shift & shif
 if /i "%~1"=="--windowed"            ( set "WINDOWED=-Windowed"   & shift & goto parse )
 if /i "%~1"=="--no-presentation"     ( set "NO_PRES=-NoPresentation" & shift & goto parse )
 if /i "%~1"=="--montage-seconds"     ( set "MONTAGE=%~2"          & shift & shift & goto parse )
+if /i "%~1"=="--person-approach-turns" ( set "TURNS=%~2"          & shift & shift & goto parse )
+if /i "%~1"=="--person-approach-amplitude" ( set "AMP=%~2"        & shift & shift & goto parse )
 echo Unknown argument: %~1
 goto :eof
 
@@ -59,6 +61,8 @@ if defined COLD      set "PS_CMD=%PS_CMD% %COLD%"
 if defined KEEP_WARM set "PS_CMD=%PS_CMD% %KEEP_WARM%"
 if defined WINDOWED  set "PS_CMD=%PS_CMD% %WINDOWED%"
 if defined NO_PRES   set "PS_CMD=%PS_CMD% %NO_PRES%"
+if defined TURNS     set "PS_CMD=%PS_CMD% -PersonApproachTurns %TURNS%"
+if defined AMP       set "PS_CMD=%PS_CMD% -PersonApproachAmplitude %AMP%"
 
 echo.
 echo run_follow_sweep : launching person-follow stair sweep

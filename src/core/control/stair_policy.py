@@ -240,7 +240,7 @@ def _apply_stair_command_policy(
     # without a fresh detection over-rotates the body and falls (the original gate intent).
     # In parkour mode steering is via delta_yaw (the predicted bearing), not this wz, so the
     # robot still aims at the last-known person while the floor keeps it climbing.
-    if not bool(debug_info.get("person_detected", False)):
+    if not getattr(args, "stair_waypoint_test", False) and not bool(debug_info.get("person_detected", False)):
         lost_age = debug_info.get("lost_age_sec")
         lost_grace = debug_info.get("lost_search_timeout_sec")
         brief_loss = (
@@ -280,7 +280,7 @@ def _apply_stair_command_policy(
     # Require at least one sensor-confirmed (non-latched-only) depth reading before
     # engaging the full near climb policy.  This prevents reaction to distant YOLO
     # detections where depth could not be measured -- but still slow the approach.
-    if stair_depth_m is None and not bool(debug_info.get("stairs_depth_ever_confirmed", False)):
+    if not getattr(args, "stair_waypoint_test", False) and stair_depth_m is None and not bool(debug_info.get("stairs_depth_ever_confirmed", False)):
         debug_info["stairs_action_active"] = False
         debug_info["stairs_gated_no_depth"] = True
         debug_info["stairs_approach_active"] = bool(approach_slowed)

@@ -252,6 +252,7 @@ foreach ($h in $Heights) {
         $exit = $LASTEXITCODE
     } else {
         $simArgs.WarmIsaac   = $true
+        $simArgs.WarmDocker  = $true
         $simArgs.WarmMaxRuns = ($Heights.Count + 5)
         $rs0 = 0
         $st0 = Get-WarmStatus
@@ -291,6 +292,8 @@ foreach ($h in $Heights) {
             Write-Host "Shutting down warm Isaac (pid $($stEnd.pid)) so the next sweep boots fresh..." -ForegroundColor DarkGray
             & $Launcher -WarmShutdown | Out-Null
         }
+        Write-Host "Shutting down warm Docker container so the next sweep boots fresh..." -ForegroundColor DarkGray
+        & wsl.exe -e bash -c "docker rm -f go2-warm-sim >/dev/null 2>&1"
     }
 }
 

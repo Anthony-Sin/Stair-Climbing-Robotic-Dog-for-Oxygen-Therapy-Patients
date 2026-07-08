@@ -98,6 +98,55 @@ def generate_graphs(eps, rows, graphs_dir):
         _save(fig, "g6_dashboard.png")
     except Exception as exc:
         log(f"WARNING: dashboard failed: {exc}")
+
+    # training-report style 2x2 dashboard (highly stylized custom layout)
+    try:
+        # Custom dark theme specific to the training report aesthetic
+        fig = plt.figure(figsize=(18, 10.5), facecolor="#0d1117")
+        fig.patch.set_facecolor("#0d1117")
+        
+        # 4 quadrant layout
+        gs = fig.add_gridspec(2, 2, wspace=0.25, hspace=0.35, left=0.06, right=0.96, top=0.88, bottom=0.08)
+        axes = [fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1]), 
+                fig.add_subplot(gs[1, 0]), fig.add_subplot(gs[1, 1])]
+        
+        for ax in axes:
+            ax.set_facecolor("#0d1117")
+            ax.grid(color="#ffffff", alpha=0.05, linestyle="-", linewidth=1)
+            for spine in ax.spines.values():
+                spine.set_color("#30363d")
+                spine.set_linewidth(1.2)
+            ax.tick_params(colors="#8b949e", labelsize=10, width=1.2, color="#30363d")
+
+        # 1 · Climb Profile
+        _plot_climb_profile(axes[0], eps)
+        axes[0].set_title("1 · Climb Profile (Body Height vs Progress)", color="#e6edf3", fontsize=13, fontweight="bold", pad=15)
+        axes[0].set_ylabel("body height (m)", color="#8b949e", fontsize=11)
+        axes[0].set_xlabel("forward distance (m)", color="#8b949e", fontsize=11)
+
+        # 2 · Steps Climbed
+        _plot_steps(axes[1], rows)
+        axes[1].set_title("2 · Curriculum Progress (Steps vs Riser)", color="#e6edf3", fontsize=13, fontweight="bold", pad=15)
+        axes[1].set_ylabel("steps climbed", color="#8b949e", fontsize=11)
+
+        # 3 · Reach Status
+        _plot_reach(axes[2], rows)
+        axes[2].set_title("3 · Reach Status / Survival", color="#e6edf3", fontsize=13, fontweight="bold", pad=15)
+        axes[2].set_ylabel("forward reach (m)", color="#8b949e", fontsize=11)
+
+        # 4 · Stability
+        _plot_stability(axes[3], rows)
+        axes[3].set_title("4 · Stability (Pitch/Roll peak)", color="#e6edf3", fontsize=13, fontweight="bold", pad=15)
+        axes[3].set_ylabel("max tilt (deg)", color="#8b949e", fontsize=11)
+
+        # Header titles
+        fig.text(0.06, 0.95, "Evaluation Sweep Report", color="#e6edf3", fontsize=22, fontweight="bold")
+        fig.text(0.06, 0.915, "Blind-RL Policy · Realistic Stair Sweep · +O₂ Payload", color="#8b949e", fontsize=13)
+        
+        _save(fig, "sweep_training_report.png")
+    except Exception as exc:
+        log(f"WARNING: training report style dashboard failed: {exc}")
+
     return written
 
 

@@ -86,7 +86,28 @@ class _SimConsoleFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         timestamp = datetime.fromtimestamp(record.created).strftime("%H:%M:%S")
         component = getattr(record, "sim_component", record.name)
-        return f"{timestamp} {record.levelname:<7} [{component}] {record.getMessage()}"
+        
+        # Claude Code TUI colors (from docs/DESIGN.md)
+        c_reset = "\x1b[0m"
+        c_muted = "\x1b[38;2;136;136;136m"     # #888888 Gray
+        c_terra = "\x1b[38;2;215;119;87m"      # #d77757 Terracotta
+        c_white = "\x1b[38;2;255;255;255m"     # #ffffff White
+        c_warn  = "\x1b[38;2;255;193;7m"       # #ffc107 Amber
+        c_err   = "\x1b[38;2;255;107;128m"     # #ff6b80 Red-pink
+        
+        level_str = f"{record.levelname:<7}"
+        if record.levelno >= logging.ERROR:
+            level_str = f"{c_err}{level_str}{c_reset}"
+        elif record.levelno >= logging.WARNING:
+            level_str = f"{c_warn}{level_str}{c_reset}"
+        else:
+            level_str = f"{c_muted}{level_str}{c_reset}"
+            
+        timestamp_str = f"{c_muted}{timestamp}{c_reset}"
+        component_str = f"{c_terra}[{component}]{c_reset}"
+        msg_str = f"{c_white}{record.getMessage()}{c_reset}"
+        
+        return f"{timestamp_str} {level_str} {component_str} {msg_str}"
 
 
 # High-rate per-step diagnostic events that belong in the JSONL stream (for log-based

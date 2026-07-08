@@ -51,24 +51,27 @@ def test_stairs_cfg_module_renders_valid_python():
     # the intended specialisations are present
     assert f"class {config_patch.STAIRS_CFG_CLASS}(UnitreeGo2RoughEnvCfg)" in text
     assert "super().__post_init__()" in text
+    # terrain now brackets the real stair: a nominal + tall sub-terrain (plus width
+    # variants) rather than a single proportion=1.0 stairs sub-terrain.
     assert '"pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(' in text
-    assert "proportion=1.0" in text                                   # stairs-only
-    assert "ranges.lin_vel_x = (0.0, 0.5)" in text                    # slow forward
+    assert '"pyramid_stairs_tall": terrain_gen.MeshPyramidStairsTerrainCfg(' in text
+    assert "step_width=0.305" in text                                 # real target tread
+    assert "ranges.lin_vel_x = (0.0, 0.6)" in text                    # modest forward bump
     assert "ranges.lin_vel_y = (0.0, 0.0)" in text                    # no strafing
     assert f'mass_distribution_params"] = ({lo}, {hi})' in text       # payload event band
-    assert "flat_orientation_l2.weight = -2.5" in text                # anti-fall ON
+    assert "flat_orientation_l2.weight = -1.0" in text                # eased anti-fall
     assert 'actuators["legs"].stiffness = 20.0' in text               # deployed kp
     assert 'actuators["legs"].damping = 0.5' in text                  # deployed kd
     assert "self.disable_zero_weight_rewards()" in text               # manual prune (name-guard)
-    # the contract-preserving negatives: we must NOT re-enable the obs dims that would
-    # break the 45-D contract, and must NOT touch the action scale / default pose
-    # (the parent's settings are inherited). The doc comment may NAME these terms; what
-    # matters is that no assignment touches them.
-    assert "observations.policy.height_scan" not in text
-    assert "observations.policy.base_lin_vel" not in text
+    # contract-preserving: the blind terms are now DELIBERATELY named in the finding-F
+    # hasattr guard that nulls them, so assert the guard is present (not their absence).
+    assert "hasattr(self.observations.policy, _blind_term)" in text
+    assert 'setattr(self.observations.policy, _blind_term, None)' in text
+    assert '("height_scan", "base_lin_vel")' in text
+    # ...but we must still NOT touch the action scale / default pose (inherited).
     assert "actions.joint_pos.scale" not in text          # inherited hip 0.125 / others 0.25
     assert "init_state" not in text and "joint_pos={" not in text  # default pose untouched
-    print("stairs cfg module OK  (valid python; stairs-only + slow + payload + anti-fall + gains)")
+    print("stairs cfg module OK  (valid python; stairs-bracket + payload + anti-tip + gains)")
 
 
 def test_register_block_idempotent():
@@ -84,13 +87,28 @@ def test_register_block_idempotent():
     print("register block OK  (idempotent; new task id appended, original preserved)")
 
 
+# A rough_env_cfg.py stub carrying every token verify_patch_targets scans for, so the
+# fake repo passes the structural drift guard. (apply_to_repo only checks file existence,
+# so this richer stub is a superset that keeps the write/patch test green too.)
+_FAKE_ROUGH_ENV_CFG = '''\
+class UnitreeGo2RoughEnvCfg:
+    def __post_init__(self):
+        # tokens verify_patch_targets scans for:
+        self.events.randomize_rigid_body_mass_base = None
+        self.rewards.flat_orientation_l2 = None
+        self.commands.base_velocity = None
+        self.scene.terrain.terrain_generator = None
+        self.scene.robot.actuators["legs"] = None
+        self.disable_zero_weight_rewards()
+'''
+
+
 def _make_fake_repo(root: Path) -> Path:
-    """Minimal robot_lab layout: just enough for apply_to_repo's existence checks."""
+    """Minimal robot_lab layout: just enough for apply_to_repo's existence checks and
+    for verify_patch_targets to find every critical token."""
     pkg = root / config_patch.GO2_CONFIG_PKG_RELPATH
     pkg.mkdir(parents=True, exist_ok=True)
-    (pkg / "rough_env_cfg.py").write_text(
-        "class UnitreeGo2RoughEnvCfg:\n    def __post_init__(self):\n        pass\n", encoding="utf-8"
-    )
+    (pkg / "rough_env_cfg.py").write_text(_FAKE_ROUGH_ENV_CFG, encoding="utf-8")
     (pkg / config_patch.PKG_INIT).write_text(
         "import gymnasium as gym\nfrom . import agents\n\n"
         "gym.register(id='RobotLab-Isaac-Velocity-Rough-Unitree-Go2-v0')\n",
@@ -117,10 +135,90 @@ def test_apply_to_repo_writes_and_patches():
         print("apply_to_repo OK  (module written, __init__ patched, idempotent)")
 
 
+def test_com_event_present():
+    payload = payload_spec.load_payload_numbers()
+    params = config_patch.StairPatchParams()
+    text = config_patch.render_stairs_cfg_module(payload, params)
+    ast.parse(text)
+    # the payload-CoM randomisation event is added, using the confirmed IsaacLab API
+    assert "self.events.randomize_com_payload = EventTerm(" in text
+    assert "func=mdp.randomize_rigid_body_com" in text
+    assert '"com_range"' in text
+    assert 'SceneEntityCfg("robot", body_names="base")' in text
+    # ...centred on the real payload com-shift numbers (x rearward, z elevated)
+    cx, cy, cz = payload.com_range(params.com_jitter_m)
+    assert f'"x": ({cx[0]}, {cx[1]})' in text
+    assert f'"z": ({cz[0]}, {cz[1]})' in text
+    # com_shift_m is cited in the explanatory comment
+    assert str(payload.com_shift_m[0]) in text
+    # add_com_event=False omits the event entirely (escape hatch)
+    off = config_patch.render_stairs_cfg_module(
+        payload, config_patch.StairPatchParams(add_com_event=False)
+    )
+    ast.parse(off)
+    assert "randomize_com_payload" not in off
+    print("com event OK  (CoM DR event present, centred on payload shift, gated by add_com_event)")
+
+
+def test_reward_terms_present():
+    payload = payload_spec.load_payload_numbers()
+    # non-zero weights -> both reward fns + RewTerms are rendered
+    on = config_patch.render_stairs_cfg_module(payload)
+    ast.parse(on)
+    for tok in ("_reward_ascent_rate", "_reward_roll_l2", "_reward_crest_level",
+                "self.rewards.ascent_rate = RewTerm", "self.rewards.roll_l2 = RewTerm",
+                "self.rewards.crest_level = RewTerm", "root_lin_vel_w", "projected_gravity_b",
+                "import torch"):
+        assert tok in on, tok
+    # zero weights -> neither the fns nor the terms are emitted (no dead code)
+    off = config_patch.render_stairs_cfg_module(
+        payload, config_patch.StairPatchParams(ascent_reward=0.0, roll_penalty=0.0, crest_reward=0.0)
+    )
+    ast.parse(off)
+    for tok in ("_reward_ascent_rate", "_reward_roll_l2", "_reward_crest_level",
+                "ascent_rate", "roll_l2", "crest_level"):
+        assert tok not in off, tok
+    print("reward terms OK  (ascent/roll/crest rendered when non-zero, omitted when zero)")
+
+
+def test_verify_patch_targets():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        _make_fake_repo(root)
+        # complete fake repo: every critical token present -> no misses
+        assert config_patch.verify_patch_targets(root) == []
+        # missing package dir -> sentinel
+        with tempfile.TemporaryDirectory() as empty:
+            assert config_patch.verify_patch_targets(empty) == ["<pkg-missing>"]
+    # a repo missing a token reports exactly that token
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        pkg = _make_fake_repo(root)
+        rough = pkg / "rough_env_cfg.py"
+        # drop the flat_orientation_l2 token from the only file that carries it
+        rough.write_text(
+            rough.read_text(encoding="utf-8").replace("flat_orientation_l2", "renamed_orient"),
+            encoding="utf-8",
+        )
+        missing = config_patch.verify_patch_targets(root)
+        assert "flat_orientation_l2" in missing, missing
+        assert "randomize_rigid_body_mass_base" not in missing, missing  # untouched token still found
+    # a repo missing rough_env_cfg.py reports it
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        pkg = _make_fake_repo(root)
+        (pkg / "rough_env_cfg.py").unlink()
+        assert "rough_env_cfg.py" in config_patch.verify_patch_targets(root)
+    print("verify_patch_targets OK  (clean=[], missing token/file/pkg reported)")
+
+
 if __name__ == "__main__":
     test_payload_numbers()
     test_box_inertia()
     test_stairs_cfg_module_renders_valid_python()
     test_register_block_idempotent()
     test_apply_to_repo_writes_and_patches()
+    test_com_event_present()
+    test_reward_terms_present()
+    test_verify_patch_targets()
     print("ALL RL-PATCH TESTS PASS")

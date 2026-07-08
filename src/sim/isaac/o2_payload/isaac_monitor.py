@@ -187,7 +187,7 @@ class O2PayloadMonitor:
     # -- event emitters -------------------------------------------------
     def _emit_status(self, tm: O2Telemetry) -> None:
         self.log(
-            logging.INFO, "o2_payload_status",
+            logging.DEBUG, "o2_payload_status",
             "O2 payload carried by robot",
             carried_mass_kg=tm.carried_mass_kg,
             payload_fraction_of_trunk=round(self.spec.payload_mass_fraction, 3),

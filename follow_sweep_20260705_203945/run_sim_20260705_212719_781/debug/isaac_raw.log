@@ -1,0 +1,829 @@
+[38;2;136;136;136m21:27:21[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mStarting Isaac Sim Go2 environment[0m
+Starting kit application with the following args:  ['C:\\isaac_sim_600\\exts\\isaacsim.simulation_app\\isaacsim\\simulation_app\\simulation_app.py', 'C:\\isaac_sim_600\\apps/isaacsim.exp.base.python.kit', '--/app/tokens/exe-path=C:\\isaac_sim_600\\kit', '--/persistent/app/viewport/displayOptions=3094', '--/rtx/materialDb/syncLoads=True', '--/rtx/hydra/materialSyncLoads=True', '--/omni.kit.plugin/syncUsdLoads=True', '--/app/renderer/resolution/width=1280', '--/app/renderer/resolution/height=720', '--/app/window/width=1440', '--/app/window/height=900', '--/renderer/multiGpu/enabled=False', '--/app/fastShutdown=True', '--/app/installSignalHandlers=0', '--ext-folder', 'C:\\isaac_sim_600/exts', '--ext-folder', 'C:\\isaac_sim_600/apps', '--/physics/cudaDevice=0', '--/plugins/carb.tasking.plugin/threadCount=16', '--/plugins/omni.tbb.globalcontrol/maxThreadCount=16', '--portable', '--no-window', '--/app/window/hideUi=1']
+Passing the following args to the base kit application:  ['--person-move', '--person-approach-turns', '2', '--person-approach-amplitude', '0.5', '--go2-x', '-4.5', '--frame-host', '127.0.0.1', '--frame-port', '52002', '--cmd-port', '52100', '--log-dir', 'C:\\Users\\antho\\Downloads\\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\\log\\run_sim_20260705_212719_781', '--no-view-follow-camera', '--raw-video-path', 'C:\\Users\\antho\\Downloads\\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\\log\\run_sim_20260705_212719_781\\videos\\scene_view.mp4', '--locomotion-policy', 'pgtt', '--pgtt-level', 'level17', '--pgtt-action-scale', '0.5', '--pgtt-heightscan-scale', '1', '--parkour-heading-mode', 'hybrid', '--parkour-mask-fill', 'terrain', '--stair-preset', 'commercial', '--stair-step-height', '0.175', '--headless', '--fast-render', '--handoff-climb-backend', 'blind_rl', '--with-o2-payload']
+2026-07-06T01:27:21Z [Info] [carb] Logging to file: c:/isaac_sim_600/kit/logs/Kit/Isaac-Sim Python/6.0/kit_20260705_212721.log
+[0.148s] [ext: omni.assets.plugins-0.0.0] startup
+[0.158s] [ext: omni.blobkey-1.1.2] startup
+[0.159s] [ext: omni.kit.async_engine-0.0.3] startup
+[1.817s] [ext: omni.client.lib-1.1.1] startup
+[1.862s] [ext: omni.client-1.3.0] startup
+[2.337s] [ext: omni.protobuf.lib-1.0.0] startup
+[2.338s] [ext: omni.grpc.lib-1.0.0] startup
+[2.339s] [ext: omni.metrics.core-0.0.3] startup
+[2.341s] [ext: omni.datastore-0.0.0] startup
+[2.343s] [ext: omni.gpu_foundation.shadercache.vulkan-1.0.0] startup
+[2.351s] [ext: omni.hsscclient-1.1.4] startup
+[2.353s] [ext: omni.stats-1.0.1] startup
+[2.357s] [ext: omni.ujitso.default-1.0.0] startup
+[2.373s] [ext: omni.gpu_foundation-0.0.0] startup
+[2.444s] [ext: carb.windowing.plugins-1.0.1] startup
+[2.448s] [ext: omni.kit.renderer.init-1.0.1] startup
+[2.450s] [ext: omni.kit.pipapi-0.0.0] startup
+[2.451s] [ext: omni.kit.pip_archive-0.0.0] startup
+[2.453s] [ext: isaacsim.pip.newton-0.6.0] startup
+[2.453s] [ext: omni.pip.compute-1.9.0] startup
+[2.456s] [ext: omni.isaac.core_archive-5.3.0] startup
+[2.457s] [ext: omni.kit.telemetry-0.5.2] startup
+[2.484s] [ext: omni.kit.loop-isaac-1.6.0] startup
+[2.489s] [ext: omni.kit.test-2.0.7] startup
+[2.668s] [ext: omni.materialx.libs-1.0.9] startup
+[2.710s] [ext: omni.gpucompute.plugins-0.0.0] startup
+[2.714s] [ext: omni.usd.config-1.0.7] startup
+[2.735s] [ext: omni.usd.libs-1.0.3] startup
+[3.049s] [ext: omni.iray.libs-0.0.1] startup
+2026-07-06T01:27:24Z [2,990ms] [Warning] [omni.rtx] Skipping unsupported non-NVIDIA GPU: Intel(R) UHD Graphics
+2026-07-06T01:27:24Z [2,990ms] [Warning] [omni.rtx] Skipping unsupported non-NVIDIA GPU: Intel(R) UHD Graphics
+[3.302s] [ext: omni.mdl-57.0.3] startup
+[3.490s] [ext: omni.mdl.neuraylib-0.2.20] startup
+[3.502s] [ext: omni.kit.usd.mdl-1.1.9] startup
+
+|---------------------------------------------------------------------------------------------|
+| Driver Version: 561.17        | Graphics API: Vulkan
+|=============================================================================================|
+| GPU | Name                             | Active | LDA | GPU Memory | Vendor-ID | LUID       |
+|     |                                  |        |     |            | Device-ID | UUID       |
+|     |                                  |        |     |            | Bus-ID    |            |
+|---------------------------------------------------------------------------------------------|
+| 0   | NVIDIA GeForce RTX 4070 Laptop.. | Yes: 0 |     | 7948    MB | 10de      | f82b0100.. |
+|     |                                  |        |     |            | 2860      | 057f8559.. |
+|     |                                  |        |     |            | 1         |            |
+|---------------------------------------------------------------------------------------------|
+| 1   | Intel(R) UHD Graphics            |        |     | 8005    MB | 8086      | f7270100.. |
+|     |                                  |        |     |            | a7a8      | 8680a8a7.. |
+|     |                                  |        |     |            | N/A       |            |
+|=============================================================================================|
+| OS: Windows 11 Home, Version: 10.0 (25H2), Build: 26200, Kernel: 10.0.26100.8655
+| Processor: 13th Gen Intel(R) Core(TM) i7-13620H
+| Cores: 10 | Logical Cores: 16
+|---------------------------------------------------------------------------------------------|
+| Total Memory (MB): 16010 | Free Memory: 3163
+| Total Page/Swap (MB): 58770 | Free Page/Swap: 20787
+|---------------------------------------------------------------------------------------------|
+[3.842s] [ext: omni.appwindow-1.2.2] startup
+[3.851s] [ext: omni.kit.renderer.core-1.2.2] startup
+[3.862s] [ext: omni.kit.renderer.capture-2.0.1] startup
+[3.873s] [ext: omni.kit.renderer.imgui-2.0.6] startup
+[3.903s] [ext: omni.ui-3.1.3] startup
+[3.930s] [ext: omni.kit.mainwindow-1.0.3] startup
+[3.933s] [ext: carb.audio-0.1.0] startup
+[3.936s] [ext: omni.uiaudio-1.0.0] startup
+[3.940s] [ext: omni.kit.uiapp-0.0.0] startup
+[3.940s] [ext: omni.usd.schema.metrics.assembler-110.1.0] startup
+[3.950s] [ext: omni.usd.schema.audio-0.0.1] startup
+[3.966s] [ext: omni.usd_resolver-1.0.0] startup
+[3.987s] [ext: omni.usd.core-1.8.3] startup
+[4.001s] [ext: omni.metropolis.schema-0.0.3] startup
+[4.004s] [ext: isaacsim.anim.robot.schema-0.1.1] startup
+[4.008s] [ext: omni.usd.schema.anim-0.0.1] startup
+[4.096s] [ext: omni.usd.schema.geospatial-0.0.1] startup
+[4.111s] [ext: omni.usd.schema.omnigraph-1.0.1] startup
+[4.129s] [ext: omni.usd.schema.semantics-0.0.0] startup
+[4.140s] [ext: omni.activity.core-1.0.3] startup
+[4.148s] [ext: omni.cubric-0.1.0] startup
+[4.154s] [ext: omni.graph.exec-0.9.6] startup
+[4.158s] [ext: omni.hydra.scene_delegate-0.3.5] startup
+[4.169s] [ext: usdrt.scenegraph-7.6.3] startup
+[4.259s] [ext: omni.hydra.usdrt_delegate-7.5.2] startup
+[4.273s] [ext: omni.inspect-1.0.2] startup
+[4.279s] [ext: omni.kit.actions.core-1.0.0] startup
+[4.285s] [ext: omni.kit.audiodeviceenum-1.0.2] startup
+[4.290s] [ext: omni.kit.commands-1.5.0] startup
+[4.301s] [ext: omni.kit.exec.core-0.13.5] startup
+[4.306s] [ext: omni.kit.usd_undo-0.1.8] startup
+[4.308s] [ext: omni.kit.window.popup_dialog-2.0.25] startup
+[4.318s] [ext: omni.kit.widget.nucleus_connector-2.3.1] startup
+[4.327s] [ext: omni.timeline-1.1.0] startup
+[4.333s] [ext: omni.usd-1.15.2] startup
+[4.440s] [ext: omni.graph.core-3.1.2] startup
+[4.450s] [ext: omni.kit.notification_manager-1.0.11] startup
+[4.454s] [ext: isaacsim.core.deprecation_manager-0.4.2] startup
+[4.456s] [ext: isaacsim.replicator.agent.schema-0.1.1] startup
+[4.458s] [ext: isaacsim.robot.schema-6.3.6] startup
+[4.473s] [ext: isaacsim.robot_motion.schema-0.2.0] startup
+[4.478s] [ext: omni.anim.behavior.schema-110.1.0] startup
+[4.503s] [ext: omni.anim.graph.schema-110.1.1] startup
+[4.526s] [ext: omni.anim.navigation.schema-110.1.0] startup
+[4.536s] [ext: omni.behavior.tree.schema-110.1.0] startup
+[4.538s] [ext: omni.isaac.ml_archive-3.3.0] startup
+[4.539s] [ext: omni.kit.asset_converter-5.1.4] startup
+[4.569s] [ext: omni.pip.cloud-1.5.3] startup
+[4.573s] [ext: omni.usd.schema.flow-110.0.0] startup
+[4.575s] [ext: omni.usd.schema.mujoco-1.1.0] startup
+[4.579s] [ext: omni.usd.schema.newton-1.2.0] startup
+[4.584s] [ext: omni.usd.schema.omni_lens_distortion-1.0.0] startup
+[4.588s] [ext: omni.usd.schema.omni_projectors-1.0.0] startup
+[4.592s] [ext: omni.usd.schema.omni_sensors-0.0.0] startup
+[4.629s] [ext: omni.usd.schema.omniscripting-1.0.1] startup
+[4.645s] [ext: omni.usd.schema.physical_lighting-0.1.0] startup
+[4.653s] [ext: omni.usd.schema.physx-110.1.11] startup
+[4.733s] [ext: omni.usd.schema.render_settings.rtx-1.0.2] startup
+[4.745s] [ext: omni.usd.schema.usd_particle_field-1.0.0] startup
+[4.747s] [ext: isaacsim.core.version-2.1.0] startup
+[4.749s] [ext: omni.kit.menu.core-1.2.0] startup
+[4.751s] [ext: omni.kit.menu.utils-2.2.3] startup
+[4.779s] [ext: isaacsim.app.about-2.3.0] startup
+[4.801s] [ext: isaacsim.asset.transformer-1.2.3] startup
+[4.808s] [ext: omni.scene.optimizer.core-110.1.0] startup
+[4.922s] [ext: isaacsim.asset.importer.utils-1.8.0] startup
+[4.928s] [ext: omni.convexdecomposition-110.1.11] startup
+[4.935s] [ext: omni.physics-110.1.11] startup
+[4.949s] [ext: omni.physx.gpu-110.1.11] startup
+[4.951s] [ext: omni.physx.foundation-110.1.11] startup
+[4.967s] [ext: omni.usdphysics-110.1.11] startup
+[4.973s] [ext: omni.physx.cooking-110.1.11] startup
+[4.983s] [ext: omni.physx-110.1.11] startup
+[5.016s] [ext: omni.physics.physx-110.1.11] startup
+[5.020s] [ext: isaacsim.asset.exporter.urdf-2.0.3] startup
+[5.036s] [ext: omni.kit.clipboard-1.1.1] startup
+[5.039s] [ext: omni.kit.usd.layers-2.6.1] startup
+[5.058s] [ext: omni.kit.widget.context_menu-1.4.0] startup
+[5.062s] [ext: omni.kit.context_menu-1.9.0] startup
+[5.066s] [ext: omni.kit.helper.file_utils-0.1.10] startup
+[5.068s] [ext: omni.kit.widget.nucleus_info-2.0.2] startup
+[5.070s] [ext: omni.kit.search_core-1.0.8] startup
+[5.073s] [ext: omni.kit.widget.path_field-2.0.13] startup
+[5.075s] [ext: omni.kit.widget.browser_bar-2.0.10] startup
+[5.077s] [ext: omni.kit.widget.filebrowser-2.13.4] startup
+[5.097s] [ext: omni.kit.widget.options_menu-1.1.6] startup
+[5.113s] [ext: omni.kit.widget.options_button-1.0.3] startup
+[5.116s] [ext: omni.kit.widget.search_delegate-1.0.9] startup
+[5.120s] [ext: omni.ui.scene-2.0.1] startup
+[5.136s] [ext: omni.kit.window.filepicker-2.15.5] startup
+[5.180s] [ext: omni.kit.window.file_importer-1.1.21] startup
+[5.187s] [ext: omni.kit.material.library-3.1.2] startup
+[5.201s] [ext: isaacsim.asset.transformer.rules-1.7.8] startup
+[5.229s] [ext: omni.usdex.libs-2.2.2] startup
+[5.251s] [ext: isaacsim.asset.importer.mjcf-3.10.0] startup
+[5.258s] [ext: isaacsim.asset.importer.urdf-3.11.0] startup
+[5.267s] [ext: omni.kit.primitive.mesh-1.1.0] startup
+[5.278s] [ext: omni.kit.stage_template.core-1.1.22] startup
+[5.280s] [ext: omni.kit.stage_templates-2.0.2] startup
+[5.286s] [ext: omni.usd.metrics.assembler-110.1.2] startup
+[5.299s] [ext: omni.warp.core-1.13.0] startup
+[5.583s] [ext: isaacsim.core.experimental.utils-0.17.1] startup
+[5.586s] [ext: omni.physics.stageupdate-110.1.11] startup
+[5.593s] [ext: omni.physics.tensors-110.1.11] startup
+[5.607s] [ext: omni.physx.tensors-110.1.11] startup
+[5.615s] [ext: isaacsim.core.simulation_manager-1.15.4] startup
+2026-07-06T01:27:26Z [5,554ms] [Warning] [isaacsim.core.simulation_manager.plugin] USD stage is not available; stage-opened subscription is deferred
+2026-07-06T01:27:26Z [5,554ms] [Warning] [isaacsim.core.simulation_manager.plugin] USD stage is not available; stage-opened subscription is deferred
+[5.646s] [ext: isaacsim.storage.native-1.9.2] startup
+[5.650s] [ext: omni.usd.metrics.assembler.physics-110.1.11] startup
+[5.654s] [ext: isaacsim.core.utils-4.1.6] startup
+[5.660s] [ext: isaacsim.core.prims-0.11.6] startup
+[9.511s] [ext: isaacsim.core.api-5.2.12] startup
+[9.542s] [ext: isaacsim.core.cloner-1.7.2] startup
+[9.546s] [ext: isaacsim.test.docstring-1.3.1] startup
+[9.558s] [ext: isaacsim.core.experimental.prims-1.8.8] startup
+[9.613s] [ext: isaacsim.core.experimental.primdata-0.3.2] startup
+[9.617s] [ext: omni.graph.tools-1.81.0] startup
+[9.683s] [ext: omni.graph-1.142.5] startup
+[9.765s] [ext: isaacsim.core.experimental.actuators-0.1.0] startup
+[13.449s] [ext: isaacsim.core.experimental.materials-0.7.0] startup
+[13.459s] [ext: isaacsim.core.experimental.objects-0.8.0] startup
+[13.607s] [ext: omni.hydra.engine.stats-1.0.5] startup
+[13.611s] [ext: omni.hydra.rtx.shadercache.vulkan-1.0.0] startup
+[13.614s] [ext: omni.index.libs-387500.3473.0] startup
+[13.614s] [ext: omni.index-1.0.1] startup
+[13.617s] [ext: omni.ujitso.client-0.0.0] startup
+[13.618s] [ext: omni.usd.schema.playback-1.0.0] startup
+[13.626s] [ext: omni.volume-0.5.2] startup
+[13.643s] [ext: omni.hydra.rtx-1.0.3] startup
+[13.796s] [ext: omni.kit.hydra_texture-1.6.0] startup
+[13.803s] [ext: omni.kit.raycast.query-1.2.0] startup
+[13.810s] [ext: omni.kit.viewport.legacy_gizmos-1.0.24] startup
+[13.813s] [ext: omni.kit.viewport.registry-104.0.6] startup
+[13.814s] [ext: omni.kit.viewport.scene_camera_model-1.0.7] startup
+[13.820s] [ext: omni.kit.widget.viewport-109.2.0] startup
+[13.833s] [ext: omni.kit.window.drop_support-1.0.8] startup
+[13.834s] [ext: omni.kit.viewport.window-109.0.2] startup
+[14.028s] [ext: omni.kit.viewport.utility-2.0.1] startup
+[14.030s] [ext: isaacsim.core.rendering_manager-0.4.2] startup
+[14.060s] [ext: omni.graph.action_core-1.1.9] startup
+[14.067s] [ext: omni.graph.action_nodes_core-2.10.2] startup
+[14.076s] [ext: omni.graph.action_nodes-2.10.3] startup
+[14.139s] [ext: omni.graph.action-2.10.2] startup
+[14.142s] [ext: omni.graph.image.core-0.6.1] startup
+[14.163s] [ext: omni.graph.image.nodes-1.3.1] startup
+[14.185s] [ext: omni.graph.nodes_core-2.10.3] startup
+[14.231s] [ext: omni.graph.nodes-2.11.1] startup
+[14.260s] [ext: omni.kit.hotkeys.core-1.3.12] startup
+[14.262s] [ext: omni.kit.property.adapter.core-1.1.1] startup
+[14.268s] [ext: omni.kit.property.adapter.usd-1.0.5] startup
+[14.272s] [ext: omni.kit.widget.filter-1.1.5] startup
+[14.274s] [ext: omni.kit.widget.highlight_label-1.0.3] startup
+[14.277s] [ext: omni.kit.widget.searchfield-1.1.8] startup
+[14.283s] [ext: omni.kit.window.file_exporter-1.0.36] startup
+[14.288s] [ext: omni.kit.widget.stage-4.3.0] startup
+[14.346s] [ext: omni.kit.window.content_browser_registry-0.0.6] startup
+[14.348s] [ext: omni.kit.window.file-2.0.10] startup
+[14.358s] [ext: omni.kit.window.content_browser-3.1.8] startup
+[14.394s] [ext: omni.kit.window.property-1.15.1] startup
+[14.471s] [ext: omni.kit.property.usd-4.8.1] startup
+[14.508s] [ext: omni.graph.scriptnode-2.10.2] startup
+[14.549s] [ext: omni.kit.widget.searchable_combobox-1.0.7] startup
+[14.577s] [ext: omni.kit.widget.settings-2.0.0] startup
+[14.588s] [ext: omni.kit.window.preferences-1.8.3] startup
+[14.607s] [ext: omni.kit.viewport.menubar.core-107.2.2] startup
+[14.654s] [ext: omni.syntheticdata-0.6.15] startup
+[14.739s] [ext: omni.replicator.nv-1.1.1] startup
+[14.758s] [ext: omni.videoencoding-0.2.1] startup
+[14.781s] [ext: omni.replicator.core-1.13.25] startup
+2026-07-06T01:27:35Z [14,733ms] [Warning] [pxr.Semantics] pxr.Semantics is deprecated - please use Semantics instead
+Warp 1.13.0 initialized:
+   CUDA Toolkit 12.9, Driver 12.6
+   Devices:
+     "cpu"      : "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel"
+     "cuda:0"   : "NVIDIA GeForce RTX 4070 Laptop GPU" (8 GiB, sm_89, mempool enabled)
+   Kernel cache:
+     \\?\C:\Users\antho\AppData\Local\NVIDIA\warp\Cache\1.13.0
+2026-07-06T01:27:36Z [15,140ms] [Warning] [omni.replicator.core.scripts.extension] No material configuration file, adding configuration to material settings directly.
+[15.763s] [ext: isaacsim.core.nodes-5.10.4] startup
+[15.903s] [ext: isaacsim.core.throttling-2.3.3] startup
+[15.906s] [ext: omni.kit.manipulator.viewport-107.0.1] startup
+[15.909s] [ext: omni.graph.visualization.nodes-2.1.4] startup
+[15.980s] [ext: omni.kit.window.extensions-1.5.7] startup
+[16.006s] [ext: isaacsim.gui.components-1.8.4] startup
+[16.018s] [ext: isaacsim.robot.surface_gripper-3.6.1] startup
+[16.071s] [ext: isaacsim.robot.manipulators-3.4.4] startup
+[16.113s] [ext: isaacsim.robot_motion.lula-4.1.2] startup
+[16.130s] [ext: isaacsim.robot_motion.motion_generation-8.2.8] startup
+[16.152s] [ext: isaacsim.cortex.framework-1.0.17] startup
+[16.160s] [ext: isaacsim.cortex.behaviors-2.0.16] startup
+[16.167s] [ext: isaacsim.examples.base-1.3.1] startup
+[16.174s] [ext: omni.kit.widget.zoombar-1.0.7] startup
+[16.179s] [ext: omni.kit.browser.core-2.3.18] startup
+[16.198s] [ext: omni.kit.browser.folder.core-2.0.2] startup
+[16.212s] [ext: omni.kit.widget.stage_icons-1.0.8] startup
+[16.216s] [ext: omni.kit.window.stage-2.6.1] startup
+[16.224s] [ext: omni.kit.menu.stage-1.2.7] startup
+[16.229s] [ext: omni.kit.usd.collect-3.0.5] startup
+[16.237s] [ext: omni.kit.widget.prompt-1.0.7] startup
+[16.240s] [ext: omni.kit.tool.collect-2.2.19] startup
+[16.246s] [ext: isaacsim.examples.browser-0.3.1] startup
+[16.252s] [ext: omni.kit.search.files-1.0.4] startup
+[16.255s] [ext: omni.kit.widget.calendar-1.0.9] startup
+[16.259s] [ext: omni.kit.widget.extended_searchfield-1.0.31] startup
+[16.283s] [ext: omni.simready.content.browser-0.3.7] startup
+[16.884s] [ext: isaacsim.gui.content_browser-0.4.2] startup
+[16.890s] [ext: omni.kit.selection-0.1.6] startup
+[16.893s] [ext: isaacsim.gui.menu-2.10.5] startup
+[16.914s] [ext: isaacsim.gui.property-1.6.2] startup
+[16.929s] [ext: omni.kit.viewport.actions-107.0.2] startup
+[16.942s] [ext: omni.kit.viewport.menubar.display-107.1.3] startup
+[16.947s] [ext: isaacsim.gui.sensors.icon-2.2.0] startup
+[16.959s] [ext: omni.behavior.scripting.core-110.1.0] startup
+[16.974s] [ext: isaacsim.replicator.behavior-1.5.3] startup
+[16.978s] [ext: isaacsim.replicator.experimental.domain_randomization-1.2.4] startup
+[17.058s] [ext: isaacsim.replicator.domain_randomization-1.2.1] startup
+[17.248s] [ext: isaacsim.replicator.writers-1.5.3] startup
+[17.326s] [ext: isaacsim.robot.experimental.wheeled_robots-0.2.9] startup
+[17.378s] [ext: isaacsim.robot.policy.examples-5.2.11] startup
+[17.428s] [ext: isaacsim.robot.wheeled_robots-5.2.3] startup
+[17.441s] [ext: isaacsim.robot.wheeled_robots.nodes-0.1.2] startup
+[17.529s] [ext: isaacsim.robot_motion.experimental.motion_generation-6.1.2] startup
+[17.557s] [ext: isaacsim.robot_motion.cumotion-1.3.0] startup
+[17.593s] [ext: omni.kit.numpy.common-0.1.3] startup
+[17.598s] [ext: isaacsim.sensors.camera-1.7.8] startup
+[17.660s] [ext: isaacsim.sensors.experimental.physics-3.0.1] startup
+[17.680s] [ext: omni.sensors.net-1.0.1] startup
+[17.701s] [ext: omni.sensors.nv.common-3.0.0] startup
+[17.831s] [ext: omni.sensors.nv.materials-2.0.0] startup
+[17.852s] [ext: omni.sensors.nv.acoustic-3.0.0] startup
+[17.869s] [ext: omni.sensors.nv.ids-2.0.1] startup
+[17.876s] [ext: omni.sensors.nv.lidar-3.0.0] startup
+[17.899s] [ext: omni.sensors.nv.radar-3.0.0] startup
+[17.929s] [ext: isaacsim.sensors.experimental.rtx-1.4.3] startup
+[18.437s] [ext: isaacsim.sensors.physics.nodes-1.5.2] startup
+[18.457s] [ext: isaacsim.util.debug_draw-3.2.2] startup
+[18.475s] [ext: isaacsim.sensors.physx-2.5.4] startup
+[18.495s] [ext: isaacsim.sensors.rtx-15.17.0] startup
+[18.524s] [ext: isaacsim.simulation_app-2.18.3] startup
+[18.525s] [ext: omni.anim.curve.core-1.6.0] startup
+[18.552s] [ext: omni.graph.ui_nodes-2.10.5] startup
+[18.634s] [ext: omni.hydra.scene_api-0.1.3] startup
+[18.640s] [ext: omni.kit.manipulator.camera-110.0.0] startup
+[18.650s] [ext: omni.kit.manipulator.selector-1.1.4] startup
+[18.654s] [ext: omni.kit.manipulator.transform-107.0.0] startup
+[18.665s] [ext: omni.kit.widget.toolbar-2.1.0] startup
+[18.683s] [ext: omni.kit.manipulator.tool.snap-1.5.14] startup
+[18.699s] [ext: omni.kit.viewport.manipulator.transform-107.0.4] startup
+[18.711s] [ext: omni.kit.manipulator.prim.core-108.0.2] startup
+[18.741s] [ext: omni.kit.manipulator.prim.usd-107.0.3] startup
+[18.744s] [ext: omni.kit.manipulator.prim-108.0.0] startup
+[18.745s] [ext: omni.kit.manipulator.selection-109.0.1] startup
+[18.748s] [ext: omni.kit.menu.create-2.0.2] startup
+[18.752s] [ext: omni.kit.property.audio-1.0.16] startup
+[18.762s] [ext: omni.kit.property.camera-1.0.14] startup
+[18.766s] [ext: omni.kit.property.geometry-2.1.2] startup
+[18.775s] [ext: omni.kit.property.light-1.0.14] startup
+2026-07-06T01:27:39Z [18,811ms] [Warning] [omni.usd] Encountered USD Warnings but USD Diagnostics are currently muted. To view USD Warnings, please set the '/persistent/app/usd/muteUsdDiagnostics' setting to false in Preferences page.
+[18.942s] [ext: omni.kit.property.material-1.14.2] startup
+[18.970s] [ext: omni.kit.property.render-1.2.2] startup
+[18.976s] [ext: omni.kit.property.transform-1.6.9] startup
+[18.989s] [ext: omni.kit.property.bundle-1.5.1] startup
+[18.996s] [ext: omni.kit.usdz_export-1.1.0] startup
+[19.005s] [ext: omni.kit.tool.asset_importer-5.2.0] startup
+[19.022s] [ext: omni.kit.ui.actions-1.0.5] startup
+[19.025s] [ext: omni.kit.viewport.menubar.camera-107.0.10] startup
+[19.039s] [ext: omni.kit.viewport.menubar.lighting-107.3.2] startup
+[19.047s] [ext: omni.kit.viewport.menubar.render-107.0.10] startup
+[19.055s] [ext: omni.kit.viewport.menubar.settings-110.0.1] startup
+[19.065s] [ext: omni.kit.window.console-1.1.8] startup
+[19.077s] [ext: omni.kit.window.status_bar-0.1.11] startup
+[19.080s] [ext: omni.kit.window.toolbar-3.0.3] startup
+[19.090s] [ext: omni.ocio-0.1.1] startup
+[19.096s] [ext: omni.physx.commands-110.1.11] startup
+[19.105s] [ext: omni.replicator.replicator_yaml-2.0.12] startup
+[19.153s] [ext: omni.rtx.window.settings-0.8.0] startup
+[19.164s] [ext: omni.rtx.settings.core-0.7.0] startup
+[19.172s] [ext: omni.usd.metrics.assembler.ui-110.1.1] startup
+[19.190s] [ext: semantics.schema.editor-2.0.2] startup
+[19.204s] [ext: semantics.schema.property-2.0.1] startup
+[19.223s] [ext: omni.kit.menu.common-2.0.2] startup
+[19.230s] [ext: isaacsim.exp.base-6.0.0] startup
+[19.230s] [ext: isaacsim.exp.base.python-6.0.0] startup
+[19.234s] Simulation App Starting
+[23.498s] Simulation App Startup Complete
+[23.510s] app ready
+[38;2;136;136;136m21:27:45[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mActive staircase: commercial (14 steps, rise=0.175 m, run=0.305 m, top=2.450 m, handrail=True)[0m
+[38;2;136;136;136m21:27:45[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mRealism profile: PERFECT ENV (clean default)[0m
+[38;2;136;136;136m21:27:45[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPerception-noise seed = 0 (frame-indexed, reproducible)[0m
+[38;2;136;136;136m21:27:45[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT HEIGHT BACKEND = GROUND_TRUTH (ground_truth: analytic terrain height)[0m
+[38;2;136;136;136m21:27:45[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mBuilding Isaac world[0m
+[38;2;136;136;136m21:27:45[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mSpawning static obstacles[0m
+[38;2;136;136;136m21:27:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mDark-oak staircase with grain texture + iron handrails both sides[0m
+[38;2;136;136;136m21:27:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mFloor: vibrant light blue tiles (101x101 grid, 0.6m pitch) with dark grout[0m
+[38;2;136;136;136m21:27:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mClean stairs-only environment (commercial preset: 14 steps + landing, handrails) successfully spawned[0m
+[38;2;136;136;136m21:27:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mSkipping extra visual props; scene contains only stairs, walls, ground, robot, and person[0m
+[38;2;136;136;136m21:27:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mConfigured soft dome, key, fill, and ceiling panel lighting[0m
+[38;2;136;136;136m21:27:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mCreated physics material /World/PhysicsMaterials/HighFrictionMaterial with dynamic=1.000, static=1.200[0m
+[38;2;136;136;136m21:27:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mBound /World/PhysicsMaterials/HighFrictionMaterial to /World/Environment/step_0[0m
+[38;2;136;136;136m21:27:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mBound /World/PhysicsMaterials/HighFrictionMaterial to /World/Environment/step_1[0m
+[38;2;136;136;136m21:27:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mBound /World/PhysicsMaterials/HighFrictionMaterial to /World/Environment/step_2[0m
+[38;2;136;136;136m21:27:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mBound /World/PhysicsMaterials/HighFrictionMaterial to /World/Environment/step_3[0m
+[38;2;136;136;136m21:27:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mBound /World/PhysicsMaterials/HighFrictionMaterial to /World/Environment/step_4[0m
+[38;2;136;136;136m21:27:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mBound /World/PhysicsMaterials/HighFrictionMaterial to /World/Environment/step_5[0m
+[38;2;136;136;136m21:27:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mBound /World/PhysicsMaterials/HighFrictionMaterial to /World/Environment/step_6[0m
+[38;2;136;136;136m21:27:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mBound /World/PhysicsMaterials/HighFrictionMaterial to /World/Environment/step_7[0m
+[38;2;136;136;136m21:27:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mBound /World/PhysicsMaterials/HighFrictionMaterial to /World/Environment/step_8[0m
+[38;2;136;136;136m21:27:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mBound /World/PhysicsMaterials/HighFrictionMaterial to /World/Environment/step_9[0m
+[38;2;136;136;136m21:27:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mBound /World/PhysicsMaterials/HighFrictionMaterial to /World/Environment/step_10[0m
+[38;2;136;136;136m21:27:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mBound /World/PhysicsMaterials/HighFrictionMaterial to /World/Environment/step_11[0m
+[38;2;136;136;136m21:27:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mBound /World/PhysicsMaterials/HighFrictionMaterial to /World/Environment/step_12[0m
+[38;2;136;136;136m21:27:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mBound /World/PhysicsMaterials/HighFrictionMaterial to /World/Environment/step_13[0m
+[38;2;136;136;136m21:27:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mBound /World/PhysicsMaterials/HighFrictionMaterial to /World/Environment/top_landing[0m
+[38;2;136;136;136m21:27:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mBound /World/PhysicsMaterials/HighFrictionMaterial to /World/defaultGroundPlane[0m
+[38;2;136;136;136m21:27:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mLoading Go2 robot[0m
+[38;2;136;136;136m21:27:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mUsing official Isaac Sim Go2 Nucleus asset (mesh geometry)[0m
+[38;2;136;136;136m21:27:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mGo2 base link set to dynamic (non-kinematic) for PhysX articulation support[0m
+[38;2;136;136;136m21:27:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mGo2 PhysX articulation was registered with the Isaac world[0m
+[38;2;136;136;136m21:27:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMounted mock-up P2-E6 oxygen concentrator + rail cradle on the Go2[0m
+[38;2;136;136;136m21:27:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mRobot physical configuration snapshot[0m
+[38;2;136;136;136m21:27:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mGo2 USD joint drives configured for selected locomotion mode[0m
+[38;2;136;136;136m21:27:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mAdding front camera[0m
+[38;2;136;136;136m21:27:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mStreaming the RGB stream of the robot's front RealSense D435 (rigid body-parented)[0m
+2026-07-06T01:27:47Z [26,077ms] [Warning] [isaacsim.sensors.camera.camera] 'verticalAperture' (1.5290800094604493) and 'horizontalAperture' (2.0954999923706055) are inconsistent with the pixel resolution aspect ratio (1.7777777777777777). Setting 'verticalAperture' to 1.1787187457084656 to ensure square pixels.
+[38;2;136;136;136m21:27:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mFront D435 RGB camera rigidly parented under the Go2 body (inherits real gait shake)[0m
+[38;2;136;136;136m21:27:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mSet D435 color intrinsics: 36mm aperture, 26mm focal length, near clip 0.05m[0m
+[38;2;136;136;136m21:27:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mRigid body-parented parkour depth camera attached to the Go2 body[0m
+2026-07-06T01:27:47Z [26,090ms] [Warning] [isaacsim.sensors.camera.camera] 'verticalAperture' (1.5290800094604493) and 'horizontalAperture' (2.0954999923706055) are inconsistent with the pixel resolution aspect ratio (1.7777777777777777). Setting 'verticalAperture' to 1.1787187457084656 to ensure square pixels.
+[38;2;136;136;136m21:27:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mCreated wide scene verification camera[0m
+[38;2;136;136;136m21:27:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mCreated final-scene cinematic recording camera[0m
+[38;2;136;136;136m21:27:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mCreated autofit zoom-to-fit overview camera (topdown.mp4 subject framing)[0m
+[38;2;136;136;136m21:27:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mCreated final-scene cinematic recording camera[0m
+[38;2;136;136;136m21:27:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mCreated cinematic chase camera for scene_view.mp4 (auto-driven follow)[0m
+[38;2;136;136;136m21:27:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mscene baseline captured (no person in scene)[0m
+[38;2;136;136;136m21:27:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mSpawning person target[0m
+[38;2;136;136;136m21:27:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPatient route begins at (x=-3.500, y=0.000) with 20 waypoints; flat walk to the stair base then one waypoint per tread.[0m
+[26.281s] [ext: omni.anim.timeline-110.0.0] startup
+[38;2;136;136;136m21:27:48[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mAnimation timeline extensions ready (USD clip mode).[0m
+[38;2;136;136;136m21:27:48[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mCreating isolated local modified copy of Biped_Setup.usd[0m
+[38;2;136;136;136m21:27:50[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mWalk clip timing + estimated gait period (diagnostic only; clip unchanged)[0m
+[38;2;136;136;136m21:27:50[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mWalk clip timing + estimated gait period (diagnostic only; clip unchanged)[0m
+[38;2;136;136;136m21:28:07[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mSuccessfully removed animationGraph and zeroed Root translation/rotation in local copy[0m
+[38;2;136;136;136m21:28:10[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mUsing local modified Biped_Setup mannequin as the animated character asset[0m
+[38;2;136;136;136m21:28:15[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mResolved skeleton joints for the gait rig (alias-mapped to canonical names)[0m
+[38;2;136;136;136m21:28:15[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mSkelAnimation clips found for the standing-pose base[0m
+[38;2;136;136;136m21:28:15[0m [38;2;255;193;7mWARNING[0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mSome driven joints were not found on the skeleton; they stay at rest[0m
+[38;2;136;136;136m21:28:15[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mProcedural biped gait rig initialized (limb-driven UsdSkel)[0m
+[38;2;136;136;136m21:28:16[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mExtracted walk clip for mocap playback (full per-bone tracks)[0m
+[38;2;136;136;136m21:28:16[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mLoaded CMU stair-climb mocap clip for the STAIR_CLIMB style[0m
+[38;2;136;136;136m21:28:16[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mCalibrated patient mesh to ride the H1 pelvis with feet on the floor[0m
+[38;2;136;136;136m21:28:16[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mSpawned animated person visual with physics collider.[0m
+[38;2;136;136;136m21:28:16[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mSkipping patient cart/O2 props for a clean stairs-and-walls sim scene[0m
+[38;2;136;136;136m21:28:16[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mFinal-scene recording camera is tracking the robot as the cinematic subject[0m
+[38;2;136;136;136m21:28:16[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mFinal-scene recording camera selected a clear cinematic vantage[0m
+2026-07-06T01:28:16Z [55,436ms] [Warning] [omni.physx.plugin] Physx scene queries can only be performed during simulation.
+2026-07-06T01:28:16Z [55,436ms] [Warning] [omni.physx.plugin] Physx scene queries can only be performed during simulation.
+[38;2;136;136;136m21:28:16[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mFinal-scene recording camera is tracking the robot as the cinematic subject[0m
+[38;2;136;136;136m21:28:16[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mFinal-scene recording camera selected a clear cinematic vantage[0m
+2026-07-06T01:28:16Z [55,456ms] [Warning] [omni.fabric.plugin] Warning: attribute evaluatedTranslations not found for bucket id 50
+
+[38;2;136;136;136m21:28:17[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mSeating patient at standing pose (60 steps)[0m
+[38;2;136;136;136m21:28:17[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient seated at standing pose[0m
+[38;2;136;136;136m21:28:17[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mInitializing Isaac front camera sensor[0m
+[38;2;136;136;136m21:28:17[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mIsaac front camera sensor initialized[0m
+[38;2;136;136;136m21:28:17[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mEnabling RGB and Depth streams on camera frame[0m
+2026-07-06T01:28:17Z [56,368ms] [Warning] [isaacsim.sensors.camera.camera] Annotator rgb already attached to /Render/OmniverseKit/HydraTextures/Replicator
+[38;2;136;136;136m21:28:17[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mRGB and Depth streams are active and available on initialized camera[0m
+[38;2;136;136;136m21:28:17[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mParkour depth camera sensor initialized (distance_to_image_plane)[0m
+2026-07-06T01:28:17Z [56,439ms] [Warning] [isaacsim.sensors.camera.camera] Annotator rgb already attached to /Render/OmniverseKit/HydraTextures/Replicator_02
+[38;2;136;136;136m21:28:17[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mTop-down camera sensor initialized[0m
+2026-07-06T01:28:17Z [56,467ms] [Warning] [isaacsim.sensors.camera.camera] Annotator rgb already attached to /Render/OmniverseKit/HydraTextures/Replicator_03
+[38;2;136;136;136m21:28:17[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mIsaac scene Left camera sensor initialized for raw recording[0m
+[38;2;136;136;136m21:28:17[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mGo2 standing joint pose applied by name via set_joint_positions[0m
+[38;2;136;136;136m21:28:17[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mSet Go2 articulation drive gains (radian units)[0m
+[38;2;136;136;136m21:28:17[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mLoaded PGTT phase-guided locomotion policy[0m
+[38;2;136;136;136m21:28:17[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mLoaded PGTT phase-guided locomotion policy[0m
+[38;2;136;136;136m21:28:17[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mSet Go2 articulation drive gains (radian units)[0m
+[38;2;136;136;136m21:28:17[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mstartup robot pose[0m
+2026-07-06T01:28:17Z [56,650ms] [Warning] [omni.rtx] DLSS Skipped: Target resolution below 64x64.
+2026-07-06T01:28:18Z [57,380ms] [Warning] [omni.syntheticdata.plugin] OgnSdPostRenderVarToHost : rendervar copy from texture directly to host buffer is counter-performant. Please use copy from texture to device buffer first.
+[38;2;136;136;136m21:28:19[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPerson animation ready via procedural limb-driven gait (biped_anim).[0m
+[38;2;136;136;136m21:28:19[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPerson animation is loaded and ready[0m
+[38;2;136;136;136m21:28:19[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mstartup robot pose[0m
+[38;2;136;136;136m21:28:20[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mstartup robot pose[0m
+[38;2;136;136;136m21:28:20[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mstartup robot pose[0m
+[38;2;136;136;136m21:28:20[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mstartup robot pose[0m
+[38;2;136;136;136m21:28:20[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mstartup robot pose[0m
+[38;2;136;136;136m21:28:20[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mAsserted clean FOLDED Go2 spawn pose before stand-up[0m
+[38;2;136;136;136m21:28:20[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT dual-policy stair handoff armed (walk<->closed-loop climber)[0m
+[38;2;136;136;136m21:28:20[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mRL policy joint mapping (policy slot -> isaac dof)[0m
+[38;2;136;136;136m21:28:20[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mLoaded blind (proprioceptive) rl_sar Go2 RL policy as the handoff climb backend[0m
+[38;2;136;136;136m21:28:20[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mBlind (proprioceptive) RL policy armed as the PGTT handoff climb backend[0m
+[38;2;136;136;136m21:28:20[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mSimulation timeline started playing successfully[0m
+2026-07-06T01:28:20Z [59,265ms] [Warning] [isaacsim.sensors.camera.camera] Annotator rgb already attached to /Render/OmniverseKit/HydraTextures/Replicator_04
+[38;2;136;136;136m21:28:20[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mGo2 PGTT locomotion policy is writing joint targets[0m
+2026-07-06T01:28:20Z [59,416ms] [Warning] [rtx.scenedb.plugin] [InstanceTransformStorage] The amount of world update transforms WorldUpdateStorageWindow 22 needed to cover is larger than max allowed storage MaxHistoryTransformCount 8.            Motions may be wrong for long exposure sensors/cameras. Consider allow a larger storage for transforms through --/rtx/scenedb/maxHistoryTransformCount=22
+[38;2;136;136;136m21:28:20[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:28:25[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mSaved wide scene verification image[0m
+[38;2;136;136;136m21:28:25[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mSaved initial verification screenshot to C:\Users\antho\Downloads\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\log\run_sim_20260705_212719_781\reports\verification_start.png[0m
+[38;2;136;136;136m21:28:25[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mIsaac world is ready[0m
+[38;2;136;136;136m21:28:25[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mCamera frame publisher is ready[0m
+[38;2;136;136;136m21:28:25[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mIsaac velocity command receiver is listening[0m
+[38;2;136;136;136m21:28:25[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mRecording video encoder resolved[0m
+[38;2;136;136;136m21:28:25[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mRecording cameras (topdown + scene_view) decoupled from perception cadence[0m
+[38;2;136;136;136m21:28:25[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mSimulated XT16 LiDAR enabled[0m
+[38;2;136;136;136m21:28:25[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mGo2 seated folded on the ground; it will stand up before the policy drives[0m
+[38;2;136;136;136m21:28:25[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mHolding autonomous scene motion until first active YOLO command received[0m
+[38;2;136;136;136m21:28:25[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mDog held folded until the Docker controller starts streaming (then it stands up)[0m
+[38;2;136;136;136m21:28:25[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mstartup robot pose[0m
+[38;2;136;136;136m21:28:25[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mXT16 raycast self-filter active[0m
+[38;2;136;136;136m21:28:25[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mFrame sidecar keys enumerated (ground-truth leaked + sensor signals present)[0m
+[38;2;136;136;136m21:28:26[0m [38;2;255;193;7mWARNING[0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mCamera frame TCP link not established yet; frame dropped[0m
+[38;2;136;136;136m21:28:26[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mFramePublisher TCP send count[0m
+[38;2;136;136;136m21:28:27[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mtopdown recording started[0m
+[38;2;136;136;136m21:28:28[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mscene_view recording started[0m
+
+Failed to load OpenH264 library: openh264-1.8.0-win64.dll
+	Please check environment and/or download library: https://github.com/cisco/openh264/releases
+
+[libopenh264 @ 0000029a158a4f80] Incorrect library version loaded
+[ERROR:0@0.030] global cap_ffmpeg_impl.hpp:3514 open Could not open codec libopenh264, error: Unspecified error (-22)
+[ERROR:0@0.031] global cap_ffmpeg_impl.hpp:3531 open VIDEOIO/FFMPEG: Failed to initialize VideoWriter
+[38;2;136;136;136m21:28:28[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mXT16 LiDAR preview recording started[0m
+[38;2;136;136;136m21:28:28[0m [38;2;255;193;7mWARNING[0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mTCP connected but Docker handshake not received (stale proxy?); will retry[0m
+[38;2;136;136;136m21:28:28[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mFramePublisher TCP send count[0m
+[38;2;136;136;136m21:28:31[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mFramePublisher TCP send count[0m
+[38;2;136;136;136m21:28:31[0m [38;2;255;193;7mWARNING[0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mCamera frame TCP link not established yet; frame dropped[0m
+[38;2;136;136;136m21:28:33[0m [38;2;255;193;7mWARNING[0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mTCP connected but Docker handshake not received (stale proxy?); will retry[0m
+[38;2;136;136;136m21:28:33[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mCamera frame TCP link connected to SimCameraCapture (handshake verified)[0m
+[38;2;136;136;136m21:28:44[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mFirst Docker/controller velocity packet received[0m
+[38;2;136;136;136m21:28:44[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mDocker controller is streaming; standing the dog up now[0m
+[38;2;136;136;136m21:28:44[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mFramePublisher TCP send count[0m
+[38;2;136;136;136m21:28:45[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mstartup robot pose[0m
+[38;2;136;136;136m21:28:45[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mstartup robot pose[0m
+[38;2;136;136;136m21:28:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mstartup robot pose[0m
+[38;2;136;136;136m21:28:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mFirst nonzero Docker/controller velocity command received; scene motion is released[0m
+[38;2;136;136;136m21:28:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mstartup robot pose[0m
+[38;2;136;136;136m21:28:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mstartup robot pose[0m
+[38;2;136;136;136m21:28:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mstartup robot pose[0m
+[38;2;136;136;136m21:28:48[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mstartup robot pose[0m
+[38;2;136;136;136m21:28:48[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mstartup robot pose[0m
+[38;2;136;136;136m21:28:49[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mstartup robot pose[0m
+[38;2;136;136;136m21:28:49[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mstartup robot pose[0m
+[38;2;136;136;136m21:28:50[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mstartup robot pose[0m
+[38;2;136;136;136m21:28:50[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mstartup robot pose[0m
+[38;2;136;136;136m21:28:51[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mstartup robot pose[0m
+[38;2;136;136;136m21:28:51[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mstartup robot pose[0m
+[38;2;136;136;136m21:28:51[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mstartup robot pose[0m
+[38;2;136;136;136m21:28:52[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mSet Go2 articulation drive gains (radian units)[0m
+[38;2;136;136;136m21:28:52[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mStand-up-from-ground finished; handing the joints to the locomotion policy[0m
+[38;2;136;136;136m21:28:52[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mstartup robot pose[0m
+[38;2;136;136;136m21:28:52[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mAutonomous scene motion released after first active YOLO command was observed[0m
+[38;2;136;136;136m21:28:53[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:28:55[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:28:58[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:28:59[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:29:02[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:29:02[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:29:05[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:29:05[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:29:06[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:29:08[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:29:08[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:29:11[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:29:11[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:29:12[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:29:14[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:29:14[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:29:18[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:29:18[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:29:19[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:29:21[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:29:21[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:29:24[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:29:24[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:29:25[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:29:26[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mFramePublisher TCP send count[0m
+[38;2;136;136;136m21:29:27[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:29:27[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:29:31[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:29:31[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:29:32[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:29:34[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:29:34[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:29:37[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:29:37[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:29:38[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:29:40[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:29:40[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:29:43[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:29:43[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:29:44[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:29:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:29:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:29:50[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:29:50[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:29:51[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:29:53[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:29:53[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:29:56[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:29:56[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:29:57[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:30:00[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:30:00[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:30:03[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:30:03[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:30:04[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:30:07[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:30:07[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:30:11[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:30:11[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:30:12[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:30:14[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:30:14[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:30:18[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:30:18[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:30:19[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:30:21[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:30:21[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:30:24[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:30:24[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:30:26[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:30:28[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:30:28[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:30:31[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:30:31[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:30:32[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:30:35[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:30:35[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:30:39[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:30:39[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:30:40[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:30:42[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:30:42[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:30:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:30:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:30:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:30:49[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:30:49[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:30:53[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:30:53[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:30:54[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:30:56[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:30:56[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:30:59[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:30:59[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:31:01[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:31:03[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:31:03[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:31:06[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:31:06[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:31:07[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:31:10[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:31:10[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:31:13[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:31:14[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:31:15[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:31:17[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:31:17[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:31:21[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:31:21[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:31:22[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:31:24[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:31:24[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:31:26[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPatient reached the stair base (x=2.001); resetting gait phase to 0.250 for centered footfall on tread 1[0m
+[38;2;136;136;136m21:31:27[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:31:27[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:31:29[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:31:31[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:31:31[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:31:35[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:31:35[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:31:36[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:31:38[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:31:38[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:31:39[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mSynthetic locomotion stair telemetry is active; body-height and anti-tip assist are disabled[0m
+[38;2;136;136;136m21:31:42[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:31:43[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mPGTT heightscan diagnostic[0m
+[38;2;136;136;136m21:31:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:31:46[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:31:48[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mHanding off PGTT -> blind_rl stair climber[0m
+[38;2;136;136;136m21:31:48[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mSet Go2 articulation drive gains (radian units)[0m
+[38;2;136;136;136m21:31:48[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mHot-swapped PGTT -> blind (proprioceptive) RL policy for the climb[0m
+[38;2;136;136;136m21:31:48[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mRL observation segments (policy order FR,FL,RR,RL)[0m
+[38;2;136;136;136m21:31:49[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mRL observation segments (policy order FR,FL,RR,RL)[0m
+[38;2;136;136;136m21:31:49[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mRL observation segments (policy order FR,FL,RR,RL)[0m
+[38;2;136;136;136m21:31:49[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:31:53[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:31:56[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:32:00[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:32:04[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:32:07[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:32:11[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:32:15[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:32:18[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:32:22[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:32:25[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:32:29[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:32:32[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:32:36[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:32:40[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:32:43[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:32:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:32:51[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:32:51[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:32:53[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mRobot entered the staircase phase; keeping the run alive so the climb is visible[0m
+[38;2;136;136;136m21:32:54[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:32:54[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:32:57[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:33:01[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:33:01[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:33:05[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:33:05[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:33:08[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:33:08[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:33:12[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:33:12[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:33:16[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:33:16[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:33:19[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:33:19[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:33:22[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:33:23[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:33:26[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:33:26[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:33:29[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:33:29[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:33:33[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:33:33[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:33:36[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:33:36[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:33:40[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:33:40[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:33:44[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:33:44[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:33:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:33:47[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:33:51[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:33:51[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:33:54[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:33:54[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:33:57[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:33:57[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:34:01[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:34:05[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:34:08[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:34:08[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:34:12[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:34:12[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:34:13[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mFinal-scene recording camera selected a clear cinematic vantage[0m
+[38;2;136;136;136m21:34:13[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mFinal-scene recording camera selected a clear cinematic vantage[0m
+[38;2;136;136;136m21:34:16[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:34:16[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:34:19[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:34:22[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mFinal-scene recording camera selected a clear cinematic vantage[0m
+[38;2;136;136;136m21:34:22[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mFinal-scene recording camera selected a clear cinematic vantage[0m
+[38;2;136;136;136m21:34:23[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:34:26[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:34:26[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:34:30[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:34:33[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:34:37[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:34:37[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:34:41[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:34:41[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:34:44[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mFinal-scene recording camera selected a clear cinematic vantage[0m
+[38;2;136;136;136m21:34:44[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mFinal-scene recording camera selected a clear cinematic vantage[0m
+[38;2;136;136;136m21:34:45[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:34:48[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:34:48[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:34:53[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:34:53[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:34:57[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:34:57[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:35:01[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:35:01[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:35:05[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:35:05[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:35:10[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:35:10[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:35:15[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:35:15[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:35:19[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:35:19[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:35:23[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:35:23[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:35:27[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:35:27[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:35:31[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:35:31[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:35:36[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:35:36[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:35:40[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:35:40[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:35:45[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:35:45[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:35:49[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:35:49[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:35:53[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:35:53[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:35:57[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:35:57[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:36:01[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:36:01[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:36:05[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:36:05[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:36:09[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:36:09[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:36:13[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:36:13[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:36:13[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mFinal-scene recording camera selected a clear cinematic vantage[0m
+[38;2;136;136;136m21:36:13[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mFinal-scene recording camera selected a clear cinematic vantage[0m
+[38;2;136;136;136m21:36:17[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:36:17[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:36:21[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:36:21[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:36:25[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:36:25[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:36:29[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:36:29[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:36:33[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:36:33[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:36:37[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:36:37[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:36:41[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:36:41[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:36:45[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:36:45[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:36:49[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:36:49[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:36:53[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:36:53[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:36:57[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:36:57[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:37:01[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:37:01[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:37:05[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:37:05[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:37:09[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:37:09[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:37:12[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mKinematic patient steering state[0m
+[38;2;136;136;136m21:37:12[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mMasked followed person out of parkour depth input[0m
+[38;2;136;136;136m21:37:15[0m [38;2;255;193;7mWARNING[0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mClimb stalled on the incline -- HOLDING the climber (NOT handing back to the flat walker mid-staircase); resetting the progress window and retrying[0m
+[38;2;136;136;136m21:37:15[0m [38;2;255;193;7mWARNING[0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mClimb stalled mid-staircase with no vertical progress; stopping run early[0m
+2026-07-06T01:37:15Z [594,603ms] [Warning] [isaacsim.sensors.camera.camera] Annotator rgb already attached to /Render/OmniverseKit/HydraTextures/Replicator_04
+2026-07-06T01:37:15Z [594,665ms] [Warning] [isaacsim.sensors.camera.camera] Annotator rgb already attached to /Render/OmniverseKit/HydraTextures/Replicator_04
+[38;2;136;136;136m21:37:20[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mSaved wide scene verification image[0m
+[38;2;136;136;136m21:37:20[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mSaved final verification screenshot to C:\Users\antho\Downloads\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\log\run_sim_20260705_212719_781\reports\verification_end.png[0m
+
+========================================
+EVALUATION SUMMARY:
+Human: fell
+Robot dog: drifted
+  - FL leg: NORMAL_WALKING (height above ground: 0.101 m)
+  - FR leg: ON_GROUND (height above ground: 0.024 m)
+  - RL leg: ON_GROUND (height above ground: 0.023 m)
+  - RR leg: ON_GROUND (height above ground: 0.023 m)
+Stair demo data: synthetic (staircase)
+Exit reason: climb_stalled
+========================================
+
+[38;2;136;136;136m21:37:21[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mSaved evaluation summary to C:\Users\antho\Downloads\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\log\run_sim_20260705_212719_781\reports\evaluation_summary.txt[0m
+[38;2;136;136;136m21:37:21[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mSaved stair demo report to C:\Users\antho\Downloads\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\log\run_sim_20260705_212719_781\reports\stair_demo_report.json[0m
+[38;2;136;136;136m21:37:21[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mTop-down video recording finalized[0m
+[38;2;136;136;136m21:37:21[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mXT16 LiDAR preview recording finalized[0m
+[38;2;136;136;136m21:37:21[0m [38;2;136;136;136mINFO   [0m [38;2;215;119;87m[isaac_env][0m [38;2;255;255;255mExternal scene_view recording finalized[0m
+[602.227s] Simulation App Shutting Down

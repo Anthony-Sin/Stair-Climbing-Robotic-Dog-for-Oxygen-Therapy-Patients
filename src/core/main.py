@@ -375,6 +375,7 @@ def main():
     preview_fps           = 0.0
     preview_save_count    = 0
     frame_idx             = 0
+    frames_received_count = 0
     sim_frame_failure_since: Optional[float] = None
     # Stairs-detected latch expressed in WALL-SECONDS (incident 8.6): a frame counter meant a
     # different physical hold on every platform (~10 s headless sim vs ~1.3 s on the robot for the
@@ -508,10 +509,15 @@ def main():
                     target_exporter.maybe_send(None, None, valid=False, force=True)
                 motion_start_ts     = None
                 last_motion_allowed = False
-                if args.sim and args.sim_frame_timeout_exit_sec > 0.0:
-                    if sim_frame_failure_since is None:
-                        sim_frame_failure_since = now
-                    elapsed = now - sim_frame_failure_since
+                if args.sim:
+                    if hasattr(cam, "_running") and not cam._running and frames_received_count > 0:
+                        print("[main] Isaac closed the TCP stream (end of episode). Exiting immediately.", flush=True)
+                        raise SystemExit(0)
+                        
+                    if args.sim_frame_timeout_exit_sec > 0.0:
+                        if sim_frame_failure_since is None:
+                            sim_frame_failure_since = now
+                        elapsed = now - sim_frame_failure_since
                     if elapsed >= args.sim_frame_timeout_exit_sec:
                         message = (
                             "Sim camera did not receive Isaac frames for "
@@ -532,291 +538,415 @@ def main():
                             ),
                         )
                         print(f"[main] {message}", flush=True)
-                        raise SystemExit(2)
+                        if frames_received_count > 0:
+                            print("[main] Frames were previously received. Assuming Isaac closed the stream at the end of the episode.", flush=True)
+                            raise SystemExit(0)
+                        else:
+                            raise SystemExit(2)
                 time.sleep(0.01)
                 continue
 
             sim_frame_failure_since = None
+            frames_received_count += 1
             depth_img = depths[0]
-            yolo_stairs.update_frame(img)
+            if not getattr(args, "stair_waypoint_test", False):
+                yolo_stairs.update_frame(img)
 
-            preprocess_start_ts = time.perf_counter()
-            input_tensor_np, letterbox_scale, pad_top, pad_left = yolo.preprocess(img)
-            stage_ms["preprocess"] = (time.perf_counter() - preprocess_start_ts) * 1000.0
+                preprocess_start_ts = time.perf_counter()
+                input_tensor_np, letterbox_scale, pad_top, pad_left = yolo.preprocess(img)
+                stage_ms["preprocess"] = (time.perf_counter() - preprocess_start_ts) * 1000.0
 
-            infer_start_ts = time.perf_counter()
-            pose_infer_wall_ts = time.time()
-            trt_output     = trt_infer.infer(input_tensor_np, args.debug)
-            pose_infer_done_ts = time.monotonic()
-            stage_ms["pose_infer"] = (time.perf_counter() - infer_start_ts) * 1000.0
-            if trt_output is None:
-                debug_trace.log(
-                    "pose_inference_failed",
-                    frame_index=int(frame_idx),
-                    stage_ms=stage_ms,
+                infer_start_ts = time.perf_counter()
+                pose_infer_wall_ts = time.time()
+                trt_output     = trt_infer.infer(input_tensor_np, args.debug)
+                pose_infer_done_ts = time.monotonic()
+                stage_ms["pose_infer"] = (time.perf_counter() - infer_start_ts) * 1000.0
+                if trt_output is None:
+                    debug_trace.log(
+                        "pose_inference_failed",
+                        frame_index=int(frame_idx),
+                        stage_ms=stage_ms,
+                    )
+                    logger.error(
+                        "Pose inference failed",
+                        extra=build_ecs_extra(
+                            component="vision.main", action="pose_inference_failed",
+                        ),
+                    )
+                    if robot_controller is not None and robot_controller.is_ready():
+                        robot_controller.stop()
+                    if target_exporter is not None:
+                        target_exporter.maybe_send(None, None, valid=False, force=True)
+                    motion_start_ts     = None
+                    last_motion_allowed = False
+                    continue
+
+                decode_start_ts = time.perf_counter()
+                trt_dets        = yolo.decode_output(trt_output)
+                stage_ms["decode"] = (time.perf_counter() - decode_start_ts) * 1000.0
+
+                trt_dets_scaled = []
+                for det in trt_dets:
+                    det_scaled = det.copy()
+                    bbox = np.array(det['bbox'], dtype=np.float32).reshape(2, 2)
+                    bbox = yolo.scale_coords_pad(bbox, letterbox_scale, pad_left, pad_top, img.shape[:2])
+                    det_scaled['bbox'] = bbox.flatten()
+                    if det_scaled.get('keypoints') is not None:
+                        kpts = np.array(det_scaled['keypoints'], dtype=np.float32)
+                        kpts = yolo.scale_coords_pad(kpts, letterbox_scale, pad_left, pad_top, img.shape[:2])
+                        det_scaled['keypoints'] = kpts
+                    trt_dets_scaled.append(det_scaled)
+
+                track_start_ts  = time.perf_counter()
+                # NOTE (follow regression fixed 2026-07-03): do NOT retune ByteTrack's max_time_lost from
+                # the measured loop rate. That window is a FRAME count -- "how many missed-detection frames
+                # to coast a lost track before dropping it" -- and ByteTrack's Kalman is frame-indexed, so
+                # frame_rate feeds ONLY max_time_lost, not the motion model. Feeding the ~4 FPS headless-sim
+                # rate collapsed the coast from 30 frames to ~4: a person briefly out of view during a
+                # zig-zag turn was dropped after ~1 s instead of coasting (the dog keeps following the last
+                # bbox and re-orients toward it), so the dog fell into a bounded lost-search and never
+                # re-acquired (run_sim_20260703_110219: lost at frame 341, 20 s to timeout). Keep the
+                # construction-time frame-count window (track_buffer=30) -- the checkpoint-proven value.
+                tracked_dets, main_person = tracker.update(trt_dets_scaled, img.shape)
+                stage_ms["track"] = (time.perf_counter() - track_start_ts) * 1000.0
+
+                matched_visual_lock = bool(
+                    main_person is not None
+                    and isinstance(main_person, dict)
+                    and main_person.get('matched_detection', False)
                 )
-                logger.error(
-                    "Pose inference failed",
-                    extra=build_ecs_extra(
-                        component="vision.main", action="pose_inference_failed",
-                    ),
+                if matched_visual_lock:
+                    last_matched_visual_ts = time.perf_counter()
+
+                recent_visual_lock = bool(
+                    args.follow
+                    and main_person is not None
+                    and last_matched_visual_ts is not None
+                    and (time.perf_counter() - last_matched_visual_ts) <= visual_lock_hold_sec
                 )
-                if robot_controller is not None and robot_controller.is_ready():
-                    robot_controller.stop()
-                if target_exporter is not None:
-                    target_exporter.maybe_send(None, None, valid=False, force=True)
-                motion_start_ts     = None
-                last_motion_allowed = False
-                continue
+                # Time-based lock hold: True while we matched the target within the hold window,
+                # EVEN on an empty-detection frame (recent_visual_lock can't span those -- it requires
+                # a live main_person). This bridges the zigzag edge-flicker for the motion gate below
+                # AND the follower coast further down, so a YOLO blink no longer counts as "lost".
+                lock_held = bool(
+                    args.follow
+                    and last_matched_visual_ts is not None
+                    and (time.perf_counter() - last_matched_visual_ts) <= visual_lock_hold_sec
+                )
 
-            decode_start_ts = time.perf_counter()
-            trt_dets        = yolo.decode_output(trt_output)
-            stage_ms["decode"] = (time.perf_counter() - decode_start_ts) * 1000.0
+                if matched_visual_lock:
+                    motion_lock_streak += 1
+                elif not lock_held:
+                    # Only zero the streak on a GENUINE loss (no match within the hold window). A brief
+                    # dropout no longer re-locks motion: the 10-frame anti-spurious gate still has to be
+                    # earned ONCE, but after that the zigzag flicker keeps the streak alive instead of
+                    # resetting it every few frames and pinning the dog in a turn-in-place (run 115009:
+                    # streak reset to 0 on each edge-flicker, never re-reached 10, so vx stayed 0 through
+                    # every lateral turn while the patient walked on).
+                    motion_lock_streak = 0
+                motion_lock_ready = motion_lock_streak >= motion_lock_frames
 
-            trt_dets_scaled = []
-            for det in trt_dets:
-                det_scaled = det.copy()
-                bbox = np.array(det['bbox'], dtype=np.float32).reshape(2, 2)
-                bbox = yolo.scale_coords_pad(bbox, letterbox_scale, pad_left, pad_top, img.shape[:2])
-                det_scaled['bbox'] = bbox.flatten()
-                if det_scaled.get('keypoints') is not None:
-                    kpts = np.array(det_scaled['keypoints'], dtype=np.float32)
-                    kpts = yolo.scale_coords_pad(kpts, letterbox_scale, pad_left, pad_top, img.shape[:2])
-                    det_scaled['keypoints'] = kpts
-                trt_dets_scaled.append(det_scaled)
+                reacquire_active = False
 
-            track_start_ts  = time.perf_counter()
-            # NOTE (follow regression fixed 2026-07-03): do NOT retune ByteTrack's max_time_lost from
-            # the measured loop rate. That window is a FRAME count -- "how many missed-detection frames
-            # to coast a lost track before dropping it" -- and ByteTrack's Kalman is frame-indexed, so
-            # frame_rate feeds ONLY max_time_lost, not the motion model. Feeding the ~4 FPS headless-sim
-            # rate collapsed the coast from 30 frames to ~4: a person briefly out of view during a
-            # zig-zag turn was dropped after ~1 s instead of coasting (the dog keeps following the last
-            # bbox and re-orients toward it), so the dog fell into a bounded lost-search and never
-            # re-acquired (run_sim_20260703_110219: lost at frame 341, 20 s to timeout). Keep the
-            # construction-time frame-count window (track_buffer=30) -- the checkpoint-proven value.
-            tracked_dets, main_person = tracker.update(trt_dets_scaled, img.shape)
-            stage_ms["track"] = (time.perf_counter() - track_start_ts) * 1000.0
+                current_time   = time.perf_counter()
+                processing_fps = 1.0 / max(1e-6, current_time - prev_time)
+                prev_time      = current_time
 
-            matched_visual_lock = bool(
-                main_person is not None
-                and isinstance(main_person, dict)
-                and main_person.get('matched_detection', False)
-            )
-            if matched_visual_lock:
-                last_matched_visual_ts = time.perf_counter()
+                follow_start_ts = time.perf_counter()
+                if main_person is not None:
+                    last_seen_person = main_person
+                # Feed the follower a continuous target: the live track when present, otherwise COAST
+                # on the last good detection for up to visual_lock_hold_sec. This bridges empty-detection
+                # frames (tracker returned None) so a ~1 s YOLO dropout no longer zeroes the follow
+                # command -- the dog keeps driving toward the last-known bearing/gap instead of freezing
+                # (run 111200: followed the zigzag well, then sat still for 10 s after one dropout).
+                if matched_visual_lock or recent_visual_lock:
+                    follow_input_person = main_person
+                elif lock_held and last_seen_person is not None:
+                    follow_input_person = last_seen_person
+                else:
+                    follow_input_person = None
+                trans_x_cmd, rotation_cmd, debug_info = person_follower.update(
+                    follow_input_person, depth_img, (img.shape[0], img.shape[1]),
+                    lidar_profile=frame_meta.get("lidar_profile"),
+                    robot_speed=last_command_trans_x,
+                    robot_yaw_speed=last_command_rotation,
+                    # Committed-to-climb latch (previous frame -- the depth stair gate that
+                    # produces this frame's value runs BELOW, incident 8.5 ordering). Tells the
+                    # follow distance fusion the 2D LiDAR is measuring the RISER, not the elevated
+                    # person, so it drops the near-LiDAR riser and trusts the person's depth. Uses the
+                    # COMMITTED (latched) value, not the genuine one: genuine detection drops mid-climb
+                    # when the person occludes the stairs -- exactly when the LiDAR is hitting the riser.
+                    on_stairs=_prev_stairs_committed,
+                )
+                # LIVE stair trigger (sensor-derived): YOLO-World detection on RGB
+                # (yolo_stairs_inference) + depth-camera distance below. This is what
+                # _apply_stair_command_policy gates on -- NOT the sim_go2_locomotion
+                # stair_demo phase/locomotion overlay, which is HUD/report decoration
+                # computed from ground-truth pose and drives nothing.
+                stairs_result = yolo_stairs.get_latest_result()
+                _stair_yolo_detected = stairs_result.get("detected", False)
+                _stair_yolo_bbox = stairs_result.get("bbox")
+                # Suppress YOLO stair detection when the person's bbox covers the majority of
+                # the stair bbox -- person legs animate in front of the stairs and their silhouette
+                # triggers YOLO-World ("steps"/"brick stairs") as a false positive.  The depth-based
+                # detector is handled separately: it IS confused by the person's footprint (a
+                # standing body profiles as a stack of risers), so it is person-masked at the
+                # depth-grid stage just below rather than via this bbox-overlap ratio.
+                _stair_person_overlap_ratio = 0.0
+                if _stair_yolo_detected and _stair_yolo_bbox is not None and main_person is not None:
+                    _pb = main_person.get("bbox")
+                    if _pb is not None and len(_pb) >= 4 and len(_stair_yolo_bbox) >= 4:
+                        sx1, sy1, sx2, sy2 = _stair_yolo_bbox[:4]
+                        px1, py1, px2, py2 = _pb[:4]
+                        ix1 = max(sx1, px1); iy1 = max(sy1, py1)
+                        ix2 = min(sx2, px2); iy2 = min(sy2, py2)
+                        inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+                        stair_area = max(1.0, (sx2 - sx1) * (sy2 - sy1))
+                        _stair_person_overlap_ratio = inter / stair_area
+                        if _stair_person_overlap_ratio >= 0.5:
+                            _stair_yolo_detected = False
+                            logger.debug(
+                                "YOLO stair detection suppressed: person bbox covers %.0f%% of stair bbox",
+                                _stair_person_overlap_ratio * 100,
+                            )
+                debug_info["stairs_person_overlap_ratio"] = round(_stair_person_overlap_ratio, 3)
+                debug_info["stairs_person_suppressed"] = (
+                    stairs_result.get("detected", False) and not _stair_yolo_detected
+                )
+                if _stair_yolo_detected:
+                    _stairs_latch_until_ts = current_time + float(args.stairs_latch_sec)
+                    _last_yolo_stair_ts = current_time
+                    if _stair_yolo_bbox is not None:
+                        last_stairs_bbox = list(_stair_yolo_bbox)
+                        last_stairs_conf = float(stairs_result.get("conf", 0.0))
 
-            recent_visual_lock = bool(
-                args.follow
-                and main_person is not None
-                and last_matched_visual_ts is not None
-                and (time.perf_counter() - last_matched_visual_ts) <= visual_lock_hold_sec
-            )
-            # Time-based lock hold: True while we matched the target within the hold window,
-            # EVEN on an empty-detection frame (recent_visual_lock can't span those -- it requires
-            # a live main_person). This bridges the zigzag edge-flicker for the motion gate below
-            # AND the follower coast further down, so a YOLO blink no longer counts as "lost".
-            lock_held = bool(
-                args.follow
-                and last_matched_visual_ts is not None
-                and (time.perf_counter() - last_matched_visual_ts) <= visual_lock_hold_sec
-            )
+                # Depth-based near-field stair detection (Rec 2): the geometric depth column
+                # profiler, merged with YOLO -- it keeps stairs_detected True when YOLO blanks
+                # out at close range. The mm->m units fix (P2-2) and the person-mask (incident
+                # 8.3) both live in evaluate_depth_stair_gate now, a pure + unit-tested gate
+                # (tests/test_depth_stair_gate.py) so the loop's two hardest bugs are covered.
+                # Prefer the live track's bbox, fall back to the coasted follow target so brief
+                # YOLO dropouts stay masked.
+                _mask_person = main_person if main_person is not None else follow_input_person
+                _mask_bbox = _mask_person.get("bbox") if _mask_person is not None else None
+                _depth_gate = evaluate_depth_stair_gate(
+                    depth_img, _mask_bbox, _depth_stair_detector,
+                    min_count=_depth_stair_cfg.stair_min_count,
+                )
+                _depth_det = _depth_gate.result
+                _depth_stairs_confirmed = _depth_gate.confirmed
+                debug_info["depth_stair_person_masked"] = _depth_gate.person_masked
+                # Gate the DEPTH-ONLY latch on recent YOLO-World stair evidence. Design intent
+                # (main L884): YOLO detects the staircase from AFAR, depth carries it at close
+                # range. Without this gate, near-floor / person-edge depth slivers confirm >=2
+                # fake risers on FLAT ground (count oscillates 1->6->2->9...) and latch stair mode
+                # with NO corroboration -- the controller tames follow yaw and the dog stops
+                # tracking the patient (incident 8.3 residual: run_..142645 latched stairs at
+                # frame 14 while YOLO's first real detection was frame 517 -> ~500 flat frames in
+                # stair mode, never plain-followed). YOLO still latches on its own (above); depth
+                # may only EXTEND the latch while YOLO has been seen within stair_seen_persist_sec.
+                _depth_may_latch = depth_stair_latch_allowed(
+                    depth_confirmed=_depth_stairs_confirmed, now=current_time,
+                    last_yolo_stair_ts=_last_yolo_stair_ts,
+                    persist_sec=float(args.stair_seen_persist_sec),
+                )
+                if _depth_may_latch:
+                    _stairs_latch_until_ts = current_time + float(args.stairs_latch_sec)
+                debug_info["depth_stair_confirmed"] = bool(_depth_stairs_confirmed)
+                debug_info["depth_stair_yolo_gated_out"] = bool(_depth_stairs_confirmed and not _depth_may_latch)
+                debug_info["depth_stair_detected"] = bool(_depth_det.get("stair_detected", False))
+                debug_info["depth_stair_count"] = int(_depth_det.get("stair_count", 0))
+                debug_info["depth_stair_leading_edge_m"] = _depth_det.get("leading_edge_distance")
 
-            if matched_visual_lock:
-                motion_lock_streak += 1
-            elif not lock_held:
-                # Only zero the streak on a GENUINE loss (no match within the hold window). A brief
-                # dropout no longer re-locks motion: the 10-frame anti-spurious gate still has to be
-                # earned ONCE, but after that the zigzag flicker keeps the streak alive instead of
-                # resetting it every few frames and pinning the dog in a turn-in-place (run 115009:
-                # streak reset to 0 on each edge-flicker, never re-reached 10, so vx stayed 0 through
-                # every lateral turn while the patient walked on).
-                motion_lock_streak = 0
-            motion_lock_ready = motion_lock_streak >= motion_lock_frames
+                stairs_detected = current_time < _stairs_latch_until_ts
 
-            reacquire_active = False
+                # Stair close-follow: tighten the standoff while any stair evidence is
+                # present so the dog stays close enough to keep the patient in frame as
+                # they climb.  Enter on YOLO-World detection (far range); MAINTAIN while
+                # YOLO OR depth stair edges are still visible; exit only when BOTH clear.
+                # This prevents the standoff from snapping back to the wide normal value
+                # the instant YOLO-World blanks out at close range (<0.8 m riser face).
+                _depth_stairs_visible = bool(debug_info.get("depth_stair_detected", False))
+                # incident 8.3 (ungated consumer): the RAW depth stair detector back-projects the CLOSE
+                # followed patient's legs into fake risers on flat ground (depth_stair_detected True from
+                # frame 1 with the patient metres from the stairs, run_sim_20260703_152845). Entering
+                # stair-close on that raw signal collapsed the follow target to --stair-target-distance
+                # (0.5 m, then tightened to ~0.28 m in follow_shaping) and crowded the dog into the
+                # patient -> only-LEGS in frame -> YOLO drops the lock at the apex. Honour the comment's
+                # intent ("ENTER on YOLO"): the depth signal may only MAINTAIN stair-close when YOLO has
+                # RECENTLY corroborated stairs (same gate as the depth latch). The YOLO-gated latch
+                # `stairs_detected` already covers the genuine on-stairs case where YOLO blanks at a close
+                # riser (it latches from the far-range YOLO detection), so real climbs are unaffected.
+                _yolo_stair_recent = (
+                    (current_time - _last_yolo_stair_ts) <= float(args.stair_seen_persist_sec)
+                )
+                _stair_close_active = stairs_detected or (_depth_stairs_visible and _yolo_stair_recent)
+                debug_info["stair_close_active"] = _stair_close_active
+                person_follower.config.target_distance = (
+                    float(args.stair_target_distance) if _stair_close_active
+                    else float(args.target_distance)
+                )
 
-            current_time   = time.perf_counter()
-            processing_fps = 1.0 / max(1e-6, current_time - prev_time)
-            prev_time      = current_time
-
-            follow_start_ts = time.perf_counter()
-            if main_person is not None:
-                last_seen_person = main_person
-            # Feed the follower a continuous target: the live track when present, otherwise COAST
-            # on the last good detection for up to visual_lock_hold_sec. This bridges empty-detection
-            # frames (tracker returned None) so a ~1 s YOLO dropout no longer zeroes the follow
-            # command -- the dog keeps driving toward the last-known bearing/gap instead of freezing
-            # (run 111200: followed the zigzag well, then sat still for 10 s after one dropout).
-            if matched_visual_lock or recent_visual_lock:
-                follow_input_person = main_person
-            elif lock_held and last_seen_person is not None:
-                follow_input_person = last_seen_person
+                stairs_bbox = stairs_result.get("bbox") or last_stairs_bbox
+                # Measure stair depth excluding the person's footprint so the robot
+                # doesn't confuse the person's legs/body with the stair edge.
+                _person_bbox_for_depth = (
+                    list(main_person.get("bbox", []))
+                    if main_person is not None and main_person.get("bbox") is not None
+                    else None
+                )
+                stairs_depth_m = _depth_from_bbox_excluding_person(
+                    depth_img, stairs_bbox, _person_bbox_for_depth
+                )
+                # Forward the followed person's bbox (normalized [0,1] of the RGB frame)
+                # to Isaac so the parkour depth policy can mask the person out of its
+                # depth input -- the near body at close follow range otherwise reads as
+                # terrain the policy charges at (the close-range surge). Reuses the same
+                # YOLO bbox as the stair-depth exclusion above; deployable on the robot.
+                person_bbox_norm = None
+                if _person_bbox_for_depth is not None and len(_person_bbox_for_depth) >= 4:
+                    _ih, _iw = img.shape[0], img.shape[1]
+                    if _iw > 0 and _ih > 0:
+                        _b = _person_bbox_for_depth
+                        person_bbox_norm = [
+                            float(_b[0]) / _iw, float(_b[1]) / _ih,
+                            float(_b[2]) / _iw, float(_b[3]) / _ih,
+                        ]
+                debug_info["person_bbox_norm"] = person_bbox_norm
+                if stairs_depth_m is not None:
+                    last_stairs_depth_m = stairs_depth_m
+                    stairs_depth_ever_confirmed = True
+                elif stairs_detected:
+                    # Use depth-detector leading edge as first fallback (more current than
+                    # the latched YOLO bbox depth), then fall back to the last trusted value.
+                    _le = _depth_det.get("leading_edge_distance")
+                    stairs_depth_m = float(_le) if _le is not None else last_stairs_depth_m
             else:
-                follow_input_person = None
-            trans_x_cmd, rotation_cmd, debug_info = person_follower.update(
-                follow_input_person, depth_img, (img.shape[0], img.shape[1]),
-                lidar_profile=frame_meta.get("lidar_profile"),
-                robot_speed=last_command_trans_x,
-                robot_yaw_speed=last_command_rotation,
-                # Committed-to-climb latch (previous frame -- the depth stair gate that
-                # produces this frame's value runs BELOW, incident 8.5 ordering). Tells the
-                # follow distance fusion the 2D LiDAR is measuring the RISER, not the elevated
-                # person, so it drops the near-LiDAR riser and trusts the person's depth. Uses the
-                # COMMITTED (latched) value, not the genuine one: genuine detection drops mid-climb
-                # when the person occludes the stairs -- exactly when the LiDAR is hitting the riser.
-                on_stairs=_prev_stairs_committed,
-            )
-            # LIVE stair trigger (sensor-derived): YOLO-World detection on RGB
-            # (yolo_stairs_inference) + depth-camera distance below. This is what
-            # _apply_stair_command_policy gates on -- NOT the sim_go2_locomotion
-            # stair_demo phase/locomotion overlay, which is HUD/report decoration
-            # computed from ground-truth pose and drives nothing.
-            stairs_result = yolo_stairs.get_latest_result()
-            _stair_yolo_detected = stairs_result.get("detected", False)
-            _stair_yolo_bbox = stairs_result.get("bbox")
-            # Suppress YOLO stair detection when the person's bbox covers the majority of
-            # the stair bbox -- person legs animate in front of the stairs and their silhouette
-            # triggers YOLO-World ("steps"/"brick stairs") as a false positive.  The depth-based
-            # detector is handled separately: it IS confused by the person's footprint (a
-            # standing body profiles as a stack of risers), so it is person-masked at the
-            # depth-grid stage just below rather than via this bbox-overlap ratio.
-            _stair_person_overlap_ratio = 0.0
-            if _stair_yolo_detected and _stair_yolo_bbox is not None and main_person is not None:
-                _pb = main_person.get("bbox")
-                if _pb is not None and len(_pb) >= 4 and len(_stair_yolo_bbox) >= 4:
-                    sx1, sy1, sx2, sy2 = _stair_yolo_bbox[:4]
-                    px1, py1, px2, py2 = _pb[:4]
-                    ix1 = max(sx1, px1); iy1 = max(sy1, py1)
-                    ix2 = min(sx2, px2); iy2 = min(sy2, py2)
-                    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
-                    stair_area = max(1.0, (sx2 - sx1) * (sy2 - sy1))
-                    _stair_person_overlap_ratio = inter / stair_area
-                    if _stair_person_overlap_ratio >= 0.5:
-                        _stair_yolo_detected = False
-                        logger.debug(
-                            "YOLO stair detection suppressed: person bbox covers %.0f%% of stair bbox",
-                            _stair_person_overlap_ratio * 100,
+                # YOLO tracking bypass / disconnected for waypoint testing
+                main_person = None
+                tracked_dets = []
+                trt_dets_scaled = []
+                matched_visual_lock = True
+                recent_visual_lock = True
+                motion_lock_ready = True
+                motion_lock_streak = motion_lock_frames
+                reacquire_active = False
+
+                current_time   = time.perf_counter()
+                processing_fps = 1.0 / max(1e-6, current_time - prev_time)
+                prev_time      = current_time
+
+                follow_start_ts = time.perf_counter()
+
+                # Retrieve ground truth robot pose from simulation metadata
+                stair_demo = frame_meta.get("stair_demo", {}) if isinstance(frame_meta, dict) else {}
+                robot_info = stair_demo.get("robot", {}) if isinstance(stair_demo, dict) else {}
+                rx = robot_info.get("x_m")
+                ry = robot_info.get("y_m")
+                yaw_deg = robot_info.get("yaw_deg")
+
+                if rx is not None and ry is not None and yaw_deg is not None:
+                    dx = args.stair_waypoint_x - rx
+                    dy = args.stair_waypoint_y - ry
+                    yaw_rad = math.radians(yaw_deg)
+                    x_local = dx * math.cos(yaw_rad) + dy * math.sin(yaw_rad)
+                    y_local = -dx * math.sin(yaw_rad) + dy * math.cos(yaw_rad)
+
+                    distance_m = math.sqrt(dx*dx + dy*dy)
+                    bearing_error_rad = math.atan2(y_local, x_local)
+                    bearing_error_deg = math.degrees(bearing_error_rad)
+
+                    # Log a startup message once so it's clean
+                    if getattr(main, "_waypoint_test_logged", False) is False:
+                        setattr(main, "_waypoint_test_logged", True)
+                        logger.warning(
+                            "YOLO tracking is disconnected for testing. "
+                            f"Driving robot to static waypoint: X={args.stair_waypoint_x}, Y={args.stair_waypoint_y}",
+                            extra=build_ecs_extra(
+                                component="vision.main",
+                                action="stair_waypoint_test_active",
+                            )
                         )
-            debug_info["stairs_person_overlap_ratio"] = round(_stair_person_overlap_ratio, 3)
-            debug_info["stairs_person_suppressed"] = (
-                stairs_result.get("detected", False) and not _stair_yolo_detected
-            )
-            if _stair_yolo_detected:
-                _stairs_latch_until_ts = current_time + float(args.stairs_latch_sec)
-                _last_yolo_stair_ts = current_time
-                if _stair_yolo_bbox is not None:
-                    last_stairs_bbox = list(_stair_yolo_bbox)
-                    last_stairs_conf = float(stairs_result.get("conf", 0.0))
+                        print(f"[main] YOLO tracking disconnected. Navigating to waypoint: X={args.stair_waypoint_x}, Y={args.stair_waypoint_y}", flush=True)
 
-            # Depth-based near-field stair detection (Rec 2): the geometric depth column
-            # profiler, merged with YOLO -- it keeps stairs_detected True when YOLO blanks
-            # out at close range. The mm->m units fix (P2-2) and the person-mask (incident
-            # 8.3) both live in evaluate_depth_stair_gate now, a pure + unit-tested gate
-            # (tests/test_depth_stair_gate.py) so the loop's two hardest bugs are covered.
-            # Prefer the live track's bbox, fall back to the coasted follow target so brief
-            # YOLO dropouts stay masked.
-            _mask_person = main_person if main_person is not None else follow_input_person
-            _mask_bbox = _mask_person.get("bbox") if _mask_person is not None else None
-            _depth_gate = evaluate_depth_stair_gate(
-                depth_img, _mask_bbox, _depth_stair_detector,
-                min_count=_depth_stair_cfg.stair_min_count,
-            )
-            _depth_det = _depth_gate.result
-            _depth_stairs_confirmed = _depth_gate.confirmed
-            debug_info["depth_stair_person_masked"] = _depth_gate.person_masked
-            # Gate the DEPTH-ONLY latch on recent YOLO-World stair evidence. Design intent
-            # (main L884): YOLO detects the staircase from AFAR, depth carries it at close
-            # range. Without this gate, near-floor / person-edge depth slivers confirm >=2
-            # fake risers on FLAT ground (count oscillates 1->6->2->9...) and latch stair mode
-            # with NO corroboration -- the controller tames follow yaw and the dog stops
-            # tracking the patient (incident 8.3 residual: run_..142645 latched stairs at
-            # frame 14 while YOLO's first real detection was frame 517 -> ~500 flat frames in
-            # stair mode, never plain-followed). YOLO still latches on its own (above); depth
-            # may only EXTEND the latch while YOLO has been seen within stair_seen_persist_sec.
-            _depth_may_latch = depth_stair_latch_allowed(
-                depth_confirmed=_depth_stairs_confirmed, now=current_time,
-                last_yolo_stair_ts=_last_yolo_stair_ts,
-                persist_sec=float(args.stair_seen_persist_sec),
-            )
-            if _depth_may_latch:
-                _stairs_latch_until_ts = current_time + float(args.stairs_latch_sec)
-            debug_info["depth_stair_confirmed"] = bool(_depth_stairs_confirmed)
-            debug_info["depth_stair_yolo_gated_out"] = bool(_depth_stairs_confirmed and not _depth_may_latch)
-            debug_info["depth_stair_detected"] = bool(_depth_det.get("stair_detected", False))
-            debug_info["depth_stair_count"] = int(_depth_det.get("stair_count", 0))
-            debug_info["depth_stair_leading_edge_m"] = _depth_det.get("leading_edge_distance")
+                    if distance_m <= 0.10:
+                        trans_x_cmd = 0.0
+                        rotation_cmd = 0.0
+                        person_follower.trans_x_pid_controller.reset()
+                        person_follower.rotation_pid_controller.reset()
+                    else:
+                        trans_x_cmd_raw = person_follower.trans_x_pid_controller.update(distance_m, 0.0)
+                        trans_x_cmd = max(0.0, trans_x_cmd_raw)
 
-            stairs_detected = current_time < _stairs_latch_until_ts
+                        rotation_error = -bearing_error_deg
+                        rotation_cmd_raw = person_follower.rotation_pid_controller.update(rotation_error, 0.0)
+                        rotation_cmd = -rotation_cmd_raw
 
-            # Stair close-follow: tighten the standoff while any stair evidence is
-            # present so the dog stays close enough to keep the patient in frame as
-            # they climb.  Enter on YOLO-World detection (far range); MAINTAIN while
-            # YOLO OR depth stair edges are still visible; exit only when BOTH clear.
-            # This prevents the standoff from snapping back to the wide normal value
-            # the instant YOLO-World blanks out at close range (<0.8 m riser face).
-            _depth_stairs_visible = bool(debug_info.get("depth_stair_detected", False))
-            # incident 8.3 (ungated consumer): the RAW depth stair detector back-projects the CLOSE
-            # followed patient's legs into fake risers on flat ground (depth_stair_detected True from
-            # frame 1 with the patient metres from the stairs, run_sim_20260703_152845). Entering
-            # stair-close on that raw signal collapsed the follow target to --stair-target-distance
-            # (0.5 m, then tightened to ~0.28 m in follow_shaping) and crowded the dog into the
-            # patient -> only-LEGS in frame -> YOLO drops the lock at the apex. Honour the comment's
-            # intent ("ENTER on YOLO"): the depth signal may only MAINTAIN stair-close when YOLO has
-            # RECENTLY corroborated stairs (same gate as the depth latch). The YOLO-gated latch
-            # `stairs_detected` already covers the genuine on-stairs case where YOLO blanks at a close
-            # riser (it latches from the far-range YOLO detection), so real climbs are unaffected.
-            _yolo_stair_recent = (
-                (current_time - _last_yolo_stair_ts) <= float(args.stair_seen_persist_sec)
-            )
-            _stair_close_active = stairs_detected or (_depth_stairs_visible and _yolo_stair_recent)
-            debug_info["stair_close_active"] = _stair_close_active
-            person_follower.config.target_distance = (
-                float(args.stair_target_distance) if _stair_close_active
-                else float(args.target_distance)
-            )
+                    # Calculate center_x mapping for visual and target export contracts
+                    fx = camera_intrinsics['fx']
+                    cx = camera_intrinsics['cx']
+                    mock_center_x = cx - y_local * fx / max(0.01, distance_m)
 
-            stairs_bbox = stairs_result.get("bbox") or last_stairs_bbox
-            # Measure stair depth excluding the person's footprint so the robot
-            # doesn't confuse the person's legs/body with the stair edge.
-            _person_bbox_for_depth = (
-                list(main_person.get("bbox", []))
-                if main_person is not None and main_person.get("bbox") is not None
-                else None
-            )
-            stairs_depth_m = _depth_from_bbox_excluding_person(
-                depth_img, stairs_bbox, _person_bbox_for_depth
-            )
-            # Forward the followed person's bbox (normalized [0,1] of the RGB frame)
-            # to Isaac so the parkour depth policy can mask the person out of its
-            # depth input -- the near body at close follow range otherwise reads as
-            # terrain the policy charges at (the close-range surge). Reuses the same
-            # YOLO bbox as the stair-depth exclusion above; deployable on the robot.
-            person_bbox_norm = None
-            if _person_bbox_for_depth is not None and len(_person_bbox_for_depth) >= 4:
-                _ih, _iw = img.shape[0], img.shape[1]
-                if _iw > 0 and _ih > 0:
-                    _b = _person_bbox_for_depth
-                    person_bbox_norm = [
-                        float(_b[0]) / _iw, float(_b[1]) / _ih,
-                        float(_b[2]) / _iw, float(_b[3]) / _ih,
-                    ]
-            debug_info["person_bbox_norm"] = person_bbox_norm
-            if stairs_depth_m is not None:
-                last_stairs_depth_m = stairs_depth_m
-                stairs_depth_ever_confirmed = True
-            elif stairs_detected:
-                # Use depth-detector leading edge as first fallback (more current than
-                # the latched YOLO bbox depth), then fall back to the last trusted value.
-                _le = _depth_det.get("leading_edge_distance")
-                stairs_depth_m = float(_le) if _le is not None else last_stairs_depth_m
+                    # Fire the stair trigger BEFORE the front-obstacle gate's stop point.
+                    stairs_detected = (1.2 <= rx <= 6.3)
+                    stairs_depth_ever_confirmed = True
+                    stairs_bbox = None
+                    stairs_depth_m = None
+                    stairs_result = {}
+
+                    # Set debug_info
+                    debug_info = {
+                        'person_detected': True,
+                        'depth_valid': True,
+                        'depth_distance_m': distance_m,
+                        'depth_method': 'stair_waypoint_test',
+                        'trans_x_cmd': trans_x_cmd,
+                        'rotation_cmd': rotation_cmd,
+                        'rotation_error_deg': -bearing_error_deg if distance_m > 0.10 else 0.0,
+                        'stairs_detected': stairs_detected,
+                        'stairs_depth_m': None,
+                        'stairs_depth_ever_confirmed': True,
+                        'target_distance': 0.0,
+                        'distance_error_m': distance_m,
+                        'center_x': mock_center_x,
+                        'bbox_center_x': mock_center_x,
+                        'edge_penalty': 0.0,
+                        'size_penalty': 0.0,
+                        'size_ratio': 0.0,
+                        'suppression': 0.0,
+                    }
+                else:
+                    trans_x_cmd = 0.0
+                    rotation_cmd = 0.0
+                    stairs_detected = False
+                    stairs_depth_ever_confirmed = False
+                    stairs_bbox = None
+                    stairs_depth_m = None
+                    stairs_result = {}
+                    debug_info = {
+                        'person_detected': False,
+                        'depth_valid': False,
+                        'depth_distance_m': None,
+                        'depth_method': None,
+                        'trans_x_cmd': 0.0,
+                        'rotation_cmd': 0.0,
+                        'rotation_error_deg': 0.0,
+                        'stairs_detected': False,
+                        'stairs_depth_m': None,
+                        'stairs_depth_ever_confirmed': False,
+                        'target_distance': 0.0,
+                        'distance_error_m': 0.0,
+                    }
+
+                _stairs_latch_until_ts = current_time
 
             debug_info["stairs_detected"] = stairs_detected
-            debug_info["stairs_raw_detected"] = bool(stairs_result.get("raw_detected", False))
-            debug_info["stairs_positive_count"] = int(stairs_result.get("positive_count", 0))
-            debug_info["stairs_consistency_required"] = int(stairs_result.get("consistency_required", 1))
+            debug_info["stairs_raw_detected"] = bool(stairs_result.get("raw_detected", False)) if not getattr(args, "stair_waypoint_test", False) else stairs_detected
+            debug_info["stairs_positive_count"] = int(stairs_result.get("positive_count", 0)) if not getattr(args, "stair_waypoint_test", False) else 0
+            debug_info["stairs_consistency_required"] = int(stairs_result.get("consistency_required", 1)) if not getattr(args, "stair_waypoint_test", False) else 1
             debug_info["stairs_latch_sec_remaining"] = round(
-                max(0.0, float(_stairs_latch_until_ts) - float(current_time)), 3)
+                max(0.0, float(_stairs_latch_until_ts) - float(current_time)), 3) if not getattr(args, "stair_waypoint_test", False) else 0.0
             debug_info["stairs_bbox"] = stairs_bbox
             # Horizontal staircase-center offset in [-1,1] (frame center = 0, +right),
             # used by the optional approach square-up to face the stairs head-on.

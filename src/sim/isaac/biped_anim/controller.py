@@ -196,7 +196,7 @@ class BipedAnimationController:
             dominant = max(state.weights.items(), key=lambda kv: kv[1])[0]
             log_event(
                 self._logger,
-                _logging.INFO,
+                _logging.DEBUG,
                 "biped_gait_state",
                 "Patient gait state (throttled)",
                 terrain=terrain.value,

@@ -45,6 +45,23 @@ class PayloadNumbers:
         hi = self.mass_kg + margin_kg
         return (round(lo, 3), round(hi, 3))
 
+    def com_range(
+        self, jitter_m: float
+    ) -> Tuple[Tuple[float, float], Tuple[float, float], Tuple[float, float]]:
+        """Per-axis ``(lo, hi)`` CoM-shift bands centred on ``com_shift_m`` +/- jitter.
+
+        IsaacLab's ``randomize_rigid_body_com`` event samples a per-axis offset from a
+        ``com_range`` dict and ADDS it to the body's nominal CoM. To train carrying the
+        rearward/elevated tank load, we centre that band on how far the payload actually
+        shifts the combined CoM (``com_shift_m``, rearward -x + elevated +z) and jitter
+        each axis by +/- ``jitter_m`` for domain-randomisation robustness. Returns three
+        ``(lo, hi)`` tuples in (x, y, z) order, rounded to mm precision.
+        """
+        j = abs(float(jitter_m))
+        return tuple(
+            (round(c - j, 6), round(c + j, 6)) for c in self.com_shift_m
+        )  # type: ignore[return-value]
+
 
 def box_inertia(mass_kg: float, extents_m: Vec3) -> Vec3:
     """Solid-box principal inertia (diagonal) about the box centre.

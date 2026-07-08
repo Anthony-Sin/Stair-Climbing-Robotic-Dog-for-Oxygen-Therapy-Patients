@@ -38,6 +38,12 @@ class SimRobotController:
             host=self._host,
             port=int(self._port),
         )
+        # Send an initial zero-velocity packet so the Isaac simulation can break
+        # out of its "waiting for first packet" deadlock before sending camera frames.
+        try:
+            self.stop()
+        except Exception as e:
+            self._logger.warning(f"Failed to send initial zero packet: {e}")
         return True
 
     def is_ready(self) -> bool:

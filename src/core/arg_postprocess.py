@@ -80,4 +80,8 @@ def postprocess_args(args):
     args.obstacle_target_clearance = max(0.0, float(args.obstacle_target_clearance))
     args.obstacle_roi_width_ratio = min(1.0, max(0.05, float(args.obstacle_roi_width_ratio)))
     args.obstacle_roi_height_ratio = min(1.0, max(0.05, float(args.obstacle_roi_height_ratio)))
+    if hasattr(args, 'stair_waypoint_x'):
+        args.stair_waypoint_x = float(args.stair_waypoint_x)
+    if hasattr(args, 'stair_waypoint_y'):
+        args.stair_waypoint_y = float(args.stair_waypoint_y)
     return args

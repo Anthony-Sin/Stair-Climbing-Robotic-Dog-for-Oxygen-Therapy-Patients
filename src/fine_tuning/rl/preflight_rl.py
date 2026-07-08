@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
@@ -22,7 +23,7 @@ if __package__ in (None, ""):
 
 from fine_tuning import sim_model_source, env_bootstrap as envb  # noqa: E402
 from fine_tuning.preflight import PreflightReport, PASS, WARN, FAIL  # noqa: E402
-from fine_tuning.rl import DEFAULT_REPO_URL, STAIR_TASK_ID  # noqa: E402
+from fine_tuning.rl import DEFAULT_REPO_COMMIT, DEFAULT_REPO_URL, STAIR_TASK_ID  # noqa: E402
 from fine_tuning.rl.config_patch import (  # noqa: E402
     GO2_CONFIG_PKG_RELPATH, PKG_INIT, STAIRS_CFG_MODULE, is_patched,
 )
@@ -40,14 +41,43 @@ def rl_repo_dir() -> Path:
     return Path(p) if p else Path(os.path.expanduser("~/robot_lab"))
 
 
+def _git_describe(repo: Path) -> Optional[str]:
+    """Best-effort checked-out ref of a git clone (tag/branch@short-sha), or None.
+
+    Never raises: if git is absent, the dir is not a repo, or the call errors, we
+    return None and the caller reports the pin as un-verifiable rather than crashing.
+    """
+    if not (repo / ".git").exists():
+        return None
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if head.returncode != 0:
+            return None
+        sha = head.stdout.strip()
+        # A tag on HEAD is the most human-meaningful; fall back to the branch name.
+        name = subprocess.run(
+            ["git", "-C", str(repo), "describe", "--tags", "--always"],
+            capture_output=True, text=True, timeout=10,
+        )
+        ref = name.stdout.strip() if name.returncode == 0 else ""
+        return f"{ref} ({sha})" if ref and ref != sha else sha
+    except Exception:  # pragma: no cover - git absent / environment dependent
+        return None
+
+
 def check(*, logger: Optional[logging.Logger] = None) -> PreflightReport:
     log = logger or LOGGER
     rep = PreflightReport()
 
-    # 1) interpreter (IsaacLab wants py3.11; newer/older still runs the patchers)
+    # 1) interpreter. The pinned Isaac Sim 5.1 uses python 3.11 (4.5 needs 3.10, 6.0 needs
+    # 3.12); newer/older still runs the pure-python patchers.
     pyver = sys.version.split()[0]
-    rep.add("python", PASS if pyver.startswith("3.11") else WARN,
-            f"{pyver}" + ("" if pyver.startswith("3.11") else "  (IsaacLab/Isaac Sim expects Python 3.11 on the pod)"))
+    ok_py = pyver.startswith("3.11")
+    rep.add("python", PASS if ok_py else WARN,
+            f"{pyver}" + ("" if ok_py else "  (Isaac Sim 5.1 uses Python 3.11 on the pod)"))
 
     # 2) GPU (best-effort; IsaacLab needs an RTX CUDA GPU on the pod)
     try:
@@ -62,11 +92,28 @@ def check(*, logger: Optional[logging.Logger] = None) -> PreflightReport:
     except Exception as exc:
         rep.add("cuda device", WARN, f"GPU probe skipped ({type(exc).__name__}).")
 
-    # 3) IsaacLab stack imports (FAIL if absent -- can't train without them)
+    # 3) IsaacLab stack imports (FAIL if absent -- can't train without them).
+    # Some packages (isaaclab_tasks) transitively import USD's `pxr` (and omni/carb),
+    # which ONLY resolve once the Isaac Sim app/Kit is launched -- the training scripts
+    # start it via AppLauncher, but a bare preflight import can't. So a ModuleNotFoundError
+    # naming one of those runtime-only deps means "installed, loads under the app", NOT missing.
+    _runtime_only = ("pxr", "omni", "carb", "usd", "usdrt")
+
+    def _runtime_miss(exc):
+        name = getattr(exc, "name", "") or ""
+        return any(name == m or name.startswith(m + ".") for m in _runtime_only)
+
     for mod in ("isaacsim", "isaaclab", "isaaclab_tasks", "rsl_rl"):
         try:
             __import__(mod)
             rep.add(f"import {mod}", PASS, "installed")
+        except ModuleNotFoundError as exc:
+            if _runtime_miss(exc):
+                rep.add(f"import {mod}", PASS,
+                        f"installed (deep dep '{exc.name}' loads only under the Isaac Sim app -- OK)")
+            else:
+                rep.add(f"import {mod}", FAIL,
+                        f"missing ({type(exc).__name__}: {exc}); run fine_tuning/rl/runpod_setup_rl.sh on the pod.")
         except Exception as exc:
             rep.add(f"import {mod}", FAIL,
                     f"missing ({type(exc).__name__}); run fine_tuning/rl/runpod_setup_rl.sh on the pod.")
@@ -87,9 +134,30 @@ def check(*, logger: Optional[logging.Logger] = None) -> PreflightReport:
     try:
         import robot_lab  # noqa: F401
         rep.add("import robot_lab", PASS, "installed (pip install -e source/robot_lab)")
+    except ModuleNotFoundError as exc:
+        if _runtime_miss(exc):
+            # robot_lab IS installed; its deep imports (pxr/omni USD from Isaac Sim) resolve
+            # only once the app is launched, which train.py does. Not a blocker.
+            rep.add("import robot_lab", PASS,
+                    f"installed (deep dep '{exc.name}' loads only under the Isaac Sim app -- OK)")
+        else:
+            rep.add("import robot_lab", FAIL if repo.exists() else WARN,
+                    f"not importable ({type(exc).__name__}: {exc}); pip install -e {repo}/source/robot_lab")
     except Exception as exc:
-        rep.add("import robot_lab", FAIL if repo.exists() else WARN,
-                f"not importable ({type(exc).__name__}); pip install -e {repo}/source/robot_lab")
+        rep.add("import robot_lab", WARN, f"import raised {type(exc).__name__}: {exc}")
+
+    # 4b) repo pin (reproducibility): a blank FT_RL_REPO_COMMIT tracks the branch TIP,
+    # which upstream can move under us between runs. WARN (non-fatal) and recommend the
+    # known-good pin; when set, PASS and echo it. Best-effort append the checked-out ref.
+    pin = envb.get_str("FT_RL_REPO_COMMIT")
+    checked_out = _git_describe(repo) if repo.exists() else None
+    at_ref = f"; checked out: {checked_out}" if checked_out else ""
+    if pin:
+        rep.add("repo pin", PASS, f"FT_RL_REPO_COMMIT={pin}{at_ref}")
+    else:
+        rep.add("repo pin", WARN,
+                f"FT_RL_REPO_COMMIT is blank -- tracking the un-pinned branch tip "
+                f"(reproducibility risk); set it to {DEFAULT_REPO_COMMIT} in .env{at_ref}")
 
     # 5) payload spec (single source of truth) -- works on any box
     try:

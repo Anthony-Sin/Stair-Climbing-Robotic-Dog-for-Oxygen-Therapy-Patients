@@ -586,6 +586,12 @@ def parse_args():
     parser.add_argument('--no-raw-video', action='store_true',
                         help='Disable the controller-side raw video writer. Used in sim, '
                              'where Isaac records scene_view.mp4 from the external scene Left view.')
+    parser.add_argument('--stair-waypoint-test', action='store_true',
+                        help='Drive the robot directly to a static waypoint at the top of the stairs, bypassing YOLO tracking')
+    parser.add_argument('--stair-waypoint-x', type=float, default=6.2,
+                        help='Target X coordinate for the static waypoint test')
+    parser.add_argument('--stair-waypoint-y', type=float, default=0.0,
+                        help='Target Y coordinate for the static waypoint test')
     parser.add_argument('--no-obstacle-stop', dest='obstacle_stop_enabled',
                         action='store_false', default=True,
                         help='Disable central-depth front obstacle speed gating')

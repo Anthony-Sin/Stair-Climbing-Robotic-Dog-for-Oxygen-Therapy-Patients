@@ -1,0 +1,79 @@
+{
+  "source": "C:\\Users\\antho\\Downloads\\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\\log\\run_sim_20260707_183410_928\\debug\\robot_frames.jsonl",
+  "mesh_source": "isaac_go2_usd",
+  "mesh_sources_per_link": {
+    "base": "usd",
+    "FL_hip": "usd",
+    "FL_thigh": "usd",
+    "FL_calf": "usd",
+    "FL_foot": "usd",
+    "FR_hip": "usd",
+    "FR_thigh": "usd",
+    "FR_calf": "usd",
+    "FR_foot": "usd",
+    "RL_hip": "usd",
+    "RL_thigh": "usd",
+    "RL_calf": "usd",
+    "RL_foot": "usd",
+    "RR_hip": "usd",
+    "RR_thigh": "usd",
+    "RR_calf": "usd",
+    "RR_foot": "usd"
+  },
+  "clips": {
+    "follow": {
+      "duration_s": 23.6,
+      "t0": 0.005,
+      "t1": 23.635
+    },
+    "climb": {
+      "duration_s": 42.7333,
+      "t0": 23.64,
+      "t1": 66.4
+    }
+  },
+  "nodes": [
+    "robot_base",
+    "FL_hip",
+    "FL_thigh",
+    "FL_calf",
+    "FL_foot",
+    "FR_hip",
+    "FR_thigh",
+    "FR_calf",
+    "FR_foot",
+    "RL_hip",
+    "RL_thigh",
+    "RL_calf",
+    "RL_foot",
+    "RR_hip",
+    "RR_thigh",
+    "RR_calf",
+    "RR_foot",
+    "oxygen_tank",
+    "cradle_rails",
+    "stairs",
+    "ground",
+    "patient_root",
+    "isaac_world"
+  ],
+  "stair_spec": {
+    "name": "commercial",
+    "start_x_m": 2.0,
+    "step_height_m": 0.145,
+    "step_depth_m": 0.305,
+    "step_count": 14,
+    "half_width_m": 0.7,
+    "landing_depth_m": 1.0,
+    "handrail": true
+  },
+  "landing_far_x_m": 8.4924,
+  "triangle_counts": {
+    "robot": 323922,
+    "stairs": 756,
+    "ground": 12,
+    "patient": 0,
+    "total": 324690
+  },
+  "generated_utc": "2026-07-07T23:25:38.127522+00:00"
+}

@@ -114,6 +114,7 @@ param(
     # --target-distance default). Pass -TargetDistance 0.6 to reproduce the old tight follow.
     [double]$TargetDistance = 1.0,
     [switch]$WarmIsaac,
+    [switch]$WarmDocker,
     [switch]$WarmShutdown,
     [int]$WarmMaxRuns = 10,
     # Disable the btop-style ANSI color/box console styling (also honored via
@@ -1825,11 +1826,11 @@ if ($NoDockerRun) {
         "--stair-square-up",
         "--stair-square-up-gain 0.5",
         "--stair-square-up-max 0.4",
-        "--ecs-log-dir /workspace/run_logs/debug/ecs",
-        "--debug-trace-dir /workspace/run_logs/debug/debug_trace",
+        "--ecs-log-dir /workspace/log/run_sim_${Stamp}/debug/ecs",
+        "--debug-trace-dir /workspace/log/run_sim_${Stamp}/debug/debug_trace",
         # Write the OpenCV preview straight into videos/ (no preview-save-dir, which
         # would rmtree its target -- that is why this used to be boxed in a subfolder).
-        "--preview-video-path /workspace/run_logs/videos/opencv_preview.mp4",
+        "--preview-video-path /workspace/log/run_sim_${Stamp}/videos/opencv_preview.mp4",
         "--preview-save-fps 5",
         # scene_view.mp4 is recorded by Isaac from the external scene Left view;
         # disable the controller's raw writer so the robot-POV stream isn't duplicated.
@@ -1866,50 +1867,65 @@ if ($NoDockerRun) {
     $byteTrackNumpyAliasFix = "find /opt/bytetrack -type f -name '*.py' -exec sed -i 's/np\.float\b/float/g; s/np\.int\b/int/g; s/np\.bool\b/bool/g' {} + 2>/dev/null"
     $containerCommand = $byteTrackNumpyAliasFix + "; cd /workspace && exec " + $visionCommand
 
-    $dockerArgs = @(
-        "-e",
-        "docker",
-        "run",
-        "--rm",
-        "--name",
-        $DockerContainerName,
-        "--label",
-        "com.cable.run_sim=true",
-        "--gpus",
-        "all",
-        "-p",
-        # Camera frames stream host->container over TCP (length-prefixed). Docker
-        # Desktop's published-port UDP forwarding drops 100% of host->container UDP on
-        # some engine versions (container stuck at "waiting for data"); TCP is reliable.
-        # The container is the TCP server; Isaac's FramePublisher connects as client.
-        "${FramePort}:${FramePort}/tcp",
-        "-v",
-        "${WslRepoRoot}:/workspace",
-        "-v",
-        "${WslSrcRoot}/sim/models:/models",
-        "-v",
-        "${WslRunLogDir}:/workspace/run_logs",
-        "-e",
-        "SIM_LOG_DIR=/workspace/run_logs/debug",
-        # Force the container's term_ui (core/telemetry) to emit DESIGN.md color even though
-        # its stdout is a pipe, so the "go2 controller"/"perception" banner boxes render in
-        # color on the console. The launcher strips these escapes before writing docker_run.log
-        # (Invoke-LoggedCommand), so file logs + diagnosis regexes stay plain.
-        "-e",
-        "CLICOLOR_FORCE=1",
-        # Correlate the vision/controller subprocess with the sim's run id (labels.run_id
-        # in isaac_env.jsonl == run_sim_<stamp>) so both processes log the same run.
-        "-e",
-        "FOLLOW_RUN_ID=run_sim_${Stamp}",
-        "-e",
-        "SIM_RUN_ID=run_sim_${Stamp}",
-        "-w",
-        "/workspace",
-        $Image,
-        "bash",
-        "-lc",
-        $containerCommand
-    )
+    $dockerArgs = @("-e", "docker")
+
+    if ($WarmDocker) {
+        $warmDockerName = "go2-warm-sim"
+        $DockerContainerName = $warmDockerName # For the cleanup script if it ever runs
+        $warmRunningId = & wsl.exe -e bash -c "docker ps -q -f name=^${warmDockerName}$"
+        if (-not $warmRunningId) {
+            # Start the warm container if it doesn't exist or isn't running
+            Write-Stage "docker" "booting" "Starting warm Docker container $warmDockerName"
+            $warmArgs = @(
+                "-e", "docker", "run", "-d", "--rm",
+                "--name", $warmDockerName,
+                "--label", "com.cable.run_sim=true",
+                "--gpus", "all",
+                "-p", "${FramePort}:${FramePort}/tcp",
+                "-v", "${WslRepoRoot}:/workspace",
+                "-v", "${WslSrcRoot}/sim/models:/models",
+                "-w", "/workspace",
+                $Image,
+                "sleep", "infinity"
+            )
+            $warmExit = Invoke-LoggedCommand -Stage "docker" -FilePath "wsl.exe" -Arguments $warmArgs -LogPath (Join-Path $DebugDir "docker_warm_boot.log")
+            if ($warmExit -ne 0) {
+                Write-Stage "summary" "failed" "Failed to start warm Docker container" @{ log = (Join-Path $DebugDir "docker_warm_boot.log") }
+                exit $warmExit
+            }
+        }
+        $dockerArgs += @(
+            "exec",
+            "-e", "SIM_LOG_DIR=/workspace/log/run_sim_${Stamp}/debug",
+            "-e", "CLICOLOR_FORCE=1",
+            "-e", "FOLLOW_RUN_ID=run_sim_${Stamp}",
+            "-e", "SIM_RUN_ID=run_sim_${Stamp}",
+            $warmDockerName,
+            "bash",
+            "-lc",
+            $containerCommand
+        )
+    } else {
+        $dockerArgs += @(
+            "run", "--rm",
+            "--name", $DockerContainerName,
+            "--label", "com.cable.run_sim=true",
+            "--gpus", "all",
+            "-p", "${FramePort}:${FramePort}/tcp",
+            "-v", "${WslRepoRoot}:/workspace",
+            "-v", "${WslSrcRoot}/sim/models:/models",
+            "-v", "${WslRunLogDir}:/workspace/run_logs",
+            "-e", "SIM_LOG_DIR=/workspace/run_logs/debug",
+            "-e", "CLICOLOR_FORCE=1",
+            "-e", "FOLLOW_RUN_ID=run_sim_${Stamp}",
+            "-e", "SIM_RUN_ID=run_sim_${Stamp}",
+            "-w", "/workspace",
+            $Image,
+            "bash",
+            "-lc",
+            $containerCommand
+        )
+    }
 
     $isaacMonitorJob = $null
     $isaacExitedDuringDocker = $false
@@ -1938,7 +1954,9 @@ if ($NoDockerRun) {
             Receive-Job -Job $isaacMonitorJob -ErrorAction SilentlyContinue | Out-Null
             Remove-Job -Job $isaacMonitorJob -Force -ErrorAction SilentlyContinue
         }
-        $null = Stop-DockerContainer -ContainerName $DockerContainerName -Reason "launcher cleanup"
+        if (-not $WarmDocker) {
+            $null = Stop-DockerContainer -ContainerName $DockerContainerName -Reason "launcher cleanup"
+        }
         # Warm mode leaves Isaac running for the next episode; only the one-shot path
         # tears it down when the Docker controller stops.
         if (-not $WarmIsaac) {

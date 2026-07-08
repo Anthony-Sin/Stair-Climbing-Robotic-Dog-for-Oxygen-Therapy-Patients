@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+	<title>Stair-climbing robotic dog — blueprint viewer</title>
+	<link rel="stylesheet" href="./styles.css" />
+
+	<!--
+		No build step: three.js r170 is vendored locally under vendor/ and
+		mapped here. If vendoring ever proves unreliable, this map can be
+		repointed at the pinned CDN URLs (see README.md "Vendoring outcome").
+	-->
+	<script type="importmap">
+		{
+			"imports": {
+				"three": "./vendor/three.module.js",
+				"three/addons/": "./vendor/addons/"
+			}
+		}
+	</script>
+</head>
+<body>
+	<div id="backdrop">
+		<main id="sheet">
+			<div id="canvas-host">
+				<!-- three.js canvas is inserted here by js/main.js -->
+
+				<div id="ui-overlay">
+					<header id="headline-block">
+						<h1 id="headline">Stair-climbing robotic dog</h1>
+						<p id="subtitle">Blind-RL quadruped carrying patient oxygen — an Isaac Sim rollout you scrub by hand.</p>
+
+						<div id="phase-buttons" role="group" aria-label="Animation phase">
+							<button type="button" class="phase-chip" id="phase-follow" data-phase="follow" aria-pressed="true">phase 1 · follow</button>
+							<button type="button" class="phase-chip" id="phase-climb" data-phase="climb" aria-pressed="false">phase 2 · climb</button>
+						</div>
+					</header>
+
+					<div id="top-right-chips">
+						<button type="button" class="chip" id="tracking-toggle" aria-pressed="true">tracking · on</button>
+						<button type="button" class="chip" id="plumb-toggle" aria-pressed="false">plumb line · off</button>
+						<button type="button" class="chip" id="theme-toggle" aria-pressed="false">light</button>
+					</div>
+
+					<div id="model-warning" class="chip warning-chip" hidden>placeholder model — run pipeline/bake_gltf.py</div>
+
+					<div id="scrub-bar">
+						<div id="time-readout">t 00.00 / 00.00 s · follow</div>
+						<button type="button" class="chip" id="play-toggle" aria-pressed="false">play</button>
+						<input type="range" id="scrubber" min="0" max="100" step="0.1" value="0" aria-label="Timeline scrubber" />
+					</div>
+
+					<footer id="footer-line">isaac sim rollout · unitree go2 · o2 payload</footer>
+				</div>
+			</div>
+		</main>
+	</div>
+
+	<script type="module" src="./js/main.js"></script>
+</body>
+</html>
