@@ -383,3 +383,169 @@ this file only covers gotchas specific to this pipeline/viewer.
   to a new data source without checking whether that source actually behaves the
   way the architecture assumes) -- both were only caught by directly inspecting the
   real recorded VALUES, not by reasoning about the code in the abstract.
+
+### 13 — "Stride too short relative to velocity, sliding/moonwalking" (user-reported, 2026-07-07): REFUTED against the Python gait math -- `stride_len` does not control swing amplitude at all
+- **TRIGGER:** Before changing `PATIENT_GAIT_FLAT`/`PATIENT_GAIT_CLIMB`'s `stride_len`
+  (synthetic_motion.py) to "fix" a reported short/sliding/moonwalking stride, or before
+  assuming a gait-parameter-vs-real-clip-speed mismatch is the cause of that complaint.
+- **INITIAL (WRONG) HYPOTHESIS:** `PATIENT_GAIT_FLAT.stride_len=0.36`/`PATIENT_GAIT_CLIMB
+  .stride_len=0.16` look tuned for the SYNTHETIC generator's own base speeds
+  (`generate_follow_frames`'s `forward_speed=0.4`, `generate_climb_frames`'s
+  `climb_speed=0.33`), and a REAL bake's clip can be much slower (measured on this run's
+  real `robot_frames.jsonl`: "follow" clip avg 0.263 m/s; "climb" clip avg 0.108 m/s,
+  with its flat-approach segment specifically at ~0.115-0.126 m/s) -- so it seemed
+  plausible the leg was swinging through its full tuned `stride_len` amplitude while the
+  body barely advanced, producing a sliding look. A first implementation scaled
+  `stride_len` down by `measured_speed / reference_speed` (capped at 1.0, reference
+  speeds 0.4/0.33) inside `anim_bake._bake_patient_legs`'s gait-driven fallback only.
+- **WHY THIS WAS WRONG (found by direct standalone simulation, not reasoning from code):**
+  `_patient_foot_target` (synthetic_motion.py) computes `touchdown_pos[leg]` at EVERY
+  liftoff as `nominal_world(hip, AT THIS LIFTOFF) + stride_len/2`, and `liftoff_pos[leg]`
+  is simply the PREVIOUS swing's committed `touchdown_pos[leg]` (via `stance_anchor`) --
+  i.e. also `nominal_world(hip, AT THE PREVIOUS LIFTOFF) + stride_len/2`. The
+  `+ stride_len/2` term is IDENTICAL at both ends and cancels in
+  `dx = touchdown_pos - liftoff_pos`, leaving `dx ~= nominal_world(this liftoff) -
+  nominal_world(prev liftoff)`, i.e. simply how far the HIP moved between two
+  successive liftoffs of the SAME leg (`~= speed * cycle_period_s`) -- **entirely
+  independent of `stride_len`**. Verified by a standalone constant-velocity
+  single-leg simulation (speed=0.263 m/s, cycle_period_s=1.2): `stride_len=0.16`,
+  `0.36`, and `0.6` ALL produced the identical steady-state per-stride `dx` (0.3163,
+  0.3163, 0.3163 m) to 4 decimal places -- `stride_len` only shifts WHERE the
+  foot-relative-to-hip sweep is CENTERED (how far ahead of the hip the plant sits),
+  not its magnitude. This is a direct, if non-obvious, consequence of incident #6's
+  own liftoff/touchdown-blend fix: that fix was designed to make the swing's actual
+  displacement self-correct to the body's real travel regardless of any stride_len/
+  speed mismatch (see incident #6 item 4's own docstring: "isn't something worth
+  hand-tuning to stay true forever") -- which means the mismatch this hypothesis
+  worried about CANNOT produce the "too short" symptom in the first place; the fix
+  (and the whole premise) was reverted in full (both files restored to their
+  pre-investigation state, verified via `git diff` showing no changes).
+- **WHAT WAS ACTUALLY MEASURED (all checks passed, no defect found in the Python pipeline):**
+  1. Stance-phase foot position: zero world-space drift across 20 consecutive stance
+     runs sampled from the real "follow" clip (every run's x range was a single value
+     to 5 decimals) -- the plant is solid, not sliding.
+  2. hip_pitch/knee_bend angular trajectories: smooth and continuous frame-to-frame
+     (angular velocity spot-checked across a full cycle, no stutters/plateaus/pops),
+     including across the mid-clip FLAT<->CLIMB gait swap the real "follow" clip
+     briefly makes (incident #9's own noted case: patient's lead x crosses
+     `start_x-0.05` around t=20.0s in this run) -- foot position was bit-identical
+     across that swap frame (both still mid-stance), confirming incident #6's
+     phase-matching fix (`cycle_period_s` identical between gaits) holds for real
+     data too.
+  3. Swing amplitude DOES shrink at slower real speeds, but via the swing's own
+     time-window kinematics (`speed * swing_frac * cycle_period_s`), not via
+     `stride_len`: a standalone probe holding `stride_len` fixed and varying only
+     speed found hip_pitch span 25.2 deg at the real "follow" speed (0.263 m/s) vs
+     29.3 deg at the old synthetic tuning speed (0.4 m/s) for the FLAT gait, and
+     19.6 deg vs 30.3 deg (real climb-approach ~0.108 m/s vs synthetic 0.33 m/s) for
+     CLIMB -- a real, measurable, and CORRECT effect (a slower walker takes
+     proportionally shorter steps at a similar ~100 steps/min combined cadence,
+     which is physically reasonable for a mobility patient) -- not a bug to fix.
+  4. The one genuine oddity found (pre-existing, NOT newly introduced): the IK reach
+     clamp (`PATIENT_MAX_REACH_M=0.86`, incident #8) engages on 27-46% of frames in
+     both real clips (measured directly from `foot_rel_hip`'s pre-clamp `reach`,
+     independent of the baked angles) and floors `knee_bend` at ~24.5 degrees even at
+     mid-stance (never straightens closer to 0) -- but this is incident #8's OWN
+     documented, deliberate tuning (`PATIENT_STANCE_TARGET_Z=-0.858` was intentionally
+     placed close to the reach cap to avoid a worse "sitting" look at a shorter-of-max-
+     reach value), confirmed unchanged in the current data, not a new regression.
+- **CONCLUSION (per this investigation's own task framing, option (d)):** No fixable
+  stride/gait-tuning defect exists in `synthetic_motion.py`/`anim_bake.py` for this
+  specific complaint. The most plausible remaining explanation is that the reported
+  "sliding/moonwalking" look is a visual byproduct of the SEPARATE ground/toe-clipping
+  bug being fixed concurrently in `js/PatientHuman.js` (untouched by this
+  investigation, per instruction) -- a foot that clips into/through the ground instead
+  of clearing it during swing reads as "gliding along the surface" rather than
+  "lifting and stepping," which is exactly the classic visual signature of a
+  moonwalk, and is a rendering-layer (Z-clearance-at-the-mesh) issue, not an X-stride-
+  length one. If this complaint persists AFTER the clipping fix lands and is
+  re-verified in the live viewer, re-open this incident and look at the RENDERED
+  (post-retarget) toe trajectory specifically, not the raw `patient_pose.json`
+  scalars (which this investigation already exhaustively checked and found sound).
+- **WHY THIS BELONGS HERE:** A plausible-sounding, well-reasoned hypothesis ("gait
+  constants tuned for a faster reference speed than this slow real clip actually
+  moves at") turned out to target a parameter (`stride_len`) that this codebase's own
+  prior incident (#6) had already made irrelevant to the symptom in question, via a
+  fix whose FULL implications weren't re-derived before reaching for that parameter
+  again. Per CLAUDE.md incident 8.7's own warning about trusting comments/assumptions:
+  a docstring calling `stride_len` "the fore-aft SWEEP" (synthetic_motion.py's own
+  `GaitParams.stride_len` field comment) is technically true only for the SHAPE of the
+  swing's fore-aft profile within one call, not for the NET displacement across a full
+  liftoff-to-touchdown cycle once the liftoff/touchdown-blend blends from a PRIOR
+  commitment -- always verify a "which parameter controls X" belief with a standalone,
+  minimal numeric simulation (as done here) before editing the parameter you assume
+  controls it.
+
+### 14 — Toe clips 2-4.5cm into ground/treads at every frame (user-reported, 2026-07-09): a bind-pose-only clearance constant, and a units bug found while fixing it
+- **TRIGGER:** Touching `js/PatientHuman.js`'s `load()`/`sync()` ground-clearance
+  logic (`_ankleGroundClearanceM`, `_legToeDropLocal`, `groundClearanceAboveRootM`),
+  or the anchor-height formula in general.
+- **LESSON, bug A (root cause):** Incident #5 fixed the ankle-vs-ground anatomical gap
+  with a SINGLE constant, `_ankleGroundClearanceM = footWorld.y - toeWorld.y`, measured
+  ONCE at Xbot's BIND pose (hip_pitch=knee_bend=0) and added to the anchor height every
+  frame regardless of the CURRENT hip_pitch. This under-corrects whenever hip_pitch
+  isn't 0 (i.e. essentially always during actual walking): incident #10 already
+  established that Foot's world rotation equals `hip_pitch` alone (Leg's own
+  `-kneeBend` and Foot's own `+kneeBend` cancel through the FK chain), and ToeBase's
+  local rotation is identity, so the whole Foot->ToeBase offset rotates rigidly with
+  hip_pitch. That offset has both a "down" and a "forward" component in Foot's local
+  frame (measured: `(x=0, y=-8.73, z=10.71)` in raw local units) -- pitching it
+  forward rotates more of the forward component into "down", so the true
+  ankle-to-toe vertical drop GROWS with hip_pitch (measured: 8.73cm at hip_pitch=0,
+  10.89cm at hip_pitch=0.224 rad, 12.67cm at hip_pitch=0.476 rad -- a smooth,
+  monotonic, exactly rotation-predicted growth, confirmed to match a hand-derived
+  `rotateAboutX` formula to 4+ decimal places). The bind-pose constant is the SMALLEST
+  possible value this drop ever takes, so it under-raises the anchor at every other
+  hip_pitch -- exactly why the reported clipping fluctuated with gait phase (0-4.5cm)
+  instead of being a fixed depth: the STANCE foot (the one actually touching down, at
+  the calibrated ~24 degree minimum knee_bend from incident #8) clipped WORST because
+  its hip_pitch is generally larger in magnitude during a normal gait's stance portion
+  than the old constant assumed.
+  Fix: `_legToeDropLocal` in `js/PatientHuman.js` analytically re-derives the FULL
+  Hips->UpLeg->Leg->Foot->ToeBase drop (not just the Foot->ToeBase piece) as a
+  function of a leg's CURRENT hip_pitch/knee_bend, using each bone's own bind-pose
+  local `.position` (never modified elsewhere -- only `.quaternion` is) and the exact
+  same rotation composition `sync()` already applies to the live bones. `sync()` now
+  samples `hip_pitch_l/r`/`knee_bend_l/r` BEFORE positioning the anchor (reordered
+  from the original code, which positioned the anchor first and sampled pose data
+  after -- this is the same "read a value before its producer runs" hazard as the
+  repo-root CLAUDE.md's `debug_info` incident, just local to this module instead of
+  that dict) and picks whichever leg has the SMALLER knee_bend (closer to full
+  extension -- the stance leg) as the one whose toe must be exactly at ground/tread;
+  the other (swinging) leg's exact height doesn't matter since it's airborne anyway.
+  Verified numerically: the stance-foot toe-vs-ground clip is now ~0 (floating-point
+  noise, ~1e-7 m) at EVERY sampled frame across both the full 23.6s 'follow' clip (81
+  samples) and the full 42.7s 'climb' clip (81 samples), down from a 0.017-0.045m
+  penetration range before the fix. The (irrelevant, airborne) swing foot stays within
+  a small, sane band (-0.016 to +0.13m, i.e. it's correctly in the air, never buried
+  more than ~1.6cm even at its worst instant) with no new frame-to-frame pops (checked
+  at 0.03-0.05s resolution across the whole climb clip, worst per-step delta ~1.8cm at
+  a normal walking-speed cadence, no discontinuity at the flat->stairs gait-mode
+  switch).
+- **LESSON, bug B (found WHILE fixing bug A -- a units/reference-point mixup, not a
+  geometry mistake):** The first attempt at this fix computed the per-leg drop
+  correctly but added it to the anchor formula using the SAME structure as the old
+  code (`anchor.z = root.position.z - hipsHeightM + X`) without noticing that `X`'s
+  MEANING had changed. The old `_ankleGroundClearanceM` was implicitly "how much
+  ABOVE `root.position` (which is itself already ground + `PATIENT_HIP_HEIGHT_M`,
+  0.92m, per `anim_bake.py`'s own `patient_root` convention) Xbot's Hips must sit" --
+  but the new per-frame drop is naturally derived as "how far ABOVE GROUND Xbot's
+  Hips must sit" (it comes from an analytic Hips->ToeBase FK chain with no reference
+  to `PATIENT_HIP_HEIGHT_M` at all). Plugging the new (ground-relative) value into a
+  slot that expected a root/hip-relative value put the anchor a full
+  `PATIENT_HIP_HEIGHT_M` (0.92m) too high -- caught immediately by the SAME
+  verification sweep used to confirm the fix (toe landed flush with the HIP height
+  instead of the ground, `mixamorigLeftToeBase.y` came back ~equal to `patient_root.y`
+  instead of ~0). Fixed by explicitly subtracting `PATIENT_HIP_HEIGHT_M` when
+  converting the new ground-relative drop into the old root-relative slot.
+- **WHY:** Bug A is the same shape as incident #10 (a fix verified/derived at one
+  specific angle regime silently stops applying once the system explores a WIDER
+  range -- here, "verified" was never even done at a nonzero angle in the first
+  place, since the constant was measured at bind pose and just assumed to generalize).
+  Bug B is the same shape as incident #12 (reusing an existing formula/slot without
+  re-deriving what its inputs are actually measured RELATIVE TO) -- two numbers can
+  both be correct "clearances" in isolation while disagreeing by a full anatomical
+  constant on WHAT they're clearances above (ground vs. hip), and mixing them produces
+  an error large enough to be obvious once measured (0.92m), but only once someone
+  actually re-verifies numerically after the "fix" rather than trusting that fixing
+  the geometry fixed the whole bug.

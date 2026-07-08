@@ -29,10 +29,14 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 const XBOT_URL = './models/vendor/Xbot.glb';
 const POSE_URL = './models/patient_pose.json';
 
-// Kept in sync with anim_bake.PATIENT_HIP_HEIGHT_M -- NOT used directly (see
-// _hipsHeightM below, which measures Xbot's OWN Hips-bone height instead of assuming
-// it matches this pipeline's mannequin height), but documents the quantity this
-// module is reconciling against.
+// Kept in sync with anim_bake.PATIENT_HIP_HEIGHT_M. Used two ways: (1) `_hipsHeightM`
+// below defaults to this constant but is normally overwritten with Xbot's OWN
+// (different, ~1.04m) bind-pose Hips-bone height once loaded -- this module doesn't
+// force Xbot's hip to match the Python mannequin's stylized height; (2) `sync()`'s
+// ground-clearance math uses this constant directly to convert `patient_root`'s
+// world position (which anim_bake.py's own convention always sets to
+// `ground_z + PATIENT_HIP_HEIGHT_M`) back into a ground-relative height -- see
+// AGENTS.md incident #14.
 const PATIENT_HIP_HEIGHT_M = 0.92;
 
 // Xbot's own local axes, as image vectors in THIS viewer's (forward=X, lateral=Y,
@@ -72,6 +76,34 @@ const BONE_NAMES = {
 	spine: 'mixamorigSpine',
 	hips: 'mixamorigHips',
 };
+
+/**
+ * Analytic 2-link-plus-toe FK: the WORLD-Y (Xbot local-up) drop from Hips down to
+ * ToeBase, for ONE leg, given that leg's current hip_pitch/knee_bend -- see AGENTS.md
+ * incident #14 for the full derivation/measurements this replaces (a single
+ * bind-pose-measured "ankle clearance" constant, which only holds at hip_pitch=0).
+ * Mirrors the exact rotation composition sync() applies to the live bones
+ * (leftUpLeg/leftLeg/leftFoot/leftToeBase quaternions below) -- kept as a pure
+ * function of each bone's own BIND-POSE local `.position` (never modified elsewhere,
+ * only `.quaternion` is) so it can be evaluated for the anchor BEFORE those bones are
+ * actually posed this frame, and for both legs, without a scene-graph round trip.
+ * Returns the drop in the bones' own raw local units (NOT yet meters -- see
+ * `this._localToM` for the conversion applied at the call site).
+ */
+function _legToeDropLocal( bonesLocal, hipPitch, kneeBend ) {
+
+	const cosP = Math.cos( hipPitch ), sinP = Math.sin( hipPitch );
+	const kneeAngle = hipPitch - kneeBend;
+	const cosK = Math.cos( kneeAngle ), sinK = Math.sin( kneeAngle );
+
+	// rotate a (y,z) pair about the shared PITCH_AXIS (local X) by the given angle,
+	// keep only the resulting y (local "up") component -- x never contributes to y.
+	const legY = bonesLocal.upLeg.y + ( bonesLocal.leg.y * cosP - bonesLocal.leg.z * sinP );
+	const footY = legY + ( bonesLocal.foot.y * cosK - bonesLocal.foot.z * sinK );
+	const toeY = footY + ( bonesLocal.toe.y * cosP - bonesLocal.toe.z * sinP );
+	return - toeY; // positive = below Hips
+
+}
 
 /** Linear-interpolated lookup into a (times, values) pair sampled at an arbitrary t (clamped to the array's own range at either end). */
 function sampleAt( times, values, t ) {
@@ -161,13 +193,46 @@ export class PatientHuman {
 			// translation further down+forward. Landing the ankle exactly at ground
 			// (as the old rig's calibration assumes) therefore buries the real toe
 			// mesh in the floor by that same anatomical gap. Measure it once from the
-			// bind pose (feet resting on Xbot's own y=0 ground) and raise the whole
-			// rig by that amount so the TOE, not the ankle, ends up at ground/tread.
+			// bind pose (feet resting on Xbot's own y=0 ground) as a SAFE-DEFAULT
+			// fallback (used only if a phase has no pose data at all -- see sync()'s
+			// early-out) -- the real per-frame compensation is `_legToeDropLocal`
+			// below, which depends on the CURRENT hip_pitch, not just this bind value
+			// (see AGENTS.md incident #14: a hip_pitch=0-only constant under-corrects
+			// at every other hip_pitch, since pitching the foot+toe assembly forward
+			// rotates more of ToeBase's forward offset into "downward").
 			const footWorld = new THREE.Vector3();
 			bones.leftFoot.getWorldPosition( footWorld );
 			const toeWorld = new THREE.Vector3();
 			bones.leftToeBase.getWorldPosition( toeWorld );
 			this._ankleGroundClearanceM = footWorld.y - toeWorld.y;
+
+			// Per-leg bind-pose local offsets (each bone's own `.position`, never
+			// touched by sync() -- only `.quaternion` is) for `_legToeDropLocal`,
+			// plus the raw-local-unit -> meters scale factor: Xbot's skeleton sits
+			// under an "Armature" node with its own uniform scale (0.01, confirmed
+			// empirically by walking the bone->parent chain in the browser console),
+			// so bone-local `.position` values are ~100x world meters. At bind pose
+			// (hip_pitch=knee_bend=0 for both legs), `_legToeDropLocal` evaluates to
+			// exactly the Hips->ToeBase drop in raw local units, and `_hipsHeightM -
+			// toeWorld.y` is that SAME drop already measured in true world meters --
+			// their ratio is the scale factor, derived rather than hard-coded so this
+			// module doesn't depend on that implementation detail of the vendored
+			// asset.
+			const bindDropLocalL = _legToeDropLocal( {
+				upLeg: bones.leftUpLeg.position, leg: bones.leftLeg.position,
+				foot: bones.leftFoot.position, toe: bones.leftToeBase.position,
+			}, 0, 0 );
+			this._localToM = ( this._hipsHeightM - toeWorld.y ) / bindDropLocalL;
+			this._legBonesLocal = {
+				l: {
+					upLeg: bones.leftUpLeg.position.clone(), leg: bones.leftLeg.position.clone(),
+					foot: bones.leftFoot.position.clone(), toe: bones.leftToeBase.position.clone(),
+				},
+				r: {
+					upLeg: bones.rightUpLeg.position.clone(), leg: bones.rightLeg.position.clone(),
+					foot: bones.rightFoot.position.clone(), toe: bones.rightToeBase.position.clone(),
+				},
+			};
 
 			const walkClip = THREE.AnimationClip.findByName( gltf.animations, 'walk' ) || gltf.animations[ 0 ];
 			const mixer = new THREE.AnimationMixer( scene );
@@ -242,9 +307,57 @@ export class PatientHuman {
 		if ( ! this._attached ) return;
 
 		const root = this._patientRootNode;
+		const pose = this._poseData[ phaseName ];
+
+		// Ground clearance (how far ABOVE GROUND -- not above `root`/the hip -- Xbot's
+		// Hips bone must sit so the STANCE foot's TOE, not its ankle, lands on the
+		// ground/tread): a fixed bind-pose constant under-corrects whenever
+		// hip_pitch != 0 (see AGENTS.md incident #14 -- pitching the foot+toe assembly
+		// forward rotates more of ToeBase's forward offset into "downward", so the
+		// true ankle-to-toe drop GROWS with hip_pitch). Recompute it per frame from
+		// `_legToeDropLocal` (a pure function of each leg's bind-pose local bone
+		// offsets, evaluated BEFORE the bones are actually posed below -- this must
+		// run first, not after, exactly the ordering hazard flagged in the repo-root
+		// CLAUDE.md's "debug_info populated in call order" incident, just in this
+		// module instead of that dict), using whichever leg has the SMALLER knee_bend
+		// (closer to full leg extension -- the calibrated stance bend, see incident
+		// #8) as the one actually bearing weight on the ground; the other (swinging)
+		// leg is airborne anyway, so its own toe height doesn't need to be exact.
+		// Falls back to the old fixed `_ankleGroundClearanceM` when a phase has no
+		// pose data at all (matches the `if ( ! pose ) return` early-out below, which
+		// never reaches the per-frame leg override this clearance is calibrated
+		// against) -- in that fallback case groundClearanceAboveRootM is added to
+		// `root.position.z` directly (the pre-existing, already-correct behavior),
+		// same as before this fix.
+		let groundClearanceAboveRootM = this._ankleGroundClearanceM;
+		let hipPitchL, kneeBendL, hipPitchR, kneeBendR;
+		if ( pose ) {
+
+			hipPitchL = sampleAt( pose.times, pose.hip_pitch_l, timeSec );
+			kneeBendL = sampleAt( pose.times, pose.knee_bend_l, timeSec );
+			hipPitchR = sampleAt( pose.times, pose.hip_pitch_r, timeSec );
+			kneeBendR = sampleAt( pose.times, pose.knee_bend_r, timeSec );
+			const stanceSide = kneeBendL <= kneeBendR ? 'l' : 'r';
+			const stanceHipPitch = stanceSide === 'l' ? hipPitchL : hipPitchR;
+			const stanceKneeBend = stanceSide === 'l' ? kneeBendL : kneeBendR;
+			const dropLocal = _legToeDropLocal(
+				this._legBonesLocal[ stanceSide ], stanceHipPitch, stanceKneeBend,
+			);
+			// dropLocal*_localToM is the Hips->Toe drop in METERS, ABOVE GROUND (not
+			// above root/hip -- `root.position` is itself already ground+
+			// PATIENT_HIP_HEIGHT_M, per anim_bake.py's own patient_root convention,
+			// so that fixed offset has to come back OUT here before re-adding the
+			// dynamic drop, or the anchor ends up floating a further
+			// PATIENT_HIP_HEIGHT_M too high -- confirmed by an initial numeric check
+			// after first writing this fix: the toe landed flush with the HIP height
+			// instead of the ground, off by almost exactly 0.92 m).
+			groundClearanceAboveRootM = ( dropLocal * this._localToM ) - PATIENT_HIP_HEIGHT_M;
+
+		}
+
 		this.anchor.position.set(
 			root.position.x, root.position.y,
-			root.position.z - this._hipsHeightM + this._ankleGroundClearanceM,
+			root.position.z - this._hipsHeightM + groundClearanceAboveRootM,
 		);
 		this.anchor.quaternion.copy( root.quaternion ).multiply( B_PLACEMENT );
 
@@ -295,14 +408,11 @@ export class PatientHuman {
 
 		// 2) Override the legs (+ set torso lean) from this pipeline's own
 		// data-driven angles -- see this module's header comment for why the canned
-		// clip can't be trusted with the stairs.
-		const pose = this._poseData[ phaseName ];
+		// clip can't be trusted with the stairs. (hipPitchL/R, kneeBendL/R already
+		// sampled above, for the ground-clearance calculation -- reused here so
+		// they're computed exactly once per frame.)
 		if ( ! pose ) return;
 
-		const hipPitchL = sampleAt( pose.times, pose.hip_pitch_l, timeSec );
-		const kneeBendL = sampleAt( pose.times, pose.knee_bend_l, timeSec );
-		const hipPitchR = sampleAt( pose.times, pose.hip_pitch_r, timeSec );
-		const kneeBendR = sampleAt( pose.times, pose.knee_bend_r, timeSec );
 		const torsoPitch = sampleAt( pose.times, pose.torso_pitch, timeSec );
 
 		b.leftUpLeg.quaternion.setFromAxisAngle( PITCH_AXIS, hipPitchL );
