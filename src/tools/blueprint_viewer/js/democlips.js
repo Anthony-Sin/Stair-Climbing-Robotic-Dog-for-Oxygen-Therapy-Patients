@@ -1,25 +1,23 @@
 // democlips.js
 //
-// The ACT-2 demo filmstrip: a row of real Isaac Sim climb clips (rising stair
-// heights) pinned along the bottom bar. Requirements:
-//   - they AUTO-PLAY when the demo scrolls into view (no click needed), and
-//     pause + rewind when it scrolls away (so five muted loops aren't decoding
-//     off-screen), and
-//   - clicking a tile jumps the interactive 3D rollout to the climb phase, so
-//     the strip doubles as a "show me this" control, not just decoration.
+// The Live demo (#s-demo) is real Isaac Sim footage: a main OpenCV / YOLO
+// "target-acquisition" HUD video (the dog following the patient) plus a left-
+// corner rail of real climb clips at rising stair heights. This module:
+//   - lazy-loads every clip (they ship preload="none" + data-src so nothing
+//     downloads until the demo is actually reached), and
+//   - auto-plays them when the Live demo scrolls into view, pausing when it
+//     scrolls away so a stack of muted loops isn't decoding off-screen, and
+//   - jumps to the Potential slide's 3D viewer (at the climb) when a clip tile
+//     is clicked, so the strip doubles as a "show me this in 3D" control.
 //
-// Kept out of main.js on purpose: this is pure DOM/video wiring with no three.js
-// dependency, and it only touches the public window.__viewer API (never main.js
-// internals). The <video> elements ship with preload="none" + a data-src so the
-// mp4s don't download until the demo is actually reached.
+// Kept out of main.js on purpose: pure DOM/video wiring, no three.js dependency
+// (it only touches the public window.__viewer API, never main.js internals).
 
-const strip = document.getElementById( 'demo-filmstrip' );
-const viewerSection = document.getElementById( 'viewer-section' );
+const demo = document.getElementById( 's-demo' );
 
-if ( strip && viewerSection ) {
+if ( demo ) {
 
-	const tiles = [ ...strip.querySelectorAll( '.film-tile' ) ];
-	const videos = tiles.map( ( t ) => t.querySelector( 'video' ) );
+	const videos = [ ...demo.querySelectorAll( 'video' ) ];
 	let loaded = false;
 
 	function ensureLoaded() {
@@ -47,29 +45,26 @@ if ( strip && viewerSection ) {
 
 	}
 
-	function pauseAll() {
+	function pauseAll() { for ( const v of videos ) if ( v ) v.pause(); }
 
-		for ( const v of videos ) if ( v ) v.pause();
-
-	}
-
-	// Auto play/pause with the demo's visibility. threshold 0.35 so the clips
-	// only spin up once a good chunk of the demo is on screen (i.e. the user has
-	// actually arrived at it), not while it's a sliver at the fold.
+	// Auto play/pause with the demo's visibility. threshold 0.35 so the clips only
+	// spin up once a good chunk of the demo is on screen (the user has arrived at
+	// it), not while it's a sliver at the fold.
 	new IntersectionObserver(
 		( entries ) => { entries[ 0 ].isIntersecting ? playAll() : pauseAll(); },
 		{ threshold: 0.35 },
-	).observe( viewerSection );
+	).observe( demo );
 
-	// Click a tile -> jump the 3D rollout to the climb (window.__viewer is set up
-	// by main.js once the model is ready; guard for the pre-ready window).
-	for ( const tile of tiles ) {
+	// Click a climb clip -> jump to the Potential slide's 3D viewer at the climb
+	// phase (window.__viewer is set up by main.js once the model is ready).
+	for ( const tile of demo.querySelectorAll( '.film-tile' ) ) {
 
 		tile.addEventListener( 'click', () => {
 
+			const pot = document.getElementById( 's-potential' );
+			if ( pot ) pot.scrollIntoView( { behavior: 'smooth', block: 'start' } );
 			const v = window.__viewer;
 			if ( v && typeof v.setPhase === 'function' ) v.setPhase( 'climb' );
-			viewerSection.scrollIntoView( { behavior: 'smooth', block: 'center' } );
 
 		} );
 

@@ -277,6 +277,42 @@ button { font: inherit; color: inherit; }
 
 .hero-art { width: 100%; max-width: 560px; color: var(--ink); }
 
+/* Opening / title visual: two framed Isaac renders in a slightly overlapping
+   photo pair (replaces the old line-art SVG). White mats + drop shadow read as
+   printed photos on the paper sheet, in either theme. */
+.hero-photos {
+	position: relative;
+	width: 100%;
+	max-width: 540px;
+	margin: 0 auto;
+	aspect-ratio: 4 / 3.5;
+}
+.hero-photos figure {
+	position: absolute;
+	margin: 0;
+	padding: 6px;
+	background: #f6f4ef;
+	border: 1px solid rgba(0, 0, 0, 0.14);
+	border-radius: 12px;
+	box-shadow: 0 18px 40px rgba(0, 0, 0, 0.34);
+}
+.hero-photos figure img { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: 7px; }
+.hp-back  { width: 50%; top: 0; right: 1%; transform: rotate(3.2deg); z-index: 1; }
+.hp-front { width: 62%; bottom: 6%; left: 0; transform: rotate(-2.4deg); z-index: 2; }
+.hero-photos-cap {
+	position: absolute;
+	right: 1%;
+	bottom: 2%;
+	max-width: 44%;
+	text-align: right;
+	font-family: var(--font-mono);
+	font-size: 11px;
+	line-height: 1.35;
+	color: var(--ink);
+	opacity: 0.62;
+	z-index: 3;
+}
+
 .hero-charts {
 	display: flex;
 	flex-direction: column;
@@ -325,6 +361,19 @@ button { font: inherit; color: inherit; }
 .ch-bar-reached { fill: #0e9b8e; }
 .ch-bar-partial { fill: #c07d3c; }
 .ch-bar-none    { fill: currentColor; opacity: 0.22; }
+.ch-bar-slow    { fill: #c07d3c; opacity: 0.5; }
+.ch-trend       { fill: none; stroke: #b0552f; stroke-width: 2.4; stroke-linejoin: round; stroke-linecap: round; }
+
+/* Sweep visual: the two charts + a real "it topples past code-max" fall clip */
+.sweep-visual { display: flex; flex-direction: column; gap: clamp(10px, 1.6vh, 18px); width: 100%; max-width: 660px; }
+.sweep-fall { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.sweep-fall-frame {
+	position: relative; width: 100%; aspect-ratio: 16 / 9; max-height: 190px;
+	border-radius: 12px; border: 1.5px solid var(--ink); overflow: hidden;
+	background: #12110f; box-shadow: 0 10px 24px rgba(0, 0, 0, 0.14);
+}
+.sweep-fall-frame video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.sweep-fall figcaption { font-family: var(--font-mono); font-size: 11.5px; line-height: 1.4; color: var(--ink); opacity: 0.66; }
 
 /* =====================================================================
    Content copy blocks
@@ -371,22 +420,46 @@ button { font: inherit; color: inherit; }
 .hero-tag { font-family: var(--font-mono); font-size: 11px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--ink); color: var(--ink); opacity: 0.82; }
 
 .hero-teamcard {
+	position: relative;
 	display: flex;
 	flex-direction: column;
 	align-items: center;
 	text-align: center;
-	gap: 14px;
-	padding: clamp(20px, 3vw, 34px);
+	gap: 12px;
+	padding: clamp(26px, 3vw, 40px) clamp(24px, 3vw, 38px) clamp(22px, 2.6vw, 32px);
 	border: 1px solid var(--sheet-border);
-	border-radius: 20px;
-	background: color-mix(in srgb, var(--sheet) 70%, transparent);
-	box-shadow: 0 18px 40px rgba(0, 0, 0, 0.16);
-	max-width: 340px;
+	border-radius: 22px;
+	background: color-mix(in srgb, var(--sheet) 78%, transparent);
+	box-shadow: 0 22px 50px rgba(0, 0, 0, 0.22);
+	max-width: 380px;
+	overflow: hidden;
+}
+/* Slim accent bar across the top of the card */
+.hero-teamcard::before {
+	content: '';
+	position: absolute;
+	top: 0; left: 0; right: 0;
+	height: 5px;
+	background: linear-gradient(90deg, #0e9b8e, #c07d3c 55%, #b0552f);
 }
 
-.hero-teamcard img { width: 130px; height: 130px; border-radius: 50%; object-fit: cover; border: 3px solid var(--ink); box-shadow: 0 8px 22px rgba(0, 0, 0, 0.2); }
-.hero-teamcard .tc-name { font-family: var(--font-display); font-size: clamp(22px, 2.4vw, 30px); font-weight: 800; letter-spacing: -0.015em; line-height: 1.05; color: var(--headline); }
-.hero-teamcard .tc-role { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink); opacity: 0.66; }
+/* Gradient ring around the avatar */
+.hero-teamcard .tc-avatar {
+	width: 148px;
+	height: 148px;
+	border-radius: 50%;
+	padding: 4px;
+	background: linear-gradient(140deg, #0e9b8e, #c07d3c 60%, #b0552f);
+	box-shadow: 0 10px 26px rgba(0, 0, 0, 0.24);
+}
+.hero-teamcard .tc-avatar img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; border: 3px solid var(--sheet); display: block; }
+
+.hero-teamcard .tc-name { margin-top: 2px; font-family: var(--font-display); font-size: clamp(24px, 2.5vw, 32px); font-weight: 800; letter-spacing: -0.015em; line-height: 1.05; color: var(--headline); }
+.hero-teamcard .tc-role { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink); opacity: 0.6; }
+.hero-teamcard .tc-rule { width: 46px; height: 3px; border-radius: 2px; background: #0e9b8e; opacity: 0.8; margin: 2px 0; }
+.hero-teamcard .tc-cred { font-family: var(--font-display); font-size: 13.5px; line-height: 1.5; color: var(--ink); opacity: 0.86; max-width: 26ch; }
+.hero-teamcard .tc-tags { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 4px; }
+.hero-teamcard .tc-tags span { font-family: var(--font-mono); font-size: 10.5px; padding: 4px 9px; border-radius: 999px; border: 1px solid var(--sheet-border); background: color-mix(in srgb, var(--sheet) 55%, transparent); color: var(--ink); opacity: 0.82; }
 
 /* =====================================================================
    Solution & technology: pinned (sticky) 3D stage + 3 scrolling steps
@@ -395,7 +468,7 @@ button { font: inherit; color: inherit; }
 #s-solution {
 	position: relative;
 	display: grid;
-	grid-template-columns: 1.5fr 1fr;
+	grid-template-columns: 1.32fr 1.12fr;
 }
 
 .sol-stage-sticky {
@@ -414,13 +487,19 @@ button { font: inherit; color: inherit; }
 	justify-content: center;
 }
 
+/* All three step cards share one footprint (equal width + min-height) so
+   Architecture / Walking / Climbing read as the same size, and content is
+   vertically centred so the shorter Architecture card breathes instead of
+   sitting cramped at the top. Wider + a touch shorter than before. */
 .sol-panel {
 	width: 100%;
-	max-width: 460px;
+	max-width: 560px;
+	min-height: min(84vh, 600px);
 	display: flex;
 	flex-direction: column;
-	gap: 12px;
-	padding: clamp(18px, 2vw, 26px);
+	justify-content: center;
+	gap: clamp(13px, 1.5vh, 18px);
+	padding: clamp(22px, 2.1vw, 32px);
 	border-radius: var(--sheet-radius);
 	background: color-mix(in srgb, var(--sheet) 86%, transparent);
 	border: 1px solid var(--sheet-border);
@@ -440,7 +519,7 @@ button { font: inherit; color: inherit; }
 	background: color-mix(in srgb, var(--sheet) 60%, transparent);
 }
 
-.sol-diagram svg { width: auto; max-width: 100%; height: auto; max-height: clamp(110px, 22vh, 190px); display: block; }
+.sol-diagram svg { width: auto; max-width: 100%; height: auto; max-height: clamp(92px, 15vh, 150px); display: block; }
 
 .sol-body { margin: 0; font-size: 13.5px; line-height: 1.6; color: var(--ink); opacity: 0.9; }
 
@@ -450,6 +529,7 @@ button { font: inherit; color: inherit; }
 	position: relative;
 	width: 100%;
 	aspect-ratio: 16 / 9;
+	max-height: 200px;
 	border-radius: 12px;
 	border: 1.5px solid var(--ink);
 	overflow: hidden;
@@ -652,13 +732,116 @@ button { font: inherit; color: inherit; }
 .film-tile figcaption span { font-size: 10px; color: var(--ink); opacity: 0.6; }
 
 /* =====================================================================
+   Live demo (real Isaac footage): OpenCV/YOLO follow HUD (main) + a
+   left-corner rail of real climb clips. The 3D viewer moved to Potential.
+   ===================================================================== */
+.slide.demo-real { display: flex; padding: var(--sheet-margin); }
+
+.demo-sheet {
+	flex: 1;
+	min-height: 0;
+	display: grid;
+	grid-template-columns: clamp(150px, 15vw, 200px) 1fr;
+	border-radius: var(--sheet-radius);
+	background: var(--sheet);
+	border: 1px solid var(--sheet-border);
+	overflow: hidden;
+	box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+}
+
+#demo-cliprail {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	padding: clamp(12px, 1.2vw, 18px);
+	border-right: 1px solid var(--sheet-border);
+	background: color-mix(in srgb, var(--sheet) 60%, transparent);
+	overflow-y: auto;
+	scrollbar-width: none;
+}
+#demo-cliprail::-webkit-scrollbar { display: none; }
+.cliprail-title { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink); opacity: 0.55; margin-bottom: 2px; }
+#demo-cliprail .film-tile { width: 100%; }
+
+.demo-main {
+	display: flex;
+	flex-direction: column;
+	gap: clamp(12px, 1.6vh, 20px);
+	padding: clamp(20px, 2.4vw, 40px);
+	min-width: 0;
+}
+.demo-head { display: flex; flex-direction: column; gap: 8px; }
+.demo-lead { margin: 0; font-family: var(--font-display); font-size: clamp(14px, 1.4vw, 17px); line-height: 1.5; color: var(--ink); opacity: 0.9; max-width: 60ch; }
+
+.demo-opencv { margin: 0; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.demo-opencv video {
+	width: 100%;
+	flex: 1;
+	min-height: 0;
+	object-fit: cover;
+	border-radius: 14px;
+	border: 1.5px solid var(--ink);
+	background: #0d0d0b;
+	box-shadow: 0 14px 34px rgba(0, 0, 0, 0.22);
+}
+.demo-opencv figcaption { font-family: var(--font-mono); font-size: 12px; line-height: 1.4; color: var(--ink); opacity: 0.66; }
+
+/* =====================================================================
+   Real-world potential: copy (left) + cinematic 3D viewer (right). The
+   viewer (#sheet / #canvas-host / #ui-overlay) moved here from the old demo.
+   ===================================================================== */
+.slide.potential { display: flex; padding: var(--sheet-margin); }
+
+.pot-sheet {
+	flex: 1;
+	min-height: 0;
+	display: grid;
+	grid-template-columns: 1fr 1.28fr;
+	border-radius: var(--sheet-radius);
+	background: var(--sheet);
+	border: 1px solid var(--sheet-border);
+	overflow: hidden;
+	box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+}
+
+.pot-copy { display: flex; flex-direction: column; justify-content: center; gap: 13px; padding: clamp(22px, 2.8vw, 46px); overflow: auto; }
+
+.pot-viewer { position: relative; border-left: 1px solid var(--sheet-border); background: var(--sheet); }
+
+/* In Potential #sheet fills its cell (the base rule absolute-insets it to the
+   whole slide, which only made sense in the old full-bleed demo). */
+.pot-viewer #sheet { position: absolute; inset: 0; border-radius: 0; border: none; box-shadow: none; }
+
+#pot-viewer-cap {
+	position: absolute;
+	left: clamp(14px, 1.6vw, 20px);
+	bottom: clamp(12px, 1.6vw, 18px);
+	z-index: 6;
+	font-family: var(--font-mono);
+	font-size: 12px;
+	color: var(--ink);
+	opacity: 0.6;
+	pointer-events: none;
+}
+
+/* The demo controls main.js still drives are kept in the DOM but hidden here —
+   Potential is a passive, autoplaying cinematic view. */
+.viewer-controls { display: none; }
+
+/* =====================================================================
    Responsive: stack the two-column slides; nav rail moves to the bottom
    ===================================================================== */
 
 @media (max-width: 860px) {
 
 	.slide-sheet,
+	.demo-sheet,
+	.pot-sheet,
 	#s-solution { grid-template-columns: 1fr; }
+
+	#demo-cliprail { flex-direction: row; overflow-x: auto; border-right: none; border-bottom: 1px solid var(--sheet-border); }
+	#demo-cliprail .film-tile { width: clamp(116px, 40vw, 160px); flex: 0 0 auto; }
+	.pot-viewer { min-height: 52dvh; border-left: none; border-top: 1px solid var(--sheet-border); }
 
 	/* On narrow screens the pinned stage can't share a row with the steps; let
 	   the Solution steps stack full-width and the stage ride above each. */

@@ -22,10 +22,16 @@ for ( const [ id, c ] of Object.entries( CONTENT ) ) {
 
 	const sec = document.getElementById( id );
 	if ( ! sec ) continue;
-	sec.querySelector( '.slide-eyebrow' ).textContent = c.group;
-	sec.querySelector( '.slide-title' ).textContent = c.title;
-	sec.querySelector( '[data-visual]' ).innerHTML = buildVisualHTML( c.visual );
-	sec.querySelector( '[data-copy]' ).innerHTML = buildCopyHTML( c.copy );
+	// Guarded: bespoke sections (e.g. Potential, whose visual is the 3D viewer)
+	// may not carry every slot — skip whatever they omit instead of throwing.
+	const eyebrowEl = sec.querySelector( '.slide-eyebrow' );
+	const titleEl = sec.querySelector( '.slide-title' );
+	const visualEl = sec.querySelector( '[data-visual]' );
+	const copyEl = sec.querySelector( '[data-copy]' );
+	if ( eyebrowEl ) eyebrowEl.textContent = c.group;
+	if ( titleEl ) titleEl.textContent = c.title;
+	if ( visualEl ) visualEl.innerHTML = buildVisualHTML( c.visual );
+	if ( copyEl ) copyEl.innerHTML = buildCopyHTML( c.copy );
 
 }
 
@@ -87,6 +93,78 @@ document.getElementById( 'nav-prev' ).addEventListener( 'click', () => scrollToS
 document.getElementById( 'nav-next' ).addEventListener( 'click', () => scrollToSection( SECTIONS[ Math.min( SECTIONS.length - 1, activeIdx + 1 ) ].id ) );
 
 // ---------------------------------------------------------------------------
+// 3b. Wheel / keyboard section navigation — ONE gesture advances ONE section.
+//     Native scroll-snap alone made the user "scroll a lot" to move down (a
+//     trackpad flick barely nudged past a snap point and sprang back). We take
+//     over the wheel so a single decisive flick jumps to the next/prev section,
+//     while still letting a genuinely-overflowing inner region (long copy)
+//     scroll on its own before nav takes over at its boundary.
+// ---------------------------------------------------------------------------
+let navLock = false;
+let navReleaseTimer = null;
+
+function navBy( dir ) {
+
+	const i = Math.min( SECTIONS.length - 1, Math.max( 0, activeIdx + dir ) );
+	if ( i !== activeIdx ) scrollToSection( SECTIONS[ i ].id );
+
+}
+
+// True when some ancestor of `node` can still scroll in the wheel's direction —
+// so inner scroll wins over section-nav until it hits its own boundary.
+function canScrollInside( node, deltaY ) {
+
+	let el = node;
+	while ( el && el !== deck && el.nodeType === 1 ) {
+
+		const oy = getComputedStyle( el ).overflowY;
+		if ( ( oy === 'auto' || oy === 'scroll' ) && el.scrollHeight > el.clientHeight + 1 ) {
+
+			if ( deltaY > 0 && el.scrollTop + el.clientHeight < el.scrollHeight - 1 ) return true;
+			if ( deltaY < 0 && el.scrollTop > 1 ) return true;
+
+		}
+		el = el.parentElement;
+
+	}
+	return false;
+
+}
+
+deck.addEventListener( 'wheel', ( e ) => {
+
+	if ( Math.abs( e.deltaY ) < Math.abs( e.deltaX ) ) return; // ignore horizontal intent
+	if ( canScrollInside( e.target, e.deltaY ) ) return;
+	e.preventDefault();
+
+	if ( ! navLock ) { navLock = true; navBy( e.deltaY > 0 ? 1 : -1 ); }
+	// Reset the release on every wheel tick so trackpad momentum is swallowed:
+	// the lock only lifts ~0.65 s after the LAST wheel event, not the first.
+	if ( navReleaseTimer ) clearTimeout( navReleaseTimer );
+	navReleaseTimer = setTimeout( () => { navLock = false; }, 650 );
+
+}, { passive: false } );
+
+window.addEventListener( 'keydown', ( e ) => {
+
+	if ( e.target && /^(INPUT|TEXTAREA|SELECT)$/.test( e.target.tagName ) ) return;
+	let dir = 0, jump = null;
+	if ( e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === ' ' ) dir = 1;
+	else if ( e.key === 'ArrowUp' || e.key === 'PageUp' ) dir = -1;
+	else if ( e.key === 'Home' ) jump = 0;
+	else if ( e.key === 'End' ) jump = SECTIONS.length - 1;
+	else return;
+
+	e.preventDefault();
+	if ( navLock ) return;
+	navLock = true;
+	if ( jump !== null ) scrollToSection( SECTIONS[ jump ].id ); else navBy( dir );
+	if ( navReleaseTimer ) clearTimeout( navReleaseTimer );
+	navReleaseTimer = setTimeout( () => { navLock = false; }, 650 );
+
+} );
+
+// ---------------------------------------------------------------------------
 // 4. Clip lazy-load helpers (Solution step clips)
 // ---------------------------------------------------------------------------
 function playClipIn( step ) {
@@ -125,9 +203,31 @@ function onActivate( id ) {
 
 	}
 
-	// Demo rollout autoplays only while the demo is on screen.
+	// The sweep "fall" clip autoplays only while the sweep is on screen (lazy-load
+	// its data-src on first arrival).
+	const sweepVid = document.querySelector( '#s-sweep video' );
+	if ( sweepVid ) {
+
+		if ( id === 's-sweep' ) {
+
+			if ( sweepVid.dataset.src && ! sweepVid.src ) sweepVid.src = sweepVid.dataset.src;
+			const pl = sweepVid.play(); if ( pl && pl.catch ) pl.catch( () => {} );
+
+		} else sweepVid.pause();
+
+	}
+
+	// The interactive 3D viewer now lives on the Potential slide as an autoplaying
+	// cinematic view: turn cinematic + autoplay ON while Potential is on screen,
+	// and pause it otherwise so it isn't rendering a rollout off-screen.
 	const viewer = window.__viewer;
-	if ( viewer && typeof viewer.play === 'function' ) viewer.play( id === 's-demo' );
+	if ( viewer ) {
+
+		const onViewer = ( id === 's-potential' );
+		if ( typeof viewer.setCinematic === 'function' ) viewer.setCinematic( onViewer );
+		if ( typeof viewer.play === 'function' ) viewer.play( onViewer );
+
+	}
 
 }
 

@@ -234,18 +234,64 @@ function artRoadmap() {
 
 function teamCard() {
 	return `<div class="hero-teamcard">
-		<img src="./assets/team/anthony.png" alt="Anthony Sinchi" />
+		<div class="tc-avatar"><img src="./assets/team/anthony.png" alt="Anthony Sinchi" /></div>
 		<div class="tc-name">Anthony Sinchi</div>
-		<div class="tc-role">Solo build · RL · perception · systems</div>
+		<div class="tc-role">Solo build</div>
+		<div class="tc-rule"></div>
+		<div class="tc-cred">Reinforcement learning · Perception · Isaac Sim · Sim ⇄ real deploy</div>
+		<div class="tc-tags">
+			<span>RL &amp; controls</span><span>perception</span><span>Isaac Sim</span><span>Jetson deploy</span>
+		</div>
 	</div>`;
 }
 
+// Opening / title visual: two real Isaac Sim renders arranged as a framed,
+// slightly-overlapping photo pair (replaces the old line-art staircase SVG).
+function problemPhotos() {
+	return `<div class="hero-photos">
+		<figure class="hp-back"><img src="./assets/renders/stairs_climb.png" alt="The robot dog climbing a full staircase behind an oxygen-therapy patient" /></figure>
+		<figure class="hp-front"><img src="./assets/renders/patient_carry.png" alt="Close-up: the Go2 carrying the patient's oxygen concentrator up the stairs" /></figure>
+		<figcaption class="hero-photos-cap">Isaac Sim · the Go2 carries the oxygen and climbs alongside the patient</figcaption>
+	</div>`;
+}
+
+// "Higher stairs slow it down": real per-height climb time (s) at the heights it
+// completed. Rises 35.5 -> 51.2 s as the riser grows 0.12 -> 0.15 m (sweep data).
+function chartClimbTime() {
+	const bars = [
+		{ x: 60,  m: '0.12', n: '4.7″', t: 35.5 },
+		{ x: 160, m: '0.13', n: '5.1″', t: 35.9 },
+		{ x: 260, m: '0.14', n: '5.5″', t: 43.4 },
+		{ x: 360, m: '0.15', n: '6″ ADA', t: 51.2 },
+	];
+	const maxT = 56, y0 = 250, top = 30, w = 60;
+	const px = ( t ) => y0 - ( t / maxT ) * ( y0 - top );
+	const rects = bars.map( ( b ) => `<rect class="ch-bar-slow" x="${ b.x }" y="${ px( b.t ) }" width="${ w }" height="${ y0 - px( b.t ) }" rx="3"/>` ).join( '' );
+	const vals = bars.map( ( b ) => `<text class="ch-val" x="${ b.x + w / 2 }" y="${ px( b.t ) - 6 }" text-anchor="middle">${ b.t.toFixed( 1 ) }s</text>` ).join( '' );
+	const labs = bars.map( ( b ) =>
+		`<text class="ch-tick" x="${ b.x + w / 2 }" y="266" text-anchor="middle">${ b.m }</text>` +
+		`<text class="ch-tick" x="${ b.x + w / 2 }" y="278" text-anchor="middle">${ b.n }</text>`,
+	).join( '' );
+	return `<div class="hero-chart"><p class="hero-chart-title">Higher stairs, slower climb · time to the top (s)</p>
+	<svg viewBox="0 0 480 300" role="img" aria-label="Climb time rises from 35.5 s to 51.2 s as the riser grows">
+		<line class="ch-axis" x1="40" y1="250" x2="464" y2="250"/>
+		<polyline class="ch-trend" points="90,${ px( 35.5 ) } 190,${ px( 35.9 ) } 290,${ px( 43.4 ) } 390,${ px( 51.2 ) }"/>
+		${ rects }${ vals }${ labs }
+	</svg></div>`;
+}
+
 const VISUALS = {
-	problem: artProblem,
+	problem: problemPhotos,
 	roadmap: artRoadmap,
 	team: teamCard,
 	training: () => `<div class="hero-charts cols-2">${ chartLearningCurve() }${ chartCurriculum() }</div>`,
-	sweep: () => `<div class="hero-charts">${ chartSweep() }</div>`,
+	sweep: () => `<div class="sweep-visual">
+		<div class="hero-charts cols-2">${ chartSweep() }${ chartClimbTime() }</div>
+		<figure class="sweep-fall">
+			<div class="sweep-fall-frame"><video muted loop playsinline preload="none" data-src="./assets/clips/fall.mp4"></video></div>
+			<figcaption>Past code-legal risers the gait rears up against the step and can’t get over it — real Isaac Sim, 0.26 m riser.</figcaption>
+		</figure>
+	</div>`,
 };
 
 export function buildVisualHTML( key ) {
@@ -293,7 +339,7 @@ export const CONTENT = {
 		visual: 'training',
 		copy: {
 			lead: 'A blind reinforcement-learning policy learned to drive the payload upstairs on feel alone.',
-			body: 'Across 6,000 training iterations the mean episode reward climbed to 95.7 and held. A difficulty curriculum pushed the stairs steeper over time, settling at a 138 mm riser — right at the real-world target height. Episodes run to full length and end by timeout almost every time: the robot stays upright and simply doesn’t topple.',
+			body: 'Across 6,000 training iterations the mean episode reward climbed to 95.7 and held. A difficulty curriculum pushed the stairs steeper over time, settling at a 138 mm riser — right at the real-world target height. The gait it found is cautious, not graceful — it noses down and leans into each riser rather than stepping cleanly — but inside that trained envelope it runs to full length and ends upright almost every time, keeping the payload level.',
 			stats: [
 				{ v: '95.7', l: 'mean reward at plateau' },
 				{ v: '138 mm', l: 'riser the curriculum settled at' },
@@ -303,17 +349,17 @@ export const CONTENT = {
 		},
 	},
 	's-sweep': {
-		group: 'Progress & results', title: 'How high can it climb?',
+		group: 'Progress & results', title: 'How high it climbs — and where it stops',
 		visual: 'sweep',
 		copy: {
-			lead: 'We swept real staircase heights from 4.7″ up to the code maximum — carrying the oxygen tank the whole way.',
-			body: 'The dog climbs the entire 14-step staircase and reaches the top at every height up to the ADA-maximum 6-inch riser, staying upright with no falls. It follows the patient the whole way up. Only beyond code-legal stairs — 7 inches and steeper — does it run out of reach, right about where a person would want a lift too.',
+			lead: 'We swept real staircase heights from 4.7″ up past the code maximum — carrying the oxygen tank the whole way, and pushing until it fails.',
+			body: 'Up to the ADA-legal 6-inch riser it climbs the full 14-step staircase and follows the patient to the top — but not for free: every extra inch of riser slows it down, from 35 s at 4.7″ to 51 s at 6″. Push past code-legal stairs and it runs out of reach — a 7-inch riser gets it barely a third of the way up — and steeper still it rears up against the step and can’t get over it at all. That limit sits right about where a person would want a stair-lift too.',
 			stats: [
-				{ v: '14 / 14', l: 'steps climbed to the top' },
-				{ v: '4 / 6', l: 'heights fully topped out' },
-				{ v: '0', l: 'falls across the sweep' },
+				{ v: '6″ ADA', l: 'highest riser it fully tops out' },
+				{ v: '+44%', l: 'slower climb from 4.7″ to 6″' },
+				{ v: '7″ +', l: 'too steep — stalls out, can’t climb' },
 			],
-			tags: [ 'ADA 6″ ✓', 'full staircase', 'payload upright' ],
+			tags: [ 'ADA 6″ ✓', 'higher = slower', 'past code-max = stalls out' ],
 		},
 	},
 	's-potential': {

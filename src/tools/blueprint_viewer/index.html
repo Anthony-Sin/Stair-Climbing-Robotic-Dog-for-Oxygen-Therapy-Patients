@@ -70,62 +70,40 @@
 			</div>
 		</div>
 
-		<!-- 3 · LIVE DEMO — the interactive rollout (js/main.js) -->
-		<section id="s-demo" class="slide demo" aria-label="Live demo">
-			<div id="sheet">
-				<div id="canvas-host">
-					<!-- three.js canvas is inserted here by js/main.js -->
-					<div id="ui-overlay">
-						<header id="headline-block">
-							<span id="demo-kicker">Live demo</span>
-							<div id="demo-captions" aria-hidden="true">
-								<span class="demo-cap" data-cap="follow"><b>Follow</b> — YOLO keeps the patient in frame</span>
-								<span class="demo-cap" data-cap="climb"><b>Climb</b> — blind RL feels each riser</span>
-							</div>
-							<div id="phase-buttons" role="group" aria-label="Animation phase">
-								<button type="button" class="phase-chip" id="phase-follow" data-phase="follow" aria-pressed="true">phase 1 · follow</button>
-								<button type="button" class="phase-chip" id="phase-climb" data-phase="climb" aria-pressed="false">phase 2 · climb</button>
-							</div>
-						</header>
-
-						<div id="top-right-chips">
-							<button type="button" class="chip" id="cinematic-toggle" aria-pressed="false">cinematic · off</button>
-							<button type="button" class="chip" id="theme-toggle" aria-pressed="false">light</button>
-						</div>
-
-						<div id="model-warning" class="chip warning-chip" hidden>placeholder model — run pipeline/bake_gltf.py</div>
-
-						<div id="demo-dock">
-							<div id="scrub-bar">
-								<div id="time-readout">t 00.00 / 00.00 s · follow</div>
-								<button type="button" class="chip" id="play-toggle" aria-pressed="false">play</button>
-								<input type="range" id="scrubber" min="0" max="100" step="0.1" value="0" aria-label="Timeline scrubber" />
-							</div>
-
-							<div id="demo-filmstrip" aria-label="Real climb clips by stair height">
-								<figure class="film-tile" data-phase="climb">
-									<video muted loop playsinline preload="none" data-src="./assets/clips/climb_0p120.mp4"></video>
-									<figcaption><b>0.12 m</b><span>4.7″ riser</span></figcaption>
-								</figure>
-								<figure class="film-tile" data-phase="climb">
-									<video muted loop playsinline preload="none" data-src="./assets/clips/climb_0p130.mp4"></video>
-									<figcaption><b>0.13 m</b><span>5.1″ riser</span></figcaption>
-								</figure>
-								<figure class="film-tile" data-phase="climb">
-									<video muted loop playsinline preload="none" data-src="./assets/clips/climb_0p140.mp4"></video>
-									<figcaption><b>0.14 m</b><span>5.5″ riser</span></figcaption>
-								</figure>
-								<figure class="film-tile is-featured" data-phase="climb">
-									<video muted loop playsinline preload="none" data-src="./assets/clips/climb_0p150.mp4"></video>
-									<figcaption><b>0.15 m</b><span>6″ · ADA max</span></figcaption>
-								</figure>
-								<figure class="film-tile" data-phase="climb">
-									<video muted loop playsinline preload="none" data-src="./assets/clips/climb_0p175.mp4"></video>
-									<figcaption><b>0.175 m</b><span>7″ · IBC</span></figcaption>
-								</figure>
-							</div>
-						</div>
-					</div>
+		<!-- 3 · LIVE DEMO — real Isaac rollout footage: the OpenCV/YOLO follow HUD
+		     (main) with a rail of real climb clips tucked in the left corner. The
+		     interactive 3D viewer moved to the Potential slide. -->
+		<section id="s-demo" class="slide demo-real" aria-label="Live demo">
+			<div class="demo-sheet reveal">
+				<aside id="demo-cliprail" aria-label="Real climb clips by stair height">
+					<span class="cliprail-title">real climb clips</span>
+					<figure class="film-tile" data-phase="climb">
+						<video muted loop playsinline preload="none" data-src="./assets/clips/climb_0p120.mp4"></video>
+						<figcaption><b>0.12 m</b><span>4.7″ riser</span></figcaption>
+					</figure>
+					<figure class="film-tile" data-phase="climb">
+						<video muted loop playsinline preload="none" data-src="./assets/clips/climb_0p130.mp4"></video>
+						<figcaption><b>0.13 m</b><span>5.1″ riser</span></figcaption>
+					</figure>
+					<figure class="film-tile is-featured" data-phase="climb">
+						<video muted loop playsinline preload="none" data-src="./assets/clips/climb_0p150.mp4"></video>
+						<figcaption><b>0.15 m</b><span>6″ · ADA max</span></figcaption>
+					</figure>
+					<figure class="film-tile" data-phase="climb">
+						<video muted loop playsinline preload="none" data-src="./assets/clips/climb_0p175.mp4"></video>
+						<figcaption><b>0.175 m</b><span>7″ · partial</span></figcaption>
+					</figure>
+				</aside>
+				<div class="demo-main">
+					<header class="demo-head">
+						<span class="slide-eyebrow">Live demo · real Isaac rollout</span>
+						<h2 class="slide-title">It sees the patient and follows</h2>
+						<p class="demo-lead">No scripting — this is the perception stack running live. YOLO-World locks onto the person every frame while depth and LiDAR read the scene, and the gait steers to keep pace, all from the dog’s own camera.</p>
+					</header>
+					<figure class="demo-opencv">
+						<video id="opencv-video" muted loop playsinline preload="none" data-src="./assets/clips/opencv_follow.mp4"></video>
+						<figcaption>Target-acquisition HUD · YOLO detection + depth + LiDAR, following the patient up the stairs</figcaption>
+					</figure>
 				</div>
 			</div>
 		</section>
@@ -154,14 +132,40 @@
 			</div>
 		</section>
 
-		<!-- 6 · REAL-WORLD POTENTIAL -->
-		<section id="s-potential" class="slide content" aria-label="Real-world potential">
-			<div class="slide-sheet reveal">
-				<div class="slide-visual" data-visual></div>
-				<div class="slide-copy">
+		<!-- 6 · REAL-WORLD POTENTIAL — copy (left) + the cinematic 3D viewer
+		     (right), autoplaying. js/main.js mounts its canvas into #canvas-host;
+		     the demo controls it needs live here now (hidden — this is a passive
+		     cinematic view). deck.js turns cinematic + autoplay on for this slide. -->
+		<section id="s-potential" class="slide potential" aria-label="Real-world potential">
+			<div class="pot-sheet reveal">
+				<div class="pot-copy">
 					<span class="slide-eyebrow"></span>
 					<h2 class="slide-title"></h2>
 					<div class="slide-body" data-copy></div>
+				</div>
+				<div class="pot-viewer">
+					<div id="sheet">
+						<div id="canvas-host">
+							<!-- three.js canvas is inserted here by js/main.js -->
+							<div id="ui-overlay">
+								<div id="pot-viewer-cap">Isaac Sim · the whole system, running end-to-end</div>
+								<div class="viewer-controls" hidden aria-hidden="true">
+									<div id="phase-buttons" role="group" aria-label="Animation phase">
+										<button type="button" class="phase-chip" id="phase-follow" data-phase="follow" aria-pressed="true">phase 1 · follow</button>
+										<button type="button" class="phase-chip" id="phase-climb" data-phase="climb" aria-pressed="false">phase 2 · climb</button>
+									</div>
+									<button type="button" class="chip" id="cinematic-toggle" aria-pressed="false">cinematic · off</button>
+									<button type="button" class="chip" id="tracking-toggle" aria-pressed="false">tracking · off</button>
+									<button type="button" class="chip" id="plumb-toggle" aria-pressed="false">plumb line · off</button>
+									<button type="button" class="chip" id="theme-toggle" aria-pressed="false">light</button>
+									<span id="time-readout">t 00.00 / 00.00 s · follow</span>
+									<button type="button" class="chip" id="play-toggle" aria-pressed="false">play</button>
+									<input type="range" id="scrubber" min="0" max="100" step="0.1" value="0" aria-label="Timeline scrubber" />
+									<div id="model-warning" class="chip warning-chip" hidden>placeholder model — run pipeline/bake_gltf.py</div>
+								</div>
+							</div>
+						</div>
+					</div>
 				</div>
 			</div>
 		</section>

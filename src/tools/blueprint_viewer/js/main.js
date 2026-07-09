@@ -1949,6 +1949,16 @@ window.__viewer = {
 		setPlaying( !! shouldPlay );
 
 	},
+	/**
+	 * Turn cinematic mode on/off from the deck. js/deck.js calls this for the
+	 * Potential slide, where the viewer is a passive, autoplaying cinematic view.
+	 * Reuses the cinematic chip's own click handler so there is a single code path.
+	 */
+	setCinematic( on ) {
+
+		if ( cinematicToggle && cinematicEnabled !== !! on ) cinematicToggle.click();
+
+	},
 	getState() {
 
 		// timeSec/duration/pct now describe the UNIFIED timeline (follow+climb);
