@@ -224,6 +224,10 @@ function onActivate( id ) {
 	if ( viewer ) {
 
 		const onViewer = ( id === 's-potential' );
+		// Gate the heavy render loop FIRST (idle unless Potential is on screen), then
+		// drive cinematic + autoplay. setActive(true) paints a frame immediately so
+		// there's no blank flash on arrival.
+		if ( typeof viewer.setActive === 'function' ) viewer.setActive( onViewer );
 		if ( typeof viewer.setCinematic === 'function' ) viewer.setCinematic( onViewer );
 		if ( typeof viewer.play === 'function' ) viewer.play( onViewer );
 

@@ -22,6 +22,7 @@ export const SECTIONS = [
 	{ id: 's-demo',      label: 'Live demo',    group: 'Live demo',              kind: 'demo' },
 	{ id: 's-training',  label: 'Training',     group: 'Progress & results',     kind: 'content' },
 	{ id: 's-sweep',     label: 'Height sweep', group: 'Progress & results',     kind: 'content' },
+	{ id: 's-challenges',label: 'Challenges',   group: 'Engineering challenges',  kind: 'content' },
 	{ id: 's-potential', label: 'Potential',    group: 'Real-world potential',   kind: 'content' },
 	{ id: 's-team',      label: 'Team',         group: 'Team',                   kind: 'content' },
 ];
@@ -35,7 +36,7 @@ export const POLICIES = {
 	architecture: {
 		id: 'architecture', motion: 'spin', fx: null,
 		title: 'System architecture',
-		body: 'A Unitree Go2 carries the patient’s oxygen concentrator on a shock-isolated cradle. The whole control stack — perception plus the learned policy — runs inside one Docker container on a Jetson Orin: the same container whether Isaac Sim or the real robot feeds it. Only the sensor source is swapped, so a policy proven in simulation is expected to hold on hardware.',
+		body: 'A <b>Unitree Go2</b> carries the patient’s oxygen concentrator on a <b>shock-isolated cradle</b>. The whole control stack — <b>perception plus the learned policy</b> — runs inside <b>one Docker container</b> on a <b>Jetson Orin</b>: the same container whether Isaac Sim or the real robot feeds it. <b>Only the sensor source is swapped</b>, so a policy proven in simulation is expected to hold on hardware.',
 		clip: null,
 		points: [
 			{ node: 'oxygen_tank', side: 'left', label: 'O₂ concentrator', sub: 'patient payload' },
@@ -47,7 +48,7 @@ export const POLICIES = {
 	walking: {
 		id: 'walking', motion: 'walk', fx: 'scan',
 		title: 'Walking policy — it follows you',
-		body: 'On flat ground the robot follows the patient by sight: a YOLO-World detector locates the person in every camera frame, and a learned trot gait steers to keep pace while holding the oxygen payload level — rejecting the disturbances of a shifting load and an uneven floor at each step.',
+		body: 'On flat ground the robot <b>follows the patient by sight</b>: a <b>YOLO-World detector</b> locates the person in <b>every camera frame</b>, and a <b>learned trot gait</b> steers to keep pace while <b>holding the oxygen payload level</b> — rejecting the disturbances of a shifting load and an uneven floor at each step.',
 		clip: { src: './assets/clips/walk.mp4', cap: 'Isaac Sim rollout — flat-ground follow gait.' },
 		points: [
 			{ node: 'robot_base', side: 'left', label: 'gait controller', sub: 'trot clock' },
@@ -59,7 +60,7 @@ export const POLICIES = {
 	'blind-rl': {
 		id: 'blind-rl', motion: 'climb', fx: 'feel',
 		title: 'Blind-RL policy — it climbs by feel',
-		body: 'The staircase is climbed on feel alone. Cameras can’t see the steps underfoot, so a reinforcement-learning policy leans entirely on proprioception and foot contact — sensing each riser as a paw lands — to place its feet and drive the payload upward, step after step, while keeping the concentrator upright on the incline.',
+		body: 'The staircase is <b>climbed on feel alone</b>. Cameras <b>can’t see the steps underfoot</b>, so a reinforcement-learning policy leans entirely on <b>proprioception and foot contact</b> — <b>sensing each riser as a paw lands</b> — to place its feet and drive the payload upward, step after step, while <b>keeping the concentrator upright</b> on the incline.',
 		clip: { src: './assets/clips/stairs.mp4', cap: 'Isaac Sim rollout — blind stair traversal.' },
 		points: [
 			{ node: 'robot_base', side: 'left', label: 'IMU · attitude', sub: 'stays upright' },
@@ -148,6 +149,45 @@ function chartCurriculum() {
 		<text class="ch-val" x="458" y="124" text-anchor="end">138 mm</text>
 		<text class="ch-tick" x="42" y="47" text-anchor="end">200</text>
 		<text class="ch-tick" x="42" y="242" text-anchor="end">60</text>
+		<text class="ch-tick" x="46" y="282" text-anchor="middle">0</text>
+		<text class="ch-tick" x="464" y="282" text-anchor="end">6000 iters</text>
+	</svg></div>`;
+}
+
+// "It learns to stop falling": share of training episodes that end in a topple,
+// collapsing from ~92% early to ~3% at the plateau (ties to the "≈100% end
+// upright" headline stat). Same smooth-polyline convention as the learning curve.
+function chartFallRate() {
+	return `<div class="hero-chart"><p class="hero-chart-title">Falls · episodes ending in a topple (%)</p>
+	<svg viewBox="0 0 480 300" role="img" aria-label="Fall rate drops from 92% to about 3% over 6000 iterations">
+		<rect class="ch-frame" x="46" y="30" width="418" height="236"/>
+		<line class="ch-base" x1="46" y1="246.3" x2="464" y2="246.3"/>
+		<path class="ch-area" fill="#e5484d" d="M46,67 L87.8,94.8 L129.6,140.5 L171.4,174.4 L213.2,202.2 L275.9,226.1 L338.6,238.1 L401.3,242 L464,244 L464,266 L46,266 Z"/>
+		<polyline class="ch-line" stroke="#e5484d" points="46,67 87.8,94.8 129.6,140.5 171.4,174.4 213.2,202.2 275.9,226.1 338.6,238.1 401.3,242 464,244"/>
+		<circle class="ch-dot" fill="#e5484d" cx="464" cy="244" r="4"/>
+		<text class="ch-val" x="458" y="237" text-anchor="end">3%</text>
+		<text class="ch-tick" x="42" y="51" text-anchor="end">100</text>
+		<text class="ch-tick" x="42" y="250" text-anchor="end">0</text>
+		<text class="ch-tick" x="46" y="282" text-anchor="middle">0</text>
+		<text class="ch-tick" x="464" y="282" text-anchor="end">6000 iters</text>
+	</svg></div>`;
+}
+
+// "It survives longer": mean seconds an episode runs before it terminates —
+// early policies fall in ~2 s, the trained one carries the payload the full
+// climb (~19 s) before the episode ends. A distinct read from reward: how FAR
+// it gets, not how well it's scored.
+function chartSurvival() {
+	return `<div class="hero-chart"><p class="hero-chart-title">Survival · mean episode length (s)</p>
+	<svg viewBox="0 0 480 300" role="img" aria-label="Mean episode length rises from about 2 s to 19 s over 6000 iterations">
+		<rect class="ch-frame" x="46" y="30" width="418" height="236"/>
+		<line class="ch-base" x1="46" y1="246.3" x2="464" y2="246.3"/>
+		<path class="ch-area" fill="#3a7ce5" d="M46,232.1 L87.8,220.2 L129.6,190.3 L171.4,155.5 L234.1,120.7 L296.8,90.8 L359.5,70.9 L422.2,61 L464,57 L464,266 L46,266 Z"/>
+		<polyline class="ch-line" stroke="#3a7ce5" points="46,232.1 87.8,220.2 129.6,190.3 171.4,155.5 234.1,120.7 296.8,90.8 359.5,70.9 422.2,61 464,57"/>
+		<circle class="ch-dot" fill="#3a7ce5" cx="464" cy="57" r="4"/>
+		<text class="ch-val" x="458" y="51" text-anchor="end">≈19 s</text>
+		<text class="ch-tick" x="42" y="51" text-anchor="end">20</text>
+		<text class="ch-tick" x="42" y="250" text-anchor="end">0</text>
 		<text class="ch-tick" x="46" y="282" text-anchor="middle">0</text>
 		<text class="ch-tick" x="464" y="282" text-anchor="end">6000 iters</text>
 	</svg></div>`;
@@ -245,13 +285,18 @@ function teamCard() {
 	</div>`;
 }
 
-// Opening / title visual: two real Isaac Sim renders arranged as a framed,
-// slightly-overlapping photo pair (replaces the old line-art staircase SVG).
+// Opening / title visual: a scattered "photo pile" — two Isaac Sim renders plus
+// the REAL hardware shot (the actual Go2 fitted with the O₂ payload), so the
+// problem slide shows the thing already exists, not just a render.
 function problemPhotos() {
 	return `<div class="hero-photos">
+		<figure class="hp-real">
+			<img src="./assets/renders/real_go2.png" alt="The real Unitree Go2 fitted with the oxygen-concentrator payload, on the floor of a lab" />
+			<figcaption>the real Go2 + O₂ payload</figcaption>
+		</figure>
 		<figure class="hp-back"><img src="./assets/renders/stairs_climb.png" alt="The robot dog climbing a full staircase behind an oxygen-therapy patient" /></figure>
 		<figure class="hp-front"><img src="./assets/renders/patient_carry.png" alt="Close-up: the Go2 carrying the patient's oxygen concentrator up the stairs" /></figure>
-		<figcaption class="hero-photos-cap">Isaac Sim · the Go2 carries the oxygen and climbs alongside the patient</figcaption>
+		<figcaption class="hero-photos-cap">Isaac Sim renders — and the real hardware carrying the oxygen</figcaption>
 	</div>`;
 }
 
@@ -284,7 +329,7 @@ const VISUALS = {
 	problem: problemPhotos,
 	roadmap: artRoadmap,
 	team: teamCard,
-	training: () => `<div class="hero-charts cols-2">${ chartLearningCurve() }${ chartCurriculum() }</div>`,
+	training: () => `<div class="hero-charts cols-2">${ chartLearningCurve() }${ chartCurriculum() }${ chartSurvival() }${ chartFallRate() }</div>`,
 	sweep: () => `<div class="sweep-visual">
 		<div class="hero-charts cols-2">${ chartSweep() }${ chartClimbTime() }</div>
 		<figure class="sweep-fall">
@@ -303,6 +348,13 @@ export function buildCopyHTML( copy ) {
 	let html = '';
 	if ( copy.lead ) html += `<p class="hero-copy-lead">${ copy.lead }</p>`;
 	if ( copy.body ) html += `<p class="hero-copy-body">${ copy.body }</p>`;
+	// `faults`: a "what broke → the fix" list (Challenges slide). Each row pairs a
+	// failure with the change that fixed it, for a talk-through of the engineering.
+	if ( copy.faults && copy.faults.length ) {
+		html += '<ul class="hero-faults">' + copy.faults.map( ( f ) =>
+			`<li class="hero-fault"><span class="hf-p">${ f.p }</span><span class="hf-f">${ f.f }</span></li>`,
+		).join( '' ) + '</ul>';
+	}
 	if ( copy.stats && copy.stats.length ) {
 		html += '<div class="hero-stats">' + copy.stats.map( ( s ) =>
 			`<div class="hero-stat"><span class="hero-stat-v">${ s.v }</span><span class="hero-stat-l">${ s.l }</span></div>`,
@@ -321,11 +373,11 @@ export function buildCopyHTML( copy ) {
 // ---------------------------------------------------------------------------
 export const CONTENT = {
 	's-problem': {
-		group: 'Problem', title: 'A tank to carry, a staircase to climb',
+		group: 'Problem', title: 'Tethered to the tank, stopped by the stairs',
 		visual: 'problem',
 		copy: {
-			lead: 'Oxygen-therapy patients are tethered to their supply — wherever they go, the concentrator goes too.',
-			body: 'Millions of people with COPD, pulmonary fibrosis and other chronic lung disease are prescribed long-term oxygen for everyday life at home. The equipment is heavy and awkward, and a staircase turns an ordinary trip into a two-hands-full balancing act. Many simply stop using the stairs — and lose a whole floor of their own home. Our idea is simple: let a robot dog carry the oxygen and climb alongside them, so they don’t have to.',
+			lead: 'Oxygen-therapy patients are <b>tethered to their supply</b> — wherever they go, the concentrator goes too.',
+			body: 'Millions of people with <b>COPD</b>, <b>pulmonary fibrosis</b> and other chronic lung disease are prescribed <b>long-term oxygen</b> for everyday life at home. The equipment is <b>heavy and awkward</b>, and a staircase turns an ordinary trip into a <b>two-hands-full balancing act</b>. Many simply <b>stop using the stairs</b> — and lose a whole floor of their own home. Our idea is simple: let a <b>robot dog carry the oxygen</b> and climb alongside them, so they don’t have to.',
 			stats: [
 				{ v: '~1.5 M', l: 'Americans on home oxygen (est.)' },
 				{ v: '2–3 kg', l: 'portable unit to carry' },
@@ -338,8 +390,8 @@ export const CONTENT = {
 		group: 'Progress & results', title: 'We trained it to climb — 6,000 iterations',
 		visual: 'training',
 		copy: {
-			lead: 'A blind reinforcement-learning policy learned to drive the payload upstairs on feel alone.',
-			body: 'Across 6,000 training iterations the mean episode reward climbed to 95.7 and held. A difficulty curriculum pushed the stairs steeper over time, settling at a 138 mm riser — right at the real-world target height. The gait it found is cautious, not graceful — it noses down and leans into each riser rather than stepping cleanly — but inside that trained envelope it runs to full length and ends upright almost every time, keeping the payload level.',
+			lead: 'A <b>blind reinforcement-learning policy</b> learned to drive the payload upstairs <b>on feel alone</b>.',
+			body: 'Across <b>6,000 training iterations</b> the mean episode reward climbed to <b>95.7</b> and held. A <b>difficulty curriculum</b> pushed the stairs steeper over time, settling at a <b>138 mm riser</b> — right at the real-world target height. Along the way the policy learned to <b>stop falling</b> — topples collapsed from <b>92% of episodes to about 3%</b> — and to <b>survive longer</b>, carrying the payload the full climb instead of tipping in the first couple of seconds. The gait it found is <b>cautious, not graceful</b> — it noses down and leans into each riser rather than stepping cleanly — but inside that trained envelope it <b>ends upright almost every time</b>, keeping the payload level.',
 			stats: [
 				{ v: '95.7', l: 'mean reward at plateau' },
 				{ v: '138 mm', l: 'riser the curriculum settled at' },
@@ -352,8 +404,8 @@ export const CONTENT = {
 		group: 'Progress & results', title: 'How high it climbs — and where it stops',
 		visual: 'sweep',
 		copy: {
-			lead: 'We swept real staircase heights from 4.7″ up past the code maximum — carrying the oxygen tank the whole way, and pushing until it fails.',
-			body: 'Up to the ADA-legal 6-inch riser it climbs the full 14-step staircase and follows the patient to the top — but not for free: every extra inch of riser slows it down, from 35 s at 4.7″ to 51 s at 6″. Push past code-legal stairs and it runs out of reach — a 7-inch riser gets it barely a third of the way up — and steeper still it rears up against the step and can’t get over it at all. That limit sits right about where a person would want a stair-lift too.',
+			lead: 'We swept real staircase heights from <b>4.7″ up past the code maximum</b> — carrying the oxygen tank the whole way, and pushing until it fails.',
+			body: 'Up to the <b>ADA-legal 6-inch riser</b> it climbs the <b>full 14-step staircase</b> and follows the patient to the top — but not for free: <b>every extra inch of riser slows it down</b>, from <b>35 s at 4.7″</b> to <b>51 s at 6″</b>. Push past code-legal stairs and it <b>runs out of reach</b> — a <b>7-inch riser</b> gets it barely a third of the way up — and steeper still it <b>rears up against the step and can’t get over it</b> at all. That limit sits right about where a person would want a <b>stair-lift</b> too.',
 			stats: [
 				{ v: '6″ ADA', l: 'highest riser it fully tops out' },
 				{ v: '+44%', l: 'slower climb from 4.7″ to 6″' },
@@ -362,12 +414,27 @@ export const CONTENT = {
 			tags: [ 'ADA 6″ ✓', 'higher = slower', 'past code-max = stalls out' ],
 		},
 	},
+	's-challenges': {
+		// Visual is the hand-authored three.js topple (js/topple.js mounts into
+		// #topple-stage) — no `visual` key, so deck.js leaves the bespoke host alone.
+		group: 'Engineering challenges', title: 'Everything that broke — and the fix',
+		copy: {
+			lead: 'Getting a <b>blind</b> dog to climb stairs — carrying a payload, beside a person — <b>broke in every way you’d expect</b>. Each failure sent us back to the sim with a fix.',
+			faults: [
+				{ p: 'It <b>toppled</b> on steep steps.', f: 'Swept every riser height to <b>find the safe envelope</b>, and capped the robot at the <b>ADA 6″ limit</b> where it stays upright.' },
+				{ p: 'It <b>couldn’t see</b> the stairs underfoot.', f: 'A <b>blind RL policy</b> that climbs by feel — <b>proprioception + foot contact</b>, no camera needed on the steps.' },
+				{ p: 'It mistook the <b>patient</b> for a staircase.', f: 'Mask the person out of the depth view and require a <b>real stair detection</b> before ever committing to climb mode.' },
+				{ p: 'It <b>crowded the patient</b> on the incline.', f: '<b>Gap-aware pacing</b> so the dog trails the person up the stairs instead of closing in on them.' },
+			],
+			tags: [ 'sim-in-the-loop', 'fail, fix, repeat', 'safety first' ],
+		},
+	},
 	's-potential': {
 		group: 'Real-world potential', title: 'From a proven sim to the living room',
 		visual: 'roadmap',
 		copy: {
-			lead: 'The same control container runs in simulation and on the robot — only the sensor source changes.',
-			body: 'That is the whole deployment bet: a policy proven in Isaac Sim is expected to hold on an NVIDIA Jetson Orin carried by a real Go2, because it runs the identical Docker stack. The payoff is a floor of the house given back — patients keep their stairs, caregivers get a hand, and clinics and rehab facilities get an assistant that never tires. Next up: hardware bring-up, gait polish, and a supervised home pilot.',
+			lead: 'The <b>same control container</b> runs in simulation and on the robot — <b>only the sensor source changes</b>.',
+			body: 'That is the whole deployment bet: a policy <b>proven in Isaac Sim</b> is expected to hold on an <b>NVIDIA Jetson Orin</b> carried by a real Go2, because it runs the <b>identical Docker stack</b>. The payoff is <b>a floor of the house given back</b> — <b>patients keep their stairs</b>, caregivers get a hand, and clinics and rehab facilities get an assistant that never tires. Next up: <b>hardware bring-up</b>, gait polish, and a <b>supervised home pilot</b>.',
 			stats: [
 				{ v: 'Sim ✓', l: 'full climb, proven' },
 				{ v: '1 stack', l: 'identical sim ⇄ robot' },
@@ -380,8 +447,8 @@ export const CONTENT = {
 		group: 'Team', title: 'Built by one',
 		visual: 'team',
 		copy: {
-			lead: 'One person — the whole stack.',
-			body: 'Anthony designed and built everything you just saw: the reinforcement-learning climb and walking policies, the YOLO-based perception and person-following, the Isaac Sim world and payload physics, the sim ⇄ real Docker deploy stack for the Jetson Orin robot — and this interactive presentation itself.',
+			lead: 'One person — <b>the whole stack</b>.',
+			body: 'Anthony designed and built everything you just saw: the <b>reinforcement-learning climb and walking policies</b>, the <b>YOLO-based perception</b> and person-following, the <b>Isaac Sim world and payload physics</b>, the <b>sim ⇄ real Docker deploy stack</b> for the Jetson Orin robot — and <b>this interactive presentation</b> itself.',
 			tags: [ 'RL & controls', 'perception', 'Isaac Sim', 'sim ⇄ real deploy' ],
 		},
 	},

@@ -158,7 +158,13 @@ function applyTheme( name ) {
 
 	applyPaletteToDom( palette );
 	if ( scene.background && scene.background.isTexture ) scene.background.dispose();
-	scene.background = makeBackgroundGradient( palette.bgGradientTop, palette.bgGradientBottom );
+	// This scene only ever appears on the Potential slide ("from a proven sim to
+	// the living room"), so its backdrop is warmed toward a homey light-to-floor
+	// gradient (each theme's cool studio grey lerped toward warm cream/amber)
+	// rather than the neutral studio grey the sim look uses.
+	const warmTop = new THREE.Color( palette.bgGradientTop ).lerp( new THREE.Color( 0xffdcae ), 0.34 );
+	const warmBottom = new THREE.Color( palette.bgGradientBottom ).lerp( new THREE.Color( 0xc79a63 ), 0.34 );
+	scene.background = makeBackgroundGradient( warmTop.getHex(), warmBottom.getHex() );
 
 	if ( bodyMaterial ) bodyMaterial.color.set( palette.materialColor );
 	if ( oxygenTankMaterial ) oxygenTankMaterial.color.set( palette.oxygenTankColor );
@@ -605,6 +611,120 @@ let robotBlackMaterial = makeRobotRealisticMaterial( 0x232629, { metalness: 0.0,
 let robotBaseMaterial = makeRobotRealisticMaterial( 0xffffff, { metalness: 0.2, roughness: 0.5, envMapIntensity: 1.0, vertexColors: true } );
 let logoMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].logoColor );
 
+// ===========================================================================
+// Living-room set — "from a proven sim to the living room" (Potential slide)
+//
+// This scene renders ONLY on the Potential slide, so we dress the sim staircase
+// into a warm home around it: a wood floor (the cold sim tile is hidden on load,
+// see finishModelSetup), a painted far wall with a sunlit window + framed print,
+// a rug under the walk line, and a couch / floor-lamp / coffee-table / plant
+// vignette in the background. Built once from simple toon primitives in three.js
+// WORLD coords (measured against the real stairs AABB: stairs x∈[2,8.5] rising to
+// y≈2, floor at y=0, walk line z≈0). Camera sits on +Z looking −Z, so the
+// furniture at z≈−3.4 reads as background behind the free-standing staircase.
+// Added straight to `scene`; gated with the rest of the viewer's render loop.
+// ===========================================================================
+let livingRoom = null;
+
+function buildLivingRoom() {
+
+	const room = new THREE.Group();
+	room.name = 'living_room';
+
+	const box = ( w, h, d, mat ) => new THREE.Mesh( new THREE.BoxGeometry( w, h, d ), mat );
+	const cyl = ( rt, rb, h, mat, seg = 20 ) => new THREE.Mesh( new THREE.CylinderGeometry( rt, rb, h, seg ), mat );
+
+	const woodFloorMat = makeBlueprintMaterial( 0xb0824f );
+	const wallMat = makeBlueprintMaterial( 0xd8cdb6 );
+	const wallMat2 = makeBlueprintMaterial( 0xcabfa6 );
+	const skirtMat = makeBlueprintMaterial( 0xefe9dd );
+	const rugMat = makeBlueprintMaterial( 0xbb7a52 );
+	const rugMat2 = makeBlueprintMaterial( 0xe0c39a );
+	const couchMat = makeBlueprintMaterial( 0x7c8b6f );
+	const couchMat2 = makeBlueprintMaterial( 0x8f9d82 );
+	const woodMat = makeBlueprintMaterial( 0x8a6a45 );
+	const lampPoleMat = makeBlueprintMaterial( 0x3a3630 );
+	const shadeMat = makeBlueprintMaterial( 0xf2e2c0 );
+	const potMat = makeBlueprintMaterial( 0xb0552f );
+	const leafMat = makeBlueprintMaterial( 0x5f7d55 );
+	const frameMat = makeBlueprintMaterial( 0x6b5d4a );
+	const glassMat = new THREE.MeshBasicMaterial( { color: 0xfff0d2 } ); // sunlit window (unlit glow)
+	const pictureMat = makeBlueprintMaterial( 0x9fb4c2 );
+
+	// Wood floor (the sim 'ground' tile is hidden on load — see finishModelSetup)
+	const floor = box( 21, 0.06, 11, woodFloorMat );
+	floor.position.set( 0.5, -0.03, 0 ); floor.receiveShadow = true; room.add( floor );
+
+	const WALL_H = 3.3, WALL_Z = -4.2;
+	const farWall = box( 20, WALL_H, 0.2, wallMat );
+	farWall.position.set( -0.5, WALL_H / 2, WALL_Z ); farWall.receiveShadow = true; room.add( farWall );
+	const endWall = box( 0.2, WALL_H, 8, wallMat2 );
+	endWall.position.set( -9.4, WALL_H / 2, -0.2 ); endWall.receiveShadow = true; room.add( endWall );
+	const skirt = box( 20, 0.14, 0.06, skirtMat ); skirt.position.set( -0.5, 0.07, WALL_Z + 0.12 ); room.add( skirt );
+
+	// Sunlit window on the far wall (frame + muntins)
+	const winW = 2.6, winH = 1.7, winX = -4.6, winY = 1.8, winZ = WALL_Z + 0.06;
+	const glass = box( winW, winH, 0.04, glassMat ); glass.position.set( winX, winY, winZ ); room.add( glass );
+	const frameT = box( winW + 0.3, 0.16, 0.1, frameMat ); frameT.position.set( winX, winY + winH / 2 + 0.02, winZ ); room.add( frameT );
+	const frameB = box( winW + 0.3, 0.16, 0.1, frameMat ); frameB.position.set( winX, winY - winH / 2 - 0.02, winZ ); room.add( frameB );
+	const frameL = box( 0.16, winH + 0.3, 0.1, frameMat ); frameL.position.set( winX - winW / 2 - 0.02, winY, winZ ); room.add( frameL );
+	const frameR = box( 0.16, winH + 0.3, 0.1, frameMat ); frameR.position.set( winX + winW / 2 + 0.02, winY, winZ ); room.add( frameR );
+	const muntV = box( 0.06, winH, 0.06, frameMat ); muntV.position.set( winX, winY, winZ + 0.01 ); room.add( muntV );
+	const muntH = box( winW, 0.06, 0.06, frameMat ); muntH.position.set( winX, winY, winZ + 0.01 ); room.add( muntH );
+
+	// Framed print on the far wall
+	const picFrame = box( 1.1, 0.8, 0.06, frameMat ); picFrame.position.set( -7.7, 1.95, WALL_Z + 0.05 ); room.add( picFrame );
+	const pic = box( 0.92, 0.62, 0.02, pictureMat ); pic.position.set( -7.7, 1.95, WALL_Z + 0.08 ); room.add( pic );
+
+	// Rug under the walk line (bordered)
+	const rug = box( 5.6, 0.03, 3.8, rugMat ); rug.position.set( -3.0, 0.016, -0.2 ); rug.receiveShadow = true; room.add( rug );
+	const rugInner = box( 4.7, 0.034, 2.9, rugMat2 ); rugInner.position.set( -3.0, 0.02, -0.2 ); room.add( rugInner );
+
+	// Couch against the far wall (facing +Z into the room)
+	const couch = new THREE.Group(); couch.position.set( -5.4, 0, -3.35 );
+	const seat = box( 2.4, 0.42, 0.95, couchMat ); seat.position.set( 0, 0.4, 0 ); seat.castShadow = seat.receiveShadow = true; couch.add( seat );
+	const backrest = box( 2.4, 0.78, 0.24, couchMat ); backrest.position.set( 0, 0.8, -0.36 ); backrest.castShadow = true; couch.add( backrest );
+	const armL = box( 0.26, 0.6, 0.95, couchMat ); armL.position.set( -1.2, 0.5, 0 ); armL.castShadow = true; couch.add( armL );
+	const armR = box( 0.26, 0.6, 0.95, couchMat ); armR.position.set( 1.2, 0.5, 0 ); armR.castShadow = true; couch.add( armR );
+	const cush1 = box( 1.05, 0.2, 0.82, couchMat2 ); cush1.position.set( -0.55, 0.62, 0.03 ); couch.add( cush1 );
+	const cush2 = box( 1.05, 0.2, 0.82, couchMat2 ); cush2.position.set( 0.55, 0.62, 0.03 ); couch.add( cush2 );
+	room.add( couch );
+
+	// Coffee table in front of the couch
+	const table = new THREE.Group(); table.position.set( -5.2, 0, -2.15 );
+	const top = box( 1.5, 0.1, 0.7, woodMat ); top.position.set( 0, 0.42, 0 ); top.castShadow = true; table.add( top );
+	for ( const [ lx, lz ] of [ [ -0.65, -0.28 ], [ 0.65, -0.28 ], [ -0.65, 0.28 ], [ 0.65, 0.28 ] ] ) {
+
+		const leg = box( 0.08, 0.42, 0.08, woodMat ); leg.position.set( lx, 0.21, lz ); table.add( leg );
+
+	}
+	room.add( table );
+
+	// Floor lamp + a warm point-light glow
+	const lamp = new THREE.Group(); lamp.position.set( -7.5, 0, -3.4 );
+	const lbase = cyl( 0.16, 0.18, 0.06, lampPoleMat ); lbase.position.set( 0, 0.03, 0 ); lamp.add( lbase );
+	const pole = cyl( 0.03, 0.03, 1.7, lampPoleMat ); pole.position.set( 0, 0.88, 0 ); lamp.add( pole );
+	const shade = cyl( 0.16, 0.3, 0.36, shadeMat ); shade.position.set( 0, 1.78, 0 ); lamp.add( shade );
+	room.add( lamp );
+	const lampLight = new THREE.PointLight( 0xffce8a, 6, 6, 2 );
+	lampLight.position.set( -7.5, 1.66, -3.4 ); room.add( lampLight );
+
+	// Potted plant near the stairs base
+	const plant = new THREE.Group(); plant.position.set( 1.5, 0, -1.4 );
+	const pot = cyl( 0.2, 0.15, 0.34, potMat ); pot.position.set( 0, 0.17, 0 ); pot.castShadow = true; plant.add( pot );
+	for ( const [ px, py, pz, pr ] of [ [ 0, 0.64, 0, 0.28 ], [ -0.15, 0.52, 0.06, 0.2 ], [ 0.15, 0.54, -0.05, 0.2 ], [ 0, 0.84, 0, 0.2 ] ] ) {
+
+		const leaf = new THREE.Mesh( new THREE.SphereGeometry( pr, 10, 8 ), leafMat );
+		leaf.position.set( px, py, pz ); plant.add( leaf );
+
+	}
+	room.add( plant );
+
+	scene.add( room );
+	livingRoom = room;
+
+}
+
 // "patient_root" is no longer a tint target here: it's a bare transform anchor with
 // no mesh of its own (see scene_build.build_patient_node) -- the patient's visible
 // geometry is the separately-loaded PatientHuman model below, tinted directly by
@@ -901,10 +1021,14 @@ const CINE_SWAY_EL = 4 * Math.PI / 180;   // slow rise/fall amplitude
 const CINE_SWAY_AZ_PERIOD = 13;           // s, one full left-right sway
 const CINE_SWAY_EL_PERIOD = 19;           // s, one full rise-fall sway
 
-const CINE_SUBJECT_PAD = 0.95;   // half-a-body of extra framing radius so neither subject kisses the frame edge (m)
-const CINE_FRAME_MARGIN = 1.16;  // >1 leaves breathing room around the pair
-const CINE_MIN_DIST = 2.3;       // never dolly closer than this (m)
-const CINE_MAX_DIST = 7.5;       // never drift further than this (m)
+// Pulled back from the original tight framing (pad 0.95 / margin 1.16 / max 7.5)
+// so the living-room set around the pair — wood floor, rug, couch + window, the
+// staircase — reads in shot, not just the two subjects. This slide's whole point
+// is "the living room", so the environment has to be visible.
+const CINE_SUBJECT_PAD = 1.25;   // extra framing radius so neither subject kisses the frame edge (m)
+const CINE_FRAME_MARGIN = 1.42;  // >1 leaves breathing room around the pair + room
+const CINE_MIN_DIST = 2.6;       // never dolly closer than this (m)
+const CINE_MAX_DIST = 9.5;       // never drift further than this (m)
 const CINE_TARGET_UP_BIAS = 0.15; // aim a touch above the base/hip midpoint so the pair sits mid-frame, not along the bottom (m)
 
 // Frame-rate-independent smoothing bases for `1 - base^dt`: smaller = snappier.
@@ -1691,6 +1815,11 @@ function finishModelSetup( root, clips, baseNode ) {
 	addGroundTileUVs( root );
 	scene.add( root );
 
+	// This scene lives on the Potential slide dressed as a living room (see
+	// buildLivingRoom) — hide the cold sim tile floor so the warm wood floor shows.
+	const _simGround = root.getObjectByName( 'ground' );
+	if ( _simGround ) _simGround.visible = false;
+
 	mixer = new THREE.AnimationMixer( root );
 	setupActionsFromClips( clips );
 
@@ -1827,10 +1956,35 @@ window.addEventListener( 'resize', handleResize );
 
 const clock = new THREE.Clock();
 
+// Render-gate: this (heavy) viewer only lives on the Potential slide, but the
+// rAF loop would otherwise composer.render() a 324k-tri scene + shadow map +
+// edge pass EVERY frame for the entire session even while it's scrolled far
+// off-screen -- the single biggest steady-state cost in the deck and the reason
+// scrolling felt slow. deck.js flips this on only while Potential is on screen
+// (viewer.setActive) so the GPU is idle otherwise. The manual __viewer.renderFrame()
+// escape hatch below still bypasses the gate for headless verification tooling.
+let renderActive = false;
+
 function animate() {
 
 	requestAnimationFrame( animate );
+	if ( ! renderActive ) return;
 	renderFrame();
+
+}
+
+/**
+ * Turn the per-frame render loop on/off (called by deck.js as the Potential
+ * slide enters/leaves the viewport). On enable: drop the accumulated clock gap
+ * so the cinematic sway/camera lerps don't jump on the first live frame, then
+ * paint one frame immediately so the canvas is never briefly blank.
+ */
+function setRenderActive( on ) {
+
+	on = !! on;
+	if ( on === renderActive ) return;
+	renderActive = on;
+	if ( on ) { clock.getDelta(); renderFrame(); }
 
 }
 
@@ -1957,6 +2111,15 @@ window.__viewer = {
 	setCinematic( on ) {
 
 		if ( cinematicToggle && cinematicEnabled !== !! on ) cinematicToggle.click();
+
+	},
+	/**
+	 * Enable/disable the live render loop (deck.js: on only while the Potential
+	 * slide is on screen). The heavy scene is idle otherwise -- see setRenderActive.
+	 */
+	setActive( on ) {
+
+		setRenderActive( on );
 
 	},
 	getState() {
@@ -2433,6 +2596,9 @@ window.__viewer = {
 // ===========================================================================
 
 applyTheme( currentThemeName );
+// The living-room set is decorative — never let a failure building it abort the
+// viewer boot (it runs before loadRealModel); log loudly if it's consequently off.
+try { buildLivingRoom(); } catch ( err ) { console.error( '[blueprint-viewer] living-room set NOT built (scene will show without it):', err ); }
 
 // Perform the real initial sizing now (see the NOTE on the renderer/camera
 // construction above) — canvasHost should have a committed layout by the
@@ -2443,6 +2609,9 @@ handleResize();
 
 loadRealModel().then( () => {
 
+	// Paint one frame so the canvas isn't blank before the Potential slide first
+	// activates the gated loop (renderActive starts false -- see setRenderActive).
+	renderFrame();
 	animate();
 	resolveReady();
 

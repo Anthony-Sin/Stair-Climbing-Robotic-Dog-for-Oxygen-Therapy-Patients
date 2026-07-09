@@ -70,40 +70,54 @@
 			</div>
 		</div>
 
-		<!-- 3 · LIVE DEMO — real Isaac rollout footage: the OpenCV/YOLO follow HUD
-		     (main) with a rail of real climb clips tucked in the left corner. The
-		     interactive 3D viewer moved to the Potential slide. -->
+		<!-- 3 · LIVE DEMO — real Isaac rollout footage. LEFT (most of the width): a
+		     gallery of six real clips (flat follow + five rising stair heights).
+		     RIGHT: the OpenCV/YOLO follow HUD + an explainer of what's happening.
+		     The interactive 3D viewer moved to the Potential slide. -->
 		<section id="s-demo" class="slide demo-real" aria-label="Live demo">
 			<div class="demo-sheet reveal">
-				<aside id="demo-cliprail" aria-label="Real climb clips by stair height">
-					<span class="cliprail-title">real climb clips</span>
-					<figure class="film-tile" data-phase="climb">
-						<video muted loop playsinline preload="none" data-src="./assets/clips/climb_0p120.mp4"></video>
-						<figcaption><b>0.12 m</b><span>4.7″ riser</span></figcaption>
-					</figure>
-					<figure class="film-tile" data-phase="climb">
-						<video muted loop playsinline preload="none" data-src="./assets/clips/climb_0p130.mp4"></video>
-						<figcaption><b>0.13 m</b><span>5.1″ riser</span></figcaption>
-					</figure>
-					<figure class="film-tile is-featured" data-phase="climb">
-						<video muted loop playsinline preload="none" data-src="./assets/clips/climb_0p150.mp4"></video>
-						<figcaption><b>0.15 m</b><span>6″ · ADA max</span></figcaption>
-					</figure>
-					<figure class="film-tile" data-phase="climb">
-						<video muted loop playsinline preload="none" data-src="./assets/clips/climb_0p175.mp4"></video>
-						<figcaption><b>0.175 m</b><span>7″ · partial</span></figcaption>
-					</figure>
-				</aside>
-				<div class="demo-main">
+				<div class="demo-gallery" aria-label="Real Isaac rollout clips">
+					<span class="demo-gallery-title">real Isaac rollout · follow → climb, carrying the O₂</span>
+					<div class="demo-grid">
+						<figure class="demo-clip" data-phase="follow">
+							<video muted loop playsinline preload="none" data-src="./assets/clips/walk.mp4"></video>
+							<figcaption><b>flat follow</b><span>keeps pace on the level</span></figcaption>
+						</figure>
+						<figure class="demo-clip" data-phase="climb">
+							<video muted loop playsinline preload="none" data-src="./assets/clips/climb_0p120.mp4"></video>
+							<figcaption><b>0.12 m</b><span>4.7″ riser</span></figcaption>
+						</figure>
+						<figure class="demo-clip" data-phase="climb">
+							<video muted loop playsinline preload="none" data-src="./assets/clips/climb_0p130.mp4"></video>
+							<figcaption><b>0.13 m</b><span>5.1″ riser</span></figcaption>
+						</figure>
+						<figure class="demo-clip" data-phase="climb">
+							<video muted loop playsinline preload="none" data-src="./assets/clips/climb_0p140.mp4"></video>
+							<figcaption><b>0.14 m</b><span>5.5″ riser</span></figcaption>
+						</figure>
+						<figure class="demo-clip is-featured" data-phase="climb">
+							<video muted loop playsinline preload="none" data-src="./assets/clips/climb_0p150.mp4"></video>
+							<figcaption><b>0.15 m</b><span>6″ · ADA max</span></figcaption>
+						</figure>
+						<figure class="demo-clip" data-phase="climb">
+							<video muted loop playsinline preload="none" data-src="./assets/clips/climb_0p175.mp4"></video>
+							<figcaption><b>0.175 m</b><span>7″ · partial</span></figcaption>
+						</figure>
+					</div>
+				</div>
+				<div class="demo-side">
 					<header class="demo-head">
 						<span class="slide-eyebrow">Live demo · real Isaac rollout</span>
 						<h2 class="slide-title">It sees the patient and follows</h2>
-						<p class="demo-lead">No scripting — this is the perception stack running live. YOLO-World locks onto the person every frame while depth and LiDAR read the scene, and the gait steers to keep pace, all from the dog’s own camera.</p>
 					</header>
 					<figure class="demo-opencv">
 						<video id="opencv-video" muted loop playsinline preload="none" data-src="./assets/clips/opencv_follow.mp4"></video>
-						<figcaption>Target-acquisition HUD · YOLO detection + depth + LiDAR, following the patient up the stairs</figcaption>
+						<figcaption>Target-acquisition HUD · YOLO detection + depth + LiDAR</figcaption>
 					</figure>
+					<div class="demo-explain">
+						<p><b>Nothing here is scripted.</b> This is the live perception stack: <b>YOLO-World</b> locks onto the patient in <b>every frame</b>, <b>depth + LiDAR</b> read the scene, and the learned gait <b>steers to keep pace</b> — all from the dog’s own camera.</p>
+						<p>On the left, the same system carries the oxygen from a <b>flat-ground follow</b> up through <b>rising stair heights</b>, right to the <b>ADA 6″ limit</b>. <span class="demo-explain-hint">Click any clip to open it in 3D →</span></p>
+					</div>
 				</div>
 			</div>
 		</section>
@@ -132,6 +146,30 @@
 			</div>
 		</section>
 
+		<!-- 5b · ENGINEERING CHALLENGES — "what broke → the fix" copy (right) with a
+		     hand-authored three.js topple animation (js/topple.js mounts into
+		     #topple-stage) as the dramatic visual on the left. -->
+		<section id="s-challenges" class="slide content" aria-label="Engineering challenges">
+			<div class="slide-sheet reveal">
+				<div class="slide-visual challenges-visual">
+					<div id="topple-stage">
+						<!-- topple three.js canvas is inserted here by js/topple.js -->
+						<div id="topple-tag">mid-climb, the payload wins · hand-authored in three.js</div>
+						<div id="topple-hud" aria-hidden="true"><span class="topple-hud-dot"></span>fall detected</div>
+						<button type="button" id="topple-replay" aria-label="Replay the fall">
+							<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v4h4" /></svg>
+							<span>replay</span>
+						</button>
+					</div>
+				</div>
+				<div class="slide-copy">
+					<span class="slide-eyebrow"></span>
+					<h2 class="slide-title"></h2>
+					<div class="slide-body" data-copy></div>
+				</div>
+			</div>
+		</section>
+
 		<!-- 6 · REAL-WORLD POTENTIAL — copy (left) + the cinematic 3D viewer
 		     (right), autoplaying. js/main.js mounts its canvas into #canvas-host;
 		     the demo controls it needs live here now (hidden — this is a passive
@@ -148,7 +186,16 @@
 						<div id="canvas-host">
 							<!-- three.js canvas is inserted here by js/main.js -->
 							<div id="ui-overlay">
-								<div id="pot-viewer-cap">Isaac Sim · the whole system, running end-to-end</div>
+								<!-- sim → home storytelling: the whole point of this slide is
+								     "proven sim → the living room", so the cinematic scene carries
+								     a small journey track + a warm home-glow vignette. -->
+								<div id="pot-vignette" aria-hidden="true"></div>
+								<div id="pot-journey" aria-hidden="true">
+									<span class="pj-node pj-done"><span class="pj-dot"></span>Isaac Sim<b>proven ✓</b></span>
+									<span class="pj-arrow"><svg viewBox="0 0 40 12" aria-hidden="true"><path d="M1 6h34m0 0l-5-4m5 4l-5 4"/></svg></span>
+									<span class="pj-node pj-next"><span class="pj-dot"></span>The living room<b>next</b></span>
+								</div>
+								<div id="pot-viewer-cap">the whole system, end-to-end — headed from the sim to the living room</div>
 								<div class="viewer-controls" hidden aria-hidden="true">
 									<div id="phase-buttons" role="group" aria-label="Animation phase">
 										<button type="button" class="phase-chip" id="phase-follow" data-phase="follow" aria-pressed="true">phase 1 · follow</button>
@@ -186,6 +233,7 @@
 
 	<script type="module" src="./js/hero.js"></script>
 	<script type="module" src="./js/main.js"></script>
+	<script type="module" src="./js/topple.js"></script>
 	<script type="module" src="./js/deck.js"></script>
 	<script type="module" src="./js/democlips.js"></script>
 </body>

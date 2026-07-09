@@ -55,16 +55,17 @@ if ( demo ) {
 		{ threshold: 0.35 },
 	).observe( demo );
 
-	// Click a climb clip -> jump to the Potential slide's 3D viewer at the climb
-	// phase (window.__viewer is set up by main.js once the model is ready).
-	for ( const tile of demo.querySelectorAll( '.film-tile' ) ) {
+	// Click a clip -> jump to the Potential slide's 3D viewer at the matching phase
+	// (follow for the flat-ground tile, climb for the stair tiles).
+	// window.__viewer is set up by main.js once the model is ready.
+	for ( const tile of demo.querySelectorAll( '.demo-clip' ) ) {
 
 		tile.addEventListener( 'click', () => {
 
 			const pot = document.getElementById( 's-potential' );
 			if ( pot ) pot.scrollIntoView( { behavior: 'smooth', block: 'start' } );
 			const v = window.__viewer;
-			if ( v && typeof v.setPhase === 'function' ) v.setPhase( 'climb' );
+			if ( v && typeof v.setPhase === 'function' ) v.setPhase( tile.dataset.phase === 'follow' ? 'follow' : 'climb' );
 
 		} );
 
