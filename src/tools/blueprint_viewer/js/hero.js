@@ -343,8 +343,10 @@ function boot( host ) {
 		_cFwd.normalize();
 
 		robotBase.getWorldPosition( _cA );
-		_cApex.copy( _cA ).addScaledVector( _cFwd, 0.3 ); _cApex.y += 0.07;
-		_cFar.copy( _cApex ).addScaledVector( _cFwd, 0.8 );
+		// Apex sits at the front camera. Lowered (was +0.07 above the base) so the
+		// scan cone reads as coming FROM the head camera, not floating above it.
+		_cApex.copy( _cA ).addScaledVector( _cFwd, 0.3 ); _cApex.y -= 0.04;
+		_cFar.copy( _cApex ).addScaledVector( _cFwd, 0.8 ); _cFar.y -= 0.03;
 
 		_cApex.project( camera );
 		_cFar.project( camera );

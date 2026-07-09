@@ -152,7 +152,7 @@ function boot( host, section ) {
 	const robotMaterial = makeRobotMat( 0xc0c0c0, { metalness: 0.2, roughness: 0.5 } );
 	const robotBlackMaterial = makeRobotMat( 0x232629, { metalness: 0.0, roughness: 0.85, envMapIntensity: 0.5 } );
 	const robotBaseMaterial = makeRobotMat( 0xffffff, { metalness: 0.2, roughness: 0.5, vertexColors: true } );
-	const oxygenTankMaterial = makeToon( 0xf7f6f2 );
+	const oxygenTankMaterial = makeToon( 0x8fc4cf ); // clean medical teal-cyan (matches palette oxygenTankColor)
 	const cradleRailsMaterial = makeToon( 0x333333 );
 	const stairsMaterial = makeToon( 0xc07d3c );
 	const handrailMaterial = makeToon( 0x332e29 );

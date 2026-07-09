@@ -131,7 +131,13 @@ function canScrollInside( node, deltaY ) {
 
 }
 
-deck.addEventListener( 'wheel', ( e ) => {
+// Listen on WINDOW, not #deck: the deck-only listener meant a wheel over any
+// fixed overlay (the nav rail, the pinned hero stage) — or before the deck had
+// pointer focus — did nothing, so it felt like "I have to click the page first
+// to scroll". Window-level catches every wheel regardless of what's under the
+// cursor; canScrollInside still lets a genuinely-overflowing inner region scroll
+// itself first.
+window.addEventListener( 'wheel', ( e ) => {
 
 	if ( Math.abs( e.deltaY ) < Math.abs( e.deltaX ) ) return; // ignore horizontal intent
 	if ( canScrollInside( e.target, e.deltaY ) ) return;
@@ -139,9 +145,9 @@ deck.addEventListener( 'wheel', ( e ) => {
 
 	if ( ! navLock ) { navLock = true; navBy( e.deltaY > 0 ? 1 : -1 ); }
 	// Reset the release on every wheel tick so trackpad momentum is swallowed:
-	// the lock only lifts ~0.65 s after the LAST wheel event, not the first.
+	// the lock only lifts ~0.45 s after the LAST wheel event, not the first.
 	if ( navReleaseTimer ) clearTimeout( navReleaseTimer );
-	navReleaseTimer = setTimeout( () => { navLock = false; }, 650 );
+	navReleaseTimer = setTimeout( () => { navLock = false; }, 450 );
 
 }, { passive: false } );
 

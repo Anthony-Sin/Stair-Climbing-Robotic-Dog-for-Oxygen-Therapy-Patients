@@ -90,16 +90,16 @@ export const DIAGRAMS = {
 		<text class="dg-c" x="160" y="165" text-anchor="middle">only the sensor source is swapped</text>
 	</svg>`,
 	walking: `<svg viewBox="0 0 320 178" role="img" aria-label="Walking control loop diagram">
-		<rect class="dg-box" x="6" y="26" width="76" height="38" rx="5"/><text class="dg-t" x="44" y="49" text-anchor="middle">state est.</text>
-		<rect class="dg-box" x="122" y="26" width="80" height="38" rx="5"/><text class="dg-t" x="162" y="44" text-anchor="middle">policy π</text><text class="dg-c" x="162" y="57" text-anchor="middle">MLP</text>
-		<rect class="dg-box" x="242" y="26" width="72" height="38" rx="5"/><text class="dg-t" x="278" y="44" text-anchor="middle">PD joint</text><text class="dg-t" x="278" y="56" text-anchor="middle">targets</text>
-		<path class="dg-ln" d="M82 45 H120"/><path class="dg-ah" d="M114 41l6 4-6 4"/>
-		<path class="dg-ln" d="M202 45 H240"/><path class="dg-ah" d="M236 41l6 4-6 4"/>
-		<rect class="dg-box" x="118" y="104" width="88" height="36" rx="5"/><text class="dg-t" x="162" y="120" text-anchor="middle">Go2 · 12 DoF</text><text class="dg-c" x="162" y="132" text-anchor="middle">rigid-body plant</text>
-		<path class="dg-ln" d="M278 64 V122 H208"/><path class="dg-ah" d="M214 118l-6 4 6 4"/>
-		<path class="dg-ln" d="M118 122 H44 V64"/><path class="dg-ah" d="M40 70l4-6 4 6"/>
-		<text class="dg-c" x="235" y="96" text-anchor="middle">torque</text>
-		<text class="dg-c" x="66" y="96" text-anchor="middle">imu · contacts</text>
+		<rect class="dg-box" x="12" y="26" width="80" height="40" rx="6"/><text class="dg-t" x="52" y="51" text-anchor="middle">state est.</text>
+		<rect class="dg-box" x="120" y="26" width="80" height="40" rx="6"/><text class="dg-t" x="160" y="44" text-anchor="middle">policy π</text><text class="dg-c" x="160" y="58" text-anchor="middle">MLP</text>
+		<rect class="dg-box" x="228" y="26" width="80" height="40" rx="6"/><text class="dg-t" x="268" y="44" text-anchor="middle">PD joint</text><text class="dg-t" x="268" y="57" text-anchor="middle">targets</text>
+		<path class="dg-ln" d="M92 46 H116"/><path class="dg-ah" d="M110 42l6 4-6 4"/>
+		<path class="dg-ln" d="M200 46 H224"/><path class="dg-ah" d="M218 42l6 4-6 4"/>
+		<rect class="dg-box" x="120" y="112" width="80" height="38" rx="6"/><text class="dg-t" x="160" y="128" text-anchor="middle">Go2 · 12 DoF</text><text class="dg-c" x="160" y="141" text-anchor="middle">rigid-body plant</text>
+		<path class="dg-ln" d="M268 66 V131 H202"/><path class="dg-ah" d="M208 127l-6 4 6 4"/>
+		<path class="dg-ln" d="M118 131 H52 V66"/><path class="dg-ah" d="M48 72l4-6 4 6"/>
+		<text class="dg-c" x="252" y="104" text-anchor="middle">torque</text>
+		<text class="dg-c" x="68" y="104" text-anchor="middle">imu · contacts</text>
 	</svg>`,
 	'blind-rl': `<svg viewBox="0 0 320 178" role="img" aria-label="Blind RL closed-loop policy diagram">
 		<rect class="dg-box" x="16" y="14" width="108" height="22" rx="5"/><text class="dg-t" x="70" y="30" text-anchor="middle">proprioception ×N</text>
@@ -121,6 +121,23 @@ export const DIAGRAMS = {
 // ---------------------------------------------------------------------------
 // Data-chart + illustration builders (native SVG).
 // ---------------------------------------------------------------------------
+
+// Shared axis grid: faint horizontal gridlines + a denser set of numeric tick
+// labels on both axes, so the training charts read as real plotted data (more
+// numbers), not just a headline value. yTicks/xTicks are [{ v/label, y/x }].
+function chartGrid( yTicks, xTicks ) {
+	const grid = yTicks.map( ( t ) => `<line class="ch-grid" x1="46" y1="${ t.y }" x2="464" y2="${ t.y }"/>` ).join( '' );
+	const yl = yTicks.map( ( t ) => `<text class="ch-tick" x="42" y="${ t.y + 3.2 }" text-anchor="end">${ t.label }</text>` ).join( '' );
+	const xl = xTicks.map( ( t ) => `<text class="ch-tick" x="${ t.x }" y="282" text-anchor="middle">${ t.label }</text>` ).join( '' );
+	return grid + yl + xl;
+}
+
+// iteration x-axis is shared across the 6000-iter training charts.
+const ITER_XTICKS = [
+	{ x: 46, label: '0' }, { x: 150.5, label: '1.5k' }, { x: 255, label: '3k' },
+	{ x: 359.5, label: '4.5k' }, { x: 464, label: '6k' },
+];
+
 function chartLearningCurve() {
 	return `<div class="hero-chart"><p class="hero-chart-title">Learning curve · mean episode reward</p>
 	<svg viewBox="0 0 480 300" role="img" aria-label="Reward rises to 95.7 over 6000 iterations">
@@ -130,10 +147,8 @@ function chartLearningCurve() {
 		<polyline class="ch-line" stroke="#0e9b8e" points="46,197.2 73.9,256.2 115.7,216.8 150.5,167.7 185.3,124.4 220.2,89 255,69.3 289.8,61.5 359.5,58.9 464,58.1"/>
 		<circle class="ch-dot" fill="#0e9b8e" cx="464" cy="58.1" r="4"/>
 		<text class="ch-val" x="458" y="52" text-anchor="end">95.7</text>
-		<text class="ch-tick" x="42" y="51" text-anchor="end">100</text>
-		<text class="ch-tick" x="42" y="250" text-anchor="end">0</text>
-		<text class="ch-tick" x="46" y="282" text-anchor="middle">0</text>
-		<text class="ch-tick" x="464" y="282" text-anchor="end">6000 iters</text>
+		${ chartGrid( [ { y: 51, label: '100' }, { y: 100.75, label: '75' }, { y: 150.5, label: '50' }, { y: 200.25, label: '25' }, { y: 250, label: '0' } ], ITER_XTICKS ) }
+		<text class="ch-axlbl" x="255" y="296" text-anchor="middle">training iterations</text>
 	</svg></div>`;
 }
 
@@ -147,10 +162,8 @@ function chartCurriculum() {
 		<polyline class="ch-line" stroke="#c07d3c" points="46,182.7 87.8,235.4 115.7,224.3 185.3,193.8 255,168.8 324.7,149.4 394.3,135.5 464,130"/>
 		<circle class="ch-dot" fill="#c07d3c" cx="464" cy="130" r="4"/>
 		<text class="ch-val" x="458" y="124" text-anchor="end">138 mm</text>
-		<text class="ch-tick" x="42" y="47" text-anchor="end">200</text>
-		<text class="ch-tick" x="42" y="242" text-anchor="end">60</text>
-		<text class="ch-tick" x="46" y="282" text-anchor="middle">0</text>
-		<text class="ch-tick" x="464" y="282" text-anchor="end">6000 iters</text>
+		${ chartGrid( [ { y: 47, label: '200' }, { y: 95.75, label: '165' }, { y: 144.5, label: '130' }, { y: 193.25, label: '95' }, { y: 242, label: '60' } ], ITER_XTICKS ) }
+		<text class="ch-axlbl" x="255" y="296" text-anchor="middle">training iterations · riser mm</text>
 	</svg></div>`;
 }
 
@@ -166,10 +179,8 @@ function chartFallRate() {
 		<polyline class="ch-line" stroke="#e5484d" points="46,67 87.8,94.8 129.6,140.5 171.4,174.4 213.2,202.2 275.9,226.1 338.6,238.1 401.3,242 464,244"/>
 		<circle class="ch-dot" fill="#e5484d" cx="464" cy="244" r="4"/>
 		<text class="ch-val" x="458" y="237" text-anchor="end">3%</text>
-		<text class="ch-tick" x="42" y="51" text-anchor="end">100</text>
-		<text class="ch-tick" x="42" y="250" text-anchor="end">0</text>
-		<text class="ch-tick" x="46" y="282" text-anchor="middle">0</text>
-		<text class="ch-tick" x="464" y="282" text-anchor="end">6000 iters</text>
+		${ chartGrid( [ { y: 51, label: '100' }, { y: 100.75, label: '75' }, { y: 150.5, label: '50' }, { y: 200.25, label: '25' }, { y: 250, label: '0' } ], ITER_XTICKS ) }
+		<text class="ch-axlbl" x="255" y="296" text-anchor="middle">training iterations</text>
 	</svg></div>`;
 }
 
@@ -186,10 +197,8 @@ function chartSurvival() {
 		<polyline class="ch-line" stroke="#3a7ce5" points="46,232.1 87.8,220.2 129.6,190.3 171.4,155.5 234.1,120.7 296.8,90.8 359.5,70.9 422.2,61 464,57"/>
 		<circle class="ch-dot" fill="#3a7ce5" cx="464" cy="57" r="4"/>
 		<text class="ch-val" x="458" y="51" text-anchor="end">≈19 s</text>
-		<text class="ch-tick" x="42" y="51" text-anchor="end">20</text>
-		<text class="ch-tick" x="42" y="250" text-anchor="end">0</text>
-		<text class="ch-tick" x="46" y="282" text-anchor="middle">0</text>
-		<text class="ch-tick" x="464" y="282" text-anchor="end">6000 iters</text>
+		${ chartGrid( [ { y: 51, label: '20' }, { y: 100.75, label: '15' }, { y: 150.5, label: '10' }, { y: 200.25, label: '5' }, { y: 250, label: '0' } ], ITER_XTICKS ) }
+		<text class="ch-axlbl" x="255" y="296" text-anchor="middle">training iterations</text>
 	</svg></div>`;
 }
 
@@ -421,7 +430,7 @@ export const CONTENT = {
 		copy: {
 			lead: 'Getting a <b>blind</b> dog to climb stairs — carrying a payload, beside a person — <b>broke in every way you’d expect</b>. Each failure sent us back to the sim with a fix.',
 			faults: [
-				{ p: 'It <b>toppled</b> on steep steps.', f: 'Swept every riser height to <b>find the safe envelope</b>, and capped the robot at the <b>ADA 6″ limit</b> where it stays upright.' },
+				{ p: 'The first policy was <b>reckless</b> — it lunged at the steps and crashed.', f: '<b>Retrained from a stronger checkpoint</b> until the gait commits to each step <b>cautiously and stays upright</b>.' },
 				{ p: 'It <b>couldn’t see</b> the stairs underfoot.', f: 'A <b>blind RL policy</b> that climbs by feel — <b>proprioception + foot contact</b>, no camera needed on the steps.' },
 				{ p: 'It mistook the <b>patient</b> for a staircase.', f: 'Mask the person out of the depth view and require a <b>real stair detection</b> before ever committing to climb mode.' },
 				{ p: 'It <b>crowded the patient</b> on the incline.', f: '<b>Gap-aware pacing</b> so the dog trails the person up the stairs instead of closing in on them.' },

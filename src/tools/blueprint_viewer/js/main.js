@@ -662,8 +662,8 @@ function buildLivingRoom() {
 	endWall.position.set( -9.4, WALL_H / 2, -0.2 ); endWall.receiveShadow = true; room.add( endWall );
 	const skirt = box( 20, 0.14, 0.06, skirtMat ); skirt.position.set( -0.5, 0.07, WALL_Z + 0.12 ); room.add( skirt );
 
-	// Sunlit window on the far wall (frame + muntins)
-	const winW = 2.6, winH = 1.7, winX = -4.6, winY = 1.8, winZ = WALL_Z + 0.06;
+	// Sunlit window on the far wall (frame + muntins) — over the couch, mid-room
+	const winW = 2.6, winH = 1.7, winX = -1.6, winY = 1.8, winZ = WALL_Z + 0.06;
 	const glass = box( winW, winH, 0.04, glassMat ); glass.position.set( winX, winY, winZ ); room.add( glass );
 	const frameT = box( winW + 0.3, 0.16, 0.1, frameMat ); frameT.position.set( winX, winY + winH / 2 + 0.02, winZ ); room.add( frameT );
 	const frameB = box( winW + 0.3, 0.16, 0.1, frameMat ); frameB.position.set( winX, winY - winH / 2 - 0.02, winZ ); room.add( frameB );
@@ -672,16 +672,16 @@ function buildLivingRoom() {
 	const muntV = box( 0.06, winH, 0.06, frameMat ); muntV.position.set( winX, winY, winZ + 0.01 ); room.add( muntV );
 	const muntH = box( winW, 0.06, 0.06, frameMat ); muntH.position.set( winX, winY, winZ + 0.01 ); room.add( muntH );
 
-	// Framed print on the far wall
-	const picFrame = box( 1.1, 0.8, 0.06, frameMat ); picFrame.position.set( -7.7, 1.95, WALL_Z + 0.05 ); room.add( picFrame );
-	const pic = box( 0.92, 0.62, 0.02, pictureMat ); pic.position.set( -7.7, 1.95, WALL_Z + 0.08 ); room.add( pic );
+	// Framed print on the far wall (back near the start)
+	const picFrame = box( 1.1, 0.8, 0.06, frameMat ); picFrame.position.set( -4.4, 1.95, WALL_Z + 0.05 ); room.add( picFrame );
+	const pic = box( 0.92, 0.62, 0.02, pictureMat ); pic.position.set( -4.4, 1.95, WALL_Z + 0.08 ); room.add( pic );
 
-	// Rug under the walk line (bordered)
-	const rug = box( 5.6, 0.03, 3.8, rugMat ); rug.position.set( -3.0, 0.016, -0.2 ); rug.receiveShadow = true; room.add( rug );
-	const rugInner = box( 4.7, 0.034, 2.9, rugMat2 ); rugInner.position.set( -3.0, 0.02, -0.2 ); room.add( rugInner );
+	// Rug — long runner down the middle of the walk line toward the stairs
+	const rug = box( 7.0, 0.03, 3.8, rugMat ); rug.position.set( -1.4, 0.016, -0.2 ); rug.receiveShadow = true; room.add( rug );
+	const rugInner = box( 6.1, 0.034, 2.9, rugMat2 ); rugInner.position.set( -1.4, 0.02, -0.2 ); room.add( rugInner );
 
-	// Couch against the far wall (facing +Z into the room)
-	const couch = new THREE.Group(); couch.position.set( -5.4, 0, -3.35 );
+	// Couch against the far wall (facing +Z into the room), mid-room
+	const couch = new THREE.Group(); couch.position.set( -1.6, 0, -3.35 );
 	const seat = box( 2.4, 0.42, 0.95, couchMat ); seat.position.set( 0, 0.4, 0 ); seat.castShadow = seat.receiveShadow = true; couch.add( seat );
 	const backrest = box( 2.4, 0.78, 0.24, couchMat ); backrest.position.set( 0, 0.8, -0.36 ); backrest.castShadow = true; couch.add( backrest );
 	const armL = box( 0.26, 0.6, 0.95, couchMat ); armL.position.set( -1.2, 0.5, 0 ); armL.castShadow = true; couch.add( armL );
@@ -691,7 +691,7 @@ function buildLivingRoom() {
 	room.add( couch );
 
 	// Coffee table in front of the couch
-	const table = new THREE.Group(); table.position.set( -5.2, 0, -2.15 );
+	const table = new THREE.Group(); table.position.set( -1.4, 0, -2.15 );
 	const top = box( 1.5, 0.1, 0.7, woodMat ); top.position.set( 0, 0.42, 0 ); top.castShadow = true; table.add( top );
 	for ( const [ lx, lz ] of [ [ -0.65, -0.28 ], [ 0.65, -0.28 ], [ -0.65, 0.28 ], [ 0.65, 0.28 ] ] ) {
 
@@ -700,25 +700,38 @@ function buildLivingRoom() {
 	}
 	room.add( table );
 
-	// Floor lamp + a warm point-light glow
-	const lamp = new THREE.Group(); lamp.position.set( -7.5, 0, -3.4 );
+	// Floor lamp + a warm point-light glow (near the start of the walk)
+	const lamp = new THREE.Group(); lamp.position.set( -4.4, 0, -3.4 );
 	const lbase = cyl( 0.16, 0.18, 0.06, lampPoleMat ); lbase.position.set( 0, 0.03, 0 ); lamp.add( lbase );
 	const pole = cyl( 0.03, 0.03, 1.7, lampPoleMat ); pole.position.set( 0, 0.88, 0 ); lamp.add( pole );
 	const shade = cyl( 0.16, 0.3, 0.36, shadeMat ); shade.position.set( 0, 1.78, 0 ); lamp.add( shade );
 	room.add( lamp );
 	const lampLight = new THREE.PointLight( 0xffce8a, 6, 6, 2 );
-	lampLight.position.set( -7.5, 1.66, -3.4 ); room.add( lampLight );
+	lampLight.position.set( -4.4, 1.66, -3.4 ); room.add( lampLight );
 
-	// Potted plant near the stairs base
-	const plant = new THREE.Group(); plant.position.set( 1.5, 0, -1.4 );
-	const pot = cyl( 0.2, 0.15, 0.34, potMat ); pot.position.set( 0, 0.17, 0 ); pot.castShadow = true; plant.add( pot );
-	for ( const [ px, py, pz, pr ] of [ [ 0, 0.64, 0, 0.28 ], [ -0.15, 0.52, 0.06, 0.2 ], [ 0.15, 0.54, -0.05, 0.2 ], [ 0, 0.84, 0, 0.2 ] ] ) {
+	// Potted plants — one to bridge the middle, one right at the stairs base, so
+	// the room stays furnished the whole way as the robot + patient cross it.
+	const leafSpread = [ [ 0, 0.64, 0, 0.28 ], [ -0.15, 0.52, 0.06, 0.2 ], [ 0.15, 0.54, -0.05, 0.2 ], [ 0, 0.84, 0, 0.2 ] ];
+	for ( const [ plx, plz ] of [ [ -3.4, -3.5 ], [ 1.6, -1.4 ] ] ) {
 
-		const leaf = new THREE.Mesh( new THREE.SphereGeometry( pr, 10, 8 ), leafMat );
-		leaf.position.set( px, py, pz ); plant.add( leaf );
+		const plant = new THREE.Group(); plant.position.set( plx, 0, plz );
+		const pot = cyl( 0.2, 0.15, 0.34, potMat ); pot.position.set( 0, 0.17, 0 ); pot.castShadow = true; plant.add( pot );
+		for ( const [ px, py, pz, pr ] of leafSpread ) {
+
+			const leaf = new THREE.Mesh( new THREE.SphereGeometry( pr, 10, 8 ), leafMat );
+			leaf.position.set( px, py, pz ); plant.add( leaf );
+
+		}
+		room.add( plant );
 
 	}
-	room.add( plant );
+
+	// A low console/cabinet against the wall just before the stairs, so the
+	// approach to the staircase is furnished too (not an empty run-up).
+	const console = new THREE.Group(); console.position.set( 0.4, 0, -3.5 );
+	const consoleTop = box( 1.6, 0.12, 0.5, woodMat ); consoleTop.position.set( 0, 0.72, 0 ); consoleTop.castShadow = true; console.add( consoleTop );
+	const consoleBody = box( 1.5, 0.62, 0.44, couchMat2 ); consoleBody.position.set( 0, 0.37, 0 ); consoleBody.castShadow = true; console.add( consoleBody );
+	room.add( console );
 
 	scene.add( room );
 	livingRoom = room;
@@ -1189,6 +1202,49 @@ function updatePlumbLine() {
 	patientHuman._patientRootNode.getWorldPosition( _plumbHipWorld );
 	const groundY = _plumbHipWorld.y - PATIENT_HIP_HEIGHT_M;
 	plumbLine.position.set( _plumbHipWorld.x, groundY + PLUMB_LINE_HEIGHT_M / 2, _plumbHipWorld.z );
+
+}
+
+// ===========================================================================
+// Elderly cue: a walking cane at the patient's side
+//
+// The Potential slide should read as an OLDER person on the stairs, so the
+// patient carries a cane. Rather than fight the Xbot armature's 0.01 scale to
+// parent it to a hand bone, the cane is a world-space prop re-planted at the
+// patient's side every frame (same pattern as the plumb line), which reads
+// correctly from the cinematic distance.
+// ===========================================================================
+const caneMaterial = makeBlueprintMaterial( 0x6b4a32 ); // dark wood cane
+const patientCane = new THREE.Group();
+patientCane.name = 'patient_cane';
+{
+
+	const shaft = new THREE.Mesh( new THREE.CylinderGeometry( 0.016, 0.019, 0.84, 10 ), caneMaterial );
+	shaft.position.y = 0.42; patientCane.add( shaft );
+	// Crook handle: a half-torus in the vertical plane curving off the shaft top.
+	const crook = new THREE.Mesh( new THREE.TorusGeometry( 0.045, 0.016, 8, 16, Math.PI ), caneMaterial );
+	crook.position.set( -0.045, 0.84, 0 ); patientCane.add( crook );
+	// Rubber ferrule tip.
+	const tip = new THREE.Mesh( new THREE.CylinderGeometry( 0.022, 0.016, 0.03, 8 ), robotBlackMaterial );
+	tip.position.y = 0.015; patientCane.add( tip );
+	patientCane.traverse( ( o ) => { if ( o.isMesh ) o.castShadow = true; } );
+
+}
+patientCane.visible = false;
+scene.add( patientCane );
+
+const _caneHipWorld = new THREE.Vector3();
+
+/** Plant the cane at the patient's side (a touch forward, camera-side) each frame. No-op before the patient attaches. */
+function updateCane() {
+
+	if ( ! patientHuman._attached ) { patientCane.visible = false; return; }
+	patientCane.visible = true;
+	patientHuman._patientRootNode.getWorldPosition( _caneHipWorld );
+	const groundY = _caneHipWorld.y - PATIENT_HIP_HEIGHT_M;
+	// World axes: +X travel / up-stairs, +Z toward the near (camera) side.
+	patientCane.position.set( _caneHipWorld.x + 0.16, groundY, _caneHipWorld.z + 0.22 );
+	patientCane.rotation.set( 0.06, 0, -0.05 ); // slight planted lean
 
 }
 
@@ -2067,6 +2123,7 @@ function renderFrame() {
 	if ( ! cinematicActive ) controls.update();
 
 	updatePlumbLine();
+	updateCane();
 
 	composer.render();
 

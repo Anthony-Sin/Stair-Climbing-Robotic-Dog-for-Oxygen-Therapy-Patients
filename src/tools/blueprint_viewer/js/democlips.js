@@ -38,6 +38,11 @@ if ( demo ) {
 		for ( const v of videos ) {
 
 			if ( ! v ) continue;
+			// The 0.175 m clip is a PARTIAL climb that auto-quit at ~10 s and loops —
+			// at normal speed its early restart can read as a completed climb. Run it
+			// visibly faster than the others so the "it never reaches the top, it just
+			// resets" is obvious. (Reasserted each play; playbackRate resets on load.)
+			if ( v.dataset.src && v.dataset.src.includes( '0p175' ) ) v.playbackRate = 1.9;
 			const p = v.play();
 			if ( p && p.catch ) p.catch( () => {} ); // autoplay policy may block until interaction; harmless
 

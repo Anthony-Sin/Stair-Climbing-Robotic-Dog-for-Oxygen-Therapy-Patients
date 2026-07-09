@@ -43,7 +43,7 @@ export const PALETTES = {
 		bgGradientBottom: 0xc7c2b8,
 		materialColor: 0xcbc6bb, // unused fallback now that every real subtree is tagged (see TINTED_NODE_NAMES) -- kept as an inert default for any untagged mesh
 		robotColor: 0xe7e3d9, // toon whitish body/legs (per explicit user direction, not the real Go2's black)
-		oxygenTankColor: 0xf7f6f2, // near-white tank, brighter than the robot body so the two whites stay distinguishable
+		oxygenTankColor: 0x8fc4cf, // clean medical teal-cyan -- reads as an oxygen concentrator and pops off the silver robot/white body instead of blending into them
 		cradleRailsColor: 0x333333, // dark holder/cradle -- matches o2_tank.py's holder_geom DisplayColor (0.2,0.2,0.2)
 		stairsColor: 0xc07d3c, // warm toon oak -- richer/brighter than the raw sim WOOD_BASE (0.30,0.19,0.08) so the large flat stair faces read as stylized honey-oak, not flat cardboard-brown
 		handrailColor: 0x332e29, // dark iron rails -- toon restatement of isaac_env.py's RAIL_COLOR (0.22,0.20,0.18)
@@ -70,7 +70,7 @@ export const PALETTES = {
 		bgGradientBottom: 0x201e1b,
 		materialColor: 0x3a3934, // unused fallback, see light theme's comment
 		robotColor: 0xe7e3d9,
-		oxygenTankColor: 0xf7f6f2,
+		oxygenTankColor: 0x8fc4cf, // clean medical teal-cyan (same as light) so the payload reads as oxygen equipment
 		cradleRailsColor: 0x333333,
 		stairsColor: 0xc07d3c,
 		handrailColor: 0x332e29,
