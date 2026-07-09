@@ -1,17 +1,17 @@
 // hero.js
 //
-// ACT 1 of the page. LEFT: an animated 3D stage — the robot changes behaviour
-// per chapter (spins in place / walks in place / climbs the real staircase
-// with a right-side follow-cam). Leader lines point from the robot to key
-// parts, on both sides of the stage. RIGHT: a chaptered explainer panel
-// (paragraph + a richer policy SVG diagram + an optional mp4 clip). Arrow
-// buttons step chapters; zoom buttons dolly the camera (the wheel is left to
-// the page so scrolling is never hijacked).
+// The shared 3D stage for the "Solution & technology" scroll sections. It is
+// PINNED (its host #hero-stage is sticky) on the left while the three step-
+// sections (architecture / walking / blind-RL climb) scroll past on the right;
+// js/deck.js calls showPolicy() as each step becomes active and setStageVisible()
+// as the Solution block enters/leaves the viewport. The robot spins / walks in
+// place / climbs the real staircase per policy, with leader-line callouts and a
+// per-policy FX overlay (walk = camera-scan cone + YOLO HUD; climb = per-foot
+// proprioceptive "feeling" waves).
 //
-// Separate three.js scene from the interactive viewer (js/main.js). Reuses
-// ./models/robot.glb as an ASSET, keeping the FULL baked hierarchy
-// (isaac_world > robot_base + stairs + …) so it can drive the real
-// `follow`/`climb` clips and show the real stairs. Shares palette.js + the
+// Separate three.js scene from the demo viewer (js/main.js). Reuses
+// ./models/robot.glb as an ASSET (full baked hierarchy) so it can drive the
+// real follow/climb clips and show the real stairs. Shares palette.js + the
 // BlueprintEdgesPass ink outlines, read-only.
 
 import * as THREE from 'three';
@@ -22,108 +22,8 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 import { PALETTES } from './palette.js';
-import { BlueprintEdgesPass } from './BlueprintEdgesPass.js';
-
-// ===========================================================================
-// Chapters. `motion` selects the stage behaviour; `points` are the leader
-// callouts, split between the stage's left/right gutters (mostly base-mounted
-// parts so they stay steady). `clip` may be null (no mp4 for that chapter);
-// `clip.src` is a real Isaac Sim rollout cut from log/.../scene_view.mp4.
-// `fx` names the stage overlay effect (camera-scan / feel), null for none.
-// ===========================================================================
-
-const CHAPTERS = [
-	{
-		id: 'architecture',
-		title: 'System architecture',
-		motion: 'spin',
-		fx: null,
-		body: 'A Unitree Go2 carries a patient’s oxygen concentrator on a shock-isolated cradle. The entire control stack — perception plus the learned policy — runs inside one Docker container on a Jetson Orin: the same container whether Isaac Sim or the real robot feeds it. Only the sensor source is swapped at the container boundary, so a policy proven in simulation is expected to hold on hardware.',
-		clip: null, // no clip for this chapter
-		points: [
-			{ node: 'oxygen_tank', side: 'right', label: 'O₂ concentrator', sub: 'patient payload' },
-			{ node: 'cradle_rails', side: 'right', label: 'payload cradle', sub: 'shock-isolated' },
-			{ node: 'robot_base', side: 'left', label: 'onboard compute', sub: 'Jetson Orin' },
-			{ node: 'FR_hip', side: 'left', label: '12× joint actuators', sub: 'three per leg' },
-		],
-	},
-	{
-		id: 'walking',
-		title: 'Walking policy',
-		motion: 'walk',
-		fx: 'scan',
-		body: 'On flat ground the robot follows the patient by sight: a YOLO-World detector locates the person in every camera frame, and a learned trot gait steers to keep pace while holding the oxygen payload level — rejecting the disturbances of a shifting load and an uneven floor at each step.',
-		clip: { badge: 'clip 01', cap: 'Isaac Sim rollout — flat-ground follow gait.', src: './assets/clips/walk.mp4' },
-		points: [
-			{ node: 'robot_base', side: 'left', label: 'gait controller', sub: 'trot clock' },
-			{ node: 'FL_hip', side: 'left', label: 'hip abduction', sub: 'lateral balance' },
-			{ node: 'cradle_rails', side: 'right', label: 'payload held level', sub: 'load balancing' },
-			{ node: 'FR_calf', side: 'right', label: 'calf drive', sub: 'ground clearance' },
-		],
-	},
-	{
-		id: 'blind-rl',
-		title: 'Blind RL policy',
-		motion: 'climb',
-		fx: 'feel',
-		body: 'The staircase is climbed on feel alone. Cameras can’t see the steps underfoot, so a reinforcement-learning policy leans entirely on proprioception and foot contact — sensing each riser as a paw lands — to place its feet and drive the payload upward, step after step, while keeping the concentrator upright on the incline.',
-		clip: { badge: 'clip 02', cap: 'Isaac Sim rollout — blind stair traversal.', src: './assets/clips/stairs.mp4' },
-		points: [
-			{ node: 'robot_base', side: 'left', label: 'IMU · body attitude', sub: 'stays upright' },
-			{ node: 'FR_hip', side: 'left', label: 'joint feedback', sub: 'proprioception' },
-			{ node: 'oxygen_tank', side: 'right', label: 'payload upright', sub: 'on the incline' },
-			{ node: 'cradle_rails', side: 'right', label: 'kept level', sub: 'active balancing' },
-		],
-	},
-];
-
-// Policy SVG schematics — richer than a bare 3-box flow, still clean line-art.
-// Theme-aware: strokes/text use currentColor (#hero-diagram sets color: var(--ink)).
-const DIAGRAMS = {
-	architecture: `<svg viewBox="0 0 320 178" role="img" aria-label="Docker / simulation split architecture diagram">
-		<rect class="dg-box" x="6" y="44" width="86" height="28" rx="5"/><text class="dg-t" x="49" y="62" text-anchor="middle">Isaac Sim</text>
-		<rect class="dg-box" x="6" y="98" width="86" height="28" rx="5"/><text class="dg-t" x="49" y="116" text-anchor="middle">real Go2</text>
-		<path class="dg-ln" d="M92 58 H102 V71 H116"/>
-		<path class="dg-ln" d="M92 112 H102 V71 H116"/>
-		<path class="dg-ah" d="M110 67l6 4-6 4"/>
-		<text class="dg-c" x="174" y="40" text-anchor="middle">docker container</text>
-		<rect class="dg-dock" x="108" y="46" width="130" height="82" rx="8"/>
-		<rect class="dg-box" x="116" y="58" width="116" height="26" rx="5"/><text class="dg-t" x="174" y="75" text-anchor="middle">perception</text>
-		<rect class="dg-box" x="116" y="94" width="116" height="26" rx="5"/><text class="dg-t" x="174" y="111" text-anchor="middle">policy π · frozen</text>
-		<path class="dg-ln" d="M174 84 V94"/><path class="dg-ah" d="M170 90l4 4 4-4"/>
-		<rect class="dg-box" x="252" y="92" width="64" height="30" rx="5"/><text class="dg-t" x="284" y="111" text-anchor="middle">12× joints</text>
-		<path class="dg-ln" d="M232 107 H250"/><path class="dg-ah" d="M244 103l6 4-6 4"/>
-		<text class="dg-c" x="160" y="150" text-anchor="middle">identical container · sim ⇄ real</text>
-		<text class="dg-c" x="160" y="165" text-anchor="middle">only the sensor source is swapped</text>
-	</svg>`,
-	walking: `<svg viewBox="0 0 320 178" role="img" aria-label="Walking control loop diagram">
-		<rect class="dg-box" x="6" y="26" width="76" height="38" rx="5"/><text class="dg-t" x="44" y="49" text-anchor="middle">state est.</text>
-		<rect class="dg-box" x="122" y="26" width="80" height="38" rx="5"/><text class="dg-t" x="162" y="44" text-anchor="middle">policy π</text><text class="dg-c" x="162" y="57" text-anchor="middle">MLP</text>
-		<rect class="dg-box" x="242" y="26" width="72" height="38" rx="5"/><text class="dg-t" x="278" y="44" text-anchor="middle">PD joint</text><text class="dg-t" x="278" y="56" text-anchor="middle">targets</text>
-		<path class="dg-ln" d="M82 45 H120"/><path class="dg-ah" d="M114 41l6 4-6 4"/>
-		<path class="dg-ln" d="M202 45 H240"/><path class="dg-ah" d="M236 41l6 4-6 4"/>
-		<rect class="dg-box" x="118" y="104" width="88" height="36" rx="5"/><text class="dg-t" x="162" y="120" text-anchor="middle">Go2 · 12 DoF</text><text class="dg-c" x="162" y="132" text-anchor="middle">rigid-body plant</text>
-		<path class="dg-ln" d="M278 64 V122 H208"/><path class="dg-ah" d="M214 118l-6 4 6 4"/>
-		<path class="dg-ln" d="M118 122 H44 V64"/><path class="dg-ah" d="M40 70l4-6 4 6"/>
-		<text class="dg-c" x="235" y="96" text-anchor="middle">torque</text>
-		<text class="dg-c" x="66" y="96" text-anchor="middle">imu · contacts</text>
-	</svg>`,
-	'blind-rl': `<svg viewBox="0 0 320 178" role="img" aria-label="Blind RL closed-loop policy diagram">
-		<rect class="dg-box" x="16" y="14" width="108" height="22" rx="5"/><text class="dg-t" x="70" y="30" text-anchor="middle">proprioception ×N</text>
-		<rect class="dg-box" x="16" y="42" width="108" height="22" rx="5"/><text class="dg-t" x="70" y="58" text-anchor="middle">foot contact</text>
-		<rect class="dg-box" x="16" y="70" width="108" height="22" rx="5"/><text class="dg-t" x="70" y="86" text-anchor="middle">velocity command</text>
-		<rect class="dg-box" x="140" y="34" width="64" height="44" rx="6"/><text class="dg-t" x="172" y="53" text-anchor="middle">policy π</text><text class="dg-c" x="172" y="67" text-anchor="middle">MLP</text>
-		<rect class="dg-box" x="224" y="42" width="88" height="30" rx="5"/><text class="dg-t" x="268" y="61" text-anchor="middle">joint targets</text>
-		<path class="dg-ln" d="M124 25 H132 V50 H140"/><path class="dg-ln" d="M124 53 H140"/><path class="dg-ln" d="M124 81 H132 V60 H140"/>
-		<path class="dg-ah" d="M134 50l6 4-6 4"/>
-		<path class="dg-ln" d="M204 56 H222"/><path class="dg-ah" d="M216 52l6 4-6 4"/>
-		<rect class="dg-box" x="120" y="112" width="96" height="30" rx="5"/><text class="dg-t" x="168" y="131" text-anchor="middle">Go2 on stairs</text>
-		<path class="dg-ln" d="M268 72 V127 H216"/><path class="dg-ah" d="M222 123l-6 4 6 4"/>
-		<path class="dg-ln" d="M120 127 H8 V25 H16"/><path class="dg-ah" d="M10 21l6 4-6 4"/>
-		<text class="dg-c" x="64" y="108" text-anchor="middle">feels each riser</text>
-		<text class="dg-c" x="164" y="164" text-anchor="middle">closed proprioceptive loop · climbs by feel</text>
-	</svg>`,
-};
+import { BlueprintEdgesPass, NO_OUTLINE_LAYER } from './BlueprintEdgesPass.js';
+import { POLICIES } from './content.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const NARROW_PX = 820;
@@ -159,7 +59,7 @@ function boot( host ) {
 	// -------------------------------------------------------------------
 	// Renderer / scene / camera / controls
 	// -------------------------------------------------------------------
-	const renderer = new THREE.WebGLRenderer( { antialias: true, alpha: false } );
+	const renderer = new THREE.WebGLRenderer( { antialias: true, alpha: true } );
 	renderer.setPixelRatio( Math.min( window.devicePixelRatio || 1, 2 ) );
 	renderer.setSize( 1, 1 );
 	renderer.shadowMap.enabled = true;
@@ -205,7 +105,65 @@ function boot( host ) {
 	scene.add( fillLight );
 
 	// -------------------------------------------------------------------
-	// Toon materials
+	// Realistic robot materials + studio IBL env
+	// -------------------------------------------------------------------
+	// The robot is REAL PBR (not toon) so it matches the interactive viewer -- a
+	// deliberate contrast against the toon set below. Only the robot reads
+	// scene.environment (the toon MeshToonMaterials ignore it).
+	const _pmrem = new THREE.PMREMGenerator( renderer );
+	scene.environment = _pmrem.fromEquirectangular( makeStudioEnvTexture() ).texture;
+	_pmrem.dispose();
+
+	function makeStudioEnvTexture() {
+
+		const w = 512, h = 256;
+		const canvas = document.createElement( 'canvas' );
+		canvas.width = w; canvas.height = h;
+		const ctx = canvas.getContext( '2d' );
+
+		const g = ctx.createLinearGradient( 0, 0, 0, h );
+		g.addColorStop( 0.0, '#e9e5dd' );
+		g.addColorStop( 0.42, '#f5f2ec' );
+		g.addColorStop( 0.58, '#dfe2e6' );
+		g.addColorStop( 1.0, '#b7bcc4' );
+		ctx.fillStyle = g;
+		ctx.fillRect( 0, 0, w, h );
+
+		function blob( cx, cy, r, color, alpha ) {
+
+			const rg = ctx.createRadialGradient( cx, cy, 0, cx, cy, r );
+			rg.addColorStop( 0, color );
+			rg.addColorStop( 1, 'rgba(255,255,255,0)' );
+			ctx.globalAlpha = alpha;
+			ctx.fillStyle = rg;
+			ctx.fillRect( 0, 0, w, h );
+			ctx.globalAlpha = 1;
+
+		}
+		blob( w * 0.30, h * 0.26, h * 0.55, '#fff5e6', 0.85 ); // warm key
+		blob( w * 0.78, h * 0.40, h * 0.5, '#e0ebff', 0.5 );   // cool fill
+
+		const texture = new THREE.CanvasTexture( canvas );
+		texture.mapping = THREE.EquirectangularReflectionMapping;
+		texture.colorSpace = THREE.SRGBColorSpace;
+		return texture;
+
+	}
+
+	function makeRobotRealisticMaterial( colorHex, opts = {} ) {
+
+		return new THREE.MeshStandardMaterial( {
+			color: colorHex,
+			metalness: opts.metalness ?? 0.4,
+			roughness: opts.roughness ?? 0.45,
+			envMapIntensity: opts.envMapIntensity ?? 1.1,
+			vertexColors: opts.vertexColors ?? false,
+		} );
+
+	}
+
+	// -------------------------------------------------------------------
+	// Toon materials  (the set: stairs, rails, tank, cradle, plinth)
 	// -------------------------------------------------------------------
 	const CEL_GRADIENT_MAP = makeToonGradientMap( [ 0.4, 0.72, 1.0 ] );
 	const RIM_COLOR = new THREE.Color( 0xffffff );
@@ -242,7 +200,13 @@ function boot( host ) {
 
 	}
 
-	const robotMaterial = makeToonMaterial( colors.robot );
+	// Robot: realistic silver PBR shell (theme-independent, intrinsic hardware
+	// colors) + per-part COLOR_0 via the white vertexColors material (see TINT).
+	// robotMaterial = silver body/hips; robotBaseMaterial = base/thighs/calves
+	// (baked black head/words/thigh-housing/knee/foot-pad); robotBlackMaterial = feet.
+	const robotMaterial = makeRobotRealisticMaterial( 0xc0c0c0, { metalness: 0.2, roughness: 0.5, envMapIntensity: 1.0 } );
+	const robotBlackMaterial = makeRobotRealisticMaterial( 0x232629, { metalness: 0.0, roughness: 0.85, envMapIntensity: 0.5 } );
+	const robotBaseMaterial = makeRobotRealisticMaterial( 0xffffff, { metalness: 0.2, roughness: 0.5, envMapIntensity: 1.0, vertexColors: true } );
 	const oxygenTankMaterial = makeToonMaterial( colors.tank );
 	const cradleRailsMaterial = makeToonMaterial( colors.cradle );
 	const stairsMaterial = makeToonMaterial( colors.stairs );
@@ -254,7 +218,15 @@ function boot( host ) {
 		oxygen_tank: () => oxygenTankMaterial,
 		cradle_rails: () => cradleRailsMaterial,
 		stairs: () => stairsMaterial,
-		handrails: () => handrailMaterial, // separate node in the newer rebake; absent (merged) in older glbs
+		handrails: () => handrailMaterial,
+		// Robot per-part (matches the viewer): base + thighs + calves carry a baked
+		// COLOR_0 (silver shell + black head/words/thigh-housing/knee/foot-pad) painted
+		// via the white vertexColors material; hips silver; foot balls flat black.
+		robot_base: () => robotBaseMaterial,
+		FL_hip: () => robotMaterial, FR_hip: () => robotMaterial, RL_hip: () => robotMaterial, RR_hip: () => robotMaterial,
+		FL_thigh: () => robotBaseMaterial, FR_thigh: () => robotBaseMaterial, RL_thigh: () => robotBaseMaterial, RR_thigh: () => robotBaseMaterial,
+		FL_calf: () => robotBaseMaterial, FR_calf: () => robotBaseMaterial, RL_calf: () => robotBaseMaterial, RR_calf: () => robotBaseMaterial,
+		FL_foot: () => robotBlackMaterial, FR_foot: () => robotBlackMaterial, RL_foot: () => robotBlackMaterial, RR_foot: () => robotBlackMaterial,
 	};
 
 	function tintFor( mesh ) {
@@ -272,6 +244,7 @@ function boot( host ) {
 	composer.addPass( new RenderPass( scene, camera ) );
 	const edgesPass = new BlueprintEdgesPass( scene, camera, {
 		inkColor: colors.ink, normalThreshold: 0.55, depthThreshold: 0.03, thickness: 1.2,
+		noOutlineLayer: NO_OUTLINE_LAYER, // robot subtree -> no ink outline (Isaac-viewport look), like the viewer
 	} );
 	composer.addPass( edgesPass );
 	composer.addPass( new OutputPass() );
@@ -279,71 +252,13 @@ function boot( host ) {
 	// -------------------------------------------------------------------
 	// Overlay DOM refs
 	// -------------------------------------------------------------------
-	const heroInner = document.getElementById( 'hero-inner' );
 	const leadersSvg = document.getElementById( 'hero-leaders' );
 	const calloutsEl = document.getElementById( 'hero-callouts' );
-	const chapterIndexEl = document.getElementById( 'hero-chapter-index' );
-	const chapterTitleEl = document.getElementById( 'hero-chapter-title' );
-	const bodyEl = document.getElementById( 'hero-body' );
-	const diagramEl = document.getElementById( 'hero-diagram' );
-	const clipFigureEl = document.querySelector( '.hero-clip' );
-	const clipBadgeEl = document.getElementById( 'hero-clip-badge' );
-	const clipCapEl = document.getElementById( 'hero-clip-cap' );
-	const dotsEl = document.getElementById( 'hero-dots' );
-	const clipVideo = document.getElementById( 'hero-clip-video' );
-	const clipFrame = document.getElementById( 'hero-clip-frame' );
-	const clipPlayBtn = document.getElementById( 'hero-clip-play' );
-	const clipDurEl = document.getElementById( 'hero-clip-dur' );
 	const fxEl = document.getElementById( 'hero-fx' );
 
 	// -------------------------------------------------------------------
-	// Inline mp4 clip (real Isaac Sim rollout, cut per chapter) — muted +
-	// looped so it plays inline; the corner button toggles play/pause.
-	// -------------------------------------------------------------------
-	function setClip( src ) {
-
-		if ( ! clipVideo || ! src ) return;
-		const abs = new URL( src, location.href ).href;
-		if ( clipVideo.src !== abs ) clipVideo.src = src;
-		try { clipVideo.currentTime = 0; } catch ( e ) { /* not seekable yet */ }
-		const p = clipVideo.play();
-		if ( p && p.catch ) p.catch( () => {} ); // autoplay may be blocked; button still works
-		updateClipButton();
-
-	}
-
-	function stopClip() { if ( clipVideo ) clipVideo.pause(); }
-
-	function updateClipButton() {
-
-		if ( clipFrame && clipVideo ) clipFrame.classList.toggle( 'playing', ! clipVideo.paused && ! clipVideo.ended );
-
-	}
-
-	if ( clipVideo && clipPlayBtn ) {
-
-		clipPlayBtn.addEventListener( 'click', () => {
-
-			if ( clipVideo.paused ) { const p = clipVideo.play(); if ( p && p.catch ) p.catch( () => {} ); }
-			else clipVideo.pause();
-			updateClipButton();
-
-		} );
-		clipVideo.addEventListener( 'play', updateClipButton );
-		clipVideo.addEventListener( 'pause', updateClipButton );
-		clipVideo.addEventListener( 'loadedmetadata', () => {
-
-			if ( clipDurEl && isFinite( clipVideo.duration ) ) clipDurEl.textContent = Math.round( clipVideo.duration ) + 's';
-
-		} );
-
-	}
-
-	// -------------------------------------------------------------------
-	// Per-policy stage FX overlay: built once, toggled via a class on
-	// #hero-fx (set in applyMotion), and positioned each frame (updateFx).
-	//   walk  -> a scan cone projected in FRONT of the robot (+ YOLO HUD)
-	//   climb -> orange proprioceptive "feeling" waves at EACH foot
+	// Per-policy stage FX overlay (built once, toggled via a class on #hero-fx
+	// in applyMotion, positioned each frame in updateFx).
 	// -------------------------------------------------------------------
 	let currentFx = null;
 	let fxConfEl = null, fxFeet = [];
@@ -360,7 +275,6 @@ function boot( host ) {
 
 		if ( ! fxEl ) return;
 		fxEl.innerHTML =
-			// walk: a scan cone projected in front of the robot + YOLO HUD
 			'<svg class="fx-cone" aria-hidden="true">' +
 				'<defs><linearGradient id="fxConeGrad" gradientUnits="userSpaceOnUse">' +
 					'<stop class="fx-cone-s0" offset="0"/><stop class="fx-cone-s1" offset="1"/>' +
@@ -368,7 +282,6 @@ function boot( host ) {
 				'<polygon class="fx-cone-fill"/><line class="fx-cone-sweep"/>' +
 			'</svg>' +
 			'<div class="fx-hud fx-hud-yolo"><span class="fx-hud-dot"></span>YOLO-World<span class="fx-hud-conf">person 0.00</span></div>' +
-			// climb: orange proprioceptive "feeling" waves at each foot + sense HUD
 			'<div class="fx-feet">' + FX_FEET.map( ( id ) => `<div class="fx-foot" data-leg="${ id }"><span></span><span></span><span></span></div>` ).join( '' ) + '</div>' +
 			'<div class="fx-hud fx-hud-sense"><span class="fx-hud-dot"></span>proprioception · contact sensing</div>';
 		fxConeSvg = fxEl.querySelector( '.fx-cone' );
@@ -390,7 +303,6 @@ function boot( host ) {
 
 			updateCone( dt, W, H );
 
-			// Wander the "confidence" so the YOLO HUD reads live (not a real score).
 			fxConfAccum += dt;
 			if ( fxConfAccum > 0.55 ) { fxConfAccum = 0; fxConfTarget = 0.9 + Math.random() * 0.09; }
 			fxConf += ( fxConfTarget - fxConf ) * Math.min( 1, dt * 4 );
@@ -398,7 +310,6 @@ function boot( host ) {
 
 		} else if ( currentFx === 'feel' ) {
 
-			// Orange "feeling" waves ripple out from EACH foot as it senses a riser.
 			for ( const foot of fxFeet ) {
 
 				if ( ! foot.node ) foot.node = scene.getObjectByName( foot.id );
@@ -416,9 +327,6 @@ function boot( host ) {
 
 	}
 
-	// Scan cone: apex at the front of the robot, fanning forward along its
-	// facing (front-feet minus rear-feet). Rebuilds the polygon, the gradient
-	// axis and a sweeping bar (apex -> far) every frame.
 	function updateCone( dt, W, H ) {
 
 		if ( ! fxConeSvg ) return;
@@ -426,16 +334,16 @@ function boot( host ) {
 		for ( const f of fxFeet ) if ( ! f.node ) f.node = scene.getObjectByName( f.id );
 		if ( ! robotBase || fxFeet.some( ( f ) => ! f.node ) ) { fxConeSvg.classList.add( 'fx-off' ); return; }
 
-		fxFeet[ 0 ].node.getWorldPosition( _cA ); // FL
-		fxFeet[ 1 ].node.getWorldPosition( _cB ); // FR
-		fxFeet[ 2 ].node.getWorldPosition( _cC ); // RL
-		fxFeet[ 3 ].node.getWorldPosition( _cD ); // RR
-		_cFwd.copy( _cA ).add( _cB ).sub( _cC ).sub( _cD ).multiplyScalar( 0.5 ).setY( 0 ); // front mid - rear mid
+		fxFeet[ 0 ].node.getWorldPosition( _cA );
+		fxFeet[ 1 ].node.getWorldPosition( _cB );
+		fxFeet[ 2 ].node.getWorldPosition( _cC );
+		fxFeet[ 3 ].node.getWorldPosition( _cD );
+		_cFwd.copy( _cA ).add( _cB ).sub( _cC ).sub( _cD ).multiplyScalar( 0.5 ).setY( 0 );
 		if ( _cFwd.lengthSq() < 1e-6 ) { fxConeSvg.classList.add( 'fx-off' ); return; }
 		_cFwd.normalize();
 
-		robotBase.getWorldPosition( _cA ); // reuse as base
-		_cApex.copy( _cA ).addScaledVector( _cFwd, 0.3 ); _cApex.y += 0.07; // at the front sensor/camera (nose), not mid-body
+		robotBase.getWorldPosition( _cA );
+		_cApex.copy( _cA ).addScaledVector( _cFwd, 0.3 ); _cApex.y += 0.07;
 		_cFar.copy( _cApex ).addScaledVector( _cFwd, 0.8 );
 
 		_cApex.project( camera );
@@ -448,14 +356,11 @@ function boot( host ) {
 		const L = Math.hypot( dx, dy );
 		if ( L < 2 ) { fxConeSvg.classList.add( 'fx-off' ); return; }
 		dx /= L; dy /= L;
-		const nx = - dy, ny = dx, halfW = L * 0.42; // perpendicular + cone half-width
+		const nx = - dy, ny = dx, halfW = L * 0.42;
 		const c1x = fxp + nx * halfW, c1y = fyp + ny * halfW;
 		const c2x = fxp - nx * halfW, c2y = fyp - ny * halfW;
 
 		fxConeSvg.classList.remove( 'fx-off' );
-		// Fade with view angle: when the view direction aligns with the cone's
-		// forward axis (looking head-on / from behind), a flat cone reads badly,
-		// so fade it out; full opacity when the view is side-on.
 		const align = Math.abs( _cFwd.dot( camera.getWorldDirection( _cB ) ) );
 		fxConeSvg.style.opacity = THREE.MathUtils.clamp( ( 1 - align ) / 0.35, 0, 1 ).toFixed( 3 );
 		fxConeSvg.setAttribute( 'viewBox', `0 0 ${ W } ${ H }` );
@@ -464,7 +369,7 @@ function boot( host ) {
 		fxConeGrad.setAttribute( 'x2', fxp ); fxConeGrad.setAttribute( 'y2', fyp );
 
 		fxConeT += dt;
-		const s = 0.2 + 0.78 * ( 0.5 + 0.5 * Math.sin( fxConeT * 2.4 ) ); // sweep phase
+		const s = 0.2 + 0.78 * ( 0.5 + 0.5 * Math.sin( fxConeT * 2.4 ) );
 		const spx = ax + dx * L * s, spy = ay + dy * L * s, sw = halfW * s;
 		fxConeSweep.setAttribute( 'x1', spx + nx * sw ); fxConeSweep.setAttribute( 'y1', spy + ny * sw );
 		fxConeSweep.setAttribute( 'x2', spx - nx * sw ); fxConeSweep.setAttribute( 'y2', spy - ny * sw );
@@ -474,19 +379,20 @@ function boot( host ) {
 	// -------------------------------------------------------------------
 	// Scene / animation state
 	// -------------------------------------------------------------------
-	let robotReady = false, chapterIdx = 0, entries = [];
+	let robotReady = false, entries = [];
+	let stageVisible = false;      // driven by deck.js via setStageVisible()
+	let currentPolicyId = 'architecture';
 	let robotBase = null, stairsNode = null, handrailsNode = null, plinth = null, mixer = null;
 	let followAction = null, climbAction = null;
 	const baseP0 = new THREE.Vector3();
 	const baseQ0 = new THREE.Quaternion();
 	let currentMotion = 'spin';
 
-	const WALK_TIMESCALE = 0.6; // slow the flat-ground gait down (per feedback)
+	const WALK_TIMESCALE = 0.6;
 
 	let robotTarget = new THREE.Vector3( 0, 0.35, 0 );
 	let robotDist = 2.2;
 	let camTransition = null;
-	// Climb follow-cam (right-side, tracks the robot up the stairs).
 	let climbFollow = false;
 	const climbDir = new THREE.Vector3( 0.22, 0.4, 1 ).normalize();
 	let climbDist = 3;
@@ -511,11 +417,11 @@ function boot( host ) {
 
 			robotBase = root.getObjectByName( 'robot_base' );
 			stairsNode = root.getObjectByName( 'stairs' );
-			handrailsNode = root.getObjectByName( 'handrails' ); // null in older (merged) glbs
+			handrailsNode = root.getObjectByName( 'handrails' );
 			const groundNode = root.getObjectByName( 'ground' );
 			const patientRoot = root.getObjectByName( 'patient_root' );
 			const patientAnchor = root.getObjectByName( 'patient_human_anchor' );
-			if ( ! robotBase ) { console.error( '[hero] robot_base not found — hero skipped' ); return; }
+			if ( ! robotBase ) { console.error( '[hero] robot_base not found — hero stage skipped' ); return; }
 
 			root.traverse( ( n ) => {
 
@@ -525,6 +431,10 @@ function boot( host ) {
 				n.receiveShadow = ( n.name === 'stairs' );
 
 			} );
+
+			// Robot subtree -> NO_OUTLINE layer: the realistic robot renders clean (no
+			// ink outlines), like the viewer. The toon set keeps its outlines.
+			robotBase.traverse( ( o ) => o.layers.enable( NO_OUTLINE_LAYER ) );
 
 			if ( groundNode ) groundNode.visible = false;
 			if ( patientRoot ) patientRoot.visible = false;
@@ -547,7 +457,7 @@ function boot( host ) {
 			robotTarget = rbox.getCenter( new THREE.Vector3() );
 			const robotMaxDim = Math.max( rSize.x, rSize.y, rSize.z ) || 1;
 			robotDist = fitDist( robotMaxDim, 1.25 );
-			climbDist = robotDist * 1.5; // frames the robot large enough that the leader arrows read on the stairs, without the old too-tight crop
+			climbDist = robotDist * 1.5;
 
 			const feetY = rbox.min.y;
 			const footprint = Math.max( rSize.x, rSize.z ) * 0.62 + 0.12;
@@ -560,8 +470,9 @@ function boot( host ) {
 			scene.add( plinth );
 
 			robotReady = true;
-			buildDots();
-			goToChapter( 0, { immediate: true } );
+			// Prime the currently-requested policy so the stage is ready the moment
+			// it scrolls into view (deck.js re-calls showPolicy as steps activate).
+			showPolicy( currentPolicyId );
 
 		},
 		undefined,
@@ -569,33 +480,7 @@ function boot( host ) {
 	);
 
 	// -------------------------------------------------------------------
-	// Chapter dots + nav
-	// -------------------------------------------------------------------
-	function buildDots() {
-
-		dotsEl.innerHTML = '';
-		CHAPTERS.forEach( ( ch, i ) => {
-
-			const d = document.createElement( 'button' );
-			d.type = 'button'; d.className = 'hero-dot'; d.setAttribute( 'role', 'tab' ); d.setAttribute( 'aria-label', ch.title );
-			d.addEventListener( 'click', () => goToChapter( i ) );
-			dotsEl.appendChild( d );
-
-		} );
-
-	}
-
-	function syncDots() {
-
-		[ ...dotsEl.children ].forEach( ( d, i ) => d.classList.toggle( 'active', i === chapterIdx ) );
-
-	}
-
-	document.getElementById( 'hero-prev' ).addEventListener( 'click', () => goToChapter( chapterIdx - 1 ) );
-	document.getElementById( 'hero-next' ).addEventListener( 'click', () => goToChapter( chapterIdx + 1 ) );
-
-	// -------------------------------------------------------------------
-	// Leader callouts (left + right gutters) — build / draw
+	// Leader callouts — build / draw
 	// -------------------------------------------------------------------
 	function clearEntries() {
 
@@ -614,18 +499,16 @@ function boot( host ) {
 
 	}
 
-	function buildEntries( chapter ) {
+	function buildEntries( points ) {
 
-		const resolved = chapter.points
+		if ( ! points ) return;
+		const resolved = points
 			.map( ( pt ) => ( { pt, node: scene.getObjectByName( pt.node ) } ) )
 			.filter( ( e ) => e.node );
 		const left = resolved.filter( ( e ) => e.pt.side !== 'right' );
 		const right = resolved.filter( ( e ) => e.pt.side === 'right' );
-		// Bottom bound kept well clear of the bottom-third #hero-body caption
-		// (which can grow to several lines on the longer chapters) so leader
-		// callouts never sit underneath it.
-		const leftTops = linspace( 20, 62, left.length );
-		const rightTops = linspace( 20, 62, right.length );
+		const leftTops = linspace( 18, 78, left.length );
+		const rightTops = linspace( 18, 78, right.length );
 		let li = 0, ri = 0;
 
 		for ( const { pt, node } of resolved ) {
@@ -656,63 +539,36 @@ function boot( host ) {
 
 	}
 
-	function goToChapter( idx, { immediate = false } = {} ) {
+	// -------------------------------------------------------------------
+	// PUBLIC: switch policy (called by deck.js as each Solution step activates)
+	// -------------------------------------------------------------------
+	function showPolicy( name ) {
 
+		const policy = POLICIES[ name ];
+		if ( ! policy ) return;
+		currentPolicyId = name;
+		currentMotion = policy.motion;
+
+		clearEntries();
 		if ( ! robotReady ) return;
-		const n = CHAPTERS.length;
-		chapterIdx = ( ( idx % n ) + n ) % n;
-		const chapter = CHAPTERS[ chapterIdx ];
-		currentMotion = chapter.motion;
 
-		const applyContent = () => {
-
-			chapterIndexEl.textContent = `${ String( chapterIdx + 1 ).padStart( 2, '0' ) } / ${ String( n ).padStart( 2, '0' ) }`;
-			chapterTitleEl.textContent = chapter.title;
-			bodyEl.textContent = chapter.body;
-			diagramEl.innerHTML = DIAGRAMS[ chapter.id ] || '';
-			if ( chapter.clip ) {
-
-				clipFigureEl.style.display = '';
-				clipBadgeEl.textContent = chapter.clip.badge;
-				clipCapEl.textContent = chapter.clip.cap;
-				setClip( chapter.clip.src );
-
-			} else {
-
-				clipFigureEl.style.display = 'none';
-				stopClip();
-
-			}
-			syncDots();
-			applyMotion( chapter );
-
-		};
-
-		const build = () => {
-
-			clearEntries();
-			applyContent();
-			buildEntries( chapter );
-			updateLeaders();
-			requestAnimationFrame( () => entries.forEach( ( e ) => e.line.classList.add( 'drawn' ) ) );
-			heroInner.classList.remove( 'switching' );
-
-		};
-
-		if ( immediate ) build();
-		else { heroInner.classList.add( 'switching' ); setTimeout( build, 230 ); }
+		applyMotion( policy );
+		buildEntries( policy.points );
+		updateLeaders();
+		requestAnimationFrame( () => entries.forEach( ( e ) => e.line.classList.add( 'drawn' ) ) );
 
 	}
 
 	// -------------------------------------------------------------------
 	// Motion: clip selection + plinth/stairs visibility + camera vantage.
 	// -------------------------------------------------------------------
-	function applyMotion( chapter ) {
+	function applyMotion( policy ) {
 
-		const motion = chapter.motion;
+		const motion = policy.motion;
+		currentMotion = motion;
 		climbFollow = ( motion === 'climb' );
 
-		currentFx = chapter.fx || null;
+		currentFx = policy.fx || null;
 		if ( fxEl ) {
 
 			fxEl.classList.toggle( 'fx-mode-scan', currentFx === 'scan' );
@@ -741,7 +597,6 @@ function boot( host ) {
 
 		if ( motion === 'climb' ) {
 
-			// Follow-cam handles framing each frame; nothing to transition here.
 			camTransition = null;
 			controls.autoRotate = false;
 			return;
@@ -754,10 +609,10 @@ function boot( host ) {
 			dir = new THREE.Vector3( 0.62, 0.42, 1 ).normalize();
 			dist = robotDist; autoRotate = true;
 
-		} else { // walk — right-side 3/4 so the gait reads
+		} else {
 
 			dir = new THREE.Vector3( 0.32, 0.32, 1 ).normalize();
-			dist = robotDist * 1.35; // pulled back so the leader callouts aren't cramped (was 1.05, too tight)
+			dist = robotDist * 1.35;
 
 		}
 
@@ -768,9 +623,6 @@ function boot( host ) {
 
 	}
 
-	// Walk in place with a robotic body bob: pin the FORWARD/lateral drift and
-	// facing to the t=0 pose, but KEEP the clip's vertical (z) motion so the
-	// body bobs up and down as it steps. Spin is fully static.
 	function pinBase() {
 
 		if ( currentMotion === 'spin' ) {
@@ -779,7 +631,7 @@ function boot( host ) {
 
 		} else if ( currentMotion === 'walk' ) {
 
-			robotBase.position.x = baseP0.x; robotBase.position.y = baseP0.y; // keep z (bob)
+			robotBase.position.x = baseP0.x; robotBase.position.y = baseP0.y;
 			robotBase.quaternion.copy( baseQ0 );
 
 		}
@@ -843,7 +695,7 @@ function boot( host ) {
 	}
 	document.getElementById( 'hero-zoom-in' ).addEventListener( 'click', () => zoomBy( 0.82 ) );
 	document.getElementById( 'hero-zoom-out' ).addEventListener( 'click', () => zoomBy( 1.22 ) );
-	document.getElementById( 'hero-zoom-reset' ).addEventListener( 'click', () => { climbDist = robotDist * 1.5; applyMotion( CHAPTERS[ chapterIdx ] ); } );
+	document.getElementById( 'hero-zoom-reset' ).addEventListener( 'click', () => { climbDist = robotDist * 1.5; if ( robotReady ) applyMotion( POLICIES[ currentPolicyId ] ); } );
 
 	// -------------------------------------------------------------------
 	// Theme sync
@@ -856,7 +708,7 @@ function boot( host ) {
 		themeName = name; palette = PALETTES[ name ]; colors = heroColors( palette );
 		scene.background = makeStudioBackdrop( colors.bg );
 		edgesPass.setInkColor( colors.ink );
-		robotMaterial.color.set( colors.robot );
+		// robot is realistic PBR with intrinsic (theme-independent) colors -- no retint
 		oxygenTankMaterial.color.set( colors.tank );
 		cradleRailsMaterial.color.set( colors.cradle );
 		stairsMaterial.color.set( colors.stairs );
@@ -875,6 +727,7 @@ function boot( host ) {
 		renderer.setPixelRatio( pr ); renderer.setSize( w, h );
 		composer.setPixelRatio( pr ); composer.setSize( w, h );
 		camera.aspect = w / h; camera.updateProjectionMatrix();
+		updateLeaders();
 
 	}
 	new ResizeObserver( handleResize ).observe( host );
@@ -882,18 +735,14 @@ function boot( host ) {
 	handleResize();
 
 	// -------------------------------------------------------------------
-	// Render loop
+	// Render loop — only runs while the Solution stage is on screen.
 	// -------------------------------------------------------------------
-	let visible = true;
-	new IntersectionObserver( ( e ) => { visible = e[ 0 ].isIntersecting; }, { threshold: 0.02 } )
-		.observe( document.getElementById( 'hero-section' ) );
-
 	const easeInOut = ( k ) => ( k < 0.5 ? 2 * k * k : 1 - Math.pow( -2 * k + 2, 2 ) / 2 );
 
 	function animate() {
 
 		requestAnimationFrame( animate );
-		if ( ! visible ) return;
+		if ( ! stageVisible ) return;
 		const dt = Math.min( _clock.getDelta(), 0.05 );
 
 		if ( robotReady && mixer ) {
@@ -914,7 +763,6 @@ function boot( host ) {
 
 		} else if ( climbFollow && robotBase ) {
 
-			// Right-side follow-cam: keep a fixed offset from the climbing robot.
 			robotBase.getWorldPosition( _curBase );
 			_tmpTarget.copy( _curBase ); _tmpTarget.y += 0.12;
 			_tmpDesired.copy( _tmpTarget ).addScaledVector( climbDir, climbDist );
@@ -935,30 +783,24 @@ function boot( host ) {
 	}
 	animate();
 
+	function setStageVisible( v ) {
+
+		v = !! v;
+		if ( v && ! stageVisible ) _clock.getDelta(); // drop the accumulated gap so motion doesn't jump
+		stageVisible = v;
+
+	}
+
 	window.__hero = {
 		scene, camera, renderer, composer, controls,
 		materials: { robotMaterial, oxygenTankMaterial, cradleRailsMaterial, stairsMaterial, plinthMaterial },
-		goToChapter, get chapterIdx() { return chapterIdx; }, get motion() { return currentMotion; },
-		get baseZ() { return robotBase ? robotBase.getWorldPosition( new THREE.Vector3() ) : null; },
+		showPolicy, setStageVisible,
+		get policy() { return currentPolicyId; }, get motion() { return currentMotion; },
+		get stageVisible() { return stageVisible; },
 		get robotTarget() { return robotTarget; }, get robotDist() { return robotDist; },
 		_robotAABB() { _fxBox.setFromObject( robotBase ); return { min: _fxBox.min.toArray(), max: _fxBox.max.toArray() }; },
-		_tick( dt ) {
-
-			if ( ! mixer ) return;
-			mixer.update( dt );
-			if ( currentMotion !== 'climb' ) pinBase();
-
-		},
-		_fx( dt ) { updateFx( dt || 0.016 ); }, // manual FX pump (rAF is paused when tab is hidden)
-		_actions() {
-
-			return {
-				followW: followAction && followAction.weight, followPaused: followAction && followAction.paused, followTS: followAction && followAction.timeScale, followT: followAction && +followAction.time.toFixed( 3 ),
-				climbW: climbAction && climbAction.weight, climbPaused: climbAction && climbAction.paused, climbT: climbAction && +climbAction.time.toFixed( 3 ),
-				climbFollow, climbDist: +climbDist.toFixed( 2 ),
-			};
-
-		},
+		_tick( dt ) { if ( mixer ) { mixer.update( dt ); if ( currentMotion !== 'climb' ) pinBase(); } },
+		_fx( dt ) { updateFx( dt || 0.016 ); },
 	};
 
 }

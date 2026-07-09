@@ -1,10 +1,15 @@
 /* styles.css
  *
- * Blueprint / anime.js-hero aesthetic. Colors are driven by CSS custom
- * properties set from js/palette.js (applyPaletteToDom) so the DOM chrome
- * and the three.js scene never disagree about the active theme. Defaults
- * below match the "light" palette so the page looks correct even for the
- * first paint before JS runs.
+ * Pitch deck: a vertical scroll-snap deck of full-height slides
+ * (Problem → Solution & technology ×3 → Live demo → Progress & results ×2 →
+ * Real-world potential → Team), following the "blueprint / paper sheet"
+ * aesthetic. Colors come from CSS custom properties set by js/palette.js so the
+ * DOM chrome and the three.js scenes never disagree about the active theme.
+ *
+ * Two WebGL scenes: the shared Solution stage (js/hero.js, host #hero-stage,
+ * pinned via sticky while its 3 step-sections scroll) and the demo viewer
+ * (js/main.js). Everything else — section content + nav + reveals — is DOM,
+ * injected/driven by js/deck.js.
  */
 
 :root {
@@ -21,367 +26,150 @@
 	--sheet-radius: 22px;
 }
 
-* {
-	box-sizing: border-box;
-}
-
-html {
-	scroll-behavior: smooth;
-}
+* { box-sizing: border-box; }
 
 html, body {
 	margin: 0;
 	padding: 0;
 	width: 100%;
+	height: 100%;
 	background: var(--backdrop);
 }
 
 body {
 	font-family: var(--font-display);
 	color: var(--ink);
-	/* The page now scrolls vertically through two acts (hero platform ->
-	   interactive viewer); only horizontal overflow is clipped. */
-	overflow-x: hidden;
+	overflow: hidden; /* the #deck scroll container owns scrolling */
 }
 
-button {
-	font: inherit;
-	color: inherit;
-}
+button { font: inherit; color: inherit; }
 
 #backdrop {
 	position: fixed;
 	inset: 0;
 	background: var(--backdrop);
 	transition: background 200ms ease;
-	z-index: 0; /* sits behind both scroll acts (which are z-index: 1) */
-}
-
-#sheet {
-	position: absolute;
-	inset: var(--sheet-margin);
-	border-radius: var(--sheet-radius);
-	background: var(--sheet);
-	border: 1px solid var(--sheet-border);
-	overflow: hidden; /* clips the canvas' rounded corners */
-	transition: background 200ms ease, border-color 200ms ease;
-}
-
-#canvas-host {
-	position: absolute;
-	inset: 0;
-}
-
-#canvas-host canvas {
-	position: absolute;
-	inset: 0;
-	display: block;
-	width: 100%;
-	height: 100%;
-}
-
-/* ---------------------------------------------------------------------
-   UI overlay: DOM chrome living on top of the WebGL canvas. Only the
-   interactive controls take pointer events, so OrbitControls still
-   receives drag/scroll everywhere else.
---------------------------------------------------------------------- */
-
-#ui-overlay {
-	position: absolute;
-	inset: 0;
-	pointer-events: none;
-	z-index: 10;
-}
-
-#headline-block {
-	position: absolute;
-	top: clamp(20px, 3.4vw, 40px);
-	left: clamp(20px, 3.4vw, 40px);
-	max-width: 34ch;
-	pointer-events: none;
-}
-
-#headline {
-	margin: 0;
-	font-family: var(--font-display);
-	font-weight: 800;
-	font-size: clamp(30px, 3.6vw, 52px);
-	line-height: 1.05;
-	color: var(--headline);
-	letter-spacing: -0.01em;
-}
-
-#subtitle {
-	margin: 10px 0 0;
-	font-size: 16px;
-	line-height: 1.5;
-	font-weight: 400;
-	color: var(--ink);
-	max-width: 34ch;
-}
-
-#phase-buttons {
-	display: flex;
-	gap: 10px;
-	margin-top: 18px;
-	pointer-events: auto;
-}
-
-.phase-chip {
-	font-family: var(--font-mono);
-	font-size: 13px;
-	line-height: 1;
-	padding: 8px 14px;
-	border-radius: 8px;
-	border: 1px solid var(--ink);
-	background: transparent;
-	color: var(--ink);
-	cursor: pointer;
-	transition: background 120ms ease, color 120ms ease, opacity 120ms ease;
-	text-transform: lowercase;
-}
-
-.phase-chip:hover {
-	opacity: 0.75;
-}
-
-.phase-chip[aria-pressed="true"] {
-	background: var(--ink);
-	color: var(--sheet);
-}
-
-/* Generic small chip (theme toggle, tracking toggle, play, warnings) */
-.chip {
-	font-family: var(--font-mono);
-	font-size: 13px;
-	padding: 7px 12px;
-	border-radius: 8px;
-	border: 1px solid var(--ink);
-	background: transparent;
-	color: var(--ink);
-	cursor: pointer;
-	pointer-events: auto;
-	transition: background 120ms ease, color 120ms ease, opacity 120ms ease;
-	white-space: nowrap;
-}
-
-.chip:hover {
-	opacity: 0.75;
-}
-
-.chip[aria-pressed="true"] {
-	background: var(--ink);
-	color: var(--sheet);
-}
-
-#top-right-chips {
-	position: absolute;
-	top: clamp(20px, 3.4vw, 40px);
-	right: clamp(20px, 3.4vw, 40px);
-	display: flex;
-	gap: 8px;
-	pointer-events: none;
-}
-
-#model-warning.warning-chip {
-	position: absolute;
-	top: 50%;
-	left: 50%;
-	transform: translate(-50%, -50%);
-	pointer-events: none;
-	background: var(--sheet);
-	opacity: 0.95;
-	cursor: default;
-}
-
-/* ---------------------------------------------------------------------
-   Scrubber (bottom-right, the anime.js signature element)
---------------------------------------------------------------------- */
-
-#scrub-bar {
-	position: absolute;
-	right: clamp(16px, 3vw, 32px);
-	bottom: clamp(16px, 3vw, 32px);
-	display: flex;
-	align-items: center;
-	gap: 10px;
-	pointer-events: none;
-	max-width: 92vw;
-}
-
-#time-readout {
-	font-family: var(--font-mono);
-	font-size: 13px;
-	color: var(--ink);
-	white-space: nowrap;
-	pointer-events: none;
-}
-
-#play-toggle {
-	flex: none;
-}
-
-#scrubber {
-	-webkit-appearance: none;
-	appearance: none;
-	width: 420px;
-	max-width: 46vw;
-	height: 44px;
-	border-radius: 10px;
-	background:
-		/* fine vertical tick marks, centered ~40% height */
-		repeating-linear-gradient(
-			to right,
-			#6f6c66 0px,
-			#6f6c66 1px,
-			transparent 1px,
-			transparent 7px
-		) center / 100% 40% no-repeat,
-		#1e1d1a;
-	outline: none;
-	cursor: pointer;
-	pointer-events: auto;
-	margin: 0;
-}
-
-#scrubber:focus-visible {
-	box-shadow: 0 0 0 2px var(--sheet), 0 0 0 4px var(--ink);
-}
-
-/* Chrome / Edge / Safari */
-#scrubber::-webkit-slider-runnable-track {
-	-webkit-appearance: none;
-	appearance: none;
-	height: 100%;
-	background: transparent;
-	border: none;
-}
-
-#scrubber::-webkit-slider-thumb {
-	-webkit-appearance: none;
-	appearance: none;
-	width: 4px;
-	height: 22px;
-	border-radius: 2px;
-	background: #e5484d;
-	border: none;
-	margin-top: 0;
-	cursor: pointer;
-	box-shadow: 0 0 0 6px rgba(229, 72, 77, 0.12);
-}
-
-/* Firefox */
-#scrubber::-moz-range-track {
-	height: 100%;
-	background: transparent;
-	border: none;
-}
-
-#scrubber::-moz-range-thumb {
-	width: 4px;
-	height: 22px;
-	border-radius: 2px;
-	background: #e5484d;
-	border: none;
-	cursor: pointer;
-	box-shadow: 0 0 0 6px rgba(229, 72, 77, 0.12);
-}
-
-#scrubber::-moz-range-progress {
-	background: transparent;
-}
-
-/* ---------------------------------------------------------------------
-   Footer
---------------------------------------------------------------------- */
-
-#footer-line {
-	position: absolute;
-	left: clamp(20px, 3.4vw, 40px);
-	bottom: clamp(16px, 2.4vw, 26px);
-	margin: 0;
-	font-family: var(--font-mono);
-	font-size: 12px;
-	color: var(--ink);
-	opacity: 0.6;
-	pointer-events: none;
-}
-
-/* ---------------------------------------------------------------------
-   Responsive: mobile layout — title may shrink further, scrubber goes
-   full-width along the bottom instead of floating bottom-right.
---------------------------------------------------------------------- */
-
-@media (max-width: 640px) {
-
-	:root {
-		--sheet-margin: 8px;
-		--sheet-radius: 16px;
-	}
-
-	#headline-block {
-		max-width: calc(100% - 40px);
-	}
-
-	#subtitle {
-		max-width: 40ch;
-	}
-
-	#top-right-chips {
-		flex-direction: column;
-		align-items: flex-end;
-	}
-
-	#scrub-bar {
-		left: 12px;
-		right: 12px;
-		bottom: 12px;
-		max-width: none;
-		flex-wrap: wrap;
-	}
-
-	#scrubber {
-		width: 100%;
-		max-width: none;
-		flex: 1 1 100%;
-		order: 3;
-	}
-
-	#time-readout {
-		order: 1;
-	}
-
-	#play-toggle {
-		order: 2;
-	}
-
-	#footer-line {
-		display: none;
-	}
-
+	z-index: 0;
 }
 
 /* =====================================================================
-   ACT 1 — hero "platform" section
-   ---------------------------------------------------------------------
-   Two columns inside a framed paper "sheet": LEFT = an animated 3D stage
-   (robot spins / walks in place / climbs, per chapter — js/hero.js) with a
-   couple of leader-line callouts to parts; RIGHT = a chaptered explainer
-   panel (nav, paragraph, policy SVG diagram, mp4 clip). Sits above the
-   interactive viewer (ACT 2); scroll reveals it.
+   Scroll-snap deck
    ===================================================================== */
 
-#hero-section {
+#deck {
 	position: relative;
 	z-index: 1;
-	height: 100vh;
 	height: 100dvh;
+	overflow-y: auto;
+	overflow-x: hidden;
+	scroll-snap-type: y mandatory;
+	scroll-behavior: smooth;
+	scrollbar-width: none;
+}
+
+#deck::-webkit-scrollbar { display: none; }
+
+.slide {
+	position: relative;
+	min-height: 100dvh;
+	scroll-snap-align: start;
+	scroll-snap-stop: always;
+}
+
+/* Content + solution-step slides frame their content in a paper sheet. */
+.slide.content,
+.slide.sol-step {
 	display: flex;
 	padding: var(--sheet-margin);
 }
 
-#hero-inner {
+/* =====================================================================
+   Consistent fixed nav rail (same place on every slide)
+   ===================================================================== */
+
+#deck-nav {
+	position: fixed;
+	right: clamp(10px, 1.4vw, 20px);
+	top: 50%;
+	transform: translateY(-50%);
+	z-index: 40;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 10px;
+}
+
+.nav-arrow {
+	width: 30px;
+	height: 30px;
+	display: grid;
+	place-items: center;
+	border-radius: 50%;
+	border: 1px solid var(--sheet-border);
+	background: color-mix(in srgb, var(--sheet) 70%, transparent);
+	backdrop-filter: blur(3px);
+	cursor: pointer;
+	transition: background 130ms ease, transform 130ms ease;
+}
+
+.nav-arrow svg { width: 16px; height: 16px; fill: none; stroke: var(--ink); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.nav-arrow:hover { background: var(--ink); }
+.nav-arrow:hover svg { stroke: var(--sheet); }
+.nav-arrow:active { transform: scale(0.92); }
+
+#nav-dots {
+	display: flex;
+	flex-direction: column;
+	gap: 11px;
+	padding: 4px 0;
+}
+
+.nav-dot {
 	position: relative;
+	width: 11px;
+	height: 11px;
+	padding: 0;
+	border-radius: 50%;
+	border: 1.5px solid var(--ink);
+	background: transparent;
+	opacity: 0.5;
+	cursor: pointer;
+	transition: opacity 130ms ease, background 130ms ease, transform 130ms ease;
+}
+
+.nav-dot:hover { opacity: 0.9; transform: scale(1.15); }
+
+.nav-dot.active {
+	background: var(--ink);
+	opacity: 1;
+}
+
+/* Label appears to the LEFT on hover/active (consistent, doesn't shift layout) */
+.nav-dot-label {
+	position: absolute;
+	right: 20px;
+	top: 50%;
+	transform: translateY(-50%) translateX(6px);
+	white-space: nowrap;
+	font-family: var(--font-mono);
+	font-size: 11px;
+	padding: 3px 8px;
+	border-radius: 6px;
+	background: var(--ink);
+	color: var(--sheet);
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 130ms ease, transform 130ms ease;
+}
+
+.nav-dot:hover .nav-dot-label,
+.nav-dot.active .nav-dot-label { opacity: 0.92; transform: translateY(-50%) translateX(0); }
+
+/* =====================================================================
+   Content slides: paper sheet with a visual (left) + explainer (right)
+   ===================================================================== */
+
+.slide-sheet {
 	flex: 1;
 	min-height: 0;
 	display: grid;
@@ -394,73 +182,318 @@ button {
 	transition: background 200ms ease, border-color 200ms ease;
 }
 
-/* --- LEFT: the animated 3D stage --- */
+.slide-visual {
+	position: relative;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: clamp(16px, 3vw, 44px);
+	overflow: hidden;
+}
+
+.slide-copy {
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	gap: 13px;
+	padding: clamp(20px, 2.6vw, 40px);
+	border-left: 1px solid var(--sheet-border);
+	overflow: auto;
+}
+
+.slide-eyebrow {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	letter-spacing: 0.16em;
+	text-transform: uppercase;
+	color: var(--ink);
+	opacity: 0.6;
+}
+
+.slide-title {
+	margin: 0;
+	font-family: var(--font-display);
+	font-weight: 800;
+	font-size: clamp(24px, 2.6vw, 38px);
+	line-height: 1.06;
+	letter-spacing: -0.015em;
+	color: var(--headline);
+}
+
+.slide-body { display: contents; }
+
+/* =====================================================================
+   Text-effect reveals (driven by .in on the section, added by deck.js)
+   ===================================================================== */
+
+.slide-eyebrow,
+.slide-title,
+.slide-visual,
+.hero-copy-lead,
+.hero-copy-body,
+.hero-stats,
+.hero-tags,
+.sol-panel > * {
+	opacity: 0;
+	transform: translateY(20px);
+	transition: opacity 0.6s ease, transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.slide.in .slide-eyebrow,
+.slide.in .slide-title,
+.slide.in .slide-visual,
+.slide.in .hero-copy-lead,
+.slide.in .hero-copy-body,
+.slide.in .hero-stats,
+.slide.in .hero-tags,
+.slide.in .sol-panel > * {
+	opacity: 1;
+	transform: none;
+}
+
+/* stagger */
+.slide.in .slide-eyebrow { transition-delay: 0.04s; }
+.slide.in .slide-title   { transition-delay: 0.10s; }
+.slide.in .slide-visual  { transition-delay: 0.16s; }
+.slide.in .hero-copy-lead { transition-delay: 0.18s; }
+.slide.in .hero-copy-body { transition-delay: 0.26s; }
+.slide.in .hero-stats    { transition-delay: 0.34s; }
+.slide.in .hero-tags     { transition-delay: 0.42s; }
+.slide.in .sol-panel > :nth-child(2) { transition-delay: 0.08s; }
+.slide.in .sol-panel > :nth-child(3) { transition-delay: 0.16s; }
+.slide.in .sol-panel > :nth-child(4) { transition-delay: 0.24s; }
+.slide.in .sol-panel > :nth-child(5) { transition-delay: 0.32s; }
+
+@media (prefers-reduced-motion: reduce) {
+	.slide-eyebrow, .slide-title, .slide-visual, .hero-copy-lead, .hero-copy-body,
+	.hero-stats, .hero-tags, .sol-panel > * { opacity: 1; transform: none; transition: none; }
+}
+
+/* =====================================================================
+   Content visuals (native SVG: illustration / charts)
+   ===================================================================== */
+
+.slide-visual svg { width: 100%; height: auto; max-height: 100%; display: block; overflow: visible; }
+
+.hero-art { width: 100%; max-width: 560px; color: var(--ink); }
+
+.hero-charts {
+	display: flex;
+	flex-direction: column;
+	gap: clamp(10px, 1.6vh, 18px);
+	width: 100%;
+	max-width: 560px;
+}
+
+.hero-charts.cols-2 {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	align-items: start;
+	max-width: 660px;
+}
+
+.hero-chart {
+	border: 1px solid var(--sheet-border);
+	border-radius: 14px;
+	background: color-mix(in srgb, var(--sheet) 62%, transparent);
+	padding: 12px 14px 10px;
+	color: var(--ink);
+}
+
+.hero-chart-title {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	opacity: 0.7;
+	margin: 0 0 6px;
+}
+
+.hero-chart svg { width: 100%; height: auto; }
+
+.ch-frame { fill: none; stroke: currentColor; stroke-width: 1; opacity: 0.32; }
+.ch-axis  { fill: none; stroke: currentColor; stroke-width: 1.2; opacity: 0.55; stroke-linecap: round; }
+.ch-base  { fill: none; stroke: currentColor; stroke-width: 1.2; stroke-dasharray: 4 3; opacity: 0.5; }
+.ch-target { fill: none; stroke: #e5484d; stroke-width: 1.3; stroke-dasharray: 5 3; opacity: 0.85; }
+.ch-line  { fill: none; stroke-width: 2.4; stroke-linejoin: round; stroke-linecap: round; }
+.ch-area  { opacity: 0.12; }
+.ch-dot   { stroke: var(--sheet); stroke-width: 1.4; }
+.ch-tick  { fill: currentColor; font-family: var(--font-mono); font-size: 9.5px; opacity: 0.6; }
+.ch-axlbl { fill: currentColor; font-family: var(--font-mono); font-size: 9px; opacity: 0.5; text-transform: uppercase; letter-spacing: 0.05em; }
+.ch-val   { fill: currentColor; font-family: var(--font-mono); font-size: 10px; font-weight: 700; }
+.ch-note  { fill: currentColor; font-family: var(--font-mono); font-size: 9px; opacity: 0.55; }
+.ch-bar-reached { fill: #0e9b8e; }
+.ch-bar-partial { fill: #c07d3c; }
+.ch-bar-none    { fill: currentColor; opacity: 0.22; }
+
+/* =====================================================================
+   Content copy blocks
+   ===================================================================== */
+
+.hero-copy-lead {
+	margin: 0;
+	font-family: var(--font-display);
+	font-size: clamp(15px, 1.55vw, 18px);
+	font-weight: 700;
+	line-height: 1.4;
+	color: var(--headline);
+}
+
+.hero-copy-body {
+	margin: 0;
+	font-size: 14px;
+	line-height: 1.62;
+	color: var(--ink);
+	opacity: 0.9;
+}
+
+.hero-stats {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 8px;
+	margin-top: 2px;
+}
+
+.hero-stat {
+	border: 1px solid var(--sheet-border);
+	border-radius: 11px;
+	padding: 10px 10px 9px;
+	background: color-mix(in srgb, var(--sheet) 55%, transparent);
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+
+.hero-stat-v { font-family: var(--font-display); font-size: clamp(17px, 1.8vw, 22px); font-weight: 800; line-height: 1; letter-spacing: -0.01em; color: var(--headline); }
+.hero-stat-l { font-family: var(--font-mono); font-size: 10px; line-height: 1.3; color: var(--ink); opacity: 0.62; }
+
+.hero-tags { display: flex; flex-wrap: wrap; gap: 7px; }
+.hero-tag { font-family: var(--font-mono); font-size: 11px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--ink); color: var(--ink); opacity: 0.82; }
+
+.hero-teamcard {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	text-align: center;
+	gap: 14px;
+	padding: clamp(20px, 3vw, 34px);
+	border: 1px solid var(--sheet-border);
+	border-radius: 20px;
+	background: color-mix(in srgb, var(--sheet) 70%, transparent);
+	box-shadow: 0 18px 40px rgba(0, 0, 0, 0.16);
+	max-width: 340px;
+}
+
+.hero-teamcard img { width: 130px; height: 130px; border-radius: 50%; object-fit: cover; border: 3px solid var(--ink); box-shadow: 0 8px 22px rgba(0, 0, 0, 0.2); }
+.hero-teamcard .tc-name { font-family: var(--font-display); font-size: clamp(22px, 2.4vw, 30px); font-weight: 800; letter-spacing: -0.015em; line-height: 1.05; color: var(--headline); }
+.hero-teamcard .tc-role { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink); opacity: 0.66; }
+
+/* =====================================================================
+   Solution & technology: pinned (sticky) 3D stage + 3 scrolling steps
+   ===================================================================== */
+
+#s-solution {
+	position: relative;
+	display: grid;
+	grid-template-columns: 1.5fr 1fr;
+}
+
+.sol-stage-sticky {
+	grid-column: 1;
+	position: sticky;
+	top: 0;
+	height: 100dvh;
+	align-self: start;
+	padding: var(--sheet-margin);
+}
+
+.sol-steps { grid-column: 2; }
+
+.sol-step {
+	align-items: center;
+	justify-content: center;
+}
+
+.sol-panel {
+	width: 100%;
+	max-width: 460px;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	padding: clamp(18px, 2vw, 26px);
+	border-radius: var(--sheet-radius);
+	background: color-mix(in srgb, var(--sheet) 86%, transparent);
+	border: 1px solid var(--sheet-border);
+	backdrop-filter: blur(4px);
+	box-shadow: 0 18px 44px rgba(0, 0, 0, 0.2);
+}
+
+.sol-panel .slide-title { font-size: clamp(20px, 2.1vw, 28px); }
+
+.sol-diagram {
+	color: var(--ink);
+	border: 1px solid var(--sheet-border);
+	border-radius: 12px;
+	padding: 8px 14px;
+	display: flex;
+	justify-content: center;
+	background: color-mix(in srgb, var(--sheet) 60%, transparent);
+}
+
+.sol-diagram svg { width: auto; max-width: 100%; height: auto; max-height: clamp(110px, 22vh, 190px); display: block; }
+
+.sol-body { margin: 0; font-size: 13.5px; line-height: 1.6; color: var(--ink); opacity: 0.9; }
+
+.sol-clip { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+
+.sol-clip-frame {
+	position: relative;
+	width: 100%;
+	aspect-ratio: 16 / 9;
+	border-radius: 12px;
+	border: 1.5px solid var(--ink);
+	overflow: hidden;
+	background: #12110f;
+	box-shadow: 0 10px 24px rgba(0, 0, 0, 0.14);
+}
+
+.sol-clip-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.sol-clip figcaption { font-family: var(--font-mono); font-size: 12px; line-height: 1.4; color: var(--ink); opacity: 0.7; text-align: center; }
+
+/* Diagram (dg-*) primitives — shared by the policy schematics */
+.dg-box, .dg-ln, .dg-ah { fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.dg-dock { fill: none; stroke: currentColor; stroke-width: 1.3; stroke-dasharray: 5 3; opacity: 0.7; }
+.dg-t { fill: currentColor; font-family: var(--font-mono); font-size: 11px; }
+.dg-c { fill: currentColor; font-family: var(--font-mono); font-size: 10px; opacity: 0.6; }
+
+/* =====================================================================
+   3D stage chrome (host #hero-stage, inside the sticky column)
+   ===================================================================== */
 
 #hero-stage {
 	position: relative;
-	overflow: hidden;
+	width: 100%;
+	height: 100%;
+	border-radius: var(--sheet-radius);
 	background: var(--sheet);
+	border: 1px solid var(--sheet-border);
+	overflow: hidden;
+	box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
 }
 
-#hero-stage canvas {
-	position: absolute;
-	inset: 0;
-	display: block;
-	width: 100%;
-	height: 100%;
-}
+#hero-stage canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
 
-/* Leader lines + target/anchor nodes */
+#hero-leaders { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 4; overflow: visible; transition: opacity 240ms ease; }
+.hero-leader { fill: none; stroke: var(--ink); stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; opacity: 0.82; stroke-dasharray: 1; stroke-dashoffset: 1; transition: stroke-dashoffset 520ms ease; }
+.hero-leader.drawn { stroke-dashoffset: 0; }
+.hero-leader-dot { fill: var(--ink); stroke: var(--sheet); stroke-width: 1.2; }
+.hero-leader-anchor { fill: var(--ink); }
 
-#hero-leaders {
-	position: absolute;
-	inset: 0;
-	width: 100%;
-	height: 100%;
-	pointer-events: none;
-	z-index: 4;
-	overflow: visible;
-}
-
-.hero-leader {
-	fill: none;
-	stroke: var(--ink);
-	stroke-width: 1.3;
-	stroke-linecap: round;
-	stroke-linejoin: round;
-	opacity: 0.82;
-	stroke-dasharray: 1;
-	stroke-dashoffset: 1;
-	transition: stroke-dashoffset 520ms ease;
-}
-
-.hero-leader.drawn {
-	stroke-dashoffset: 0;
-}
-
-.hero-leader-dot {
-	fill: var(--ink);
-	stroke: var(--sheet);
-	stroke-width: 1.2;
-}
-
-.hero-leader-anchor {
-	fill: var(--ink);
-}
-
-/* Callout cards (LEFT gutter only — the panel takes the right) */
-
-#hero-callouts {
-	position: absolute;
-	inset: 0;
-	pointer-events: none;
-	z-index: 5;
-}
-
+#hero-callouts { position: absolute; inset: 0; pointer-events: none; z-index: 5; transition: opacity 240ms ease; }
 .hero-callout {
 	position: absolute;
 	transform: translateY(-50%);
-	max-width: clamp(120px, 13vw, 180px);
+	max-width: clamp(120px, 13vw, 178px);
 	display: flex;
 	flex-direction: column;
 	gap: 1px;
@@ -471,418 +504,21 @@ button {
 	backdrop-filter: blur(2px);
 	box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
 }
+.hero-callout.side-left { left: clamp(12px, 1.6vw, 24px); text-align: left; }
+.hero-callout.side-right { right: clamp(12px, 1.6vw, 24px); text-align: right; }
+.hero-callout-label { font-family: var(--font-display); font-size: 14px; font-weight: 700; color: var(--headline); line-height: 1.2; }
+.hero-callout-sub { font-family: var(--font-mono); font-size: 11px; color: var(--ink); opacity: 0.62; line-height: 1.25; }
 
-.hero-callout.side-left {
-	left: clamp(14px, 2vw, 30px);
-	text-align: left;
-}
+#hero-stage-tag { position: absolute; left: clamp(14px, 1.8vw, 22px); bottom: clamp(12px, 1.8vw, 20px); z-index: 6; font-family: var(--font-mono); font-size: 12px; color: var(--ink); opacity: 0.6; pointer-events: none; }
 
-.hero-callout.side-right {
-	right: clamp(14px, 2vw, 30px);
-	text-align: right;
-}
-
-.hero-callout-label {
-	font-family: var(--font-display);
-	font-size: 14px;
-	font-weight: 700;
-	color: var(--headline);
-	line-height: 1.2;
-}
-
-.hero-callout-sub {
-	font-family: var(--font-mono);
-	font-size: 11px;
-	color: var(--ink);
-	opacity: 0.62;
-	line-height: 1.25;
-}
-
-/* Stage corner chrome */
-
-#hero-stage-tag {
-	position: absolute;
-	left: clamp(16px, 2vw, 26px);
-	bottom: clamp(14px, 2vw, 22px);
-	z-index: 6;
-	font-family: var(--font-mono);
-	font-size: 12px;
-	color: var(--ink);
-	opacity: 0.6;
-	pointer-events: none;
-}
-
-#hero-zoom {
-	position: absolute;
-	right: clamp(16px, 2vw, 26px);
-	bottom: clamp(14px, 2vw, 22px);
-	z-index: 6;
-	display: flex;
-	gap: 6px;
-}
-
-.hero-zoombtn {
-	width: 34px;
-	height: 34px;
-	display: grid;
-	place-items: center;
-	border-radius: 8px;
-	border: 1px solid var(--ink);
-	background: color-mix(in srgb, var(--sheet) 78%, transparent);
-	cursor: pointer;
-	pointer-events: auto;
-	transition: background 130ms ease;
-}
-
-.hero-zoombtn svg {
-	width: 18px;
-	height: 18px;
-	fill: none;
-	stroke: var(--ink);
-	stroke-width: 2;
-	stroke-linecap: round;
-	stroke-linejoin: round;
-	transition: stroke 130ms ease;
-}
-
-.hero-zoombtn:hover {
-	background: var(--ink);
-}
-
-.hero-zoombtn:hover svg {
-	stroke: var(--sheet);
-}
-
-/* --- RIGHT: the explainer panel --- */
-
-#hero-panel {
-	position: relative;
-	display: flex;
-	flex-direction: column;
-	/* `safe center` centres the content when it fits, but falls back to
-	   start-alignment when it OVERFLOWS — otherwise a tall chapter (one with
-	   a clip) centres and pushes the nav arrows off the top where they can't
-	   be scrolled to (a flexbox overflow footgun). */
-	justify-content: safe center;
-	gap: clamp(10px, 1.3vw, 14px);
-	padding: clamp(18px, 2vw, 26px);
-	border-left: 1px solid var(--sheet-border);
-	overflow: auto;
-}
-
-#hero-nav {
-	display: flex;
-	align-items: center;
-	gap: 12px;
-}
-
-.hero-navarrow {
-	width: 36px;
-	height: 36px;
-	flex: none;
-	display: grid;
-	place-items: center;
-	border-radius: 50%;
-	border: 1px solid var(--ink);
-	background: transparent;
-	cursor: pointer;
-	pointer-events: auto;
-	transition: background 130ms ease, transform 130ms ease;
-}
-
-.hero-navarrow svg {
-	width: 17px;
-	height: 17px;
-	fill: none;
-	stroke: var(--ink);
-	stroke-width: 2;
-	stroke-linecap: round;
-	stroke-linejoin: round;
-	transition: stroke 130ms ease;
-}
-
-.hero-navarrow:hover {
-	background: var(--ink);
-}
-
-.hero-navarrow:hover svg {
-	stroke: var(--sheet);
-}
-
-.hero-navarrow:active {
-	transform: scale(0.94);
-}
-
-#hero-nav-label {
-	display: flex;
-	flex-direction: column;
-	gap: 2px;
-	transition: opacity 240ms ease, transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-#hero-chapter-index {
-	font-family: var(--font-mono);
-	font-size: 11px;
-	letter-spacing: 0.14em;
-	color: var(--ink);
-	opacity: 0.55;
-}
-
-#hero-chapter-title {
-	font-family: var(--font-display);
-	font-size: clamp(20px, 2.1vw, 28px);
-	font-weight: 800;
-	letter-spacing: -0.015em;
-	line-height: 1.05;
-	color: var(--headline);
-}
-
-#hero-dots {
-	display: flex;
-	gap: 8px;
-}
-
-.hero-dot {
-	width: 8px;
-	height: 8px;
-	padding: 0;
-	border-radius: 50%;
-	border: 1px solid var(--ink);
-	background: transparent;
-	cursor: pointer;
-	pointer-events: auto;
-	opacity: 0.5;
-	transition: opacity 130ms ease, background 130ms ease;
-}
-
-.hero-dot:hover {
-	opacity: 0.85;
-}
-
-.hero-dot.active {
-	background: var(--ink);
-	opacity: 1;
-}
-
-/* Chapter body copy — a lower-third caption over the bottom of the stage
-   (moved out of the panel so the diagram + clip fit without scrolling). It
-   sits above the stage-tag/zoom row and clears the side gutter callouts.
-   Width is capped well short of the left/right callout gutters (each up to
-   ~180px + edge offset) so the longest chapter body never overlaps them. */
-#hero-body {
-	position: absolute;
-	left: 50%;
-	bottom: clamp(46px, 6vh, 72px);
-	transform: translateX(-50%);
-	z-index: 6;
-	width: min(62%, 600px);
-	margin: 0;
-	padding: 13px 20px;
-	border-radius: 13px;
-	background: color-mix(in srgb, var(--sheet) 84%, transparent);
-	backdrop-filter: blur(5px);
-	border: 1px solid var(--sheet-border);
-	box-shadow: 0 12px 30px rgba(0, 0, 0, 0.16);
-	font-size: 14px;
-	line-height: 1.55;
-	color: var(--ink);
-	text-align: center;
-	pointer-events: none;
-	transition: opacity 240ms ease, transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-/* Policy SVG diagram (theme-aware via currentColor) */
-
-#hero-diagram {
-	color: var(--ink);
-	border: 1px solid var(--sheet-border);
-	border-radius: 12px;
-	padding: 8px 14px;
-	display: flex;
-	justify-content: center;
-	background: color-mix(in srgb, var(--sheet) 60%, transparent);
-	transition: opacity 240ms ease, transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-#hero-diagram svg {
-	width: auto;
-	max-width: 100%;
-	height: auto;
-	max-height: clamp(120px, 27vh, 220px);
-	display: block;
-}
-
-.dg-box, .dg-ln, .dg-ah {
-	fill: none;
-	stroke: currentColor;
-	stroke-width: 1.4;
-	stroke-linecap: round;
-	stroke-linejoin: round;
-}
-
-.dg-x {
-	stroke: currentColor;
-	stroke-width: 1.6;
-	opacity: 0.75;
-}
-
-/* Dashed "docker container" boundary (architecture diagram) */
-.dg-dock {
-	fill: none;
-	stroke: currentColor;
-	stroke-width: 1.3;
-	stroke-dasharray: 5 3;
-	opacity: 0.7;
-}
-
-.dg-t {
-	fill: currentColor;
-	font-family: var(--font-mono);
-	font-size: 11px;
-}
-
-.dg-c {
-	fill: currentColor;
-	font-family: var(--font-mono);
-	font-size: 10px;
-	opacity: 0.6;
-}
-
-/* mp4 clip card */
-
-.hero-clip {
-	margin: 0;
-	display: flex;
-	flex-direction: column;
-	align-items: center;
-	gap: 6px;
-	transition: opacity 240ms ease, transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.hero-clip-frame {
-	position: relative;
-	width: clamp(220px, 46vh, 100%);
-	aspect-ratio: 16 / 9;
-	border-radius: 12px;
-	border: 1.5px solid var(--ink);
-	background:
-		radial-gradient(135% 110% at 50% 0%, rgba(255, 255, 255, 0.12), rgba(0, 0, 0, 0.06) 82%),
-		var(--sheet);
-	box-shadow: 0 10px 24px rgba(0, 0, 0, 0.14);
-	display: grid;
-	place-items: center;
-	overflow: hidden;
-}
-
-.hero-clip-play {
-	width: 46px;
-	height: 46px;
-	border-radius: 50%;
-	border: 1.5px solid var(--ink);
-	background: var(--sheet);
-	display: grid;
-	place-items: center;
-	cursor: pointer;
-	pointer-events: auto;
-	transition: transform 140ms ease, background 140ms ease;
-}
-
-.hero-clip-play svg {
-	width: 19px;
-	height: 19px;
-	margin-left: 2px;
-	fill: var(--ink);
-	transition: fill 140ms ease;
-}
-
-.hero-clip-play:hover {
-	transform: scale(1.09);
-	background: var(--ink);
-}
-
-.hero-clip-play:hover svg {
-	fill: var(--sheet);
-}
-
-.hero-clip-badge {
-	position: absolute;
-	top: 9px;
-	left: 9px;
-	font-family: var(--font-mono);
-	font-size: 10px;
-	text-transform: uppercase;
-	letter-spacing: 0.09em;
-	padding: 3px 8px;
-	border-radius: 6px;
-	background: var(--ink);
-	color: var(--sheet);
-	opacity: 0.85;
-}
-
-.hero-clip-dur {
-	position: absolute;
-	bottom: 9px;
-	right: 9px;
-	font-family: var(--font-mono);
-	font-size: 10px;
-	text-transform: uppercase;
-	letter-spacing: 0.08em;
-	color: var(--ink);
-	opacity: 0.5;
-}
-
-.hero-clip figcaption {
-	width: clamp(220px, 46vh, 100%);
-	text-align: center;
-	font-family: var(--font-mono);
-	font-size: 12px;
-	line-height: 1.4;
-	color: var(--ink);
-	opacity: 0.7;
-}
-
-/* Inline clip video + play/pause toggle */
-
-.hero-clip-video {
-	position: absolute;
-	inset: 0;
-	width: 100%;
-	height: 100%;
-	object-fit: cover;
-	display: block;
-	background: #12110f;
-}
-
-.hero-clip-ic-pause {
-	display: none;
-}
-
-.hero-clip-frame.playing .hero-clip-ic-play {
-	display: none;
-}
-
-.hero-clip-frame.playing .hero-clip-ic-pause {
-	display: block;
-}
-
-/* When playing, the button recedes so the footage shows; returns on hover. */
-.hero-clip-frame.playing .hero-clip-play {
-	opacity: 0;
-}
-
-.hero-clip-frame.playing:hover .hero-clip-play {
-	opacity: 1;
-}
-
-.hero-clip-play {
-	transition: transform 140ms ease, background 140ms ease, opacity 220ms ease;
-}
+#hero-zoom { position: absolute; right: clamp(14px, 1.8vw, 22px); bottom: clamp(12px, 1.8vw, 20px); z-index: 6; display: flex; gap: 6px; }
+.hero-zoombtn { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 8px; border: 1px solid var(--ink); background: color-mix(in srgb, var(--sheet) 78%, transparent); cursor: pointer; transition: background 130ms ease; }
+.hero-zoombtn svg { width: 18px; height: 18px; fill: none; stroke: var(--ink); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transition: stroke 130ms ease; }
+.hero-zoombtn:hover { background: var(--ink); }
+.hero-zoombtn:hover svg { stroke: var(--sheet); }
 
 /* =====================================================================
    Per-policy stage FX overlay (#hero-fx, built by js/hero.js)
-   walk  -> a scan cone projected in FRONT of the robot + YOLO HUD
-   climb -> orange proprioceptive "feeling" waves at EACH foot + sensing HUD
-   The overlay never takes pointer events (OrbitControls still gets drags).
    ===================================================================== */
 
 #hero-fx {
@@ -892,287 +528,150 @@ button {
 	pointer-events: none;
 	overflow: hidden;
 	transition: opacity 180ms ease;
-	--fx-scan: #0e9b8e; /* teal — vision / YOLO instrument colour */
-	--fx-feel: #3a7ce5; /* cool blue — blind "feeling" / contact colour, kept off the warm oak-stair orange */
+	--fx-scan: #0e9b8e;
+	--fx-feel: #3a7ce5;
 }
 
-/* Hidden unless the matching mode class is present */
-.fx-cone, .fx-hud, .fx-feet {
-	display: none;
-}
-
+.fx-cone, .fx-hud, .fx-feet { display: none; }
 #hero-fx.fx-mode-scan .fx-cone { display: block; }
 #hero-fx.fx-mode-scan .fx-hud-yolo { display: flex; }
 #hero-fx.fx-mode-feel .fx-feet { display: block; }
 #hero-fx.fx-mode-feel .fx-hud-sense { display: flex; }
-
-/* JS hides the cone / a foot origin when it is off-screen */
 .fx-cone.fx-off, .fx-foot.fx-off { display: none !important; }
 
-/* --- walk: scan cone projected in FRONT of the robot. The polygon points +
-       gradient axis are recomputed each frame in js/hero.js from the robot's
-       facing; a bright bar sweeps apex -> far like a radar ping. --- */
-.fx-cone {
-	position: absolute;
-	inset: 0;
-	width: 100%;
-	height: 100%;
-	overflow: visible;
-	/* opacity is driven per-frame in js/hero.js: the cone fades out as the
-	   view rotates head-on (where a flat 2D cone would collapse to a sliver). */
-}
-
-.fx-cone-fill {
-	fill: url(#fxConeGrad);
-	stroke: var(--fx-scan);
-	stroke-width: 1.5;
-	stroke-opacity: 0.5;
-	stroke-linejoin: round;
-}
-
+.fx-cone { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.fx-cone-fill { fill: url(#fxConeGrad); stroke: var(--fx-scan); stroke-width: 1.5; stroke-opacity: 0.5; stroke-linejoin: round; }
 .fx-cone-s0 { stop-color: var(--fx-scan); stop-opacity: 0.4; }
 .fx-cone-s1 { stop-color: var(--fx-scan); stop-opacity: 0; }
+.fx-cone-sweep { stroke: var(--fx-scan); stroke-width: 2.5; stroke-linecap: round; stroke-opacity: 0.9; filter: drop-shadow(0 0 4px var(--fx-scan)); }
 
-.fx-cone-sweep {
-	stroke: var(--fx-scan);
-	stroke-width: 2.5;
-	stroke-linecap: round;
-	stroke-opacity: 0.9;
-	filter: drop-shadow(0 0 4px var(--fx-scan));
-}
+.fx-hud { position: absolute; top: 14px; left: 14px; align-items: center; gap: 7px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.03em; padding: 5px 10px; border-radius: 7px; color: #f4f2ee; background: rgba(18, 18, 16, 0.74); backdrop-filter: blur(3px); }
+.fx-hud-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--fx-scan); box-shadow: 0 0 8px 1px var(--fx-scan); animation: fxBlink 1.1s steps(1, end) infinite; }
+.fx-hud-sense .fx-hud-dot { background: var(--fx-feel); box-shadow: 0 0 8px 1px var(--fx-feel); }
+@keyframes fxBlink { 0%, 60% { opacity: 1; } 61%, 100% { opacity: 0.2; } }
+.fx-hud-conf { margin-left: 3px; padding-left: 8px; border-left: 1px solid rgba(255, 255, 255, 0.22); color: var(--fx-scan); font-variant-numeric: tabular-nums; }
 
-/* --- HUD chips (top-left) --- */
-.fx-hud {
-	position: absolute;
-	top: 14px;
-	left: 14px;
-	align-items: center;
-	gap: 7px;
-	font-family: var(--font-mono);
-	font-size: 11px;
-	letter-spacing: 0.03em;
-	padding: 5px 10px;
-	border-radius: 7px;
-	color: #f4f2ee;
-	background: rgba(18, 18, 16, 0.74);
-	backdrop-filter: blur(3px);
-}
-
-.fx-hud-dot {
-	width: 7px;
-	height: 7px;
-	border-radius: 50%;
-	background: var(--fx-scan);
-	box-shadow: 0 0 8px 1px var(--fx-scan);
-	animation: fxBlink 1.1s steps(1, end) infinite;
-}
-
-.fx-hud-sense .fx-hud-dot {
-	background: var(--fx-feel);
-	box-shadow: 0 0 8px 1px var(--fx-feel);
-}
-
-@keyframes fxBlink {
-	0%, 60% { opacity: 1; }
-	61%, 100% { opacity: 0.2; }
-}
-
-.fx-hud-conf {
-	margin-left: 3px;
-	padding-left: 8px;
-	border-left: 1px solid rgba(255, 255, 255, 0.22);
-	color: var(--fx-scan);
-	font-variant-numeric: tabular-nums;
-}
-
-/* --- climb: orange proprioceptive "feeling" waves at EACH foot (per-foot
-       origins positioned each frame in js/hero.js) --- */
-.fx-feet {
-	position: absolute;
-	inset: 0;
-}
-
-.fx-foot {
-	position: absolute;
-	width: 0;
-	height: 0;
-}
-
-.fx-foot span {
-	position: absolute;
-	left: 0;
-	top: 0;
-	width: 18px;
-	height: 18px;
-	margin: -9px 0 0 -9px;
-	border-radius: 50%;
-	border: 2px solid var(--fx-feel);
-	transform: scale(0.3);
-	opacity: 0;
-	animation: fxFootRipple 1.9s ease-out infinite;
-}
-
+.fx-feet { position: absolute; inset: 0; }
+.fx-foot { position: absolute; width: 0; height: 0; }
+.fx-foot span { position: absolute; left: 0; top: 0; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; border: 2px solid var(--fx-feel); transform: scale(0.3); opacity: 0; animation: fxFootRipple 1.9s ease-out infinite; }
 .fx-foot span:nth-child(2) { animation-delay: 0.63s; }
 .fx-foot span:nth-child(3) { animation-delay: 1.26s; }
-
-@keyframes fxFootRipple {
-	0%   { transform: scale(0.3); opacity: 0; }
-	14%  { opacity: 0.8; }
-	100% { transform: scale(3.6); opacity: 0; }
-}
+@keyframes fxFootRipple { 0% { transform: scale(0.3); opacity: 0; } 14% { opacity: 0.8; } 100% { transform: scale(3.6); opacity: 0; } }
 
 @media (prefers-reduced-motion: reduce) {
-	.fx-hud-dot, .fx-foot span {
-		animation: none;
-	}
+	.fx-hud-dot, .fx-foot span { animation: none; }
 	.fx-foot span:nth-child(1) { opacity: 0.55; transform: scale(2.4); }
 }
 
-/* Chapter switch: the stage overlays just crossfade; the panel content and
-   the body caption also slide up a touch as they fade, for a softer swap. */
+/* =====================================================================
+   Live demo (js/main.js) — #sheet fills the slide; overlay chrome on top
+   ===================================================================== */
 
-#hero-inner.switching #hero-callouts,
-#hero-inner.switching #hero-leaders,
-#hero-inner.switching #hero-fx {
-	opacity: 0;
-}
-
-#hero-inner.switching #hero-nav-label,
-#hero-inner.switching #hero-diagram,
-#hero-inner.switching .hero-clip {
-	opacity: 0;
-	transform: translateY(14px);
-}
-
-#hero-inner.switching #hero-body {
-	opacity: 0;
-	transform: translateX(-50%) translateY(14px);
-}
-
-#hero-callouts,
-#hero-leaders {
-	transition: opacity 240ms ease;
-}
-
-/* --- Scroll cue --- */
-
-#scroll-cue {
+#sheet {
 	position: absolute;
-	left: 50%;
-	bottom: calc(var(--sheet-margin) + 12px);
-	transform: translateX(-50%);
-	z-index: 6;
-	display: flex;
-	flex-direction: column;
-	align-items: center;
-	gap: 3px;
-	font-family: var(--font-mono);
-	font-size: 11px;
-	letter-spacing: 0.12em;
-	text-transform: lowercase;
-	text-decoration: none;
-	color: var(--ink);
-	opacity: 0.5;
-	pointer-events: auto;
+	inset: var(--sheet-margin);
+	border-radius: var(--sheet-radius);
+	background: var(--sheet);
+	border: 1px solid var(--sheet-border);
+	overflow: hidden;
+	box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+	transition: background 200ms ease, border-color 200ms ease;
 }
 
-#scroll-cue:hover {
-	opacity: 0.85;
-}
+#canvas-host { position: absolute; inset: 0; }
+#canvas-host canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
 
-#scroll-cue svg {
-	width: 20px;
-	height: 20px;
-	fill: none;
-	stroke: var(--ink);
-	stroke-width: 2;
-	stroke-linecap: round;
-	stroke-linejoin: round;
-	animation: cueBob 1.8s ease-in-out infinite;
-}
+#ui-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 10; }
 
-@keyframes cueBob {
-	0%, 100% { transform: translateY(0); }
-	50% { transform: translateY(5px); }
+#headline-block { position: absolute; top: clamp(18px, 3vw, 36px); left: clamp(18px, 3vw, 36px); max-width: 34ch; pointer-events: none; }
+
+#demo-kicker { display: inline-block; font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink); opacity: 0.6; }
+
+/* Animated explanatory captions (fade + slide in when the demo is active) */
+#demo-captions { display: flex; flex-direction: column; gap: 7px; margin: 12px 0 16px; }
+.demo-cap {
+	font-family: var(--font-display);
+	font-size: clamp(15px, 1.5vw, 18px);
+	font-weight: 600;
+	line-height: 1.35;
+	color: var(--headline);
+	opacity: 0;
+	transform: translateX(-14px);
+	transition: opacity 0.6s ease, transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);
 }
+.demo-cap b { font-weight: 800; }
+.demo-cap b::before { content: '›  '; color: var(--ink); opacity: 0.5; }
+#s-demo.in .demo-cap { opacity: 0.92; transform: none; }
+#s-demo.in .demo-cap[data-cap="follow"] { transition-delay: 0.15s; }
+#s-demo.in .demo-cap[data-cap="climb"] { transition-delay: 0.45s; }
+@media (prefers-reduced-motion: reduce) { .demo-cap { opacity: 0.92; transform: none; transition: none; } }
+
+#phase-buttons { display: flex; gap: 10px; pointer-events: auto; }
+.phase-chip { font-family: var(--font-mono); font-size: 13px; line-height: 1; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--ink); background: transparent; color: var(--ink); cursor: pointer; transition: background 120ms ease, color 120ms ease, opacity 120ms ease; text-transform: lowercase; }
+.phase-chip:hover { opacity: 0.75; }
+.phase-chip[aria-pressed="true"] { background: var(--ink); color: var(--sheet); }
+
+.chip { font-family: var(--font-mono); font-size: 13px; padding: 7px 12px; border-radius: 8px; border: 1px solid var(--ink); background: transparent; color: var(--ink); cursor: pointer; pointer-events: auto; transition: background 120ms ease, color 120ms ease, opacity 120ms ease; white-space: nowrap; }
+.chip:hover { opacity: 0.75; }
+.chip[aria-pressed="true"] { background: var(--ink); color: var(--sheet); }
+
+#top-right-chips { position: absolute; top: clamp(18px, 3vw, 36px); right: clamp(18px, 3vw, 36px); display: flex; gap: 8px; pointer-events: none; }
+
+#model-warning.warning-chip { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); pointer-events: none; background: var(--sheet); opacity: 0.95; cursor: default; }
+
+/* Bottom dock: scrub controls + auto-playing filmstrip */
+#demo-dock { position: absolute; left: 0; right: 0; bottom: clamp(14px, 2.4vw, 26px); display: flex; flex-direction: column; align-items: center; gap: clamp(10px, 1.4vw, 16px); padding: 0 clamp(16px, 3vw, 32px); pointer-events: none; z-index: 12; }
+
+#scrub-bar { display: flex; align-items: center; gap: 10px; max-width: min(560px, 92vw); width: 100%; justify-content: center; pointer-events: none; }
+#time-readout { font-family: var(--font-mono); font-size: 13px; color: var(--ink); white-space: nowrap; }
+#play-toggle { flex: none; }
+
+#scrubber {
+	-webkit-appearance: none; appearance: none;
+	width: 420px; max-width: 46vw; height: 44px; border-radius: 10px;
+	background: repeating-linear-gradient(to right, #6f6c66 0px, #6f6c66 1px, transparent 1px, transparent 7px) center / 100% 40% no-repeat, #1e1d1a;
+	outline: none; cursor: pointer; pointer-events: auto; margin: 0;
+}
+#scrubber:focus-visible { box-shadow: 0 0 0 2px var(--sheet), 0 0 0 4px var(--ink); }
+#scrubber::-webkit-slider-runnable-track { -webkit-appearance: none; appearance: none; height: 100%; background: transparent; border: none; }
+#scrubber::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 4px; height: 22px; border-radius: 2px; background: #e5484d; border: none; margin-top: 0; cursor: pointer; box-shadow: 0 0 0 6px rgba(229, 72, 77, 0.12); }
+#scrubber::-moz-range-track { height: 100%; background: transparent; border: none; }
+#scrubber::-moz-range-thumb { width: 4px; height: 22px; border-radius: 2px; background: #e5484d; border: none; cursor: pointer; box-shadow: 0 0 0 6px rgba(229, 72, 77, 0.12); }
+#scrubber::-moz-range-progress { background: transparent; }
+
+#demo-filmstrip { display: flex; gap: clamp(8px, 1vw, 12px); justify-content: center; align-items: flex-end; flex-wrap: nowrap; max-width: 100%; overflow-x: auto; pointer-events: auto; padding-bottom: 2px; scrollbar-width: none; }
+#demo-filmstrip::-webkit-scrollbar { display: none; }
+
+.film-tile { margin: 0; flex: 0 0 auto; width: clamp(116px, 14vw, 164px); display: flex; flex-direction: column; gap: 5px; cursor: pointer; transition: transform 160ms ease; }
+.film-tile video { width: 100%; aspect-ratio: 2 / 1; object-fit: cover; display: block; border-radius: 10px; border: 1.5px solid var(--ink); background: #12110f; box-shadow: 0 8px 20px rgba(0, 0, 0, 0.16); transition: border-color 160ms ease, box-shadow 160ms ease; }
+.film-tile.is-featured video { border-color: #0e9b8e; box-shadow: 0 8px 22px rgba(14, 155, 142, 0.28); }
+.film-tile:hover { transform: translateY(-3px); }
+.film-tile:hover video { border-color: #0e9b8e; }
+.film-tile figcaption { display: flex; flex-direction: column; line-height: 1.2; font-family: var(--font-mono); text-align: center; }
+.film-tile figcaption b { font-size: 12px; font-weight: 700; color: var(--headline); }
+.film-tile figcaption span { font-size: 10px; color: var(--ink); opacity: 0.6; }
 
 /* =====================================================================
-   ACT 2 wrapper — the existing interactive viewer, now a scroll section.
+   Responsive: stack the two-column slides; nav rail moves to the bottom
    ===================================================================== */
 
-#viewer-section {
-	position: relative;
-	z-index: 1;
-	height: 100vh;
-	height: 100dvh;
-}
+@media (max-width: 860px) {
 
-/* =====================================================================
-   Scroll-driven reveal (progressive enhancement).
-   ===================================================================== */
+	.slide-sheet,
+	#s-solution { grid-template-columns: 1fr; }
 
-@media (prefers-reduced-motion: no-preference) {
-	@supports (animation-timeline: view()) {
+	/* On narrow screens the pinned stage can't share a row with the steps; let
+	   the Solution steps stack full-width and the stage ride above each. */
+	.sol-stage-sticky { position: relative; height: 60dvh; grid-column: 1; }
+	.sol-steps { grid-column: 1; }
+	.hero-charts.cols-2 { grid-template-columns: 1fr; }
 
-		#hero-inner {
-			animation: heroExit linear both;
-			animation-timeline: view();
-			animation-range: exit 0% exit 92%;
-		}
+	.slide-copy { border-left: none; border-top: 1px solid var(--sheet-border); }
 
-		@keyframes heroExit {
-			to {
-				opacity: 0.3;
-				transform: translateY(-24px) scale(0.99);
-			}
-		}
+	#hero-leaders, #hero-callouts { display: none; }
 
-		#sheet {
-			animation: sheetReveal linear both;
-			animation-timeline: view();
-			animation-range: entry 4% entry 62%;
-		}
-
-		@keyframes sheetReveal {
-			from {
-				opacity: 0;
-				transform: translateY(42px) scale(0.985);
-			}
-			to {
-				opacity: 1;
-				transform: none;
-			}
-		}
-
-	}
-}
-
-/* =====================================================================
-   Hero responsive: stack the panel under the stage; drop the leader
-   lines / gutter callouts (no side gutters on narrow screens).
-   ===================================================================== */
-
-@media (max-width: 820px) {
-
-	#hero-section {
-		height: auto;
-		min-height: 100dvh;
-	}
-
-	#hero-inner {
-		grid-template-columns: 1fr;
-		grid-template-rows: minmax(300px, 52vh) auto;
-	}
-
-	#hero-leaders,
-	#hero-callouts {
-		display: none;
-	}
-
-	#hero-panel {
-		justify-content: flex-start;
-		border-left: none;
-		border-top: 1px solid var(--sheet-border);
-	}
-
+	#deck-nav { top: auto; bottom: 10px; left: 50%; right: auto; transform: translateX(-50%); flex-direction: row; }
+	#nav-dots { flex-direction: row; }
+	.nav-dot-label { display: none; }
+	.nav-arrow { transform: rotate(-90deg); }
 }

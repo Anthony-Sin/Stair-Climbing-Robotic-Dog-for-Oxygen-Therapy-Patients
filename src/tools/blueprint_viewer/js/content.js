@@ -1,0 +1,342 @@
+// content.js
+//
+// Single source of truth for the pitch deck's copy + data visuals, shared by
+// the 3D stage engine (hero.js, which needs the Solution policies' motion/fx/
+// leader points) and the scroll orchestrator (deck.js, which injects every
+// section's HTML and builds the nav). All data visuals are native SVG in the
+// paper/ink palette (currentColor + accents teal #0e9b8e, oak #c07d3c,
+// terracotta #b0552f, red #e5484d) — deliberately NOT the dark matplotlib PNGs,
+// which clash with the deck's vibe. Numbers are the real training/sweep values
+// (follow_sweep_20260705_203945).
+
+// ---------------------------------------------------------------------------
+// Ordered sections — drives the nav rail + IntersectionObserver in deck.js.
+// `kind`: 'content' (static HTML card) | 'stage' (Solution, shared 3D stage) |
+// 'demo' (the interactive ACT-2 viewer, owned by main.js).
+// ---------------------------------------------------------------------------
+export const SECTIONS = [
+	{ id: 's-problem',   label: 'Problem',      group: 'Problem',                kind: 'content' },
+	{ id: 's-arch',      label: 'Architecture', group: 'Solution & technology',  kind: 'stage', policy: 'architecture' },
+	{ id: 's-walk',      label: 'Walking',      group: 'Solution & technology',  kind: 'stage', policy: 'walking' },
+	{ id: 's-climb',     label: 'Climbing',     group: 'Solution & technology',  kind: 'stage', policy: 'blind-rl' },
+	{ id: 's-demo',      label: 'Live demo',    group: 'Live demo',              kind: 'demo' },
+	{ id: 's-training',  label: 'Training',     group: 'Progress & results',     kind: 'content' },
+	{ id: 's-sweep',     label: 'Height sweep', group: 'Progress & results',     kind: 'content' },
+	{ id: 's-potential', label: 'Potential',    group: 'Real-world potential',   kind: 'content' },
+	{ id: 's-team',      label: 'Team',         group: 'Team',                   kind: 'content' },
+];
+
+// ---------------------------------------------------------------------------
+// Solution & technology policies (the 3 shared-stage sections). `motion`/`fx`
+// drive the 3D stage; `points` are the leader callouts; `diagram`/`clip`/`body`
+// fill the section's side panel.
+// ---------------------------------------------------------------------------
+export const POLICIES = {
+	architecture: {
+		id: 'architecture', motion: 'spin', fx: null,
+		title: 'System architecture',
+		body: 'A Unitree Go2 carries the patient’s oxygen concentrator on a shock-isolated cradle. The whole control stack — perception plus the learned policy — runs inside one Docker container on a Jetson Orin: the same container whether Isaac Sim or the real robot feeds it. Only the sensor source is swapped, so a policy proven in simulation is expected to hold on hardware.',
+		clip: null,
+		points: [
+			{ node: 'oxygen_tank', side: 'left', label: 'O₂ concentrator', sub: 'patient payload' },
+			{ node: 'cradle_rails', side: 'left', label: 'payload cradle', sub: 'shock-isolated' },
+			{ node: 'robot_base', side: 'left', label: 'onboard compute', sub: 'Jetson Orin' },
+			{ node: 'FR_hip', side: 'left', label: '12× actuators', sub: 'three per leg' },
+		],
+	},
+	walking: {
+		id: 'walking', motion: 'walk', fx: 'scan',
+		title: 'Walking policy — it follows you',
+		body: 'On flat ground the robot follows the patient by sight: a YOLO-World detector locates the person in every camera frame, and a learned trot gait steers to keep pace while holding the oxygen payload level — rejecting the disturbances of a shifting load and an uneven floor at each step.',
+		clip: { src: './assets/clips/walk.mp4', cap: 'Isaac Sim rollout — flat-ground follow gait.' },
+		points: [
+			{ node: 'robot_base', side: 'left', label: 'gait controller', sub: 'trot clock' },
+			{ node: 'FL_hip', side: 'left', label: 'hip abduction', sub: 'lateral balance' },
+			{ node: 'cradle_rails', side: 'left', label: 'payload held level', sub: 'load balancing' },
+			{ node: 'FR_calf', side: 'left', label: 'calf drive', sub: 'ground clearance' },
+		],
+	},
+	'blind-rl': {
+		id: 'blind-rl', motion: 'climb', fx: 'feel',
+		title: 'Blind-RL policy — it climbs by feel',
+		body: 'The staircase is climbed on feel alone. Cameras can’t see the steps underfoot, so a reinforcement-learning policy leans entirely on proprioception and foot contact — sensing each riser as a paw lands — to place its feet and drive the payload upward, step after step, while keeping the concentrator upright on the incline.',
+		clip: { src: './assets/clips/stairs.mp4', cap: 'Isaac Sim rollout — blind stair traversal.' },
+		points: [
+			{ node: 'robot_base', side: 'left', label: 'IMU · attitude', sub: 'stays upright' },
+			{ node: 'FR_hip', side: 'left', label: 'joint feedback', sub: 'proprioception' },
+			{ node: 'oxygen_tank', side: 'left', label: 'payload upright', sub: 'on the incline' },
+			{ node: 'FL_calf', side: 'left', label: 'foot contact', sub: 'feels each riser' },
+		],
+	},
+};
+
+// Policy SVG schematics (theme-aware via currentColor).
+export const DIAGRAMS = {
+	architecture: `<svg viewBox="0 0 320 178" role="img" aria-label="Docker / simulation split architecture diagram">
+		<rect class="dg-box" x="6" y="44" width="86" height="28" rx="5"/><text class="dg-t" x="49" y="62" text-anchor="middle">Isaac Sim</text>
+		<rect class="dg-box" x="6" y="98" width="86" height="28" rx="5"/><text class="dg-t" x="49" y="116" text-anchor="middle">real Go2</text>
+		<path class="dg-ln" d="M92 58 H102 V71 H116"/>
+		<path class="dg-ln" d="M92 112 H102 V71 H116"/>
+		<path class="dg-ah" d="M110 67l6 4-6 4"/>
+		<text class="dg-c" x="174" y="40" text-anchor="middle">docker container</text>
+		<rect class="dg-dock" x="108" y="46" width="130" height="82" rx="8"/>
+		<rect class="dg-box" x="116" y="58" width="116" height="26" rx="5"/><text class="dg-t" x="174" y="75" text-anchor="middle">perception</text>
+		<rect class="dg-box" x="116" y="94" width="116" height="26" rx="5"/><text class="dg-t" x="174" y="111" text-anchor="middle">policy π · frozen</text>
+		<path class="dg-ln" d="M174 84 V94"/><path class="dg-ah" d="M170 90l4 4 4-4"/>
+		<rect class="dg-box" x="252" y="92" width="64" height="30" rx="5"/><text class="dg-t" x="284" y="111" text-anchor="middle">12× joints</text>
+		<path class="dg-ln" d="M232 107 H250"/><path class="dg-ah" d="M244 103l6 4-6 4"/>
+		<text class="dg-c" x="160" y="150" text-anchor="middle">identical container · sim ⇄ real</text>
+		<text class="dg-c" x="160" y="165" text-anchor="middle">only the sensor source is swapped</text>
+	</svg>`,
+	walking: `<svg viewBox="0 0 320 178" role="img" aria-label="Walking control loop diagram">
+		<rect class="dg-box" x="6" y="26" width="76" height="38" rx="5"/><text class="dg-t" x="44" y="49" text-anchor="middle">state est.</text>
+		<rect class="dg-box" x="122" y="26" width="80" height="38" rx="5"/><text class="dg-t" x="162" y="44" text-anchor="middle">policy π</text><text class="dg-c" x="162" y="57" text-anchor="middle">MLP</text>
+		<rect class="dg-box" x="242" y="26" width="72" height="38" rx="5"/><text class="dg-t" x="278" y="44" text-anchor="middle">PD joint</text><text class="dg-t" x="278" y="56" text-anchor="middle">targets</text>
+		<path class="dg-ln" d="M82 45 H120"/><path class="dg-ah" d="M114 41l6 4-6 4"/>
+		<path class="dg-ln" d="M202 45 H240"/><path class="dg-ah" d="M236 41l6 4-6 4"/>
+		<rect class="dg-box" x="118" y="104" width="88" height="36" rx="5"/><text class="dg-t" x="162" y="120" text-anchor="middle">Go2 · 12 DoF</text><text class="dg-c" x="162" y="132" text-anchor="middle">rigid-body plant</text>
+		<path class="dg-ln" d="M278 64 V122 H208"/><path class="dg-ah" d="M214 118l-6 4 6 4"/>
+		<path class="dg-ln" d="M118 122 H44 V64"/><path class="dg-ah" d="M40 70l4-6 4 6"/>
+		<text class="dg-c" x="235" y="96" text-anchor="middle">torque</text>
+		<text class="dg-c" x="66" y="96" text-anchor="middle">imu · contacts</text>
+	</svg>`,
+	'blind-rl': `<svg viewBox="0 0 320 178" role="img" aria-label="Blind RL closed-loop policy diagram">
+		<rect class="dg-box" x="16" y="14" width="108" height="22" rx="5"/><text class="dg-t" x="70" y="30" text-anchor="middle">proprioception ×N</text>
+		<rect class="dg-box" x="16" y="42" width="108" height="22" rx="5"/><text class="dg-t" x="70" y="58" text-anchor="middle">foot contact</text>
+		<rect class="dg-box" x="16" y="70" width="108" height="22" rx="5"/><text class="dg-t" x="70" y="86" text-anchor="middle">velocity command</text>
+		<rect class="dg-box" x="140" y="34" width="64" height="44" rx="6"/><text class="dg-t" x="172" y="53" text-anchor="middle">policy π</text><text class="dg-c" x="172" y="67" text-anchor="middle">MLP</text>
+		<rect class="dg-box" x="224" y="42" width="88" height="30" rx="5"/><text class="dg-t" x="268" y="61" text-anchor="middle">joint targets</text>
+		<path class="dg-ln" d="M124 25 H132 V50 H140"/><path class="dg-ln" d="M124 53 H140"/><path class="dg-ln" d="M124 81 H132 V60 H140"/>
+		<path class="dg-ah" d="M134 50l6 4-6 4"/>
+		<path class="dg-ln" d="M204 56 H222"/><path class="dg-ah" d="M216 52l6 4-6 4"/>
+		<rect class="dg-box" x="120" y="112" width="96" height="30" rx="5"/><text class="dg-t" x="168" y="131" text-anchor="middle">Go2 on stairs</text>
+		<path class="dg-ln" d="M268 72 V127 H216"/><path class="dg-ah" d="M222 123l-6 4 6 4"/>
+		<path class="dg-ln" d="M120 127 H8 V25 H16"/><path class="dg-ah" d="M10 21l6 4-6 4"/>
+		<text class="dg-c" x="64" y="108" text-anchor="middle">feels each riser</text>
+		<text class="dg-c" x="164" y="164" text-anchor="middle">closed proprioceptive loop · climbs by feel</text>
+	</svg>`,
+};
+
+// ---------------------------------------------------------------------------
+// Data-chart + illustration builders (native SVG).
+// ---------------------------------------------------------------------------
+function chartLearningCurve() {
+	return `<div class="hero-chart"><p class="hero-chart-title">Learning curve · mean episode reward</p>
+	<svg viewBox="0 0 480 300" role="img" aria-label="Reward rises to 95.7 over 6000 iterations">
+		<rect class="ch-frame" x="46" y="30" width="418" height="236"/>
+		<line class="ch-base" x1="46" y1="246.3" x2="464" y2="246.3"/>
+		<path class="ch-area" fill="#0e9b8e" d="M46,197.2 L73.9,256.2 L115.7,216.8 L150.5,167.7 L185.3,124.4 L220.2,89 L255,69.3 L289.8,61.5 L359.5,58.9 L464,58.1 L464,266 L46,266 Z"/>
+		<polyline class="ch-line" stroke="#0e9b8e" points="46,197.2 73.9,256.2 115.7,216.8 150.5,167.7 185.3,124.4 220.2,89 255,69.3 289.8,61.5 359.5,58.9 464,58.1"/>
+		<circle class="ch-dot" fill="#0e9b8e" cx="464" cy="58.1" r="4"/>
+		<text class="ch-val" x="458" y="52" text-anchor="end">95.7</text>
+		<text class="ch-tick" x="42" y="51" text-anchor="end">100</text>
+		<text class="ch-tick" x="42" y="250" text-anchor="end">0</text>
+		<text class="ch-tick" x="46" y="282" text-anchor="middle">0</text>
+		<text class="ch-tick" x="464" y="282" text-anchor="end">6000 iters</text>
+	</svg></div>`;
+}
+
+function chartCurriculum() {
+	return `<div class="hero-chart"><p class="hero-chart-title">Curriculum · stair riser height reached</p>
+	<svg viewBox="0 0 480 300" role="img" aria-label="Curriculum riser height settles at 138 mm">
+		<rect class="ch-frame" x="46" y="30" width="418" height="236"/>
+		<line class="ch-target" x1="46" y1="113.3" x2="464" y2="113.3"/>
+		<text class="ch-note" x="50" y="108">0.15 m · real target</text>
+		<path class="ch-area" fill="#c07d3c" d="M46,182.7 L87.8,235.4 L115.7,224.3 L185.3,193.8 L255,168.8 L324.7,149.4 L394.3,135.5 L464,130 L464,266 L46,266 Z"/>
+		<polyline class="ch-line" stroke="#c07d3c" points="46,182.7 87.8,235.4 115.7,224.3 185.3,193.8 255,168.8 324.7,149.4 394.3,135.5 464,130"/>
+		<circle class="ch-dot" fill="#c07d3c" cx="464" cy="130" r="4"/>
+		<text class="ch-val" x="458" y="124" text-anchor="end">138 mm</text>
+		<text class="ch-tick" x="42" y="47" text-anchor="end">200</text>
+		<text class="ch-tick" x="42" y="242" text-anchor="end">60</text>
+		<text class="ch-tick" x="46" y="282" text-anchor="middle">0</text>
+		<text class="ch-tick" x="464" y="282" text-anchor="end">6000 iters</text>
+	</svg></div>`;
+}
+
+function chartSweep() {
+	const bars = [
+		{ x: 52.33, h: 218,   y: 30,    cls: 'ch-bar-reached', v: '14.0', m: '0.12',  n: '4.7″' },
+		{ x: 123.0, h: 216.4, y: 31.6,  cls: 'ch-bar-reached', v: '13.9', m: '0.13',  n: '5.1″' },
+		{ x: 193.67, h: 216.4, y: 31.6, cls: 'ch-bar-reached', v: '13.9', m: '0.14',  n: '5.5″' },
+		{ x: 264.33, h: 218,   y: 30,   cls: 'ch-bar-reached', v: '14.0', m: '0.15',  n: '6″ ADA' },
+		{ x: 335.0, h: 68.5,  y: 179.5, cls: 'ch-bar-partial', v: '4.4',  m: '0.175', n: '7″' },
+		{ x: 405.67, h: 2,    y: 246,   cls: 'ch-bar-none',    v: '0.0',  m: '0.198', n: '7.75″' },
+	];
+	const rects = bars.map( ( b ) => `<rect class="${ b.cls }" x="${ b.x }" y="${ b.y }" width="46" height="${ b.h }" rx="3"/>` ).join( '' );
+	const vals = bars.map( ( b ) => `<text class="ch-val" x="${ b.x + 23 }" y="${ b.y - 6 }" text-anchor="middle">${ b.v }</text>` ).join( '' );
+	const labs = bars.map( ( b ) =>
+		`<text class="ch-tick" x="${ b.x + 23 }" y="262" text-anchor="middle">${ b.m }</text>` +
+		`<text class="ch-tick" x="${ b.x + 23 }" y="274" text-anchor="middle">${ b.n }</text>`,
+	).join( '' );
+	return `<div class="hero-chart"><p class="hero-chart-title">Stair-height sweep · steps climbed (of 14)</p>
+	<svg viewBox="0 0 480 300" role="img" aria-label="Steps climbed at each riser height">
+		<line class="ch-target" x1="40" y1="30" x2="464" y2="30"/>
+		<text class="ch-note" x="462" y="24" text-anchor="end">full staircase · 14 steps</text>
+		<line class="ch-axis" x1="40" y1="248" x2="464" y2="248"/>
+		<text class="ch-tick" x="36" y="33" text-anchor="end">14</text>
+		<text class="ch-tick" x="36" y="251" text-anchor="end">0</text>
+		${ rects }${ vals }${ labs }
+	</svg></div>`;
+}
+
+function artProblem() {
+	return `<div class="hero-art"><svg viewBox="0 0 440 340" role="img" aria-label="An elderly person with a cane and an oxygen tank at the foot of a staircase">
+		<line x1="20" y1="302" x2="420" y2="302" stroke="currentColor" stroke-width="1.4" opacity="0.5"/>
+		<path d="M250 302 V272 H292 V242 H334 V212 H376 V182 H418 V302 Z" fill="#c07d3c" fill-opacity="0.9" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+		<path d="M250 272 H292 M292 242 H334 M334 212 H376 M376 182 H418" fill="none" stroke="currentColor" stroke-width="1" opacity="0.5"/>
+		<line x1="256" y1="250" x2="424" y2="130" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+		<line x1="262" y1="272" x2="262" y2="256" stroke="currentColor" stroke-width="1.6"/>
+		<line x1="418" y1="182" x2="418" y2="150" stroke="currentColor" stroke-width="1.6"/>
+		<path d="M300 252 L360 208" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="4 4" opacity="0.55"/>
+		<path d="M360 208 l-11 1 4 -10" fill="none" stroke="currentColor" stroke-width="1.4" opacity="0.55"/>
+		<path d="M403 150 l9 16 -18 0 Z" fill="none" stroke="#e5484d" stroke-width="1.8" stroke-linejoin="round"/>
+		<line x1="403" y1="156" x2="403" y2="161" stroke="#e5484d" stroke-width="1.8" stroke-linecap="round"/>
+		<circle cx="403" cy="164.5" r="0.9" fill="#e5484d"/>
+		<circle cx="150" cy="188" r="14" fill="none" stroke="currentColor" stroke-width="2.4"/>
+		<path d="M143 204 Q168 210 162 250 Q160 258 150 258 Q140 258 142 246 Q145 224 138 208 Z" fill="#b0552f" fill-opacity="0.9" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+		<path d="M148 256 L140 300 M156 254 L168 300" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+		<path d="M158 224 L182 250" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+		<path d="M186 246 q6 -2 6 4 L194 300" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+		<rect x="86" y="236" width="30" height="64" rx="10" fill="#f4f2ec" stroke="currentColor" stroke-width="2"/>
+		<rect x="95" y="224" width="12" height="16" rx="3" fill="#333" stroke="currentColor" stroke-width="1.4"/>
+		<line x1="101" y1="224" x2="101" y2="216" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+		<path d="M101 236 Q120 200 146 206" fill="none" stroke="currentColor" stroke-width="1.6" opacity="0.7"/>
+		<path d="M107 230 Q130 200 144 190" fill="none" stroke="#3a7ce5" stroke-width="1.8" stroke-linecap="round"/>
+	</svg></div>`;
+}
+
+function artRoadmap() {
+	return `<div class="hero-art"><svg viewBox="0 0 480 300" role="img" aria-label="Deployment roadmap from proven simulation to a home pilot">
+		<line x1="60" y1="96" x2="180" y2="96" stroke="currentColor" stroke-width="2" opacity="0.75"/>
+		<line x1="180" y1="96" x2="300" y2="96" stroke="currentColor" stroke-width="2" opacity="0.75"/>
+		<line x1="300" y1="96" x2="420" y2="96" stroke="currentColor" stroke-width="2" stroke-dasharray="5 4" opacity="0.55"/>
+		<circle cx="60"  cy="96" r="11" fill="#0e9b8e" stroke="var(--sheet)" stroke-width="2"/>
+		<circle cx="180" cy="96" r="11" fill="#0e9b8e" stroke="var(--sheet)" stroke-width="2"/>
+		<circle cx="300" cy="96" r="11" fill="none" stroke="currentColor" stroke-width="2.4"/>
+		<circle cx="420" cy="96" r="11" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="4 3"/>
+		<g text-anchor="middle">
+			<text class="ch-val" x="60"  y="70">Isaac Sim</text><text class="ch-note" x="60"  y="122">full climb ✓</text>
+			<text class="ch-val" x="180" y="70">One stack</text><text class="ch-note" x="180" y="122">sim ⇄ robot</text>
+			<text class="ch-val" x="300" y="70">Jetson Orin</text><text class="ch-note" x="300" y="122">on the Go2</text>
+			<text class="ch-val" x="420" y="70">Home pilot</text><text class="ch-note" x="420" y="122">supervised</text>
+		</g>
+		<text class="ch-axlbl" x="60" y="188">who benefits</text>
+		<g>
+			<rect x="60"  y="200" width="108" height="34" rx="8" fill="none" stroke="currentColor" stroke-width="1.3" opacity="0.6"/>
+			<text class="ch-note" x="114" y="221" text-anchor="middle" font-size="11">patients</text>
+			<rect x="186" y="200" width="108" height="34" rx="8" fill="none" stroke="currentColor" stroke-width="1.3" opacity="0.6"/>
+			<text class="ch-note" x="240" y="221" text-anchor="middle" font-size="11">caregivers</text>
+			<rect x="312" y="200" width="120" height="34" rx="8" fill="none" stroke="currentColor" stroke-width="1.3" opacity="0.6"/>
+			<text class="ch-note" x="372" y="221" text-anchor="middle" font-size="11">clinics &amp; rehab</text>
+		</g>
+	</svg></div>`;
+}
+
+function teamCard() {
+	return `<div class="hero-teamcard">
+		<img src="./assets/team/anthony.png" alt="Anthony Sinchi" />
+		<div class="tc-name">Anthony Sinchi</div>
+		<div class="tc-role">Solo build · RL · perception · systems</div>
+	</div>`;
+}
+
+const VISUALS = {
+	problem: artProblem,
+	roadmap: artRoadmap,
+	team: teamCard,
+	training: () => `<div class="hero-charts cols-2">${ chartLearningCurve() }${ chartCurriculum() }</div>`,
+	sweep: () => `<div class="hero-charts">${ chartSweep() }</div>`,
+};
+
+export function buildVisualHTML( key ) {
+	return ( VISUALS[ key ] || ( () => '' ) )();
+}
+
+export function buildCopyHTML( copy ) {
+	if ( ! copy ) return '';
+	let html = '';
+	if ( copy.lead ) html += `<p class="hero-copy-lead">${ copy.lead }</p>`;
+	if ( copy.body ) html += `<p class="hero-copy-body">${ copy.body }</p>`;
+	if ( copy.stats && copy.stats.length ) {
+		html += '<div class="hero-stats">' + copy.stats.map( ( s ) =>
+			`<div class="hero-stat"><span class="hero-stat-v">${ s.v }</span><span class="hero-stat-l">${ s.l }</span></div>`,
+		).join( '' ) + '</div>';
+	}
+	if ( copy.tags && copy.tags.length ) {
+		html += '<div class="hero-tags">' + copy.tags.map( ( t ) => `<span class="hero-tag">${ t }</span>` ).join( '' ) + '</div>';
+	}
+	return html;
+}
+
+// ---------------------------------------------------------------------------
+// Content sections (everything except the 3 Solution stages + the demo).
+// `visual` is a VISUALS key rendered into the left column; `copy` fills the
+// right column.
+// ---------------------------------------------------------------------------
+export const CONTENT = {
+	's-problem': {
+		group: 'Problem', title: 'A tank to carry, a staircase to climb',
+		visual: 'problem',
+		copy: {
+			lead: 'Oxygen-therapy patients are tethered to their supply — wherever they go, the concentrator goes too.',
+			body: 'Millions of people with COPD, pulmonary fibrosis and other chronic lung disease are prescribed long-term oxygen for everyday life at home. The equipment is heavy and awkward, and a staircase turns an ordinary trip into a two-hands-full balancing act. Many simply stop using the stairs — and lose a whole floor of their own home. Our idea is simple: let a robot dog carry the oxygen and climb alongside them, so they don’t have to.',
+			stats: [
+				{ v: '~1.5 M', l: 'Americans on home oxygen (est.)' },
+				{ v: '2–3 kg', l: 'portable unit to carry' },
+				{ v: 'Leading', l: 'injury cause, age 65+' },
+			],
+			tags: [ 'independence', 'fall risk', 'daily burden' ],
+		},
+	},
+	's-training': {
+		group: 'Progress & results', title: 'We trained it to climb — 6,000 iterations',
+		visual: 'training',
+		copy: {
+			lead: 'A blind reinforcement-learning policy learned to drive the payload upstairs on feel alone.',
+			body: 'Across 6,000 training iterations the mean episode reward climbed to 95.7 and held. A difficulty curriculum pushed the stairs steeper over time, settling at a 138 mm riser — right at the real-world target height. Episodes run to full length and end by timeout almost every time: the robot stays upright and simply doesn’t topple.',
+			stats: [
+				{ v: '95.7', l: 'mean reward at plateau' },
+				{ v: '138 mm', l: 'riser the curriculum settled at' },
+				{ v: '≈100%', l: 'episodes end upright, not a fall' },
+			],
+			tags: [ 'blind RL', 'Go2 + 2.22 kg O₂', 'Isaac Sim' ],
+		},
+	},
+	's-sweep': {
+		group: 'Progress & results', title: 'How high can it climb?',
+		visual: 'sweep',
+		copy: {
+			lead: 'We swept real staircase heights from 4.7″ up to the code maximum — carrying the oxygen tank the whole way.',
+			body: 'The dog climbs the entire 14-step staircase and reaches the top at every height up to the ADA-maximum 6-inch riser, staying upright with no falls. It follows the patient the whole way up. Only beyond code-legal stairs — 7 inches and steeper — does it run out of reach, right about where a person would want a lift too.',
+			stats: [
+				{ v: '14 / 14', l: 'steps climbed to the top' },
+				{ v: '4 / 6', l: 'heights fully topped out' },
+				{ v: '0', l: 'falls across the sweep' },
+			],
+			tags: [ 'ADA 6″ ✓', 'full staircase', 'payload upright' ],
+		},
+	},
+	's-potential': {
+		group: 'Real-world potential', title: 'From a proven sim to the living room',
+		visual: 'roadmap',
+		copy: {
+			lead: 'The same control container runs in simulation and on the robot — only the sensor source changes.',
+			body: 'That is the whole deployment bet: a policy proven in Isaac Sim is expected to hold on an NVIDIA Jetson Orin carried by a real Go2, because it runs the identical Docker stack. The payoff is a floor of the house given back — patients keep their stairs, caregivers get a hand, and clinics and rehab facilities get an assistant that never tires. Next up: hardware bring-up, gait polish, and a supervised home pilot.',
+			stats: [
+				{ v: 'Sim ✓', l: 'full climb, proven' },
+				{ v: '1 stack', l: 'identical sim ⇄ robot' },
+				{ v: 'Jetson', l: 'Orin edge compute' },
+			],
+			tags: [ 'home pilot', 'care facilities', 'aging in place' ],
+		},
+	},
+	's-team': {
+		group: 'Team', title: 'Built by one',
+		visual: 'team',
+		copy: {
+			lead: 'One person — the whole stack.',
+			body: 'Anthony designed and built everything you just saw: the reinforcement-learning climb and walking policies, the YOLO-based perception and person-following, the Isaac Sim world and payload physics, the sim ⇄ real Docker deploy stack for the Jetson Orin robot — and this interactive presentation itself.',
+			tags: [ 'RL & controls', 'perception', 'Isaac Sim', 'sim ⇄ real deploy' ],
+		},
+	},
+};

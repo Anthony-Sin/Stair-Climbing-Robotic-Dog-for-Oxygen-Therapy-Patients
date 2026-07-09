@@ -3,14 +3,10 @@
 <head>
 	<meta charset="utf-8" />
 	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-	<title>Stair-climbing robotic dog — blueprint viewer</title>
+	<title>Stair-climbing robotic dog — pitch</title>
 	<link rel="stylesheet" href="./styles.css" />
 
-	<!--
-		No build step: three.js r170 is vendored locally under vendor/ and
-		mapped here. If vendoring ever proves unreliable, this map can be
-		repointed at the pinned CDN URLs (see README.md "Vendoring outcome").
-	-->
+	<!-- No build step: three.js r170 is vendored under vendor/ and mapped here. -->
 	<script type="importmap">
 		{
 			"imports": {
@@ -21,130 +17,172 @@
 	</script>
 </head>
 <body>
-	<!-- Fixed dark frame behind every scroll act (the paper "sheets" sit on it). -->
+	<!-- Fixed dark frame behind every scroll section. -->
 	<div id="backdrop"></div>
 
-	<!-- =====================================================================
-	     ACT 1 — the "platform". Left: an animated 3D stage (the robot spins /
-	     walks in place / climbs the stairs depending on the chapter, driven by
-	     js/hero.js). Right: a chaptered explainer panel (text + policy diagram
-	     + clip). A couple of leader lines point from the robot to key parts.
-	     Scroll down to reveal ACT 2 (the full interactive rollout).
-	     ================================================================== -->
-	<section id="hero-section" aria-label="Overview">
-		<div id="hero-inner">
-			<div id="hero-stage">
-				<!-- hero three.js canvas is inserted here by js/hero.js -->
-				<svg id="hero-leaders" aria-hidden="true"></svg>
-				<div id="hero-callouts"></div>
+	<!-- Consistent, always-in-the-same-place navigation (built by js/deck.js):
+	     a fixed dot rail with prev/next; scrolling also advances sections. -->
+	<nav id="deck-nav" aria-label="Sections">
+		<button type="button" id="nav-prev" class="nav-arrow" aria-label="Previous section">
+			<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 15l-6-6-6 6" /></svg>
+		</button>
+		<div id="nav-dots" role="tablist"></div>
+		<button type="button" id="nav-next" class="nav-arrow" aria-label="Next section">
+			<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+		</button>
+	</nav>
 
-				<!-- Per-policy stage FX (built by js/hero.js): walk = camera-scan
-				     cone + YOLO HUD; climb = per-foot proprioceptive "feeling"
-				     waves. Toggled by a fx-mode-* class on this element. -->
-				<div id="hero-fx" aria-hidden="true"></div>
+	<!-- The scroll-snap deck. Each .slide is a full-height snap section. -->
+	<main id="deck">
 
-				<!-- Chapter body copy lives here (a lower-third over the stage)
-				     so the panel has room for the diagram + clip without scroll. -->
-				<p id="hero-body"></p>
-
-				<div id="hero-stage-tag">unitree go2 · o2 payload</div>
-
-				<div id="hero-zoom" role="group" aria-label="Zoom">
-					<button type="button" class="hero-zoombtn" id="hero-zoom-out" aria-label="Zoom out">
-						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg>
-					</button>
-					<button type="button" class="hero-zoombtn" id="hero-zoom-reset" aria-label="Reset view">
-						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
-					</button>
-					<button type="button" class="hero-zoombtn" id="hero-zoom-in" aria-label="Zoom in">
-						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-					</button>
+		<!-- 1 · PROBLEM -->
+		<section id="s-problem" class="slide content" aria-label="Problem">
+			<div class="slide-sheet reveal">
+				<div class="slide-visual" data-visual></div>
+				<div class="slide-copy">
+					<span class="slide-eyebrow"></span>
+					<h2 class="slide-title"></h2>
+					<div class="slide-body" data-copy></div>
 				</div>
 			</div>
+		</section>
 
-			<aside id="hero-panel">
-				<div id="hero-nav">
-					<button type="button" id="hero-prev" class="hero-navarrow" aria-label="Previous chapter">
-						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7" /></svg>
-					</button>
-					<div id="hero-nav-label">
-						<span id="hero-chapter-index">01 / 03</span>
-						<span id="hero-chapter-title">System architecture</span>
+		<!-- 2 · SOLUTION & TECHNOLOGY — three step-sections sharing one pinned 3D stage -->
+		<div id="s-solution" class="solution">
+			<div class="sol-stage-sticky">
+				<div id="hero-stage">
+					<!-- hero three.js canvas is inserted here by js/hero.js -->
+					<svg id="hero-leaders" aria-hidden="true"></svg>
+					<div id="hero-callouts"></div>
+					<div id="hero-fx" aria-hidden="true"></div>
+					<div id="hero-stage-tag">unitree go2 · o2 payload</div>
+					<div id="hero-zoom" role="group" aria-label="Zoom">
+						<button type="button" class="hero-zoombtn" id="hero-zoom-out" aria-label="Zoom out"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg></button>
+						<button type="button" class="hero-zoombtn" id="hero-zoom-reset" aria-label="Reset view"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg></button>
+						<button type="button" class="hero-zoombtn" id="hero-zoom-in" aria-label="Zoom in"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg></button>
 					</div>
-					<button type="button" id="hero-next" class="hero-navarrow" aria-label="Next chapter">
-						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7" /></svg>
-					</button>
 				</div>
-				<div id="hero-dots" role="tablist" aria-label="Chapters"></div>
-
-				<div id="hero-diagram" aria-hidden="true"></div>
-
-				<figure class="hero-clip">
-					<div class="hero-clip-frame" id="hero-clip-frame">
-						<!-- Real Isaac Sim rollout footage, cut per chapter (js/hero.js
-						     sets the src). Muted + looped so it plays inline. -->
-						<video class="hero-clip-video" id="hero-clip-video" muted loop playsinline preload="metadata"></video>
-						<button type="button" class="hero-clip-play" id="hero-clip-play" aria-label="Play or pause clip">
-							<svg class="hero-clip-ic-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
-							<svg class="hero-clip-ic-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3v14H7zM14 5h3v14h-3z" /></svg>
-						</button>
-						<span class="hero-clip-badge" id="hero-clip-badge">clip 01</span>
-						<span class="hero-clip-dur" id="hero-clip-dur">mp4</span>
-					</div>
-					<figcaption id="hero-clip-cap">Isaac Sim rollout — flat-ground follow gait.</figcaption>
-				</figure>
-			</aside>
+			</div>
+			<div class="sol-steps">
+				<section id="s-arch"  class="slide sol-step" data-policy="architecture" aria-label="System architecture"><div class="sol-panel reveal"></div></section>
+				<section id="s-walk"  class="slide sol-step" data-policy="walking" aria-label="Walking policy"><div class="sol-panel reveal"></div></section>
+				<section id="s-climb" class="slide sol-step" data-policy="blind-rl" aria-label="Blind-RL climb policy"><div class="sol-panel reveal"></div></section>
+			</div>
 		</div>
 
-		<a href="#viewer-section" id="scroll-cue" aria-label="Scroll to the interactive viewer">
-			<span>scroll</span>
-			<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
-		</a>
-	</section>
+		<!-- 3 · LIVE DEMO — the interactive rollout (js/main.js) -->
+		<section id="s-demo" class="slide demo" aria-label="Live demo">
+			<div id="sheet">
+				<div id="canvas-host">
+					<!-- three.js canvas is inserted here by js/main.js -->
+					<div id="ui-overlay">
+						<header id="headline-block">
+							<span id="demo-kicker">Live demo</span>
+							<div id="demo-captions" aria-hidden="true">
+								<span class="demo-cap" data-cap="follow"><b>Follow</b> — YOLO keeps the patient in frame</span>
+								<span class="demo-cap" data-cap="climb"><b>Climb</b> — blind RL feels each riser</span>
+							</div>
+							<div id="phase-buttons" role="group" aria-label="Animation phase">
+								<button type="button" class="phase-chip" id="phase-follow" data-phase="follow" aria-pressed="true">phase 1 · follow</button>
+								<button type="button" class="phase-chip" id="phase-climb" data-phase="climb" aria-pressed="false">phase 2 · climb</button>
+							</div>
+						</header>
 
-	<!-- =====================================================================
-	     ACT 2 — the existing interactive viewer. Everything inside #sheet is
-	     unchanged (driven by js/main.js); it is only wrapped in a scroll
-	     section so it becomes the second act of the page.
-	     ================================================================== -->
-	<section id="viewer-section">
-		<main id="sheet">
-			<div id="canvas-host">
-				<!-- three.js canvas is inserted here by js/main.js -->
-
-				<div id="ui-overlay">
-					<header id="headline-block">
-						<h1 id="headline">Stair-climbing robotic dog</h1>
-						<p id="subtitle">Blind-RL quadruped carrying patient oxygen — an Isaac Sim rollout you scrub by hand.</p>
-
-						<div id="phase-buttons" role="group" aria-label="Animation phase">
-							<button type="button" class="phase-chip" id="phase-follow" data-phase="follow" aria-pressed="true">phase 1 · follow</button>
-							<button type="button" class="phase-chip" id="phase-climb" data-phase="climb" aria-pressed="false">phase 2 · climb</button>
+						<div id="top-right-chips">
+							<button type="button" class="chip" id="cinematic-toggle" aria-pressed="false">cinematic · off</button>
+							<button type="button" class="chip" id="theme-toggle" aria-pressed="false">light</button>
 						</div>
-					</header>
 
-					<div id="top-right-chips">
-						<button type="button" class="chip" id="cinematic-toggle" aria-pressed="false">cinematic · off</button>
-						<button type="button" class="chip" id="tracking-toggle" aria-pressed="true">tracking · on</button>
-						<button type="button" class="chip" id="plumb-toggle" aria-pressed="false">plumb line · off</button>
-						<button type="button" class="chip" id="theme-toggle" aria-pressed="false">light</button>
+						<div id="model-warning" class="chip warning-chip" hidden>placeholder model — run pipeline/bake_gltf.py</div>
+
+						<div id="demo-dock">
+							<div id="scrub-bar">
+								<div id="time-readout">t 00.00 / 00.00 s · follow</div>
+								<button type="button" class="chip" id="play-toggle" aria-pressed="false">play</button>
+								<input type="range" id="scrubber" min="0" max="100" step="0.1" value="0" aria-label="Timeline scrubber" />
+							</div>
+
+							<div id="demo-filmstrip" aria-label="Real climb clips by stair height">
+								<figure class="film-tile" data-phase="climb">
+									<video muted loop playsinline preload="none" data-src="./assets/clips/climb_0p120.mp4"></video>
+									<figcaption><b>0.12 m</b><span>4.7″ riser</span></figcaption>
+								</figure>
+								<figure class="film-tile" data-phase="climb">
+									<video muted loop playsinline preload="none" data-src="./assets/clips/climb_0p130.mp4"></video>
+									<figcaption><b>0.13 m</b><span>5.1″ riser</span></figcaption>
+								</figure>
+								<figure class="film-tile" data-phase="climb">
+									<video muted loop playsinline preload="none" data-src="./assets/clips/climb_0p140.mp4"></video>
+									<figcaption><b>0.14 m</b><span>5.5″ riser</span></figcaption>
+								</figure>
+								<figure class="film-tile is-featured" data-phase="climb">
+									<video muted loop playsinline preload="none" data-src="./assets/clips/climb_0p150.mp4"></video>
+									<figcaption><b>0.15 m</b><span>6″ · ADA max</span></figcaption>
+								</figure>
+								<figure class="film-tile" data-phase="climb">
+									<video muted loop playsinline preload="none" data-src="./assets/clips/climb_0p175.mp4"></video>
+									<figcaption><b>0.175 m</b><span>7″ · IBC</span></figcaption>
+								</figure>
+							</div>
+						</div>
 					</div>
-
-					<div id="model-warning" class="chip warning-chip" hidden>placeholder model — run pipeline/bake_gltf.py</div>
-
-					<div id="scrub-bar">
-						<div id="time-readout">t 00.00 / 00.00 s · follow</div>
-						<button type="button" class="chip" id="play-toggle" aria-pressed="false">play</button>
-						<input type="range" id="scrubber" min="0" max="100" step="0.1" value="0" aria-label="Timeline scrubber" />
-					</div>
-
-					<footer id="footer-line">isaac sim rollout · unitree go2 · o2 payload</footer>
 				</div>
 			</div>
-		</main>
-	</section>
+		</section>
+
+		<!-- 4 · PROGRESS & RESULTS — training -->
+		<section id="s-training" class="slide content" aria-label="Training results">
+			<div class="slide-sheet reveal">
+				<div class="slide-visual" data-visual></div>
+				<div class="slide-copy">
+					<span class="slide-eyebrow"></span>
+					<h2 class="slide-title"></h2>
+					<div class="slide-body" data-copy></div>
+				</div>
+			</div>
+		</section>
+
+		<!-- 5 · PROGRESS & RESULTS — height sweep -->
+		<section id="s-sweep" class="slide content" aria-label="Stair-height sweep">
+			<div class="slide-sheet reveal">
+				<div class="slide-visual" data-visual></div>
+				<div class="slide-copy">
+					<span class="slide-eyebrow"></span>
+					<h2 class="slide-title"></h2>
+					<div class="slide-body" data-copy></div>
+				</div>
+			</div>
+		</section>
+
+		<!-- 6 · REAL-WORLD POTENTIAL -->
+		<section id="s-potential" class="slide content" aria-label="Real-world potential">
+			<div class="slide-sheet reveal">
+				<div class="slide-visual" data-visual></div>
+				<div class="slide-copy">
+					<span class="slide-eyebrow"></span>
+					<h2 class="slide-title"></h2>
+					<div class="slide-body" data-copy></div>
+				</div>
+			</div>
+		</section>
+
+		<!-- 7 · TEAM -->
+		<section id="s-team" class="slide content" aria-label="Team">
+			<div class="slide-sheet reveal">
+				<div class="slide-visual" data-visual></div>
+				<div class="slide-copy">
+					<span class="slide-eyebrow"></span>
+					<h2 class="slide-title"></h2>
+					<div class="slide-body" data-copy></div>
+				</div>
+			</div>
+		</section>
+
+	</main>
 
 	<script type="module" src="./js/hero.js"></script>
 	<script type="module" src="./js/main.js"></script>
+	<script type="module" src="./js/deck.js"></script>
+	<script type="module" src="./js/democlips.js"></script>
 </body>
 </html>

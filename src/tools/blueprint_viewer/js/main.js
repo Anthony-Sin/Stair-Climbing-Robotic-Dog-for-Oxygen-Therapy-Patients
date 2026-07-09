@@ -16,7 +16,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 import { PALETTES, applyPaletteToDom } from './palette.js';
-import { BlueprintEdgesPass } from './BlueprintEdgesPass.js';
+import { BlueprintEdgesPass, NO_OUTLINE_LAYER } from './BlueprintEdgesPass.js';
 import { buildPlaceholderRobot } from './PlaceholderRobot.js';
 import { PatientHuman } from './PatientHuman.js';
 
@@ -97,6 +97,23 @@ fillLight.position.set( -3.5, 2.2, -2.4 );
 scene.add( fillLight );
 
 // ---------------------------------------------------------------------------
+// Environment (IBL) for the REALISTIC ROBOT only.
+//
+// The baked robot.glb is bare geometry (0 materials/textures) -- it IS the real
+// Go2 shape, just unpainted. Per the user's "import the robot, not toon (keep
+// the human toon)", the robot geometry is given realistic (white plastic-shell) PBR
+// materials (see makeRobotRealisticMaterial) lit by this small procedural studio
+// environment; without an environment, PBR metal reads as dead black. The
+// PATIENT and the whole SET stay toon (MeshToonMaterial ignores
+// scene.environment), so ONLY the robot picks this up -- human + elements render
+// exactly as before.
+const _pmrem = new THREE.PMREMGenerator( renderer );
+const _envEquirect = makeStudioEnvTexture();
+scene.environment = _pmrem.fromEquirectangular( _envEquirect ).texture;
+_envEquirect.dispose();
+_pmrem.dispose();
+
+// ---------------------------------------------------------------------------
 // Shadows: dirLight (the key light) casts; a tight, moving orthographic
 // shadow frustum re-centers on the robot's current world position every
 // frame (see renderFrame() below) so a fixed small mapSize still gets good
@@ -153,7 +170,10 @@ function applyTheme( name ) {
 	// .color stays neutral white always (set once at creation) so the toon shading
 	// modulates the texture's own colors instead of double-tinting them.
 	if ( patientMaterial ) patientMaterial.color.set( palette.patientColor );
-	if ( robotMaterial ) robotMaterial.color.set( palette.robotColor );
+	// robotMaterial / robotFootMaterial are realistic PBR with intrinsic hardware
+	// colors (dark metal / rubber, same in both themes) -- deliberately NOT
+	// re-tinted from the palette here (the old palette.robotColor line was removed
+	// when the robot switched from toon to the imported realistic look).
 	if ( logoMaterial ) logoMaterial.color.set( palette.logoColor );
 
 	if ( edgesPass ) edgesPass.setInkColor( palette.inkColorGl );
@@ -218,6 +238,77 @@ function makeToonGradientMap( levels ) {
 	texture.generateMipmaps = false;
 	texture.needsUpdate = true;
 	return texture;
+
+}
+
+// ===========================================================================
+// Realistic robot (imported look)
+//
+// The user asked to "import the robot and not make it toon (keep the human
+// toon)". The robot geometry is already the real 1:1 Go2 from the sim, but the
+// baked GLB carries no materials -- so "realistic" here means giving that real
+// geometry real PBR materials (white plastic-shell body/legs, matte rubber feet)
+// lit by the studio environment, instead of the flat cel material. Everything
+// else (patient + set) stays on makeBlueprintMaterial (toon). The screen-space
+// ink outline still runs scene-wide, but on the dark robot it naturally recedes
+// into the body edge, so the robot reads realistic while the toon human/set keep
+// their bold outline.
+// ===========================================================================
+
+// Soft procedural "studio" equirectangular texture -> scene.environment (see the
+// light setup above). Warm-key / cool-fill gradient with two soft light blobs;
+// enough for believable metal reflections without an external HDR.
+function makeStudioEnvTexture() {
+
+	const w = 512, h = 256;
+	const canvas = document.createElement( 'canvas' );
+	canvas.width = w; canvas.height = h;
+	const ctx = canvas.getContext( '2d' );
+
+	const g = ctx.createLinearGradient( 0, 0, 0, h );
+	g.addColorStop( 0.0, '#e9e5dd' );
+	g.addColorStop( 0.42, '#f5f2ec' );
+	g.addColorStop( 0.58, '#dfe2e6' );
+	g.addColorStop( 1.0, '#b7bcc4' );
+	ctx.fillStyle = g;
+	ctx.fillRect( 0, 0, w, h );
+
+	function blob( cx, cy, r, color, alpha ) {
+
+		const rg = ctx.createRadialGradient( cx, cy, 0, cx, cy, r );
+		rg.addColorStop( 0, color );
+		rg.addColorStop( 1, 'rgba(255,255,255,0)' );
+		ctx.globalAlpha = alpha;
+		ctx.fillStyle = rg;
+		ctx.fillRect( 0, 0, w, h );
+		ctx.globalAlpha = 1;
+
+	}
+	blob( w * 0.30, h * 0.26, h * 0.55, '#fff5e6', 0.85 ); // warm key
+	blob( w * 0.78, h * 0.40, h * 0.5, '#e0ebff', 0.5 );   // cool fill
+
+	const texture = new THREE.CanvasTexture( canvas );
+	texture.mapping = THREE.EquirectangularReflectionMapping;
+	texture.colorSpace = THREE.SRGBColorSpace;
+	return texture;
+
+}
+
+// Real Go2 material: satin plastic/metal shell for the body/legs (color per call), matte rubber for the
+// feet (pass a low metalness / high roughness). No toon banding, no fresnel rim
+// -- just PBR lit by the scene lights + environment, so it reads as the real
+// hardware rather than a cel drawing.
+function makeRobotRealisticMaterial( colorHex, opts = {} ) {
+
+	return new THREE.MeshStandardMaterial( {
+		color: colorHex,
+		metalness: opts.metalness ?? 0.4,
+		roughness: opts.roughness ?? 0.45,
+		envMapIntensity: opts.envMapIntensity ?? 1.1,
+		// vertexColors: robot_base carries a baked COLOR_0 (shell gray + black
+		// lidar/sensors, from the source material groups) -- see recolor_base_lidar.py.
+		vertexColors: opts.vertexColors ?? false,
+	} );
 
 }
 
@@ -498,8 +589,20 @@ let stairsMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].stairsC
 let handrailMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].handrailColor );
 let groundMaterial = makeBlueprintMaterial( 0xffffff ); // neutral -- tile colors live in .map, see makeGroundTileTexture
 groundMaterial.map = makeGroundTileTexture( PALETTES[ currentThemeName ].groundColor, PALETTES[ currentThemeName ].groundGroutColor );
+// Patient stays TOON (per "keep the human toon"). Robot goes REALISTIC: real
+// white plastic-shell PBR on the real geometry (see makeRobotRealisticMaterial). The
+// robot's colors are intrinsic to the hardware (same in both themes), so they
+// live here rather than in the theme palette -- applyTheme no longer re-tints
+// the robot (its palette.robotColor line was removed).
 let patientMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].patientColor );
-let robotMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].robotColor );
+let robotMaterial = makeRobotRealisticMaterial( 0xc0c0c0, { metalness: 0.2, roughness: 0.5, envMapIntensity: 1.0 } ); // SILVER (#C0C0C0) Go2 body/legs -- matte painted-plastic shell (low metalness so it reads as painted plastic, not chrome); carries the thighs
+let robotBlackMaterial = makeRobotRealisticMaterial( 0x232629, { metalness: 0.0, roughness: 0.85, envMapIntensity: 0.5 } ); // matte near-black -- the foot contact balls. 0x232629 == the LINEAR BLACK baked into the COLOR_0 meshes, so the black foot ball meets the black calf foot-pad with no seam.
+// robot_base + the four calves carry a baked COLOR_0 (silver shell + BLACK for
+// the head lidar/sensors, the robot's own printed logo WORDS, and the calf's
+// ground-contact foot pad) recovered from the source GeomSubsets by
+// pipeline/recolor_parts.py. White base color so the vertex color IS the albedo.
+// The thighs (uniform silver) and hips/feet (uniform black) stay on flat materials.
+let robotBaseMaterial = makeRobotRealisticMaterial( 0xffffff, { metalness: 0.2, roughness: 0.5, envMapIntensity: 1.0, vertexColors: true } );
 let logoMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].logoColor );
 
 // "patient_root" is no longer a tint target here: it's a bare transform anchor with
@@ -517,11 +620,31 @@ const TINTED_NODE_NAMES = {
 	stairs: () => stairsMaterial,
 	handrails: () => handrailMaterial,
 	ground: () => groundMaterial,
-	robot_base: () => robotMaterial,
+	// robot_base + the four thighs + the four calves carry a baked COLOR_0 (silver
+	// shell with black regions: the head lidar/sensors + logo-words on robot_base,
+	// the round TOP hip-actuator housing on each thigh, and the ground-contact foot
+	// pad on each calf): paint them with the white vertexColors material so the
+	// baked color is the albedo. The hips (leg<->body connectors) + the thigh
+	// blades are silver; only the foot balls are uniform flat black. Thighs +
+	// calves are tagged EXPLICITLY so their material is unambiguous regardless of
+	// ancestor tags.
+	robot_base: () => robotBaseMaterial,
 	FL_hip: () => robotMaterial,
 	FR_hip: () => robotMaterial,
 	RL_hip: () => robotMaterial,
 	RR_hip: () => robotMaterial,
+	FL_thigh: () => robotBaseMaterial,
+	FR_thigh: () => robotBaseMaterial,
+	RL_thigh: () => robotBaseMaterial,
+	RR_thigh: () => robotBaseMaterial,
+	FL_calf: () => robotBaseMaterial,
+	FR_calf: () => robotBaseMaterial,
+	RL_calf: () => robotBaseMaterial,
+	RR_calf: () => robotBaseMaterial,
+	FL_foot: () => robotBlackMaterial,
+	FR_foot: () => robotBlackMaterial,
+	RL_foot: () => robotBlackMaterial,
+	RR_foot: () => robotBlackMaterial,
 };
 
 // Per-subtree shadow role (2026-07-10 lighting pass), looked up by the same
@@ -666,6 +789,8 @@ const CINE_INTERIOR_FADE_FAR = 32.0;
 
 const edgesPass = new BlueprintEdgesPass( scene, camera, {
 	inkColor: PALETTES[ currentThemeName ].inkColorGl,
+	// Robot subtree lives on this layer; the edge pass renders it clean (no ink).
+	noOutlineLayer: NO_OUTLINE_LAYER,
 	// 0.4 was tuned on the primitive-built robot; the real Isaac Go2 mesh
 	// (324k tris of sculpted surface detail) saturates into dark speckle at
 	// viewing distance with it. 0.55 kept close-up creases intact but showed
@@ -1102,9 +1227,13 @@ function attachLogoLabel( baseNode, font ) {
 
 	}
 
-	baseNode.add( buildLogoMesh( font ) );
-	baseNode.add( buildSideLogoMesh( font, 'Unitree', true ) );
-	baseNode.add( buildSideLogoMesh( font, 'Go2', false ) );
+	// Placed brand-label meshes REMOVED per user direction: the robot now shows
+	// only its OWN printed logo words, which are baked into the robot_base mesh's
+	// `白色logo` GeomSubset and colored black by pipeline/recolor_parts.py. The
+	// old buildLogoMesh()/buildSideLogoMesh() overlays (a top deck label + the
+	// side "Unitree"/"Go2" text) are gone; the loop above still strips any that a
+	// prior load attached. (builders kept below in case the overlays are wanted
+	// back.)
 
 }
 
@@ -1456,7 +1585,7 @@ themeToggle.addEventListener( 'click', () => {
 
 } );
 
-trackingToggle.addEventListener( 'click', () => {
+if ( trackingToggle ) trackingToggle.addEventListener( 'click', () => {
 
 	trackingEnabled = ! trackingEnabled;
 	trackingToggle.textContent = `tracking · ${ trackingEnabled ? 'on' : 'off' }`;
@@ -1465,7 +1594,11 @@ trackingToggle.addEventListener( 'click', () => {
 
 } );
 
-cinematicToggle.addEventListener( 'click', () => {
+// NOTE: the cinematic / tracking / plumb debug chips were removed from the pitch
+// build's demo markup (index.html), so these elements can be null. Each listener
+// is registered only when its chip exists, keeping the debug controls available
+// if the chips are ever restored without breaking the cleaned-up demo.
+if ( cinematicToggle ) cinematicToggle.addEventListener( 'click', () => {
 
 	cinematicEnabled = ! cinematicEnabled;
 	cinematicToggle.textContent = `cinematic · ${ cinematicEnabled ? 'on' : 'off' }`;
@@ -1508,7 +1641,7 @@ cinematicToggle.addEventListener( 'click', () => {
 
 } );
 
-plumbToggle.addEventListener( 'click', () => {
+if ( plumbToggle ) plumbToggle.addEventListener( 'click', () => {
 
 	plumbLineEnabled = ! plumbLineEnabled;
 	plumbLine.visible = plumbLineEnabled;
@@ -1547,6 +1680,14 @@ function finishModelSetup( root, clips, baseNode ) {
 	robotBase = baseNode || root.getObjectByName( 'robot_base' ) || root;
 
 	applyBlueprintMaterials( root );
+	// Robot subtree -> NO_OUTLINE layer so the edge pass renders it clean (no toon
+	// ink lines), like an Isaac viewport -- a deliberate contrast to the toon-
+	// outlined human + set. It stays on layer 0 too (beauty/shadows unchanged);
+	// only the edge pass's mask render singles it out. Payload (oxygen_tank/
+	// cradle_rails) is under robot_base so it's covered; the async logo meshes
+	// enable the layer themselves in attachLogoLabel().
+	const _robotNoOutline = root.getObjectByName( 'robot_base' );
+	if ( _robotNoOutline ) _robotNoOutline.traverse( ( o ) => o.layers.enable( NO_OUTLINE_LAYER ) );
 	addGroundTileUVs( root );
 	scene.add( root );
 
@@ -1794,6 +1935,18 @@ window.__viewer = {
 	setPhase( name ) {
 
 		setPhase( name );
+
+	},
+	/**
+	 * Autoplay control for the pitch deck (js/deck.js): the rollout auto-plays
+	 * while the demo section is on screen and pauses when it isn't. Restarts
+	 * from the top if it had already run to the end, so re-entering the demo
+	 * always shows motion rather than a stopped frame.
+	 */
+	play( shouldPlay ) {
+
+		if ( shouldPlay && globalTime >= totalDuration ) applyGlobalTime( 0, { updateSlider: true } );
+		setPlaying( !! shouldPlay );
 
 	},
 	getState() {

@@ -44,6 +44,7 @@ import {
 	FloatType,
 	HalfFloatType,
 	LinearFilter,
+	MeshBasicMaterial,
 	MeshNormalMaterial,
 	NearestFilter,
 	NoBlending,
@@ -54,6 +55,13 @@ import {
 	WebGLRenderTarget,
 } from 'three';
 import { Pass, FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
+
+// three.js layer (0-31) reserved for meshes that must NOT receive the ink
+// outline. main.js puts the whole robot subtree on this layer; the edge pass's
+// mask render (below) singles it out and suppresses ink there, so the robot
+// renders clean like an Isaac viewport while the toon human + set keep their
+// outline. Objects stay on layer 0 too, so beauty/shadows are unaffected.
+export const NO_OUTLINE_LAYER = 11;
 
 const BlueprintMaskShader = {
 	name: 'BlueprintMaskShader',
@@ -89,6 +97,10 @@ const BlueprintMaskShader = {
 		// this to 0 for a clean "one solid black outline, no busy interior lines" look
 		// (see main.js's cinematic toggle); the default orbit view keeps it at 1.
 		uInteriorStrength: { value: 1.0 },
+		// White where the robot (NO_OUTLINE_LAYER) is on screen, black elsewhere.
+		// The fragment clears ALL ink there (dilated a few px) so the robot has no
+		// toon outline; the human/set are untouched (mask is black over them).
+		tRobotMask: { value: null },
 	},
 
 	vertexShader: /* glsl */ `
@@ -111,6 +123,7 @@ const BlueprintMaskShader = {
 		uniform float uInteriorFadeNear;
 		uniform float uInteriorFadeFar;
 		uniform float uInteriorStrength;
+			uniform sampler2D tRobotMask;
 
 		varying vec2 vUv;
 
@@ -199,6 +212,24 @@ const BlueprintMaskShader = {
 			normalEdge *= smoothstep( 0.20, 0.45, facing );
 
 			float edge = clamp( max( normalEdge, depthEdge ), 0.0, 1.0 );
+
+			// --- Robot outline suppression (clean "Isaac viewport" robot) ---
+			// The robot subtree is drawn white into tRobotMask; clear ALL ink where
+			// the robot is, DILATED outward a few px so the silhouette line just
+			// OUTSIDE the boundary is cleared too (else a thin outline hugs it). The
+			// robot still occupies the depth buffer, so edges of objects BEHIND it
+			// stay occluded and never bleed across it. Human/set: mask is black -> no-op.
+			vec2 rmOff = 4.0 / uResolution;
+			float rm = texture2D( tRobotMask, vUv ).r;
+			rm = max( rm, texture2D( tRobotMask, vUv + vec2(  rmOff.x, 0.0 ) ).r );
+			rm = max( rm, texture2D( tRobotMask, vUv + vec2( -rmOff.x, 0.0 ) ).r );
+			rm = max( rm, texture2D( tRobotMask, vUv + vec2( 0.0,  rmOff.y ) ).r );
+			rm = max( rm, texture2D( tRobotMask, vUv + vec2( 0.0, -rmOff.y ) ).r );
+			rm = max( rm, texture2D( tRobotMask, vUv + rmOff ).r );
+			rm = max( rm, texture2D( tRobotMask, vUv - rmOff ).r );
+			rm = max( rm, texture2D( tRobotMask, vUv + vec2(  rmOff.x, -rmOff.y ) ).r );
+			rm = max( rm, texture2D( tRobotMask, vUv + vec2( -rmOff.x,  rmOff.y ) ).r );
+			edge *= ( 1.0 - step( 0.5, rm ) );
 
 			// .r = combined edge (the ONLY channel the downstream dilate/erode +
 			// composite consume). .g/.b expose the depth (silhouette) and normal
@@ -361,6 +392,21 @@ export class BlueprintEdgesPass extends Pass {
 		this._maskMaterial.uniforms.tDepth.value = this._normalTarget.depthTexture;
 		this._maskQuad = new FullScreenQuad( this._maskMaterial );
 
+		// --- Robot no-outline mask (see NO_OUTLINE_LAYER) ---
+		// A white-on-black render of ONLY the robot subtree, used by the mask shader
+		// to clear ink there. The robot still renders into the normal/depth buffer in
+		// Pass 1, so this removes ONLY its own outline -- occlusion and everyone
+		// else's outlines are unchanged.
+		this._noOutlineLayer = options.noOutlineLayer ?? null;
+		this._robotMaskTarget = new WebGLRenderTarget( 1, 1, {
+			minFilter: NearestFilter,
+			magFilter: NearestFilter,
+			format: RGBAFormat,
+		} );
+		this._robotMaskTarget.texture.name = 'BlueprintEdgesPass.robotMask';
+		this._robotWhiteMaterial = new MeshBasicMaterial( { color: 0xffffff, toneMapped: false, fog: false } );
+		this._maskMaterial.uniforms.tRobotMask.value = this._robotMaskTarget.texture;
+
 		// --- Dilate target + material (closing step 1 of 2) ---
 		this._dilateTarget = new WebGLRenderTarget( 1, 1, {
 			minFilter: NearestFilter,
@@ -476,6 +522,7 @@ export class BlueprintEdgesPass extends Pass {
 		this._normalTarget.setSize( w, h );
 		this._maskTarget.setSize( w, h );
 		this._dilateTarget.setSize( w, h );
+		if ( this._robotMaskTarget ) this._robotMaskTarget.setSize( w, h );
 
 		this._maskMaterial.uniforms.uResolution.value.set( w, h );
 		this._dilateMaterial.uniforms.uResolution.value.set( w, h );
@@ -511,6 +558,35 @@ export class BlueprintEdgesPass extends Pass {
 		this.scene.overrideMaterial = previousOverrideMaterial;
 		this.scene.background = previousBackground;
 		renderer.setClearColor( previousClearColor, previousClearAlpha );
+
+		// --- Pass 1.5: robot-only white mask (outline suppression) ---
+		// Render JUST the NO_OUTLINE_LAYER (robot subtree) as flat white so the mask
+		// shader can clear ink there. The main camera's layer mask is switched to that
+		// layer for this internal render only, then restored -- beauty + shadows (run
+		// in the prior RenderPass) are untouched. Shadow auto-update is paused so this
+		// extra render doesn't needlessly re-render the shadow map.
+		if ( this._noOutlineLayer !== null ) {
+
+			const prevShadowAuto = renderer.shadowMap.autoUpdate;
+			renderer.shadowMap.autoUpdate = false;
+			const savedCamMask = this.camera.layers.mask;
+
+			this.scene.overrideMaterial = this._robotWhiteMaterial;
+			this.scene.background = null;
+			this.camera.layers.set( this._noOutlineLayer );
+
+			renderer.setRenderTarget( this._robotMaskTarget );
+			renderer.setClearColor( 0x000000, 1 );
+			renderer.clear( true, true, false );
+			renderer.render( this.scene, this.camera );
+
+			this.camera.layers.mask = savedCamMask;
+			this.scene.overrideMaterial = previousOverrideMaterial;
+			this.scene.background = previousBackground;
+			renderer.setClearColor( previousClearColor, previousClearAlpha );
+			renderer.shadowMap.autoUpdate = prevShadowAuto;
+
+		}
 
 		// --- Pass 2: raw (possibly-fragmented) edge mask ---
 		renderer.setRenderTarget( this._maskTarget );
@@ -550,6 +626,8 @@ export class BlueprintEdgesPass extends Pass {
 		this._dilateTarget.dispose();
 		this._dilateMaterial.dispose();
 		this._dilateQuad.dispose();
+		if ( this._robotMaskTarget ) this._robotMaskTarget.dispose();
+		if ( this._robotWhiteMaterial ) this._robotWhiteMaterial.dispose();
 		this._material.dispose();
 		this._fsQuad.dispose();
 

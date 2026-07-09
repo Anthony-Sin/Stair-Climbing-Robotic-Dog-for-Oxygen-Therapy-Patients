@@ -63,6 +63,12 @@ robot-dog-thing/src/person_following/src/xfeat_output/
 # Local dependency trees
 librealsense/
 
+# Personal photo — never commit (used on the blueprint viewer "Team" slide,
+# copied into the gitignored folder below). *.png above already covers these,
+# but keep these explicit so the face can never be force-added.
+me.png
+src/tools/blueprint_viewer/assets/team/
+
 # API keys and environment variables
 .env
 
