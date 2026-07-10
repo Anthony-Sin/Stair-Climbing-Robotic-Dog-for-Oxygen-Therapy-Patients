@@ -628,3 +628,37 @@ this file only covers gotchas specific to this pipeline/viewer.
   VECTORS instead of one assumed shared direction, and by verifying every claim in
   this entry against real `Xbot.glb` parses and real `THREE.Object3D` FK, not a
   second hand-derivation.
+
+### 16 — raising the anchor tightens EVERY world-referenced IK target's reach budget, not just the one you're tuning for (2026-07-10)
+- **TRIGGER:** Tuning any anchor-height/reach compensation constant (e.g.
+  `standingReachRaiseM` in `js/PatientHuman.js`) that raises or lowers the whole rig.
+- **LESSON:** A world/terrain-referenced target (ankle AND cane handle) sits a fixed
+  distance below the anchor's origin; raising the anchor increases the reaching
+  limb's required distance to any such target by ~the same amount. `standingReachRaiseM`
+  (the round-2 stance-knee fix) was derived solely against LEG reach; an isolated A/B
+  trace run surfaced that it also tightened the already-marginal cane-arm reach
+  (cane follow_straight mean hand-to-handle error 8.2mm -> 15.3mm at the naive 0.028m
+  value). Two per-frame "de-raise just the arm's reference" compensations were tried
+  and BOTH measured worse than doing nothing — resolved by tuning the raise down to
+  0.018m to balance both budgets. Verify any such change against EVERY world-referenced
+  IK target in the file, not just the motivating one.
+- **WHY:** The coupling is invisible in the code (the two IK targets live in different
+  functions and share nothing textually) — it only exists through the world frame, so
+  only a measured A/B against the full-body trace reveals it.
+
+### 17 — the recorded "follow" clip crosses ONTO the staircase at t≈19.8s; segment analyses by TERRAIN, not by clip name (2026-07-10)
+- **TRIGGER:** Computing any per-clip gait statistic (knee bend, swing apex, swing
+  duration, step length) on the "follow" clip, or comparing its tail against a
+  flat-ground baseline/norm.
+- **LESSON:** The follow clip is NOT all flat ground: the recorded patient path reaches
+  the staircase's first risers well before the clip ends (x >= terrain startX at
+  t≈19.8s; every swing after t=19.5s rises a full 0.145m riser — verified from
+  scheduler events). Round 2's "knee blows up 60->101 deg / high-kick before the
+  handoff" finding was exactly this trap: genuine, correctly-formed STAIR swings
+  (apex heights inside the climb clip's own validated range) scored against a
+  flat-ground 60-deg baseline. The finding was refuted, not fixed. Any analyzer
+  sub-segmenting these clips must split by terrain slope/height under the root (as
+  analyze_fullbody.py's climb segmentation does), never assume clip name == context.
+- **WHY:** "follow = flat, climb = stairs" is true for ~84% of the follow clip's
+  duration, which is exactly enough for a statistic to look clean while its tail
+  compares apples to oranges.
