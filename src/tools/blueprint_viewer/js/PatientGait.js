@@ -115,6 +115,88 @@ export const DEFAULT_GAIT_PARAMS = {
 	caneLateralM: 0.32, // m -- tip target offset, to the RIGHT of the root (cane is always held in the right hand). F7 (integration_2.json diag, 2026-07-10): widened 0.28->0.32, M12_caneShaftClearanceMin measured 0.0065 m against a 0.03 m bar (shaft passing too close to the shin) -- +0.04 m lateral moves the whole shaft further from the leg; see this rewrite's own report for the re-measured landed value.
 	caneClearanceM: 0.05, // m -- vertical swing-arc clearance margin (same role as swingClearance for feet)
 	caneTreadMarginM: 0.02, // m -- point-footprint margin kept inside a tread's near/far edge when the tip snaps onto stairs (a cane tip is a point, so -- unlike heelMargin/nosingMargin's asymmetric foot-length margins -- both edges share this one small constant)
+
+	// -- v2 round-2 additions (gait-realism round 2: audit/out/scheduler_naturalness.md
+	// + audit/out/fullbody_naturalness.md ranked findings) -----------------------------
+
+	// W2 speed-scaled step-trigger geometry (scheduler finding #2, "walk ratio
+	// collapses": stepTrigger/stepTriggerClimb/stepLead were fixed DISTANCES
+	// independent of speed, so a slower walk just triggered the SAME-length step less
+	// often -- cadence did all the work -- instead of taking genuinely shorter, more
+	// frequent steps; a faster walk should take genuinely LONGER strides, not just a
+	// faster metronome at a fixed length). See _triggerGeometryMult. exp=0.5 (sqrt
+	// law) is the closed-form consequence of demanding an approximately speed-
+	// INVARIANT walk ratio (step length[m]/cadence[steps/min], target ~0.006 per
+	// Sekiya & Nagasaki 1998) from this scheduler's own trigger model: a step fires
+	// once drift-since-plant (which grows ~linearly with root speed) crosses
+	// stepTrigger_eff, so cadence ~= 60*speed/stepTrigger_eff and stepLength ~=
+	// 2*stepTrigger_eff (the "+stepLead" term cancels between successive same-foot
+	// events, AGENTS.md incident #13's own finding, still true here) -- walkRatio =
+	// stepLength/cadence ~= stepTrigger_eff^2/(30*speed), constant iff
+	// stepTrigger_eff ~ sqrt(speed). Deliberately does NOT reuse G2's refSpeedMps
+	// (0.4 m/s, tuned for swing-duration scaling): the existing stepTrigger/
+	// stepTriggerClimb base constants were already validated against the REAL
+	// clips' own typical paces (follow ~0.26 m/s, climb ~0.11-0.13 m/s creep) -- a
+	// single 0.4 m/s reference would scale BOTH of those real clips away from their
+	// already-correct behavior (measured: it shrank follow's own double-support
+	// fraction under its M5 [0.2,0.5] floor). Two separate references anchor the
+	// multiplier at ~1.0 exactly where each base constant already works, so the
+	// speed SWEEP (0.08-0.60 m/s, this fix's actual target) gets scaled while the
+	// two real recorded clips stay close to their prior validated behavior.
+	stepTriggerSpeedExp: 0.5,
+	stepTriggerRefSpeedMps: 0.28, // m/s -- flat-context reference (stepTrigger, stepLead): between the follow clip's own recorded average pace (~0.26) and gait_audit.mjs's own synthetic stopgo/zigzag/constant fixture speeds (0.25-0.30) -- combined with stepTriggerDeadZoneFrac below, this keeps ALL of those close-to-reference fixtures at (or very near) an UNSCALED 1.0 multiplier, while the wider 0.08-0.60 m/s speed sweep this fix actually targets (audit/out/scheduler_naturalness.md finding #2) still gets meaningfully scaled at its extremes
+	stepTriggerClimbRefSpeedMps: 0.12, // m/s -- climb-context reference (stepTriggerClimb): close to the climb clip's own creep pace
+	stepTriggerSpeedFloorMult: 0.45, // never shrink stepTrigger/stepTriggerClimb/stepLead below 45% of their base value (creep-speed floor -- stays a cautious elderly shuffle, not a sporty micro-step)
+	stepTriggerSpeedCeilMult: 1.6, // never grow them beyond 160% of base (keeps M1 stepLength <= 0.45 m headroom at the fast end of the tested speed range)
+	// W2 CORRECTION (found chasing the same M3/M5 fragility the reference-speed pick
+	// above already documents): a WIDE but genuinely walking-paced speed band
+	// (0.25-0.30 m/s -- follow's own pace AND every near-that-speed gait_audit
+	// fixture: constant/stopgo/zigzag) is dead center on this scheduler's own
+	// existing, already-validated cadence tuning. Even a MILD multiplier deviation
+	// there (measured: an 8-11% shrink/growth, nowhere near the floor/ceil clamps)
+	// was enough to tip a marginal trigger either direction on more than one
+	// fixture -- retuning stepTriggerRefSpeedMps alone could only ever satisfy ONE
+	// of {stopgo, zigzag} at a time (their own speeds, 0.30 vs 0.25, sit on
+	// opposite sides of any single reference point). Fix: a genuine DEAD ZONE --
+	// when the speed ratio is within stepTriggerDeadZoneFrac of 1.0, the multiplier
+	// is EXACTLY 1.0 (bit-identical pre-W2 behavior), not just approximately so.
+	// This intentionally leaves the comfortable-walking-pace region unscaled (where
+	// this scheduler's constants were already tuned and validated) and reserves
+	// W2's scaling for speeds MEANINGFULLY different from a comfortable walk -- the
+	// creep end (0.08-0.20 m/s, the climb clip's own pace, finding #4's glide
+	// problem) and the brisk end (0.35-0.60 m/s, finding #2's worst walk-ratio
+	// deviations) -- which is exactly where the naturalness findings this fix
+	// exists for were actually measured.
+	stepTriggerDeadZoneFrac: 0.15,
+	// W2 CORRECTION (see _nearIdleWithinWindow's own doc comment): the multiplier is
+	// held at a neutral 1.0 (baseline, pre-W2 behavior) whenever a near-idle sample
+	// exists within this many SECONDS of the trigger sample, in EITHER direction --
+	// a central-difference speed reading straddling a stop/resume boundary is an
+	// unreliable blended artifact, and scaling off it was what caused the fresh
+	// idle-overshoot regression. 1.0 s comfortably covers the slowest swing
+	// (swingDurSlowMaxClimb=0.70 s) that could dangle into an upcoming stop, plus
+	// margin for a just-resumed blended reading on the trailing side.
+	stepTriggerIdleGuardSec: 1.0,
+
+	// W3 "break the metronome" (scheduler finding #1: swing duration/step length were
+	// reproduced to MACHINE PRECISION step after step on any locally-steady path, CV
+	// ~0%, vs a healthy-to-frail-elderly human's own ~2-5% stride-time CV). Small
+	// DETERMINISTIC per-event jitter (see _jitterUnit) seeded from `gaitSeed` plus
+	// each event's own array index -- both fixed at buildSchedule time, so re-running
+	// buildSchedule on the SAME (samples, terrain, params) reproduces the identical
+	// jitter sequence bit-for-bit (I1 determinism: no Math.random/Date anywhere in
+	// this module).
+	gaitSeed: 20260710, // arbitrary fixed integer -- change ONLY to reshuffle the jitter pattern (still fully deterministic/reproducible), never to "randomize" anything live
+	swingDurJitterFrac: 0.045, // +-4.5% multiplicative jitter on swingDur_eff (applied AFTER G2's speed scaling) -- targets ~2-3% CV (a uniform[-1,1) jitter's std is frac/sqrt(3))
+	stepTriggerJitterFrac: 0.05, // +-5% multiplicative jitter on the effective step-trigger threshold (applied AFTER W2's speed scaling) -- small enough to leave M1/M5/M6's mechanical guarantees intact
+	caneLeadJitterFrac: 0.12, // +-12% multiplicative jitter on caneLeadSec -- targets ~7% CV (spec range: 5-15% of the mean lead)
+
+	// W4 "kill the marching arc" (scheduler finding #3 + fullbody swingTrajectory
+	// findings: the swing-height envelope was a bare symmetric sin(pi*u) hump peaking
+	// at u=0.5 -- the textbook "marching" signature; humans peak early, ~30-40% of
+	// swing, then ease down into touchdown). See _swingEnvelope.
+	swingPeakUFlat: 0.35, // u-fraction (0=liftoff, 1=touchdown) where the flat-ground swing envelope peaks
+	swingPeakUClimb: 0.30, // earlier still on stairs -- the endpoint blend (ankle rising from a lower tread to a higher one) keeps ADDING height on the descent side, so the arc's OWN contribution must peak earlier for the COMBINED (blend+arc) curve to read as early-peaking overall; see _swingEnvelope's call site comment in _footPoseAt
 };
 
 // ===========================================================================
@@ -321,6 +403,99 @@ function _angleDiff( a, b ) {
 	while ( d > Math.PI ) d -= 2 * Math.PI;
 	while ( d < - Math.PI ) d += 2 * Math.PI;
 	return d;
+
+}
+
+/**
+ * Cheap deterministic 32-bit integer hash (a Murmur3-style finalizer mix) of two
+ * integers -- pure function, no Math.random/Date (I1 determinism). Used only by
+ * _jitterUnit below to seed W3's "break the metronome" per-event jitter.
+ */
+function _hash32( a, b ) {
+
+	let x = ( a ^ 0x9E3779B9 ) + Math.imul( ( b | 0 ) + 0x85EBCA6B, 0xC2B2AE35 );
+	x = Math.imul( x ^ ( x >>> 16 ), 0x21F0AAAD );
+	x = Math.imul( x ^ ( x >>> 15 ), 0x735A2D97 );
+	x = x ^ ( x >>> 15 );
+	return x >>> 0;
+
+}
+
+/**
+ * W3 "break the metronome" (IK_OVERHAUL_SPEC.md round 2, scheduler finding #1):
+ * deterministic pseudo-random value in [-1, 1) from a hash `seed` (a
+ * DEFAULT_GAIT_PARAMS.gaitSeed-derived constant, fixed per call site so different
+ * jitter USES -- swing duration vs trigger threshold vs cane lead -- don't share
+ * one correlated sequence) and an `idx` that is ALREADY FIXED at buildSchedule time
+ * (e.g. an event's own 0-based index within its foot's/cane's event array -- known
+ * the instant that event is about to be constructed, never re-derived from anything
+ * that changes on replay). Re-running buildSchedule on the SAME (samples, terrain,
+ * params) therefore reproduces the identical jitter sequence bit-for-bit -- I1
+ * determinism, no Math.random/Date anywhere in this module.
+ */
+function _jitterUnit( seed, idx ) {
+
+	return ( _hash32( seed, idx ) / 4294967296 ) * 2 - 1;
+
+}
+
+/**
+ * W2 speed-scaled step-trigger geometry (IK_OVERHAUL_SPEC.md round 2, scheduler
+ * finding #2): multiplier applied to stepTrigger/stepTriggerClimb/stepLead so a
+ * slower root takes genuinely SHORTER, more frequent steps (not just a faster
+ * metronome at a fixed stride length) and a faster root takes genuinely LONGER
+ * strides -- see DEFAULT_GAIT_PARAMS.stepTriggerSpeedExp's own comment for the
+ * sqrt-law derivation. `refSpeedMps` is context-specific (stepTriggerRefSpeedMps
+ * for the flat threshold/stepLead, stepTriggerClimbRefSpeedMps for the climb
+ * threshold -- see their own comments for why this does NOT reuse G2's single
+ * refSpeedMps): at speed==refSpeedMps this multiplier is exactly 1.0.
+ * speedAtTrigger is floored at swingSpeedFloorMps BEFORE the ratio (same floor G2
+ * already uses) purely to avoid a divide-by-near-zero blowup -- the idle gates,
+ * not this floor, are what keep a genuinely-stopped root from triggering at all.
+ * W2 CORRECTION (see DEFAULT_GAIT_PARAMS.stepTriggerDeadZoneFrac's own comment):
+ * a genuine dead zone around ratio==1 returns EXACTLY 1.0 (not merely close to
+ * it) -- a comfortable-walking-pace speed within that zone gets bit-identical
+ * pre-W2 behavior, sidestepping marginal-trigger fragility that even a mild (sub-
+ * 10%) multiplier deviation could tip on more than one gait_audit fixture.
+ */
+function _triggerGeometryMult( speedAtTrigger, refSpeedMps, p ) {
+
+	const denom = Math.max( speedAtTrigger, p.swingSpeedFloorMps );
+	const ratio = denom / refSpeedMps;
+	if ( Math.abs( ratio - 1.0 ) < p.stepTriggerDeadZoneFrac ) return 1.0;
+	const mult = Math.pow( ratio, p.stepTriggerSpeedExp );
+	return Math.min( p.stepTriggerSpeedCeilMult, Math.max( p.stepTriggerSpeedFloorMult, mult ) );
+
+}
+
+/**
+ * W4 "kill the marching arc" (IK_OVERHAUL_SPEC.md round 2, scheduler finding #3):
+ * asymmetric swing-height envelope, 0 at u=0 and u=1, peaking at 1.0 at u=peakU
+ * (< 0.5 for an early, human-like peak -- Winter's minimum-toe-clearance data shows
+ * an early local max soon after toe-off, not a hump centred at mid-swing).
+ * Replaces the old bare `Math.sin(Math.PI*u)` (symmetric by construction, always
+ * peaks at u=0.5 -- the textbook "marching" signature). Built from a piecewise
+ * sin/cos half-raised-cosine, C1-smooth at the peak (both halves reach slope 0
+ * there, matching a genuine local max) rather than a warped single sine: the RISE
+ * half (u<=peakU) is time-compressed (a quicker initial clearance, matching a real
+ * toe-off) and the FALL half (u>peakU) is time-stretched (a gentler descent toward
+ * touchdown, matching the spec's "eases down toward touchdown, small terminal
+ * descent slope" ask -- the fall-side slope AT u=1 is smaller in magnitude than the
+ * old symmetric sin's was). Shared by both _footPoseAt and _canePoseAt (one copy of
+ * this shape, not two -- see _buildSwingProfile's own "shared swing helper"
+ * convention above).
+ */
+function _swingEnvelope( u, peakU ) {
+
+	const up = Math.min( 0.9, Math.max( 0.1, peakU ) );
+	if ( u <= up ) {
+
+		const t = up > 1e-6 ? u / up : 1.0;
+		return Math.sin( t * Math.PI * 0.5 );
+
+	}
+	const t = ( 1 - up ) > 1e-6 ? ( u - up ) / ( 1 - up ) : 1.0;
+	return Math.cos( t * Math.PI * 0.5 );
 
 }
 
@@ -582,6 +757,46 @@ export function buildSchedule( samples, terrain, params = DEFAULT_GAIT_PARAMS ) 
 		// +-0.02s probe), so "how fast is the root moving right now" can never
 		// disagree between the idle gate and the swing-duration scaling.
 		const speedAtTrigger = _speedAtIndex( samples, i );
+		// W2 speed-scaled step-trigger geometry (see _triggerGeometryMult): TWO
+		// multipliers per sample (speed-dependent only, foot-independent) -- one per
+		// context, each referenced against ITS OWN base constant's own already-
+		// validated typical pace (see stepTriggerRefSpeedMps/
+		// stepTriggerClimbRefSpeedMps's own comments). triggerMultClimb backs the
+		// first-pass filter (which always uses stepTriggerClimb, the smaller
+		// threshold, as its base) and stepTriggerClimb's own final-recheck use;
+		// triggerMultFlat backs stepTrigger's final-recheck use and stepLead. W2
+		// CORRECTION: held at a neutral 1.0 (exact pre-W2 behavior) near any
+		// stop/resume transition -- see _nearIdleWithinWindow's own doc comment for
+		// why (a blended central-difference speed reading at a stop boundary is not
+		// a trustworthy scaling input, and W2 shrinking the threshold right there is
+		// what caused the idle-overshoot regression this guard fixes).
+		const nearStopTransition = _nearIdleWithinWindow( samples, i, p.stepTriggerIdleGuardSec, p.idleSpeedThreshold, p.idleYawRateThreshold );
+		const triggerMultFlat = nearStopTransition ? 1.0 : _triggerGeometryMult( speedAtTrigger, p.stepTriggerRefSpeedMps, p );
+		const triggerMultClimb = nearStopTransition ? 1.0 : _triggerGeometryMult( speedAtTrigger, p.stepTriggerClimbRefSpeedMps, p );
+		// W2 BUG FOUND while chasing the stopgo/M3 regression above: stepTriggerClimb
+		// and stepTrigger are scaled off DIFFERENT reference speeds (0.12 vs 0.30), so
+		// at a speed well ABOVE the climb reference but AT/NEAR the flat reference
+		// (e.g. this fixture's steady 0.30 m/s) triggerMultClimb balloons well past
+		// triggerMultFlat (measured live: 1.58x vs 1.00x at 0.30 m/s) -- inverting the
+		// invariant the first-pass filter's own comment depends on ("stepTriggerClimb
+		// is always the SMALLER threshold, so it never wrongly excludes a legitimate
+		// flat-ground candidate"). With that inverted, the first-pass filter became
+		// MORE conservative than the eventual flat final-recheck, silently dropping
+		// otherwise-valid candidates purely on this ordering flip -- confirmed as the
+		// actual root cause of stopgo's lost step (every floor/exp/guard retune above
+		// left this identical bug in place, which is why none of them moved the
+		// needle). Fix: the first-pass filter uses the TRUE minimum of both contexts'
+		// scaled thresholds, not stepTriggerClimb's own scaled value in isolation --
+		// restores the "can only ever admit a too-small-for-context candidate, never
+		// wrongly exclude a valid one" guarantee regardless of which reference speed
+		// currently dominates.
+		const stepTriggerFirstPassBase = Math.min( p.stepTriggerClimb * triggerMultClimb, p.stepTrigger * triggerMultFlat );
+		// W3 "break the metronome": small per-event threshold jitter, seeded from
+		// this CANDIDATE foot's own upcoming event index (events[foot].length is
+		// fixed the instant this sample is evaluated -- no event has been pushed
+		// for `foot` yet, so calling this twice for the same foot before/after
+		// bestFoot is chosen reproduces the identical value; see _jitterUnit).
+		const stepTriggerJitterFor = ( foot ) => 1 + p.stepTriggerJitterFrac * _jitterUnit( p.gaitSeed + 2, events[ foot ].length );
 
 		let bestFoot = null, bestNeed = - Infinity;
 
@@ -610,7 +825,11 @@ export function buildSchedule( samples, terrain, params = DEFAULT_GAIT_PARAMS ) 
 
 			const need = Math.max( needNow, needPred );
 
-			if ( need < p.stepTriggerClimb ) continue; // first-pass filter, see comment above
+			// First-pass filter, see comment above -- W2/W3: the TRUE minimum of both
+			// contexts' scaled thresholds (see stepTriggerFirstPassBase's own comment
+			// for why this is no longer just stepTriggerClimb*triggerMultClimb alone),
+			// times this candidate foot's own jitter.
+			if ( need < stepTriggerFirstPassBase * stepTriggerJitterFor( foot ) ) continue;
 			if ( need > bestNeed ) { bestNeed = need; bestFoot = foot; }
 
 		}
@@ -633,7 +852,13 @@ export function buildSchedule( samples, terrain, params = DEFAULT_GAIT_PARAMS ) 
 		// BOTH the flat and climb duration below -- only the base/cap PAIR flips when
 		// the touchdown context resolves to stairs, mirroring the existing "at most
 		// one extra forward-walk" re-resolution pattern.
-		let swingDur = _speedAdaptiveSwingDur( p.swingDur, p.swingDurSlowMax, speedAtTrigger, p );
+		// W3 "break the metronome": swing-duration jitter, seeded from bestFoot's own
+		// upcoming event index (fixed now that bestFoot is chosen and no event has
+		// been pushed for it yet this sample) -- computed ONCE so the SAME multiplier
+		// applies whether the touchdown resolves flat or (after the re-walk below)
+		// climb, exactly mirroring how G2's speedAtTrigger stays fixed across both.
+		const swingDurJitterMult = 1 + p.swingDurJitterFrac * _jitterUnit( p.gaitSeed + 1, events[ bestFoot ].length );
+		let swingDur = _speedAdaptiveSwingDur( p.swingDur, p.swingDurSlowMax, speedAtTrigger, p ) * swingDurJitterMult;
 		let touchdownSampleIdx = _findSampleAtOrAfter( samples, i, s.t + swingDur );
 		let touchdownSample = samples[ touchdownSampleIdx ];
 		let touchdownNominal = _nominalAt( touchdownSample, sides[ bestFoot ].sign, p.footLateral, terrain );
@@ -641,7 +866,7 @@ export function buildSchedule( samples, terrain, params = DEFAULT_GAIT_PARAMS ) 
 		let touchdownOnStairs = terrain.treadIndexAt( touchdownNominal.x ) >= 0 && terrain.treadIndexAt( touchdownNominal.x ) < terrain.stepCount;
 		if ( touchdownOnStairs ) {
 
-			swingDur = _speedAdaptiveSwingDur( p.swingDurClimb, p.swingDurSlowMaxClimb, speedAtTrigger, p );
+			swingDur = _speedAdaptiveSwingDur( p.swingDurClimb, p.swingDurSlowMaxClimb, speedAtTrigger, p ) * swingDurJitterMult;
 			touchdownSampleIdx = _findSampleAtOrAfter( samples, i, s.t + swingDur );
 			touchdownSample = samples[ touchdownSampleIdx ];
 			touchdownNominal = _nominalAt( touchdownSample, sides[ bestFoot ].sign, p.footLateral, terrain );
@@ -656,7 +881,13 @@ export function buildSchedule( samples, terrain, params = DEFAULT_GAIT_PARAMS ) 
 		// this sample does not fire (the still-growing need is simply re-evaluated next
 		// sample, exactly as if this candidate had never been found -- no state was
 		// mutated above, so this `continue` is entirely safe).
-		const requiredTrigger = touchdownOnStairs ? p.stepTriggerClimb : p.stepTrigger;
+		// W2/W3: context-matched speed multiplier + this event's own jitter
+		// (recomputed here -- pure function of gaitSeed/events[bestFoot].length, so
+		// this is bit-identical to the value the first-pass filter already used for
+		// bestFoot above, when the context also resolved to climb).
+		const requiredTriggerBase = touchdownOnStairs ? p.stepTriggerClimb : p.stepTrigger;
+		const requiredTriggerMult = touchdownOnStairs ? triggerMultClimb : triggerMultFlat;
+		const requiredTrigger = requiredTriggerBase * requiredTriggerMult * stepTriggerJitterFor( bestFoot );
 		if ( bestNeed < requiredTrigger ) continue;
 
 		// "Won't-actually-go-anywhere" gate: the instantaneous idle check just above
@@ -714,14 +945,69 @@ export function buildSchedule( samples, terrain, params = DEFAULT_GAIT_PARAMS ) 
 			if ( _rootNearIdleAtIndex( samples, j, 2 * p.idleSpeedThreshold, 2 * p.idleYawRateThreshold ) ) { windowHasNearIdleSample = true; break; }
 
 		}
-		if ( windowMotion < requiredTrigger * 0.5 && windowHasNearIdleSample ) continue;
+		// W2 CORRECTION: compare against requiredTriggerBase (the UNSCALED base
+		// constant), never the W2/W3-scaled `requiredTrigger` -- this safety net's
+		// question ("did the root nearly stop somewhere in this window") is a fixed,
+		// physical distance/idle judgment, orthogonal to how aggressively W2 is
+		// currently scaling the trigger threshold at this sample's speed. Verified
+		// live: wiring this to the SCALED threshold instead (an earlier version of
+		// this change) shrank the bar at low speed (since W2 shrinks stepTrigger_eff
+		// there), which starved this gate of sensitivity exactly when W2 was also
+		// making triggers fire more eagerly -- measured as fresh M10/M7 idle-motion
+		// violations on the climb/stopgo cases that did not exist before W2 landed.
+		if ( windowMotion < requiredTriggerBase * 0.5 && windowHasNearIdleSample ) continue;
+
+		// SEPARATE fix, found while investigating the same M10 regression (W3's
+		// swingDur jitter can lengthen swingDur_eff up to +4.5%): windowMotion alone
+		// only judges the NET distance covered over the whole prospective window, so
+		// a trigger fired late in a moving phase -- most of its "distance" already
+		// covered before the root stops -- can pass the check above even though its
+		// OWN swing then dangles a residual ~30-60ms PAST the stop, still airborne
+		// while the root (and this gate's audit-tier idle proxy) already reads idle
+		// (confirmed: a "stopgo" fixture swing triggered at t=2.700 with
+		// swingDur_eff=0.356s landed at t=3.056, 56ms after the root froze at
+		// t=3.0 -- a LATENT overshoot present even pre-jitter (~44ms), which jitter's
+		// added variance pushed just over the 0.002 m M10 bar). A full DEFER here
+		// (tried first) traded that violation for a WORSE one: skipping the step
+		// entirely left this foot planted through the whole stop, blowing M3 duty
+		// factor / M6 root-travel-while-planted once the other foot had to carry the
+		// stance further after resume -- especially on gait_audit's tight-cycle
+		// "stopgo" fixture. Instead, CLAMP: walk touchdownSampleIdx BACKWARD (never
+		// past the trigger sample i itself) to the last sample that is NOT near-idle,
+		// re-resolving the touchdown/duration from there -- the swing still fires
+		// (keeping M3/M6 intact) but finishes as late as the root is genuinely still
+		// moving, instead of dangling into the stop.
+		let clampIdx = touchdownSampleIdx;
+		while ( clampIdx > i && _rootNearIdleAtIndex( samples, clampIdx, 2 * p.idleSpeedThreshold, 2 * p.idleYawRateThreshold ) ) clampIdx --;
+		if ( clampIdx < touchdownSampleIdx ) {
+
+			const clampedSwingDur = samples[ clampIdx ].t - s.t;
+			// Degenerate case (the whole prospective window reads near-idle, e.g. a
+			// trigger evaluated a hair before rootIsIdle's own sustain window would
+			// have caught it): fall back to deferring rather than commit a near-zero
+			// swing.
+			if ( clampedSwingDur < 0.06 ) continue;
+			touchdownSampleIdx = clampIdx;
+			swingDur = clampedSwingDur;
+			touchdownSample = samples[ touchdownSampleIdx ];
+			touchdownNominal = _nominalAt( touchdownSample, sides[ bestFoot ].sign, p.footLateral, terrain );
+			touchdownOnStairs = terrain.treadIndexAt( touchdownNominal.x ) >= 0 && terrain.treadIndexAt( touchdownNominal.x ) < terrain.stepCount;
+
+		}
 
 		// stepLead: offset the touchdown target forward along the touchdown sample's
 		// OWN facing direction (a real stride reaches slightly ahead of "directly
-		// under the hip" at the moment of plant).
+		// under the hip" at the moment of plant). W2: scaled by the flat-context
+		// speed multiplier (not jittered -- W3's jitter is expressed via
+		// swingDur/threshold/cane-lead, not this placement offset) -- a slower
+		// stride reaches less far ahead of the hip, matching how a real
+		// slow/cautious gait plants closer under the body (also the direct fix for
+		// W1's tail-glide: a smaller lead at low speed means less "head start" baked
+		// into the new plant, so the next step's drift starts growing sooner).
 		const leadCy = Math.cos( touchdownSample.yaw ), leadSy = Math.sin( touchdownSample.yaw );
-		let toX = touchdownNominal.x + leadCy * p.stepLead;
-		let toY = touchdownNominal.y + leadSy * p.stepLead;
+		const stepLeadEff = p.stepLead * triggerMultFlat;
+		let toX = touchdownNominal.x + leadCy * stepLeadEff;
+		let toY = touchdownNominal.y + leadSy * stepLeadEff;
 		let toZ = terrain.heightAt( toX );
 		const onStairs = terrain.treadIndexAt( toX ) >= 0 && terrain.treadIndexAt( toX ) < terrain.stepCount;
 
@@ -1045,11 +1331,16 @@ function _buildCaneEvents( samples, events, terrain, p ) {
 
 		const leftEv = leftEvents[ k ];
 
-		// Lead the paired left-foot liftoff by caneLeadSec, but never start before
+		// W3 "break the metronome": small per-event jitter on the cane's own lead
+		// time, seeded from this cane event's own (0-based, already-fixed) index k --
+		// deterministic (I1), see _jitterUnit / DEFAULT_GAIT_PARAMS.caneLeadJitterFrac.
+		const caneLeadEff = p.caneLeadSec * ( 1 + p.caneLeadJitterFrac * _jitterUnit( p.gaitSeed + 3, k ) );
+
+		// Lead the paired left-foot liftoff by caneLeadEff, but never start before
 		// the previous cane event has had a moment to finish (previous tLand + 0.05,
 		// the same minEventGap-flavoured spacing the feet use) or before the clip's
 		// own first sample.
-		const tLift = Math.max( leftEv.tLift - p.caneLeadSec, lastLandT + 0.05, samples[ 0 ].t );
+		const tLift = Math.max( leftEv.tLift - caneLeadEff, lastLandT + 0.05, samples[ 0 ].t );
 		// Finish planting no later than the paired foot (leftEv.tLand - 0.02), and
 		// never longer than the cane's own (shorter) swing duration.
 		const tLand = Math.min( leftEv.tLand - 0.02, tLift + p.caneSwingDur );
@@ -1107,6 +1398,43 @@ function _rootNearIdleAtIndex( samples, j, speedThreshold, yawRateThreshold ) {
 	const spd = _hyp2( sn.x - sp.x, sn.y - sp.y ) / dt;
 	const yr = Math.abs( sn.yaw - sp.yaw ) / dt;
 	return spd < speedThreshold && yr < yawRateThreshold;
+
+}
+
+/**
+ * W2 CORRECTION (found while fixing the same M10/M3 regression the windowMotion-
+ * gate/touchdown-clamp fixes above address): true if ANY sample within
+ * +-halfWindowSamples of `centerIdx` is near-idle (2x the idle floors, same loose
+ * net as the other gates in this file). Used to decide whether W2's speed
+ * multiplier is even trustworthy at this sample -- a central-difference speed
+ * reading straddling a stop/resume boundary is a BLENDED artifact (e.g. reads
+ * ~half the true moving speed one sample either side of an instantaneous stop),
+ * and applying W2's sqrt-law scaling to that artifact SHRINKS the trigger
+ * threshold right as the root is decelerating -- exactly the condition that
+ * encourages a swing to fire late and dangle into the stop it's approaching
+ * (confirmed live: this was the actual root cause of a fresh M10 idle-motion
+ * violation on the "climb" clip and an M3 duty-factor violation on gait_audit's
+ * "stopgo" fixture, both introduced by W2 and NOT fixed by shrinking
+ * stepTriggerSpeedFloorMult/-Exp alone). See _triggerGeometryMult's call site in
+ * buildSchedule for how this gates the multiplier back to a neutral 1.0 near any
+ * stop/resume transition, while leaving it fully active during confidently-steady
+ * walking (the actual target of W2 -- the speed-sweep fixtures, which never stop).
+ */
+function _nearIdleWithinWindow( samples, centerIdx, halfWindowSec, speedThreshold, yawRateThreshold ) {
+
+	const n = samples.length;
+	const centerT = samples[ centerIdx ].t;
+	for ( let j = centerIdx; j >= 0 && samples[ j ].t >= centerT - halfWindowSec; j -- ) {
+
+		if ( _rootNearIdleAtIndex( samples, j, speedThreshold, yawRateThreshold ) ) return true;
+
+	}
+	for ( let j = centerIdx; j < n && samples[ j ].t <= centerT + halfWindowSec; j ++ ) {
+
+		if ( _rootNearIdleAtIndex( samples, j, speedThreshold, yawRateThreshold ) ) return true;
+
+	}
+	return false;
 
 }
 
@@ -1445,10 +1773,18 @@ function _footPoseAt( schedule, terrain, foot, t, sign ) {
 			const x = e.from.x + ( e.to.x - e.from.x ) * ease;
 			const y = e.from.y + ( e.to.y - e.from.y ) * ease;
 			const zEndpointBlend = e.from.z + ( e.to.z - e.from.z ) * ease;
-			// Arc bump: zero at u=0 and u=1 (a plain sine half-arch), added on top of
-			// the endpoint-exact blend so touchdown/liftoff are always pop-free
-			// regardless of the arc's own amplitude.
-			const arcBump = Math.max( 0.0, e.apexZ - Math.max( e.from.z, e.to.z ) ) * Math.sin( Math.PI * u );
+			// Arc bump: zero at u=0 and u=1, added on top of the endpoint-exact blend so
+			// touchdown/liftoff are always pop-free regardless of the arc's own
+			// amplitude. W4 "kill the marching arc" (IK_OVERHAUL_SPEC.md round 2): uses
+			// the asymmetric _swingEnvelope (early-peaking, gentle descent) instead of a
+			// bare symmetric sin(pi*u) -- peakU picks the flat/climb constant based on
+			// whether THIS swing has a net terrain rise (same >0.05 m heuristic
+			// analyze_scheduler.py's own swing-profile analysis uses to classify a swing
+			// as "stairs", so the tuned peakU constants are being tuned against exactly
+			// what gets measured).
+			const onStairsSwing = Math.abs( e.to.z - e.from.z ) > 0.05;
+			const peakU = onStairsSwing ? schedule.params.swingPeakUClimb : schedule.params.swingPeakUFlat;
+			const arcBump = Math.max( 0.0, e.apexZ - Math.max( e.from.z, e.to.z ) ) * _swingEnvelope( u, peakU );
 			const zArc = zEndpointBlend + arcBump;
 
 			// Terrain clamp: a strict, DEFENSIVE non-penetration floor only -- NOT a
@@ -1581,7 +1917,11 @@ function _canePoseAt( schedule, terrain, t ) {
 			const x = e.from.x + ( e.to.x - e.from.x ) * ease;
 			const y = e.from.y + ( e.to.y - e.from.y ) * ease;
 			const zEndpointBlend = e.from.z + ( e.to.z - e.from.z ) * ease;
-			const arcBump = Math.max( 0.0, e.apexZ - Math.max( e.from.z, e.to.z ) ) * Math.sin( Math.PI * u );
+			// W4 (see _footPoseAt's own call-site comment for the full rationale):
+			// same asymmetric envelope, same stairs-vs-flat classification heuristic.
+			const onStairsSwing = Math.abs( e.to.z - e.from.z ) > 0.05;
+			const peakU = onStairsSwing ? schedule.params.swingPeakUClimb : schedule.params.swingPeakUFlat;
+			const arcBump = Math.max( 0.0, e.apexZ - Math.max( e.from.z, e.to.z ) ) * _swingEnvelope( u, peakU );
 			const zArc = zEndpointBlend + arcBump;
 
 			// Same ceiling-indexed, ease-space clamp lookup as _footPoseAt -- see its
