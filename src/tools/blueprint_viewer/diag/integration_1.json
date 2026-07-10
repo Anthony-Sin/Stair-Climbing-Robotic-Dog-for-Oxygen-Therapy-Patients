@@ -1,0 +1,352 @@
+{
+  "perClip": {
+    "follow": {
+      "minSoleClearance": -0.16674875476473383,
+      "maxPenetration": 0.16674875476473383,
+      "plantedDriftMax": 0.03260171320019046,
+      "idleFootMotionMax": 0.0044401273860937346,
+      "fkErrorMax": 2.1654952620054098e-05,
+      "kneeBendDeg": {
+        "stanceMedian": 38.6575559047189,
+        "max": 94.80350858248866
+      },
+      "maxToeStepM": 0.08779046946065716,
+      "hipHeightAboveTerrain": {
+        "min": 0.7764069192337444,
+        "max": 0.9200000166893005
+      }
+    },
+    "climb": {
+      "minSoleClearance": -0.14500982322808675,
+      "maxPenetration": 0.14500982322808675,
+      "plantedDriftMax": 0.03151741250701562,
+      "idleFootMotionMax": 0.0015967717929780258,
+      "fkErrorMax": 2.3048758891244324e-05,
+      "kneeBendDeg": {
+        "stanceMedian": 54.843771025407406,
+        "max": 94.35690334789837
+      },
+      "maxToeStepM": 0.05809804496023772,
+      "hipHeightAboveTerrain": {
+        "min": 0.775076599121109,
+        "max": 0.920000047683716
+      }
+    }
+  },
+  "violations": [
+    {
+      "clip": "follow",
+      "t": 0.1,
+      "metric": "idleFootMotion",
+      "value": 0.0044401273860937346
+    },
+    {
+      "clip": "follow",
+      "t": 0.6,
+      "metric": "plantedDrift",
+      "value": 0.010054311672626715
+    },
+    {
+      "clip": "follow",
+      "t": 0.65,
+      "metric": "plantedDrift",
+      "value": 0.01788031908329152
+    },
+    {
+      "clip": "follow",
+      "t": 0.7000000000000001,
+      "metric": "penetration.rightToe",
+      "value": 0.019543318706182453
+    },
+    {
+      "clip": "follow",
+      "t": 0.7000000000000001,
+      "metric": "plantedDrift",
+      "value": 0.01788031908329152
+    },
+    {
+      "clip": "follow",
+      "t": 0.7500000000000001,
+      "metric": "penetration.rightToe",
+      "value": 0.006313115402322376
+    },
+    {
+      "clip": "follow",
+      "t": 0.7500000000000001,
+      "metric": "plantedDrift",
+      "value": 0.01788031908329152
+    },
+    {
+      "clip": "follow",
+      "t": 0.8000000000000002,
+      "metric": "plantedDrift",
+      "value": 0.01788031908329152
+    },
+    {
+      "clip": "follow",
+      "t": 0.8500000000000002,
+      "metric": "plantedDrift",
+      "value": 0.01788031908329152
+    },
+    {
+      "clip": "follow",
+      "t": 0.9000000000000002,
+      "metric": "plantedDrift",
+      "value": 0.01788031908329152
+    },
+    {
+      "clip": "follow",
+      "t": 0.9500000000000003,
+      "metric": "plantedDrift",
+      "value": 0.01788031908329152
+    },
+    {
+      "clip": "follow",
+      "t": 1.0000000000000002,
+      "metric": "plantedDrift",
+      "value": 0.01788031908329152
+    },
+    {
+      "clip": "follow",
+      "t": 1.0500000000000003,
+      "metric": "penetration.leftToe",
+      "value": 0.022207343427140425
+    },
+    {
+      "clip": "follow",
+      "t": 1.0500000000000003,
+      "metric": "plantedDrift",
+      "value": 0.01788031908329152
+    },
+    {
+      "clip": "follow",
+      "t": 1.1000000000000003,
+      "metric": "penetration.leftToe",
+      "value": 0.009975495415793484
+    },
+    {
+      "clip": "follow",
+      "t": 1.1000000000000003,
+      "metric": "plantedDrift",
+      "value": 0.019844392797147156
+    },
+    {
+      "clip": "follow",
+      "t": 1.1500000000000004,
+      "metric": "plantedDrift",
+      "value": 0.027670369720409496
+    },
+    {
+      "clip": "follow",
+      "t": 1.2000000000000004,
+      "metric": "plantedDrift",
+      "value": 0.03080124506721738
+    },
+    {
+      "clip": "follow",
+      "t": 1.2500000000000004,
+      "metric": "plantedDrift",
+      "value": 0.03080124506721738
+    },
+    {
+      "clip": "follow",
+      "t": 1.3000000000000005,
+      "metric": "plantedDrift",
+      "value": 0.03080124506721738
+    },
+    {
+      "clip": "follow",
+      "t": 1.3500000000000005,
+      "metric": "plantedDrift",
+      "value": 0.03080124506721738
+    },
+    {
+      "clip": "follow",
+      "t": 1.4000000000000006,
+      "metric": "plantedDrift",
+      "value": 0.03080124506721738
+    },
+    {
+      "clip": "follow",
+      "t": 1.4500000000000006,
+      "metric": "plantedDrift",
+      "value": 0.03080124506721738
+    },
+    {
+      "clip": "follow",
+      "t": 1.5000000000000007,
+      "metric": "plantedDrift",
+      "value": 0.03080124506721738
+    },
+    {
+      "clip": "follow",
+      "t": 1.5500000000000007,
+      "metric": "penetration.rightToe",
+      "value": 0.021748921326605088
+    },
+    {
+      "clip": "follow",
+      "t": 1.5500000000000007,
+      "metric": "plantedDrift",
+      "value": 0.0317010295205112
+    },
+    {
+      "clip": "follow",
+      "t": 1.6000000000000008,
+      "metric": "penetration.rightToe",
+      "value": 0.009052306949870765
+    },
+    {
+      "clip": "follow",
+      "t": 1.6000000000000008,
+      "metric": "plantedDrift",
+      "value": 0.0317010295205112
+    },
+    {
+      "clip": "follow",
+      "t": 1.6500000000000008,
+      "metric": "plantedDrift",
+      "value": 0.0317010295205112
+    },
+    {
+      "clip": "follow",
+      "t": 1.7000000000000008,
+      "metric": "plantedDrift",
+      "value": 0.0317010295205112
+    },
+    {
+      "clip": "follow",
+      "t": 1.7500000000000009,
+      "metric": "plantedDrift",
+      "value": 0.0317010295205112
+    },
+    {
+      "clip": "follow",
+      "t": 1.800000000000001,
+      "metric": "plantedDrift",
+      "value": 0.0317010295205112
+    },
+    {
+      "clip": "follow",
+      "t": 1.850000000000001,
+      "metric": "plantedDrift",
+      "value": 0.0317010295205112
+    },
+    {
+      "clip": "follow",
+      "t": 1.900000000000001,
+      "metric": "penetration.leftToe",
+      "value": 0.023289405050458598
+    },
+    {
+      "clip": "follow",
+      "t": 1.900000000000001,
+      "metric": "plantedDrift",
+      "value": 0.0317010295205112
+    },
+    {
+      "clip": "follow",
+      "t": 1.950000000000001,
+      "metric": "penetration.leftToe",
+      "value": 0.013872030104480034
+    },
+    {
+      "clip": "follow",
+      "t": 1.950000000000001,
+      "metric": "plantedDrift",
+      "value": 0.0317010295205112
+    },
+    {
+      "clip": "follow",
+      "t": 2.000000000000001,
+      "metric": "plantedDrift",
+      "value": 0.0317010295205112
+    },
+    {
+      "clip": "follow",
+      "t": 2.0500000000000007,
+      "metric": "plantedDrift",
+      "value": 0.0317010295205112
+    },
+    {
+      "clip": "follow",
+      "t": 2.1000000000000005,
+      "metric": "plantedDrift",
+      "value": 0.0317010295205112
+    }
+  ],
+  "ikSelfCheck": false,
+  "pass": false,
+  "metrics": {
+    "M8_soleClearanceMin": {
+      "value": -0.16674875476473383,
+      "bar": ">= -0.002 m",
+      "pass": false
+    },
+    "M8_rollWindowContactDriftMax": {
+      "value": 0.06794753025844104,
+      "bar": "<= 0.005 m (toe-bone approximates the heel/toe contact point -- see code comment)",
+      "pass": false
+    },
+    "M9b_footPitchContinuityMax": {
+      "value": 0.17424523147970494,
+      "bar": "<= 0.12 rad per sample @ dt=0.05s",
+      "pass": false
+    },
+    "M11_armSwingAmplitude": {
+      "value": 0.08923495670218692,
+      "bar": "[0.1, 0.45] rad (peak-to-peak/2, pooled across both clips)",
+      "pass": false
+    },
+    "M11_armSwingIdleAmplitude": {
+      "value": 0.060552563979476635,
+      "bar": "<= 0.01 rad (breathing only)",
+      "pass": false
+    },
+    "M11_contralateralPhaseCorr": {
+      "value": 0.9925225098500654,
+      "bar": "corr(shoulder_L, adv_R) >= 0.7 (sign assumes the leg rig's local-X sagittal convention also applies to arms -- unverified for arms, see localTwistAboutXRad's comment)",
+      "pass": true
+    },
+    "M12_handForearmToThighClearanceMin": {
+      "value": 0.0903769717607749,
+      "bar": ">= 0.09 m point-to-axis (~0.07 m thigh mesh radius + 0.02 m clearance; bone-segment-centerline approximation, not a true mesh surface)",
+      "pass": true
+    },
+    "M12_caneHandToHandleErrorMax": {
+      "value": 0.13090122761336434,
+      "bar": "<= 0.015 m every sampled frame",
+      "pass": false
+    },
+    "M12_caneShaftClearanceMin": {
+      "value": 0.006490289071046699,
+      "bar": ">= 0.03 m vs shin (segment-to-segment centerline distance, both sides; bone-position approximation, not a true mesh/capsule surface)",
+      "pass": false
+    },
+    "M13_pelvisBobAmplitude": {
+      "value": 0.00899947137306678,
+      "bar": "[0.008, 0.035] m (peak-to-peak/2, pooled across both clips)",
+      "pass": true
+    },
+    "M13_pelvisBobIdleAmplitude": {
+      "value": 0.00031876768704541814,
+      "bar": "<= 0.002 m (\"zero\" at idle)",
+      "pass": true
+    },
+    "M13_headVsPelvisAmplitudeRatio": {
+      "value": 1.0603877899433383,
+      "bar": "< 1.0 (head amplitude < pelvis amplitude -- stabilization works)",
+      "pass": false
+    },
+    "M14_existingAcceptanceBars": {
+      "value": {
+        "fkErrorMax": 2.3048758891244324e-05,
+        "plantedDriftMax": 0.03260171320019046,
+        "idleFootMotionMax": 0.0044401273860937346,
+        "kneeBendStanceMedianMax": 54.843771025407406
+      },
+      "bar": "fkErrorMax<=0.012m, plantedDriftMax<=0.01m, idleFootMotionMax<=0.002m, kneeBend stanceMedian<=40deg (existing bars, unchanged)",
+      "pass": false
+    }
+  }
+}

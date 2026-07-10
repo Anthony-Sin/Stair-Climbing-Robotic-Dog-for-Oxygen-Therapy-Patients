@@ -14,9 +14,17 @@ hand with a real `<input type="range">`.
 .claude/launch.json
 ```
 
-already defines a `blueprint-viewer` configuration (`python -m http.server
-8741 -d src/tools/blueprint_viewer`). Launch it from the Claude Code preview
-tooling, or run the equivalent command yourself:
+already defines a `blueprint-viewer` configuration that runs `serve.py`
+(`python src/tools/blueprint_viewer/serve.py`, port 8741 — see `serve.py`'s
+own docstring for why it's a small custom handler rather than stock
+`http.server`: no-cache headers so edited JS never runs stale, plus the
+`POST /shot` and `POST /diag` capture sinks the debug API below relies on).
+Launch it from the Claude Code preview tooling, or run the equivalent
+command yourself:
+
+```powershell
+python src/tools/blueprint_viewer/serve.py
+```
 
 ### Option B — plain `python -m http.server`
 
@@ -26,7 +34,10 @@ python -m http.server 8741
 ```
 
 then open `http://localhost:8741/`. Any static file server works — the app
-is plain ES modules with an import map, no bundler/build step required.
+is plain ES modules with an import map, no bundler/build step required — but
+plain `http.server` sends no cache headers (stale-JS risk on live edits) and
+has no `/shot`/`/diag` sinks, so `window.__viewer.saveShot`/`gaitReport` won't
+have anywhere to write; prefer Option A for real development/verification.
 Do NOT open `index.html` directly via `file://` — GLTFLoader's fetch of
 `./models/robot.glb` and the ES module imports both require an HTTP origin.
 
@@ -68,14 +79,29 @@ pipeline/                     Model-baking scripts — NOT owned by this viewer
 
 ```js
 await window.__viewer.ready;             // resolves once the model (real or placeholder) has loaded
-window.__viewer.scrub(50);               // set the scrubber to 50%
+window.__viewer.scrub(50);               // set the scrubber to 50% of the UNIFIED (follow+climb) timeline
 window.__viewer.setPhase('climb');       // switch phase ('follow' | 'climb')
+window.__viewer.play(true);              // start/stop autoplay (true|false)
+window.__viewer.resetDemo();             // rewind the unified timeline to t=0 (keeps playing if it was
+                                          // playing); same action as the #pot-reset stage button / Home key
 window.__viewer.getState();              // { phase, timeSec, duration, pct, usingPlaceholder, theme }
 window.__viewer.renderFrame();           // manually render one frame without waiting for rAF
                                           // (rAF is throttled to ~0 on a backgrounded/hidden tab —
                                           // this is the escape hatch for headless/automated capture)
 window.__viewer.getNodeWorldPosition('patient_root'); // world position of a named scene node, or null
 window.__viewer.getCameraState();        // { position, target, near, far }
+window.__viewer.saveShot('name');        // render + POST the current frame to serve.py's /shot sink,
+                                          // resolving to the saved PNG's path (see serve.py's docstring —
+                                          // the canvas is write-only, so this is the reliable capture path)
+window.__viewer.patientDiag({ dt: 0.05 }); // sweep both clips at `dt`, driving the real sync() path, and
+                                          // return the patient-gait acceptance-bar report: the original
+                                          // { perClip, violations, ikSelfCheck } shape PLUS a top-level
+                                          // { pass, metrics: { <name>: { value, bar, pass|'pending' } } }
+                                          // (metrics needing not-yet-landed rig/gait fields report
+                                          // pass:'pending' instead of crashing — see js/main.js's own
+                                          // comment at the top of patientDiag for the full metric list)
+window.__viewer.gaitReport('name');      // run patientDiag({ dt: 0.05 }) and POST the JSON result to
+                                          // serve.py's /diag sink, resolving to the saved .json path
 ```
 
 ## Tuning knobs

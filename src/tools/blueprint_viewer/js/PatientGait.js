@@ -45,14 +45,14 @@ export const DEFAULT_GAIT_PARAMS = {
 	swingDur: 0.32, // s -- flat-ground swing duration (liftoff -> touchdown)
 	swingDurClimb: 0.45, // s -- longer on stairs: clearing a riser needs a slower, more deliberate swing
 	swingClearance: 0.07, // m -- flat-ground vertical margin added over the highest terrain sample along a swing's path
-	swingClearanceClimb: 0.10, // m -- taller margin on stairs so the swinging foot clears a riser nosing, not just the tread top
+	swingClearanceClimb: 0.14, // m -- taller margin on stairs so the swinging foot clears a riser nosing, not just the tread top. F1 (integration_2.json diag, 2026-07-10) residual: widened 0.10->0.14 -- this profile clamps the ANKLE's own path (buildSchedule's from/to are ankle-level nominal points), but the diag measures the TOE bone, which leads the ankle horizontally by toeForwardLenM during a fast-advancing climb swing, so it can reach a tread's higher terrain slightly BEFORE the ankle-based clamp profile has climbed to match -- measured worst-case penetration during a mid-swing sample (climb t=20.1s, swingU=0.28) dropped 0.0351->0.0233 m with this widen (~34%). Does NOT fully eliminate the residual (0.0233 m still exceeds the -0.002 m bar) -- the remaining gap is a DIFFERENT, margin-independent mechanism (see PatientHuman.js's own _footRollPitch/heel-strike-pivot residual, same order of magnitude, present on FLAT ground too where this constant doesn't even apply) -- a proper fix needs a toe-aware swing clamp or an incident-#14-style full analytic re-derivation of the toe's real (not just ankle's) swing-time position, out of this pass's scope; left as a documented residual, this widen is a genuine partial improvement with no observed downside (Node audit stays green).
 	minEventGap: 0.15, // s -- minimum time between one foot's swing ENDING and the SAME foot starting another (prevents rapid double-triggers)
 	yawErrorWeight: 0.30, // m/rad -- converts a plant-vs-current yaw error into an equivalent "need" distance; tuned so ~25 deg (0.44 rad) of yaw error alone crosses stepTrigger (0.44*0.30=0.132, just under 0.16 -- combines with even a little translational need to trigger, matching "yaw alone eventually triggers, not instantly")
 	idleSpeedThreshold: 0.02, // m/s -- SAME value the browser diagnostic (main.js patientDiag) uses to define "idle" for idleFootMotionMax; a swing may only START at a sample where root translational speed OR yaw rate clears its own idle floor (see buildSchedule) -- deliberately shared so "does a step trigger" and "does the diagnostic call this idle" can never disagree
 	idleYawRateThreshold: 0.05, // rad/s -- companion to idleSpeedThreshold: an in-place turn (near-zero translational speed, real yaw rate) must still be able to trigger an adjustment step, so idleness requires BOTH speed and yaw-rate to be below their floors, not just speed alone
 	idleSustainSamples: 3, // count -- the idle gate requires this many CONSECUTIVE trailing samples to all clear the idle floor (not just the trigger sample itself), so a trigger can't fire on the single leading-edge sample of a resume-from-stop, whose swing would otherwise still span mostly-idle samples just before it
 	heelMargin: 0.05, // m -- keep the foot's heel/back edge this far from a tread's near (riser) edge
-	nosingMargin: 0.03, // m -- keep the foot's toe this far from a tread's far (nosing) edge
+	nosingMargin: 0.05, // m -- keep the foot's toe this far from a tread's far (nosing) edge. F1 (integration_2.json diag, 2026-07-10): widened 0.03->0.05 -- the NOMINAL (flat-footed) toeForwardLen reach this margin is measured against assumes pitch=0, but a toe-off roll's REAL rendered toe (PatientHuman's roll model, pivoting the ANKLE about a toe contact point while the Foot->ToeBase offset itself also rotates through `pitch`) reaches further forward than that flat assumption by an amount that grows with roll angle -- measured empirically (climb clip, tread idx 2->3 boundary, t=3.25s) at ~0.0365 m beyond the flat-nominal toe position, i.e. the OLD 0.03 m margin was already fully consumed with 0.0065 m to spare in the wrong direction. This margin is shared by BOTH the pre-existing onStairs tread-to-tread clamp and F1's own startX base clamp, so widening it fixes both boundary classes with one tune. Does not touch heelForwardLen/heelMargin (0.05 m already had headroom; no matching heel-side violation was observed).
 	bobAmplitude: 0.015, // m -- vertical anchor bob amplitude, phase-locked to gaitPhase (freezes when steps stop)
 	footLateral: 0.09 * 0.75, // m -- half-stance-width (nominal foot lateral offset from the root). This default matches the OLD (now-retired) Python pipeline's anim_bake._PATIENT_LEG_HIP_OFFSET magnitude, kept only so this module stays usable standalone (Node tests, this file's own header) -- PatientHuman.buildGait() ALWAYS overrides this with the REAL measured hip-pivot lateral offset from Xbot's own bind pose (~0.082 m, close but not identical to this default) before building a schedule for the live app, exactly like toeForwardLen below
 	toeForwardLen: 0.107, // m -- horizontal Foot->ToeBase reach, measured from Xbot's own bind pose (see PatientHuman.js's load-time measurement) -- default here is that measured value, duplicated so this module stays load-order-independent (PatientHuman passes the REAL measured value in at buildGait() time; this default only matters for standalone/Node testing)
@@ -74,6 +74,47 @@ export const DEFAULT_GAIT_PARAMS = {
 	walkOnStepDur: 0.65, // s per step (swing+stance); total walk-on time = walkOnSteps*this
 	walkOnFootAhead: 0.13, // m each footfall lands ahead of the hip (a natural stride reach)
 	walkOnMinRecordedForward: 0.30, // m -- only walk on if the recorded path itself still travels at least this far forward past the last footfall (skips the follow clip's negligible ~0.1 m tail)
+
+	// -- v2 additions (IK_OVERHAUL_SPEC.md gait-realism overhaul) --------------------
+
+	// G1 predictive trigger (buildSchedule's need computation, see its own comment):
+	// ~0.6*swingDur (0.6*0.32=0.192, rounded) -- long enough to actually forecast past
+	// the current instant, short enough to stay a genuine near-term forecast rather
+	// than reaching towards a whole extra swing away.
+	predictLeadSec: 0.19, // s -- how far ahead buildSchedule forecasts drift when evaluating a step trigger (sampled off the real array, never extrapolated -- see _findSampleAtOrAfter)
+
+	// G2 speed-adaptive swing duration (_speedAdaptiveSwingDur): swingDur_eff =
+	// clamp(swingDur * (refSpeedMps/max(speedAtTrigger,swingSpeedFloorMps))^0.25,
+	// swingDur, swingDurSlowMax) -- a slower root takes slower, more deliberate steps.
+	refSpeedMps: 0.4, // m/s -- root speed at which swingDur/swingDurClimb apply UNSCALED
+	swingSpeedFloorMps: 0.05, // m/s -- floor under the measured trigger-time speed before it divides refSpeedMps (prevents the ratio blowing up as speed->0; the idle gates, not this floor, are what keep a genuinely-stopped root from triggering at all)
+	swingDurSlowMax: 0.55, // s -- flat-ground cap on the speed-scaled swing duration
+	swingDurSlowMaxClimb: 0.70, // s -- stair cap on the speed-scaled swing duration
+
+	// G3 out-toeing -- applied ONLY at poseAt/_footPoseAt time (display yaw), never to
+	// buildSchedule's own trigger/need math -- see _footPoseAt's comment for why, and
+	// for the +Y=left/-Y=right sign derivation this default relies on.
+	outToeRad: 0.10, // rad -- plant/swing yaw offset; LEFT foot gets +outToeRad, RIGHT gets -outToeRad (toes splay away from the midline)
+
+	// G4 stance width -- buildSchedule adds this to p.footLateral EXACTLY ONCE, right
+	// after params are merged (see buildSchedule's own comment there); every nominal/
+	// plant lookup in this file already reads the (now-widened) p.footLateral
+	// afterward, so no separate "effective width" constant is threaded elsewhere.
+	stanceWidenM: 0.012, // m -- elderly slightly-wider-than-rig-measured stance, added to footLateral
+
+	// G6 support (lateral weight-transfer signal, see _supportAt).
+	supportEaseSec: 0.35, // s -- smoothstep duration easing `support` from +-1 (value at a swing's touchdown) back toward 0 (centered double support) while planted
+
+	// G5 cane schedule (see _buildCaneEvents). caneEnabled defaults true; a caller sets
+	// it false only if the rig layer genuinely cannot build/attach a cane (I10
+	// safe-disable contract -- _buildCaneEvents logs once when that happens).
+	caneEnabled: true,
+	caneLeadSec: 0.08, // s -- cane liftoff leads its associated LEFT-foot event's own tLift by this much
+	caneSwingDur: 0.30, // s -- cane's own (shorter) swing duration -- it must finish planting before its foot, see the tLand clamp in _buildCaneEvents
+	caneForwardM: 0.18, // m -- tip target offset, forward of the root at the cane's own landing time
+	caneLateralM: 0.32, // m -- tip target offset, to the RIGHT of the root (cane is always held in the right hand). F7 (integration_2.json diag, 2026-07-10): widened 0.28->0.32, M12_caneShaftClearanceMin measured 0.0065 m against a 0.03 m bar (shaft passing too close to the shin) -- +0.04 m lateral moves the whole shaft further from the leg; see this rewrite's own report for the re-measured landed value.
+	caneClearanceM: 0.05, // m -- vertical swing-arc clearance margin (same role as swingClearance for feet)
+	caneTreadMarginM: 0.02, // m -- point-footprint margin kept inside a tread's near/far edge when the tip snaps onto stairs (a cane tip is a point, so -- unlike heelMargin/nosingMargin's asymmetric foot-length margins -- both edges share this one small constant)
 };
 
 // ===========================================================================
@@ -283,6 +324,72 @@ function _angleDiff( a, b ) {
 
 }
 
+/**
+ * I10 shared swing-finishing helper (IK_OVERHAUL_SPEC.md section 4 G-refactor):
+ * build the apex height + terrain non-penetration clamp profile for a
+ * liftoff->touchdown segment. Used by ALL swing producers in this file -- the
+ * main march (feet), _buildWalkOn, and _buildCaneEvents -- so there is exactly
+ * ONE implementation of this math, not three copies that could drift.
+ *
+ * clampProfile stores the RAW terrain height (running max, so it stays
+ * monotone non-decreasing -> smooth to interpolate), sampled at <=2cm spacing
+ * along the straight liftoff->touchdown line. The clamp that consumes this
+ * (_footPoseAt/_canePoseAt) uses it as a strict non-penetration FLOOR ONLY --
+ * it does NOT separately add the clearance margin (see _footPoseAt:
+ * `z = max(zArc, terrainProfile(ease))`, no extra `+ clearance*sin(pi*u)` term
+ * on the clamp side). Clearance is already fully provided by zArc's OWN arc
+ * bump (its coefficient is `apexZ - max(from.z,to.z)`, and
+ * `apexZ = maxTerrainAlongPath + clearance` -- i.e. the arc already peaks
+ * `clearance` above the highest terrain along the path), so the clamp's only
+ * remaining job is "never actually go below ground" -- a strictly weaker,
+ * purely defensive condition. Two prior formulations were tried and rejected:
+ * (1) clamping against `rawTerrain + clearance*sin(pi*u)` DOUBLE-counted
+ * clearance on top of the arc bump's own, compounding right where both were
+ * steepest (0.1275 m single-dt=0.05-sample jump on a real single-riser "climb
+ * straight to touchdown" event, maxToeStep 0.131 m against the 0.12 m bar);
+ * (2) storing the EXCESS over a straight-line reference between the
+ * endpoints' own terrain heights (rather than the raw terrain height) was
+ * meant to zero out the clamp for that same common case, but a discrete STEP
+ * terrain function is "all excess" relative to any LINEAR baseline near the
+ * step -- it didn't actually reduce the clamp's contribution there at all,
+ * and made maxToeStep slightly WORSE (0.135 m). The plain "raw terrain
+ * height, no added clearance" version here is both simpler and empirically
+ * the best of the three: zArc alone already keeps within ~2.8 cm of terrain
+ * on that same problem event (verified via a standalone probe), so a bare
+ * non-penetration floor (no redundant margin) closes that small remaining gap
+ * without reintroducing a large jump.
+ */
+function _buildSwingProfile( from, to, terrain, clearance ) {
+
+	const pathLen = _hyp2( to.x - from.x, to.y - from.y );
+	const profileSteps = Math.max( 1, Math.ceil( pathLen / 0.02 ) );
+	const clampProfile = new Float64Array( profileSteps + 1 ); // raw terrain height, running max
+	// Seed with ONLY from.x's terrain -- NOT to.x's, even though apexZ (below)
+	// needs the true overall max INCLUDING the endpoints: the loop's own LAST
+	// iteration (k=profileSteps, u=1) already reaches xx=to.x exactly, so
+	// pre-seeding with terrain.heightAt(to.x) here would leak the touchdown's
+	// (possibly much higher, e.g. one tread up) terrain height into EARLY profile
+	// entries before the geometric path has actually reached that x -- confirmed
+	// as a real bug when first written: on a real tread0->tread1 climb event it
+	// put tread1's height at clampProfile[1] even though the true crossing doesn't
+	// happen until roughly HALFWAY through the path.
+	let maxTerrainAlongPath = terrain.heightAt( from.x );
+	clampProfile[ 0 ] = maxTerrainAlongPath;
+	for ( let k = 1; k <= profileSteps; k ++ ) {
+
+		const u = k / profileSteps;
+		const xx = from.x + ( to.x - from.x ) * u;
+		const hh = terrain.heightAt( xx );
+		maxTerrainAlongPath = Math.max( maxTerrainAlongPath, hh );
+		clampProfile[ k ] = maxTerrainAlongPath; // running max -> monotone non-decreasing
+
+	}
+	const apexZ = maxTerrainAlongPath + clearance;
+
+	return { apexZ, clampProfile };
+
+}
+
 // ===========================================================================
 // Schedule builder
 // ===========================================================================
@@ -334,6 +441,12 @@ function _angleDiff( a, b ) {
 export function buildSchedule( samples, terrain, params = DEFAULT_GAIT_PARAMS ) {
 
 	const p = { ...DEFAULT_GAIT_PARAMS, ...params };
+	// G4 stance width (IK_OVERHAUL_SPEC.md section 4): widen the nominal half-stance
+	// by stanceWidenM ONCE, right here, so every downstream nominal/plant lookup in
+	// this file (which all read p.footLateral, never a separate "effective width"
+	// constant) picks up the widened value automatically -- an elderly gait stands
+	// slightly wider than the rig's own measured hip-pivot offset.
+	p.footLateral = p.footLateral + p.stanceWidenM;
 	const n = samples.length;
 	if ( n === 0 ) throw new Error( 'buildSchedule: empty samples array' );
 
@@ -421,14 +534,7 @@ export function buildSchedule( samples, terrain, params = DEFAULT_GAIT_PARAMS ) 
 
 			const j = i - back;
 			if ( j < 0 ) break;
-			const iPrev = Math.max( 0, j - 1 );
-			const iNext = Math.min( n - 1, j + 1 );
-			const sp = samples[ iPrev ], sn = samples[ iNext ];
-			const dt = sn.t - sp.t;
-			if ( dt <= 1e-6 ) continue;
-			const spd = _hyp2( sn.x - sp.x, sn.y - sp.y ) / dt;
-			const yr = Math.abs( sn.yaw - sp.yaw ) / dt;
-			if ( spd < p.idleSpeedThreshold && yr < p.idleYawRateThreshold ) { rootIsIdle = true; break; }
+			if ( _rootNearIdleAtIndex( samples, j, p.idleSpeedThreshold, p.idleYawRateThreshold ) ) { rootIsIdle = true; break; }
 
 		}
 		if ( rootIsIdle ) continue;
@@ -453,6 +559,30 @@ export function buildSchedule( samples, terrain, params = DEFAULT_GAIT_PARAMS ) 
 		// other foot's disqualified state) -- firing a swing almost every sample, the
 		// exact mechanism behind an earlier observed idleFootMotionMax violation
 		// (~0.048 m against a 0.002 m bar) traced to this gate being missing entirely.
+		// G1 predictive trigger (IK_OVERHAUL_SPEC.md section 4): forecast drift/yaw-
+		// error at a near-future sample too, so a step can fire slightly BEFORE the
+		// INSTANTANEOUS need alone would cross threshold -- this is what shrinks the
+		// "glide" phase (both feet planted while the root has already drifted most of
+		// the way to triggering, P3) without weakening the trigger threshold itself.
+		// Sampled off the REAL future array entry via _findSampleAtOrAfter, searching
+		// forward from the CURRENT index i -- never velocity-extrapolated (matches
+		// AGENTS.md incident #6's "decide from an actual snapshot, don't
+		// recompute-live-forward" discipline, and the touchdown-resolution walk just
+		// below it); clamps at the array's end automatically, so a lead window that
+		// overruns the clip's remaining samples just degrades to the last available
+		// sample, never an out-of-range read or an extrapolated guess. Foot-
+		// independent (only depends on the current sample index/time), so resolved
+		// once here rather than inside the per-foot loop below.
+		const predIdx = _findSampleAtOrAfter( samples, i, s.t + p.predictLeadSec );
+		const sPred = samples[ predIdx ];
+		// G2 speed-adaptive swing duration also reads the root speed AT this trigger
+		// sample (see _speedAdaptiveSwingDur's call site below, after bestFoot is
+		// chosen) -- computed once here via the SAME central-difference formula the
+		// idle gate above uses (neighbor-sample difference, not poseAt's own fixed
+		// +-0.02s probe), so "how fast is the root moving right now" can never
+		// disagree between the idle gate and the swing-duration scaling.
+		const speedAtTrigger = _speedAtIndex( samples, i );
+
 		let bestFoot = null, bestNeed = - Infinity;
 
 		for ( const foot of [ 'left', 'right' ] ) {
@@ -464,11 +594,21 @@ export function buildSchedule( samples, terrain, params = DEFAULT_GAIT_PARAMS ) 
 			const other = foot === 'left' ? 'right' : 'left';
 			if ( state[ other ].swinging ) continue;
 
-			const nominal = _nominalAt( s, sides[ foot ].sign, p.footLateral, terrain );
 			const planted = state[ foot ].plantedPos;
+
+			const nominal = _nominalAt( s, sides[ foot ].sign, p.footLateral, terrain );
 			const drift = _hyp2( nominal.x - planted.x, nominal.y - planted.y );
 			const yawErr = Math.abs( _angleDiff( s.yaw, state[ foot ].plantYaw ) );
-			const need = drift + p.yawErrorWeight * yawErr;
+			const needNow = drift + p.yawErrorWeight * yawErr;
+
+			// Same drift+yaw formula, against the SAME held `planted` position, but
+			// measured at the forecast sample instead of the current one.
+			const nominalPred = _nominalAt( sPred, sides[ foot ].sign, p.footLateral, terrain );
+			const driftPred = _hyp2( nominalPred.x - planted.x, nominalPred.y - planted.y );
+			const yawErrPred = Math.abs( _angleDiff( sPred.yaw, state[ foot ].plantYaw ) );
+			const needPred = driftPred + p.yawErrorWeight * yawErrPred;
+
+			const need = Math.max( needNow, needPred );
 
 			if ( need < p.stepTriggerClimb ) continue; // first-pass filter, see comment above
 			if ( need > bestNeed ) { bestNeed = need; bestFoot = foot; }
@@ -487,7 +627,13 @@ export function buildSchedule( samples, terrain, params = DEFAULT_GAIT_PARAMS ) 
 		// target found within the shorter window can only move FURTHER forward (later
 		// sample) when re-searched with the longer window, never behind the staircase
 		// it already reached.
-		let swingDur = p.swingDur;
+		// G2 speed-adaptive swing duration (IK_OVERHAUL_SPEC.md section 4,
+		// _speedAdaptiveSwingDur): a slower root takes slower, more deliberate steps.
+		// speedAtTrigger is fixed (computed once above, at the trigger sample) for
+		// BOTH the flat and climb duration below -- only the base/cap PAIR flips when
+		// the touchdown context resolves to stairs, mirroring the existing "at most
+		// one extra forward-walk" re-resolution pattern.
+		let swingDur = _speedAdaptiveSwingDur( p.swingDur, p.swingDurSlowMax, speedAtTrigger, p );
 		let touchdownSampleIdx = _findSampleAtOrAfter( samples, i, s.t + swingDur );
 		let touchdownSample = samples[ touchdownSampleIdx ];
 		let touchdownNominal = _nominalAt( touchdownSample, sides[ bestFoot ].sign, p.footLateral, terrain );
@@ -495,7 +641,7 @@ export function buildSchedule( samples, terrain, params = DEFAULT_GAIT_PARAMS ) 
 		let touchdownOnStairs = terrain.treadIndexAt( touchdownNominal.x ) >= 0 && terrain.treadIndexAt( touchdownNominal.x ) < terrain.stepCount;
 		if ( touchdownOnStairs ) {
 
-			swingDur = p.swingDurClimb;
+			swingDur = _speedAdaptiveSwingDur( p.swingDurClimb, p.swingDurSlowMaxClimb, speedAtTrigger, p );
 			touchdownSampleIdx = _findSampleAtOrAfter( samples, i, s.t + swingDur );
 			touchdownSample = samples[ touchdownSampleIdx ];
 			touchdownNominal = _nominalAt( touchdownSample, sides[ bestFoot ].sign, p.footLateral, terrain );
@@ -522,9 +668,10 @@ export function buildSchedule( samples, terrain, params = DEFAULT_GAIT_PARAMS ) 
 		// gate reads "moving" but lands well into a now-fully-stopped root. Since the
 		// touchdown sample was JUST resolved by walking forward anyway, use it
 		// directly: require the root to cover a non-trivial distance (or turn a
-		// non-trivial amount) over the WHOLE prospective [liftoff, touchdown] window,
-		// not just at the liftoff instant. If it wouldn't, defer -- don't fire this
-		// sample; the still-growing need is simply re-evaluated at the next sample
+		// non-trivial amount) over the WHOLE prospective [liftoff, touchdown] window --
+		// UNLESS that window is demonstrably a real, sustained walk throughout (see the
+		// two-condition gate below). If it wouldn't (and isn't), defer -- don't fire
+		// this sample; the still-growing need is simply re-evaluated at the next sample
 		// (exactly like the threshold re-check above), which naturally waits either
 		// for the root to resume moving (giving a window that clears this gate) or,
 		// worst case, the swing ends up starting later/shorter rather than orphaned
@@ -535,11 +682,39 @@ export function buildSchedule( samples, terrain, params = DEFAULT_GAIT_PARAMS ) 
 		// during the preceding stance, crossing threshold right as the root began
 		// decelerating) ran through almost entirely -- idleFootMotionMax 0.058 m
 		// against the 0.002 m bar before this gate existed.
+		//
+		// CORRECTED 2026-07-10 (orchestrator, IK_OVERHAUL_SPEC.md sections 4/8): the
+		// original single-condition gate (`windowMotion < requiredTrigger * 0.5`)
+		// conflates SLOW-BUT-SUSTAINED motion with DECELERATING-INTO-A-STOP -- both
+		// produce a small liftoff-to-touchdown ENDPOINT distance, but only the latter is
+		// what this gate exists to catch. Measured on the real "climb" clip's
+		// top-landing stretch: a steady ~0.17 m/s walk sustained for 3+ seconds gives
+		// windowMotion ~= 0.17*swingDur_eff ~= 0.068, permanently BELOW
+		// requiredTrigger*0.5 (0.16*0.5=0.08 on flat ground) even though the root never
+		// stops -- zero steps ever fired, freezing both feet while the root crept
+		// 0.5+ m (an M6 max-root-travel-while-planted violation). Fix: only defer when
+		// the window ALSO contains a near-idle sample -- i.e. the low windowMotion must
+		// be explained by an actual stop/near-stop somewhere inside
+		// [liftoff sample i, touchdownSampleIdx], not just by the root moving slowly
+		// throughout. windowHasNearIdleSample reuses _rootNearIdleAtIndex, the SAME
+		// central-difference construction the rootIsIdle sustain gate above calls
+		// (looser 2x thresholds here -- this scan only needs to catch a genuine
+		// stop/near-stop somewhere across a multi-sample window, not gate the trigger
+		// instant itself the way rootIsIdle does). Net effect: a steady slow walk
+		// (every sample in the window clears 2x the idle floors) now steps normally;
+		// the t~=33.17s stop-and-go window above (which necessarily drops under the
+		// idle floor at its stopped end) still gets deferred exactly as before.
 		const windowDx = touchdownSample.x - s.x, windowDy = touchdownSample.y - s.y;
 		const windowDist = _hyp2( windowDx, windowDy );
 		const windowYawErr = Math.abs( _angleDiff( touchdownSample.yaw, s.yaw ) );
 		const windowMotion = windowDist + p.yawErrorWeight * windowYawErr;
-		if ( windowMotion < requiredTrigger * 0.5 ) continue;
+		let windowHasNearIdleSample = false;
+		for ( let j = i; j <= touchdownSampleIdx; j ++ ) {
+
+			if ( _rootNearIdleAtIndex( samples, j, 2 * p.idleSpeedThreshold, 2 * p.idleYawRateThreshold ) ) { windowHasNearIdleSample = true; break; }
+
+		}
+		if ( windowMotion < requiredTrigger * 0.5 && windowHasNearIdleSample ) continue;
 
 		// stepLead: offset the touchdown target forward along the touchdown sample's
 		// OWN facing direction (a real stride reaches slightly ahead of "directly
@@ -565,6 +740,24 @@ export function buildSchedule( samples, terrain, params = DEFAULT_GAIT_PARAMS ) 
 			toX = Math.min( clampedHi, Math.max( clampedLo, toX ) );
 			toZ = terrain.heightAt( toX ); // EXACT tread-top height at the (possibly re-clamped) snapped X
 
+		} else if ( terrain.treadIndexAt( toX ) < 0 && toX < terrain.startX && toX + p.toeForwardLen + p.nosingMargin > terrain.startX ) {
+
+			// F1 (integration_2.json diag, 2026-07-10): a plant resolved to FLAT ground
+			// just short of the staircase BASE still reaches, toe-first, past
+			// terrain.startX -- heightAt() jumps 0 -> stepH the instant x crosses
+			// startX (buildTerrain's own doc: no ramp, a genuine discontinuous riser),
+			// so a toe that pokes even a few mm past startX gets compared against a
+			// full tread-top height while the foot is actually resting on the flat
+			// floor at z=0 -- exactly the "penetration reads a full riser" signature
+			// (diag cluster: follow t~=19.7-22.1s, penetration.rightToe/leftToe up to
+			// 0.167 m, plateauing at ~0.145 m == stepH while the stance holds). Clamp
+			// the plant back so the toe stops AT the base, mirroring the onStairs
+			// branch's own margin logic (toeForwardLen+nosingMargin) just measured
+			// from the OPPOSITE edge (the staircase's near/start face instead of a
+			// tread's far/nosing edge).
+			toX = terrain.startX - p.toeForwardLen - p.nosingMargin;
+			toZ = terrain.heightAt( toX );
+
 		}
 
 		const from = { x: state[ bestFoot ].plantedPos.x, y: state[ bestFoot ].plantedPos.y, z: state[ bestFoot ].plantedPos.z };
@@ -572,60 +765,13 @@ export function buildSchedule( samples, terrain, params = DEFAULT_GAIT_PARAMS ) 
 		const fromYaw = state[ bestFoot ].plantYaw;
 		const toYaw = touchdownSample.yaw;
 
-		// Apex/clamp data: precomputed (at build time, "decide once and hold" --
-		// AGENTS.md incident #6) along the liftoff->touchdown segment at <=2cm spacing.
-		//
-		// clampProfile stores the RAW terrain height (running max, so it stays
-		// monotone non-decreasing -> smooth to interpolate), sampled at <=2cm spacing
-		// along the straight liftoff->touchdown line. poseAt's clamp uses this as a
-		// strict non-penetration FLOOR ONLY -- it does NOT separately add the
-		// clearance margin (see poseAt: `z = max(zArc, terrainProfile(ease))`, no
-		// extra `+ clearance*sin(pi*u)` term on the clamp side). Clearance is already
-		// fully provided by zArc's OWN arc bump (its coefficient is
-		// `apexZ - max(from.z,to.z)`, and `apexZ = maxTerrainAlongPath + clearance` --
-		// i.e. the arc already peaks `clearance` above the highest terrain along the
-		// path), so the clamp's only remaining job is "never actually go below ground"
-		// -- a strictly weaker, purely defensive condition. Two prior formulations
-		// were tried and rejected: (1) clamping against
-		// `rawTerrain + clearance*sin(pi*u)` DOUBLE-counted clearance on top of the
-		// arc bump's own, compounding right where both were steepest (0.1275 m single-
-		// dt=0.05-sample jump on a real single-riser "climb straight to touchdown"
-		// event, maxToeStep 0.131 m against the 0.12 m bar); (2) storing the EXCESS
-		// over a straight-line reference between the endpoints' own terrain heights
-		// (rather than the raw terrain height) was meant to zero out the clamp for
-		// that same common case, but a discrete STEP terrain function is "all excess"
-		// relative to any LINEAR baseline near the step -- it didn't actually reduce
-		// the clamp's contribution there at all, and made maxToeStep slightly WORSE
-		// (0.135 m). The plain "raw terrain height, no added clearance" version here
-		// is both simpler and empirically the best of the three: zArc alone already
-		// keeps within ~2.8 cm of terrain on that same problem event (verified via a
-		// standalone probe), so a bare non-penetration floor (no redundant margin)
-		// closes that small remaining gap without reintroducing a large jump.
+		// Apex/clamp data along liftoff->touchdown ("decide once and hold" --
+		// AGENTS.md incident #6): see _buildSwingProfile's own docstring above for
+		// the full clampProfile/apexZ design rationale (shared by every swing
+		// producer in this file -- this march, _buildWalkOn, _buildCaneEvents -- so
+		// there is exactly one copy of that reasoning, not several).
 		const clearance = onStairs ? p.swingClearanceClimb : p.swingClearance;
-		const pathLen = _hyp2( to.x - from.x, to.y - from.y );
-		const profileSteps = Math.max( 1, Math.ceil( pathLen / 0.02 ) );
-		const clampProfile = new Float64Array( profileSteps + 1 ); // raw terrain height, running max
-		// Seed with ONLY from.x's terrain -- NOT to.x's, even though apexZ (below)
-		// needs the true overall max INCLUDING the endpoints: the loop's own LAST
-		// iteration (k=profileSteps, u=1) already reaches xx=to.x exactly, so
-		// pre-seeding with terrain.heightAt(to.x) here would leak the touchdown's
-		// (possibly much higher, e.g. one tread up) terrain height into EARLY profile
-		// entries before the geometric path has actually reached that x -- confirmed
-		// as a real bug when first written: on a real tread0->tread1 climb event it
-		// put tread1's height at clampProfile[1] even though the true crossing doesn't
-		// happen until roughly HALFWAY through the path.
-		let maxTerrainAlongPath = terrain.heightAt( from.x );
-		clampProfile[ 0 ] = maxTerrainAlongPath;
-		for ( let k = 1; k <= profileSteps; k ++ ) {
-
-			const u = k / profileSteps;
-			const xx = from.x + ( to.x - from.x ) * u;
-			const hh = terrain.heightAt( xx );
-			maxTerrainAlongPath = Math.max( maxTerrainAlongPath, hh );
-			clampProfile[ k ] = maxTerrainAlongPath; // running max -> monotone non-decreasing
-
-		}
-		const apexZ = maxTerrainAlongPath + clearance;
+		const { apexZ, clampProfile } = _buildSwingProfile( from, to, terrain, clearance );
 
 		const event = {
 			foot: bestFoot,
@@ -647,12 +793,29 @@ export function buildSchedule( samples, terrain, params = DEFAULT_GAIT_PARAMS ) 
 	// clip animate through the walk-on and freeze with it.
 	const tail = _buildWalkOn( samples, events, terrain, p );
 
+	// G5 cane schedule (IK_OVERHAUL_SPEC.md section 5, _buildCaneEvents): built from
+	// the FINISHED events.left (main march + walk-on), so every left-foot step,
+	// including the synthesized walk-on tail, gets a paired cane event. null when
+	// params.caneEnabled is false (I10 safe-disable contract -- _buildCaneEvents
+	// itself logs once when that happens).
+	const caneEvents = _buildCaneEvents( samples, events, terrain, p );
+
 	// Derive the phase timeline from the finished event lists (see the comment on
 	// phaseAtSampleIdx's declaration above for why this is a separate pass).
 	_fillPhaseTimeline( phaseAtSampleIdx, samples, events );
 
+	// G6 phaseC/support (IK_OVERHAUL_SPEC.md section 3): both read a SINGLE merged,
+	// tLift-sorted array of every foot event (main march + walk-on, both feet) --
+	// built ONCE here (buildSchedule is the one allowed stateful/forward-marching
+	// pass in this module, per this file's own header) so poseAt's phaseC/support
+	// lookups (_phaseCAt/_supportAt) stay pure functions of (schedule, t), never
+	// re-merging/re-sorting per query. Each event object already carries its own
+	// `foot` field (set at construction in both the main march and _buildWalkOn), so
+	// no re-tagging is needed here, just a merge + time sort.
+	const mergedFootEvents = [ ...events.left, ...events.right ].sort( ( a, b ) => a.tLift - b.tLift );
+
 	return {
-		samples, events, phaseAtSampleIdx,
+		samples, events, phaseAtSampleIdx, mergedFootEvents, caneEvents,
 		params: p,
 		tail,
 	};
@@ -760,6 +923,15 @@ function _buildWalkOn( samples, events, terrain, p ) {
 
 		const hip = hipAt( k / nSteps );
 		// Footfall lands walkOnFootAhead ahead of the hip, offset to this foot's side.
+		// F1 (2026-07-10 diag) note: NOT mirroring the main march's startX base-clamp
+		// here -- this tail only ever runs once the recorded root has already reached
+		// its OWN last real footfall (startT = max of both feet's last tLand), and
+		// walkOnMinRecordedForward (0.30 m) additionally skips it entirely on the
+		// follow clip (whose ~0.1 m tail never reaches the stair base at all, see
+		// this function's own header). On climb, that last real footfall is already
+		// past the staircase (climb is complete by the time feet stop stepping), so
+		// this synthesized tail walks forward on the flat TOP landing, never anywhere
+		// near terrain.startX -- the base-clamp guard would be dead code here.
 		const toX = hip.x + fwdX * p.walkOnFootAhead + latX * ( sign * p.footLateral );
 		const toY = hip.y + fwdY * p.walkOnFootAhead + latY * ( sign * p.footLateral );
 		const toZ = terrain.heightAt( toX );
@@ -767,13 +939,15 @@ function _buildWalkOn( samples, events, terrain, p ) {
 		const from = { x: plant[ foot ].x, y: plant[ foot ].y, z: plant[ foot ].z };
 		const to = { x: toX, y: toY, z: toZ };
 		const clearance = p.swingClearance;
-		const apexZ = Math.max( from.z, to.z ) + clearance;
-		// Flat landing: a 2-point running-max profile (start height, end height) is exact
-		// for poseAt's ceil-indexed non-penetration clamp.
-		const clampProfile = new Float64Array( [
-			Math.max( from.z, terrain.heightAt( from.x ) ),
-			Math.max( from.z, to.z, terrain.heightAt( to.x ) ),
-		] );
+		// Same shared swing-profile helper as the main march + cane (_buildSwingProfile,
+		// I10 refactor) rather than a bespoke 2-point shortcut. Equivalent here: from.z/
+		// to.z are always freshly set FROM terrain.heightAt (toZ just above; the
+		// previous iteration's plant[foot].z came from an earlier toZ the same way), so
+		// the helper's from.x-seeded running-max scan reduces to the same effective
+		// plateau(s) on this always-flat walk-on span, while staying correct (unlike a
+		// bare endpoint check) if a future clip's walk-on ever started before the
+		// terrain leveled off, crossing a tread boundary mid-path.
+		const { apexZ, clampProfile } = _buildSwingProfile( from, to, terrain, clearance );
 
 		events[ foot ].push( {
 			foot, tLift, tLand, from, to,
@@ -790,6 +964,123 @@ function _buildWalkOn( samples, events, terrain, p ) {
 
 }
 
+/**
+ * G5 cane tip TARGET at a given root sample's pose (IK_OVERHAUL_SPEC.md section
+ * 5): facing-frame offset, forward `caneForwardM` and to the RIGHT `caneLateralM`
+ * (the cane is always held in the RIGHT hand), then stair-snapped the same way
+ * feet are, except with a SYMMETRIC margin on both tread edges (caneTreadMarginM)
+ * since a cane tip is a point -- unlike a foot's heel-to-toe footprint, there's no
+ * asymmetric heelMargin/nosingMargin pair to reuse.
+ *
+ * Sign derivation (documented per this module's own "don't guess signs" discipline
+ * -- see AGENTS.md incident #4's coordinate-reconciliation note): forward =
+ * (cos yaw, sin yaw). This module's convention (DEFAULT_GAIT_PARAMS.outToeRad's
+ * comment / _nominalAt: at yaw=0 facing +X, +Y is the LEFT side) means the LEFT
+ * lateral unit vector is (-sin yaw, cos yaw) (see _nominalAt's own lateral-offset
+ * formula) -- so RIGHT is that vector's negation: (sin yaw, -cos yaw). Shared by
+ * the initial (t=0, before any cane event) nominal and every scheduled event's
+ * touchdown target, so both use IDENTICAL placement math.
+ */
+function _caneTargetAt( rootSample, terrain, p ) {
+
+	const yaw = rootSample.yaw;
+	const cy = Math.cos( yaw ), sy = Math.sin( yaw );
+	// forward=(cy,sy); right=(sy,-cy) -- see the function's own doc comment above.
+	let x = rootSample.x + cy * p.caneForwardM + sy * p.caneLateralM;
+	let y = rootSample.y + sy * p.caneForwardM - cy * p.caneLateralM;
+	let z = terrain.heightAt( x );
+
+	const treadIdx = terrain.treadIndexAt( x );
+	if ( treadIdx >= 0 && treadIdx < terrain.stepCount ) {
+
+		const span = terrain.treadSpan( treadIdx );
+		const lo = span.xStart + p.caneTreadMarginM;
+		const hi = span.xEnd - p.caneTreadMarginM;
+		const clampedLo = Math.min( lo, hi );
+		const clampedHi = Math.max( lo, hi );
+		x = Math.min( clampedHi, Math.max( clampedLo, x ) );
+		z = terrain.heightAt( x ); // EXACT tread-top height at the (possibly re-clamped) snapped X
+
+	} else if ( x < terrain.startX && x + p.caneTreadMarginM > terrain.startX ) {
+
+		// F1 point-margin mirror (2026-07-10 diag): same startX discontinuity as the
+		// foot touchdown clamp above, but the cane tip is a POINT (no toeForwardLen
+		// reach) -- caneTreadMarginM is the right (and only) margin to keep it off
+		// the base riser's face.
+		x = terrain.startX - p.caneTreadMarginM;
+		z = terrain.heightAt( x );
+
+	}
+
+	return { x, y, z, yaw };
+
+}
+
+/**
+ * G5 cane schedule (IK_OVERHAUL_SPEC.md section 5): synthesize one cane event per
+ * LEFT-foot event (main march + walk-on, in the time order `events.left` is
+ * already in -- see buildSchedule's own call site comment), so the cane advances
+ * WITH (slightly leading) the contralateral left foot's swing, 3-point-pattern
+ * style. Returns `null` (not an empty array) when caneEnabled is false, matching
+ * poseAt's own `cane: null` contract -- and logs ONCE per the I10 safe-disable
+ * contract (CLAUDE.md 8.8 / AGENTS.md: a "safe disable" guard must state what
+ * feature is consequently off and why, not silently vanish).
+ */
+function _buildCaneEvents( samples, events, terrain, p ) {
+
+	if ( ! p.caneEnabled ) {
+
+		console.log( '[PatientGait] cane schedule disabled (params.caneEnabled=false) -- poseAt().cane will be null for this schedule.' );
+		return null;
+
+	}
+
+	const leftEvents = events.left;
+	const caneEvents = [];
+
+	let plantedPos = _caneTargetAt( samples[ 0 ], terrain, p );
+	let lastLandT = - Infinity;
+
+	for ( let k = 0; k < leftEvents.length; k ++ ) {
+
+		const leftEv = leftEvents[ k ];
+
+		// Lead the paired left-foot liftoff by caneLeadSec, but never start before
+		// the previous cane event has had a moment to finish (previous tLand + 0.05,
+		// the same minEventGap-flavoured spacing the feet use) or before the clip's
+		// own first sample.
+		const tLift = Math.max( leftEv.tLift - p.caneLeadSec, lastLandT + 0.05, samples[ 0 ].t );
+		// Finish planting no later than the paired foot (leftEv.tLand - 0.02), and
+		// never longer than the cane's own (shorter) swing duration.
+		const tLand = Math.min( leftEv.tLand - 0.02, tLift + p.caneSwingDur );
+
+		if ( tLand - tLift < 0.05 ) continue; // degenerate window -- skip this step's cane event entirely
+
+		const rootAtLand = _sampleRootAt( samples, tLand );
+		const target = _caneTargetAt( rootAtLand, terrain, p );
+
+		const from = { x: plantedPos.x, y: plantedPos.y, z: plantedPos.z };
+		const to = { x: target.x, y: target.y, z: target.z };
+
+		const { apexZ, clampProfile } = _buildSwingProfile( from, to, terrain, p.caneClearanceM );
+
+		caneEvents.push( {
+			foot: 'cane',
+			tLift, tLand,
+			from, to,
+			fromYaw: plantedPos.yaw, toYaw: target.yaw,
+			apexZ, clearance: p.caneClearanceM, clampProfile,
+		} );
+
+		plantedPos = target;
+		lastLandT = tLand;
+
+	}
+
+	return caneEvents;
+
+}
+
 /** Find the index of the first sample at or after time `tTarget`, searching forward from `fromIdx` (never before it -- the schedule builder only ever needs to look FORWARD in time, matching "never velocity-extrapolate, walk the actual array"). Clamps to the last sample if tTarget exceeds the array's range (an event whose touchdown would fall past the clip's end still resolves to a sane target: the clip's final recorded pose). */
 function _findSampleAtOrAfter( samples, fromIdx, tTarget ) {
 
@@ -801,6 +1092,49 @@ function _findSampleAtOrAfter( samples, fromIdx, tTarget ) {
 	}
 
 	return n - 1;
+
+}
+
+/** Root "near-idle" test at sample index `j`: TRUE when BOTH the central-difference translational speed and yaw rate (neighbor-sample difference, clamped at the array ends -- a degenerate dt<=1e-6 neighbor pair returns false, "no evidence either way", matching the original inline rootIsIdle loop's own bare `continue`, never concluding idle from a zero-duration sample) are below the given thresholds. Parameterized on speedThreshold/yawRateThreshold so ONE formula backs both of buildSchedule's near-idle checks (both above -- earlier in this file's march loop): the rootIsIdle sustain gate (1x idleSpeedThreshold/idleYawRateThreshold) and the windowMotion "won't-actually-go-anywhere" gate's near-idle window scan (2x the same floors, see that gate's own comment) -- factored here so "is the root moving at sample j" can never quietly diverge between the two. */
+function _rootNearIdleAtIndex( samples, j, speedThreshold, yawRateThreshold ) {
+
+	const n = samples.length;
+	const iPrev = Math.max( 0, j - 1 );
+	const iNext = Math.min( n - 1, j + 1 );
+	const sp = samples[ iPrev ], sn = samples[ iNext ];
+	const dt = sn.t - sp.t;
+	if ( dt <= 1e-6 ) return false;
+	const spd = _hyp2( sn.x - sp.x, sn.y - sp.y ) / dt;
+	const yr = Math.abs( sn.yaw - sp.yaw ) / dt;
+	return spd < speedThreshold && yr < yawRateThreshold;
+
+}
+
+/** G2 root speed (m/s) at sample index `i`, via the SAME central-difference formula buildSchedule's own idle gate uses (neighbor-sample difference, clamped at the array ends) -- deliberately NOT poseAt's _speedAt (which probes a fixed +-0.02s window via interpolation): this one is queried by INDEX, at the trigger sample itself, so "how fast is the root moving right now" can never disagree between the idle gate and G2's swing-duration scaling. */
+function _speedAtIndex( samples, i ) {
+
+	const n = samples.length;
+	const iPrev = Math.max( 0, i - 1 );
+	const iNext = Math.min( n - 1, i + 1 );
+	const sp = samples[ iPrev ], sn = samples[ iNext ];
+	const dt = sn.t - sp.t;
+	if ( dt <= 1e-6 ) return 0;
+	return _hyp2( sn.x - sp.x, sn.y - sp.y ) / dt;
+
+}
+
+/**
+ * G2 speed-adaptive swing duration (IK_OVERHAUL_SPEC.md section 4): a slower root
+ * takes slower, more deliberate steps. `baseSwing`/`capForContext` are the
+ * flat/climb swingDur and swingDurSlowMax pair (caller picks); the result is
+ * never faster than `baseSwing` (only ever slowed down, floored at the base
+ * value) and never slower than `capForContext`.
+ */
+function _speedAdaptiveSwingDur( baseSwing, capForContext, speedAtTrigger, p ) {
+
+	const denom = Math.max( speedAtTrigger, p.swingSpeedFloorMps );
+	const scaled = baseSwing * Math.pow( p.refSpeedMps / denom, 0.25 );
+	return Math.min( capForContext, Math.max( baseSwing, scaled ) );
 
 }
 
@@ -869,11 +1203,21 @@ export function poseAt( schedule, terrain, t ) {
 	const rightFoot = _footPoseAt( schedule, terrain, 'right', t, - 1 );
 
 	const gaitPhase = _phaseAt( schedule, t );
+	// G6 phaseC/support (IK_OVERHAUL_SPEC.md section 3): both stateless lookups over
+	// the SAME merged, tLift-sorted event array built once in buildSchedule (see
+	// mergedFootEvents' own comment there) -- pure functions of (schedule, t), no
+	// memoization, consistent with this module's scrub-safety contract.
+	const phaseC = _phaseCAt( schedule.mergedFootEvents, t );
+	const support = _supportAt( schedule.mergedFootEvents, t, schedule.params.supportEaseSec );
 	const speed = _speedAt( samples, t );
 	const groundSlope = _slopeAt( terrain, rootSample.x );
+	// G5 cane (IK_OVERHAUL_SPEC.md section 3): null whenever caneEnabled was false at
+	// buildSchedule time (schedule.caneEvents is null in that case too, see its own
+	// comment) -- single source of truth, no separate params re-check needed here.
+	const cane = schedule.caneEvents ? _canePoseAt( schedule, terrain, t ) : null;
 
 	return {
-		leftFoot, rightFoot, gaitPhase, speed, groundSlope,
+		leftFoot, rightFoot, gaitPhase, phaseC, support, speed, groundSlope, cane,
 		rootX: rootSample.x, rootY: rootSample.y, rootYaw: rootSample.yaw, rootZ: rootSample.zRoot,
 	};
 
@@ -966,6 +1310,88 @@ function _phaseAt( schedule, t ) {
 }
 
 /**
+ * G6 continuous phase (IK_OVERHAUL_SPEC.md section 3), CORRECTED CONTRACT
+ * (2026-07-10): its OWN clean monotone counter, NOT required to equal legacy
+ * gaitPhase at any point -- gaitPhase is NON-MONOTONE by construction (see this
+ * file's header / _fillPhaseTimeline's own comment: left events get integer
+ * phases and right half-integer, by PER-FOOT order, so when the right foot steps
+ * first the merged sequence goes 0.5, 0.0, 1.5, 1.0, ... ), so no monotone signal
+ * can match it at every boundary. Do NOT "fix" gaitPhase to make it match --
+ * main.js depends on its current behavior.
+ *
+ * Definition: for the k-th event (0-based) in `merged` (ALL foot events -- main
+ * march + walk-on, both feet -- tLift-sorted, built once in buildSchedule as
+ * schedule.mergedFootEvents): phaseC(tLift)=0.5k, phaseC(tLand)=0.5(k+1), ramping
+ * LINEARLY (matching poseAt's own swing progress u, NOT the smoothstep-eased
+ * `ease` used for position/height) in between, frozen when t falls outside every
+ * event's window. Well-defined because L/R swings never overlap (existing
+ * invariant) -- at most one event's window contains any given t, and the merged
+ * array's tLift order also orders tLand (no event starts before the previous one
+ * lands, since that would require two feet swinging at once), so kCompleted (the
+ * count of events already landed at/before t) is unambiguous from a forward scan.
+ * Stateless: a pure function of (merged, t), no memoization.
+ */
+function _phaseCAt( merged, t ) {
+
+	let kCompleted = 0;
+	let progress = 0;
+
+	for ( let i = 0; i < merged.length; i ++ ) {
+
+		const e = merged[ i ];
+		if ( e.tLand <= t ) { kCompleted ++; continue; }
+		if ( t >= e.tLift && t < e.tLand ) {
+
+			progress = e.tLand > e.tLift ? ( t - e.tLift ) / ( e.tLand - e.tLift ) : 1.0;
+
+		}
+
+	}
+
+	return 0.5 * kCompleted + 0.5 * progress;
+
+}
+
+/**
+ * G6 lateral weight-transfer signal (IK_OVERHAUL_SPEC.md section 3) in [-1, +1];
+ * +1 = weight fully on the LEFT foot (i.e. during a RIGHT-foot swing, since the
+ * right foot is off the ground), -1 = fully on the RIGHT (during a LEFT-foot
+ * swing). Stateless over the SAME merged, tLift-sorted event array phaseC uses:
+ * during an active swing the value is a flat step (the swinging foot's own sign);
+ * after that swing's tLand it HOLDS, then eases (smoothstep) toward 0 (centered
+ * double support) over `supportEaseSec`; 0 before the very first event. Because
+ * L/R swings never overlap (see _phaseCAt's own comment), at most one event can
+ * be "active" at any t, and the merged array's tLift order also orders tLand, so
+ * a simple forward scan suffices for both the active-swing check and the
+ * most-recently-landed lookup.
+ */
+function _supportAt( merged, t, supportEaseSec ) {
+
+	for ( let i = 0; i < merged.length; i ++ ) {
+
+		const e = merged[ i ];
+		if ( t >= e.tLift && t < e.tLand ) return e.foot === 'left' ? - 1 : 1;
+
+	}
+
+	let lastLanded = null;
+	for ( let i = 0; i < merged.length; i ++ ) {
+
+		if ( merged[ i ].tLand <= t ) lastLanded = merged[ i ]; else break;
+
+	}
+	if ( ! lastLanded ) return 0;
+
+	const held = lastLanded.foot === 'left' ? - 1 : 1;
+	const uRaw = supportEaseSec > 1e-6 ? ( t - lastLanded.tLand ) / supportEaseSec : 1.0;
+	const u = Math.max( 0, Math.min( 1, uRaw ) );
+	const value = held * ( 1.0 - _smoothstep( u ) );
+
+	return Math.max( - 1, Math.min( 1, value ) );
+
+}
+
+/**
  * Pose one foot at time t: if t falls within one of this foot's scheduled swing
  * windows [tLift, tLand], blend; otherwise the foot is PLANTED at whichever event's
  * `to` position is the most recent one at or before t (or the schedule's initial
@@ -979,6 +1405,31 @@ function _phaseAt( schedule, t ) {
 function _footPoseAt( schedule, terrain, foot, t, sign ) {
 
 	const evs = schedule.events[ foot ];
+
+	// G3 out-toeing (IK_OVERHAUL_SPEC.md section 4): applied ONLY here, at
+	// display-yaw time -- never to buildSchedule's own trigger/need math (which
+	// reads state[foot].plantYaw / s.yaw directly and never calls this function)
+	// or to _nominalAt's yaw (still raw), so scheduling behavior is completely
+	// unaffected by this offset. `sign` (+1 left / -1 right -- the SAME convention
+	// _nominalAt's own lateral offset uses; see its comment: "+Y is the LEFT
+	// side") IS the correct out-toe sign directly: LEFT (sign=+1) gets
+	// +outToeRad, RIGHT (sign=-1) gets -outToeRad, splaying both toes away from
+	// the midline. Applied at each of this function's three RETURN sites below
+	// (events/planted state itself keeps storing RAW yaws).
+	const outToeRad = schedule.params.outToeRad;
+
+	// G6 per-foot timing fields (IK_OVERHAUL_SPEC.md section 3): nextLiftAt is
+	// independent of which branch below applies (swinging/planted/pre-first-event)
+	// -- this foot's OWN event list is already time-sorted (events are appended in
+	// increasing tLift order during buildSchedule's forward march, then the
+	// walk-on tail appends further steps also in increasing order -- see
+	// _buildWalkOn), so the first entry whose tLift >= t is the answer.
+	let nextLiftAt = null;
+	for ( let ni = 0; ni < evs.length; ni ++ ) {
+
+		if ( evs[ ni ].tLift >= t ) { nextLiftAt = evs[ ni ].tLift; break; }
+
+	}
 
 	// Find a swing window containing t (evs is time-sorted and non-overlapping for a
 	// single foot by construction -- buildSchedule never starts a new swing for a foot
@@ -1055,8 +1506,12 @@ function _footPoseAt( schedule, terrain, foot, t, sign ) {
 			const z = Math.max( zArc, clampFloor );
 
 			const yaw = e.fromYaw + _angleDiff( e.toYaw, e.fromYaw ) * ease;
+			const strideLen = _hyp2( e.to.x - e.from.x, e.to.y - e.from.y );
 
-			return { x, y, z, yaw, planted: false, swingU: u };
+			return {
+				x, y, z, yaw: yaw + sign * outToeRad, planted: false, swingU: u,
+				liftAt: e.tLift, landedAt: i > 0 ? evs[ i - 1 ].tLand : null, nextLiftAt, strideLen,
+			};
 
 		}
 
@@ -1073,7 +1528,11 @@ function _footPoseAt( schedule, terrain, foot, t, sign ) {
 
 	if ( lastLanded ) {
 
-		return { x: lastLanded.to.x, y: lastLanded.to.y, z: lastLanded.to.z, yaw: lastLanded.toYaw, planted: true, swingU: null };
+		const strideLen = _hyp2( lastLanded.to.x - lastLanded.from.x, lastLanded.to.y - lastLanded.from.y );
+		return {
+			x: lastLanded.to.x, y: lastLanded.to.y, z: lastLanded.to.z, yaw: lastLanded.toYaw + sign * outToeRad,
+			planted: true, swingU: null, liftAt: null, landedAt: lastLanded.tLand, nextLiftAt, strideLen,
+		};
 
 	}
 
@@ -1083,6 +1542,91 @@ function _footPoseAt( schedule, terrain, foot, t, sign ) {
 	// buildSchedule assumed as its starting condition).
 	const s0 = schedule.samples[ 0 ];
 	const nominal = _nominalAt( s0, sign, schedule.params.footLateral, terrain );
-	return { x: nominal.x, y: nominal.y, z: nominal.z, yaw: s0.yaw, planted: true, swingU: null };
+	return {
+		x: nominal.x, y: nominal.y, z: nominal.z, yaw: s0.yaw + sign * outToeRad,
+		planted: true, swingU: null, liftAt: null, landedAt: null, nextLiftAt, strideLen: 0,
+	};
+
+}
+
+/**
+ * G5 cane tip pose at time t (IK_OVERHAUL_SPEC.md section 3): same planted/swing
+ * lookup shape as _footPoseAt (swing-window blend with arc + terrain clamp, else
+ * planted at the most recent landed cane event, else the schedule's initial cane
+ * nominal before the first cane event) but over schedule.caneEvents instead of a
+ * foot's own event list, and with NO out-toe (a cane tip has no yaw-splay concept)
+ * and no strideLen (not part of the cane's poseAt contract, see IK_OVERHAUL_SPEC.md
+ * section 3's cane block). Only called when schedule.caneEvents is non-null
+ * (poseAt itself gates on that).
+ */
+function _canePoseAt( schedule, terrain, t ) {
+
+	const evs = schedule.caneEvents;
+
+	let nextLiftAt = null;
+	for ( let ni = 0; ni < evs.length; ni ++ ) {
+
+		if ( evs[ ni ].tLift >= t ) { nextLiftAt = evs[ ni ].tLift; break; }
+
+	}
+
+	for ( let i = 0; i < evs.length; i ++ ) {
+
+		const e = evs[ i ];
+		if ( t >= e.tLift && t < e.tLand ) {
+
+			const u = e.tLand > e.tLift ? ( t - e.tLift ) / ( e.tLand - e.tLift ) : 1.0;
+			const ease = _smoothstep( u );
+
+			const x = e.from.x + ( e.to.x - e.from.x ) * ease;
+			const y = e.from.y + ( e.to.y - e.from.y ) * ease;
+			const zEndpointBlend = e.from.z + ( e.to.z - e.from.z ) * ease;
+			const arcBump = Math.max( 0.0, e.apexZ - Math.max( e.from.z, e.to.z ) ) * Math.sin( Math.PI * u );
+			const zArc = zEndpointBlend + arcBump;
+
+			// Same ceiling-indexed, ease-space clamp lookup as _footPoseAt -- see its
+			// own comment for the full rationale (raw-terrain running-max profile,
+			// indexed by ease not u, rounded UP to the conservative neighbour).
+			const profile = e.clampProfile;
+			const profileIdxF = ease * ( profile.length - 1 );
+			const profileIdxCeil = Math.min( profile.length - 1, Math.ceil( profileIdxF - 1e-9 ) );
+			const clampFloor = profile[ profileIdxCeil ];
+			const z = Math.max( zArc, clampFloor );
+
+			return {
+				x, y, z, planted: false, swingU: u,
+				liftAt: e.tLift, landedAt: i > 0 ? evs[ i - 1 ].tLand : null, nextLiftAt,
+			};
+
+		}
+
+	}
+
+	let lastLanded = null;
+	for ( let i = 0; i < evs.length; i ++ ) {
+
+		if ( evs[ i ].tLand <= t ) lastLanded = evs[ i ]; else break;
+
+	}
+
+	if ( lastLanded ) {
+
+		return {
+			x: lastLanded.to.x, y: lastLanded.to.y, z: lastLanded.to.z,
+			planted: true, swingU: null, liftAt: null, landedAt: lastLanded.tLand, nextLiftAt,
+		};
+
+	}
+
+	// Before the first cane event: planted at the initial nominal -- root at
+	// samples[0], SAME forward/right offset formula as every scheduled cane
+	// target (see _caneTargetAt), matching _footPoseAt's own "t=0 before any
+	// event" convention.
+	const s0 = schedule.samples[ 0 ];
+	const nominal = _caneTargetAt( s0, terrain, schedule.params );
+	return {
+		x: nominal.x, y: nominal.y, z: nominal.z,
+		planted: true, swingU: null, liftAt: null, landedAt: null, nextLiftAt,
+	};
 
 }

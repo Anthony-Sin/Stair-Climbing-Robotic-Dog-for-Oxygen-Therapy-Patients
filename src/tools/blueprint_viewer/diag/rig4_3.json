@@ -1,0 +1,1305 @@
+{
+  "perClip": {
+    "follow": {
+      "minSoleClearance": -0.02333756331250847,
+      "maxPenetration": 0.02333756331250847,
+      "plantedDriftMax": 0,
+      "idleFootMotionMax": 0.0044401273860937346,
+      "fkErrorMax": 2.3117741675830248e-05,
+      "kneeBendDeg": {
+        "stanceMedian": 38.72645735721712,
+        "max": 100.83648383148514
+      },
+      "maxToeStepM": 0.08940184194854309,
+      "hipHeightAboveTerrain": {
+        "min": 0.7764069192337444,
+        "max": 0.9200000166893005
+      }
+    },
+    "climb": {
+      "minSoleClearance": -0.024728818961211207,
+      "maxPenetration": 0.024728818961211207,
+      "plantedDriftMax": 0,
+      "idleFootMotionMax": 0.0015967717929780258,
+      "fkErrorMax": 2.4131525804397245e-05,
+      "kneeBendDeg": {
+        "stanceMedian": 54.70005060888386,
+        "max": 100.3371547980513
+      },
+      "maxToeStepM": 0.07017046548607216,
+      "hipHeightAboveTerrain": {
+        "min": 0.775076599121109,
+        "max": 0.920000047683716
+      }
+    }
+  },
+  "violations": [
+    {
+      "clip": "follow",
+      "t": 0.1,
+      "metric": "idleFootMotion",
+      "value": 0.0044401273860937346
+    },
+    {
+      "clip": "follow",
+      "t": 0.7000000000000001,
+      "metric": "penetration.rightToe",
+      "value": 0.019543318706182453
+    },
+    {
+      "clip": "follow",
+      "t": 0.7500000000000001,
+      "metric": "penetration.rightToe",
+      "value": 0.006313115402322376
+    },
+    {
+      "clip": "follow",
+      "t": 1.0500000000000003,
+      "metric": "penetration.leftToe",
+      "value": 0.022207343427140425
+    },
+    {
+      "clip": "follow",
+      "t": 1.1000000000000003,
+      "metric": "penetration.leftToe",
+      "value": 0.009975495415793484
+    },
+    {
+      "clip": "follow",
+      "t": 1.5500000000000007,
+      "metric": "penetration.rightToe",
+      "value": 0.021748921326605088
+    },
+    {
+      "clip": "follow",
+      "t": 1.6000000000000008,
+      "metric": "penetration.rightToe",
+      "value": 0.009052306949870765
+    },
+    {
+      "clip": "follow",
+      "t": 1.900000000000001,
+      "metric": "penetration.leftToe",
+      "value": 0.023289405050458598
+    },
+    {
+      "clip": "follow",
+      "t": 1.950000000000001,
+      "metric": "penetration.leftToe",
+      "value": 0.013872030104480034
+    },
+    {
+      "clip": "follow",
+      "t": 2.3999999999999995,
+      "metric": "penetration.rightToe",
+      "value": 0.018363840980272866
+    },
+    {
+      "clip": "follow",
+      "t": 2.7499999999999982,
+      "metric": "penetration.leftToe",
+      "value": 0.02173759048278478
+    },
+    {
+      "clip": "follow",
+      "t": 2.799999999999998,
+      "metric": "penetration.leftToe",
+      "value": 0.009041219525327826
+    },
+    {
+      "clip": "follow",
+      "t": 3.1999999999999966,
+      "metric": "penetration.rightToe",
+      "value": 0.02332705074525479
+    },
+    {
+      "clip": "follow",
+      "t": 3.2499999999999964,
+      "metric": "penetration.rightToe",
+      "value": 0.014382457745713652
+    },
+    {
+      "clip": "follow",
+      "t": 3.599999999999995,
+      "metric": "penetration.leftToe",
+      "value": 0.018356855501604288
+    },
+    {
+      "clip": "follow",
+      "t": 4.049999999999994,
+      "metric": "penetration.rightToe",
+      "value": 0.021748949182913334
+    },
+    {
+      "clip": "follow",
+      "t": 4.099999999999993,
+      "metric": "penetration.rightToe",
+      "value": 0.009052358059710733
+    },
+    {
+      "clip": "follow",
+      "t": 4.399999999999992,
+      "metric": "penetration.leftToe",
+      "value": 0.023289391930368653
+    },
+    {
+      "clip": "follow",
+      "t": 4.449999999999992,
+      "metric": "penetration.leftToe",
+      "value": 0.013871868929010373
+    },
+    {
+      "clip": "follow",
+      "t": 4.899999999999991,
+      "metric": "penetration.rightToe",
+      "value": 0.01836394872621967
+    },
+    {
+      "clip": "follow",
+      "t": 5.249999999999989,
+      "metric": "penetration.leftToe",
+      "value": 0.02173774206883614
+    },
+    {
+      "clip": "follow",
+      "t": 5.299999999999989,
+      "metric": "penetration.leftToe",
+      "value": 0.009041501437102882
+    },
+    {
+      "clip": "follow",
+      "t": 5.599999999999988,
+      "metric": "penetration.rightToe",
+      "value": 0.01268791493448335
+    },
+    {
+      "clip": "follow",
+      "t": 5.899999999999987,
+      "metric": "penetration.leftToe",
+      "value": 0.023289400917877998
+    },
+    {
+      "clip": "follow",
+      "t": 5.949999999999987,
+      "metric": "penetration.leftToe",
+      "value": 0.01387199959143029
+    },
+    {
+      "clip": "follow",
+      "t": 6.249999999999986,
+      "metric": "penetration.rightToe",
+      "value": 0.020214168772080605
+    },
+    {
+      "clip": "follow",
+      "t": 6.299999999999986,
+      "metric": "penetration.rightToe",
+      "value": 0.008411038754502734
+    },
+    {
+      "clip": "follow",
+      "t": 6.5999999999999845,
+      "metric": "penetration.leftToe",
+      "value": 0.018352628547549498
+    },
+    {
+      "clip": "follow",
+      "t": 6.8999999999999835,
+      "metric": "penetration.rightToe",
+      "value": 0.01995739247308655
+    },
+    {
+      "clip": "follow",
+      "t": 6.949999999999983,
+      "metric": "penetration.rightToe",
+      "value": 0.011885585675484199
+    },
+    {
+      "clip": "follow",
+      "t": 7.399999999999982,
+      "metric": "penetration.leftToe",
+      "value": 0.023289402395907453
+    },
+    {
+      "clip": "follow",
+      "t": 7.4499999999999815,
+      "metric": "penetration.leftToe",
+      "value": 0.013872042464118424
+    },
+    {
+      "clip": "follow",
+      "t": 7.7499999999999805,
+      "metric": "penetration.rightToe",
+      "value": 0.02174888699535624
+    },
+    {
+      "clip": "follow",
+      "t": 7.79999999999998,
+      "metric": "penetration.rightToe",
+      "value": 0.009053105038980241
+    },
+    {
+      "clip": "follow",
+      "t": 8.249999999999982,
+      "metric": "penetration.leftToe",
+      "value": 0.021737660962039326
+    },
+    {
+      "clip": "follow",
+      "t": 8.299999999999983,
+      "metric": "penetration.leftToe",
+      "value": 0.009041351961337806
+    },
+    {
+      "clip": "follow",
+      "t": 8.599999999999987,
+      "metric": "penetration.rightToe",
+      "value": 0.018364007210226324
+    },
+    {
+      "clip": "follow",
+      "t": 9.099999999999994,
+      "metric": "penetration.leftToe",
+      "value": 0.018352632262476357
+    },
+    {
+      "clip": "follow",
+      "t": 9.399999999999999,
+      "metric": "penetration.rightToe",
+      "value": 0.023300514932347305
+    },
+    {
+      "clip": "follow",
+      "t": 9.45,
+      "metric": "penetration.rightToe",
+      "value": 0.013883599539349197
+    },
+    {
+      "clip": "follow",
+      "t": 9.900000000000006,
+      "metric": "penetration.leftToe",
+      "value": 0.023289402860852543
+    },
+    {
+      "clip": "follow",
+      "t": 9.950000000000006,
+      "metric": "penetration.leftToe",
+      "value": 0.013872041132632663
+    },
+    {
+      "clip": "follow",
+      "t": 10.25000000000001,
+      "metric": "penetration.rightToe",
+      "value": 0.021748898652616724
+    },
+    {
+      "clip": "follow",
+      "t": 10.300000000000011,
+      "metric": "penetration.rightToe",
+      "value": 0.009053126426538407
+    },
+    {
+      "clip": "follow",
+      "t": 10.750000000000018,
+      "metric": "penetration.leftToe",
+      "value": 0.02173773437122712
+    },
+    {
+      "clip": "follow",
+      "t": 10.800000000000018,
+      "metric": "penetration.leftToe",
+      "value": 0.009041486643555625
+    },
+    {
+      "clip": "follow",
+      "t": 11.100000000000023,
+      "metric": "penetration.rightToe",
+      "value": 0.018363973407396365
+    },
+    {
+      "clip": "follow",
+      "t": 11.60000000000003,
+      "metric": "penetration.leftToe",
+      "value": 0.018352583924299292
+    },
+    {
+      "clip": "follow",
+      "t": 11.900000000000034,
+      "metric": "penetration.rightToe",
+      "value": 0.023300513422112788
+    },
+    {
+      "clip": "follow",
+      "t": 11.950000000000035,
+      "metric": "penetration.rightToe",
+      "value": 0.013883580984035294
+    },
+    {
+      "clip": "follow",
+      "t": 12.400000000000041,
+      "metric": "penetration.leftToe",
+      "value": 0.023289401931441012
+    },
+    {
+      "clip": "follow",
+      "t": 12.450000000000042,
+      "metric": "penetration.leftToe",
+      "value": 0.013872029713782558
+    },
+    {
+      "clip": "follow",
+      "t": 12.750000000000046,
+      "metric": "penetration.rightToe",
+      "value": 0.0217481092230932
+    },
+    {
+      "clip": "follow",
+      "t": 12.800000000000047,
+      "metric": "penetration.rightToe",
+      "value": 0.009051853023933385
+    },
+    {
+      "clip": "follow",
+      "t": 13.100000000000051,
+      "metric": "penetration.leftToe",
+      "value": 0.015690086802558317
+    },
+    {
+      "clip": "follow",
+      "t": 13.400000000000055,
+      "metric": "penetration.rightToe",
+      "value": 0.023299735219319787
+    },
+    {
+      "clip": "follow",
+      "t": 13.450000000000056,
+      "metric": "penetration.rightToe",
+      "value": 0.013882544758995448
+    },
+    {
+      "clip": "follow",
+      "t": 13.75000000000006,
+      "metric": "penetration.leftToe",
+      "value": 0.017804012616478255
+    },
+    {
+      "clip": "follow",
+      "t": 13.800000000000061,
+      "metric": "penetration.leftToe",
+      "value": 0.007399547019755765
+    },
+    {
+      "clip": "follow",
+      "t": 14.100000000000065,
+      "metric": "penetration.rightToe",
+      "value": 0.018363994400310384
+    },
+    {
+      "clip": "follow",
+      "t": 14.600000000000072,
+      "metric": "penetration.leftToe",
+      "value": 0.018352621200232195
+    },
+    {
+      "clip": "follow",
+      "t": 14.900000000000077,
+      "metric": "penetration.rightToe",
+      "value": 0.02330052173930259
+    },
+    {
+      "clip": "follow",
+      "t": 14.950000000000077,
+      "metric": "penetration.rightToe",
+      "value": 0.01388358011564364
+    },
+    {
+      "clip": "follow",
+      "t": 15.400000000000084,
+      "metric": "penetration.leftToe",
+      "value": 0.023289410051833104
+    },
+    {
+      "clip": "follow",
+      "t": 15.450000000000085,
+      "metric": "penetration.leftToe",
+      "value": 0.013872028583586039
+    },
+    {
+      "clip": "follow",
+      "t": 15.750000000000089,
+      "metric": "penetration.rightToe",
+      "value": 0.021748954210370878
+    },
+    {
+      "clip": "follow",
+      "t": 15.80000000000009,
+      "metric": "penetration.rightToe",
+      "value": 0.009053220048144963
+    },
+    {
+      "clip": "follow",
+      "t": 16.250000000000096,
+      "metric": "penetration.leftToe",
+      "value": 0.02173772569783513
+    },
+    {
+      "clip": "follow",
+      "t": 16.300000000000097,
+      "metric": "penetration.leftToe",
+      "value": 0.009041462527175852
+    },
+    {
+      "clip": "follow",
+      "t": 16.6000000000001,
+      "metric": "penetration.rightToe",
+      "value": 0.018557444088945472
+    },
+    {
+      "clip": "follow",
+      "t": 17.100000000000108,
+      "metric": "penetration.leftToe",
+      "value": 0.018352274447716012
+    },
+    {
+      "clip": "follow",
+      "t": 17.400000000000112,
+      "metric": "penetration.rightToe",
+      "value": 0.023300543999506065
+    },
+    {
+      "clip": "follow",
+      "t": 17.450000000000113,
+      "metric": "penetration.rightToe",
+      "value": 0.013883087597032013
+    },
+    {
+      "clip": "follow",
+      "t": 17.800000000000118,
+      "metric": "penetration.leftToe",
+      "value": 0.018352562334344274
+    },
+    {
+      "clip": "follow",
+      "t": 18.100000000000122,
+      "metric": "penetration.rightToe",
+      "value": 0.020534506298589612
+    },
+    {
+      "clip": "follow",
+      "t": 18.150000000000123,
+      "metric": "penetration.rightToe",
+      "value": 0.012229611326561739
+    },
+    {
+      "clip": "follow",
+      "t": 18.60000000000013,
+      "metric": "penetration.leftToe",
+      "value": 0.023289346075181072
+    },
+    {
+      "clip": "follow",
+      "t": 18.65000000000013,
+      "metric": "penetration.leftToe",
+      "value": 0.01387139115924834
+    },
+    {
+      "clip": "follow",
+      "t": 18.950000000000134,
+      "metric": "penetration.rightToe",
+      "value": 0.021748855256701272
+    },
+    {
+      "clip": "follow",
+      "t": 19.000000000000135,
+      "metric": "penetration.rightToe",
+      "value": 0.009053050056158378
+    },
+    {
+      "clip": "follow",
+      "t": 19.40000000000014,
+      "metric": "penetration.leftToe",
+      "value": 0.01835265718075069
+    },
+    {
+      "clip": "follow",
+      "t": 19.750000000000146,
+      "metric": "penetration.rightToe",
+      "value": 0.014455500940991033
+    },
+    {
+      "clip": "follow",
+      "t": 19.800000000000146,
+      "metric": "penetration.rightToe",
+      "value": 0.006010882434600103
+    },
+    {
+      "clip": "follow",
+      "t": 20.15000000000015,
+      "metric": "penetration.leftToe",
+      "value": 0.021737502143838877
+    },
+    {
+      "clip": "follow",
+      "t": 20.200000000000152,
+      "metric": "penetration.leftToe",
+      "value": 0.009041060266899326
+    },
+    {
+      "clip": "follow",
+      "t": 20.250000000000153,
+      "metric": "penetration.rightToe",
+      "value": 0.011674610326840501
+    },
+    {
+      "clip": "follow",
+      "t": 20.65000000000016,
+      "metric": "penetration.rightToe",
+      "value": 0.013543382402757459
+    },
+    {
+      "clip": "follow",
+      "t": 20.70000000000016,
+      "metric": "penetration.rightToe",
+      "value": 0.014782275094956887
+    },
+    {
+      "clip": "follow",
+      "t": 22.000000000000178,
+      "metric": "penetration.leftToe",
+      "value": 0.023242622873715646
+    },
+    {
+      "clip": "follow",
+      "t": 22.05000000000018,
+      "metric": "penetration.leftToe",
+      "value": 0.013429221051134033
+    },
+    {
+      "clip": "follow",
+      "t": 22.600000000000186,
+      "metric": "penetration.rightToe",
+      "value": 0.02333756331250847
+    },
+    {
+      "clip": "follow",
+      "t": 22.650000000000187,
+      "metric": "penetration.rightToe",
+      "value": 0.02333756331250847
+    },
+    {
+      "clip": "follow",
+      "t": 22.700000000000188,
+      "metric": "penetration.rightToe",
+      "value": 0.02333756331250847
+    },
+    {
+      "clip": "follow",
+      "t": 22.75000000000019,
+      "metric": "penetration.rightToe",
+      "value": 0.02333756331250847
+    },
+    {
+      "clip": "follow",
+      "t": 22.80000000000019,
+      "metric": "penetration.rightToe",
+      "value": 0.02333756331250847
+    },
+    {
+      "clip": "follow",
+      "t": 22.85000000000019,
+      "metric": "penetration.rightToe",
+      "value": 0.02333756331250847
+    },
+    {
+      "clip": "follow",
+      "t": 22.90000000000019,
+      "metric": "penetration.rightToe",
+      "value": 0.02333756331250847
+    },
+    {
+      "clip": "follow",
+      "t": 22.95000000000019,
+      "metric": "penetration.rightToe",
+      "value": 0.02333756331250847
+    },
+    {
+      "clip": "follow",
+      "t": 23.000000000000192,
+      "metric": "penetration.rightToe",
+      "value": 0.02333756331250847
+    },
+    {
+      "clip": "follow",
+      "t": 23.050000000000193,
+      "metric": "penetration.rightToe",
+      "value": 0.02333756331250847
+    },
+    {
+      "clip": "follow",
+      "t": 23.100000000000193,
+      "metric": "penetration.rightToe",
+      "value": 0.02333756331250847
+    },
+    {
+      "clip": "follow",
+      "t": 23.150000000000194,
+      "metric": "penetration.rightToe",
+      "value": 0.02333756331250847
+    },
+    {
+      "clip": "follow",
+      "t": 23.200000000000195,
+      "metric": "penetration.rightToe",
+      "value": 0.02333756331250847
+    },
+    {
+      "clip": "follow",
+      "t": 23.250000000000195,
+      "metric": "penetration.rightToe",
+      "value": 0.02333756331250847
+    },
+    {
+      "clip": "follow",
+      "t": 23.300000000000196,
+      "metric": "penetration.rightToe",
+      "value": 0.02333756331250847
+    },
+    {
+      "clip": "follow",
+      "t": 23.350000000000197,
+      "metric": "penetration.rightToe",
+      "value": 0.02333756331250847
+    },
+    {
+      "clip": "follow",
+      "t": 23.400000000000198,
+      "metric": "penetration.rightToe",
+      "value": 0.02333756331250847
+    },
+    {
+      "clip": "follow",
+      "t": 23.4500000000002,
+      "metric": "penetration.rightToe",
+      "value": 0.02333756331250847
+    },
+    {
+      "clip": "follow",
+      "t": 23.5000000000002,
+      "metric": "penetration.rightToe",
+      "value": 0.02333756331250847
+    },
+    {
+      "clip": "follow",
+      "t": 23.5500000000002,
+      "metric": "penetration.rightToe",
+      "value": 0.02333756331250847
+    },
+    {
+      "clip": "follow",
+      "t": 23.6000000000002,
+      "metric": "penetration.rightToe",
+      "value": 0.02333756331250847
+    },
+    {
+      "clip": "climb",
+      "t": 1.3500000000000005,
+      "metric": "penetration.leftToe",
+      "value": 0.021491285200291477
+    },
+    {
+      "clip": "climb",
+      "t": 1.4000000000000006,
+      "metric": "penetration.leftToe",
+      "value": 0.00860524317959871
+    },
+    {
+      "clip": "climb",
+      "t": 1.4500000000000006,
+      "metric": "penetration.rightToe",
+      "value": 0.024728818961211207
+    },
+    {
+      "clip": "climb",
+      "t": 1.950000000000001,
+      "metric": "penetration.rightToe",
+      "value": 0.02150948004690323
+    },
+    {
+      "clip": "climb",
+      "t": 2.000000000000001,
+      "metric": "penetration.rightToe",
+      "value": 0.008624045937923541
+    },
+    {
+      "clip": "climb",
+      "t": 3.2999999999999963,
+      "metric": "penetration.leftToe",
+      "value": 0.01797444145989535
+    },
+    {
+      "clip": "climb",
+      "t": 3.399999999999996,
+      "metric": "penetration.rightToe",
+      "value": 0.012453082127557136
+    },
+    {
+      "clip": "climb",
+      "t": 3.899999999999994,
+      "metric": "penetration.rightToe",
+      "value": 0.01799284954790048
+    },
+    {
+      "clip": "climb",
+      "t": 5.299999999999989,
+      "metric": "penetration.leftToe",
+      "value": 0.007050842899822163
+    },
+    {
+      "clip": "climb",
+      "t": 5.899999999999987,
+      "metric": "penetration.rightToe",
+      "value": 0.017993989612433925
+    },
+    {
+      "clip": "climb",
+      "t": 5.999999999999987,
+      "metric": "penetration.leftToe",
+      "value": 0.01243492869903795
+    },
+    {
+      "clip": "climb",
+      "t": 6.499999999999985,
+      "metric": "penetration.leftToe",
+      "value": 0.01797458233974525
+    },
+    {
+      "clip": "climb",
+      "t": 7.84999999999998,
+      "metric": "penetration.rightToe",
+      "value": 0.02151193155217257
+    },
+    {
+      "clip": "climb",
+      "t": 7.89999999999998,
+      "metric": "penetration.rightToe",
+      "value": 0.00862630847136292
+    },
+    {
+      "clip": "climb",
+      "t": 8.449999999999985,
+      "metric": "penetration.leftToe",
+      "value": 0.02149092875415093
+    },
+    {
+      "clip": "climb",
+      "t": 8.499999999999986,
+      "metric": "penetration.leftToe",
+      "value": 0.008604641936571511
+    },
+    {
+      "clip": "climb",
+      "t": 9.950000000000006,
+      "metric": "penetration.rightToe",
+      "value": 0.00844922994366426
+    },
+    {
+      "clip": "climb",
+      "t": 10.550000000000015,
+      "metric": "penetration.leftToe",
+      "value": 0.021491418609782764
+    },
+    {
+      "clip": "climb",
+      "t": 10.600000000000016,
+      "metric": "penetration.leftToe",
+      "value": 0.008605472147244608
+    },
+    {
+      "clip": "climb",
+      "t": 11.150000000000023,
+      "metric": "penetration.rightToe",
+      "value": 0.021509559883594487
+    },
+    {
+      "clip": "climb",
+      "t": 11.200000000000024,
+      "metric": "penetration.rightToe",
+      "value": 0.008623880582294019
+    },
+    {
+      "clip": "climb",
+      "t": 12.500000000000043,
+      "metric": "penetration.leftToe",
+      "value": 0.02324277491122384
+    },
+    {
+      "clip": "climb",
+      "t": 12.550000000000043,
+      "metric": "penetration.leftToe",
+      "value": 0.013430420548819377
+    },
+    {
+      "clip": "climb",
+      "t": 13.100000000000051,
+      "metric": "penetration.rightToe",
+      "value": 0.023261674114217756
+    },
+    {
+      "clip": "climb",
+      "t": 13.150000000000052,
+      "metric": "penetration.rightToe",
+      "value": 0.013448937341480338
+    },
+    {
+      "clip": "climb",
+      "t": 14.650000000000073,
+      "metric": "penetration.leftToe",
+      "value": 0.008435431515241065
+    },
+    {
+      "clip": "climb",
+      "t": 15.250000000000082,
+      "metric": "penetration.rightToe",
+      "value": 0.02151115055039665
+    },
+    {
+      "clip": "climb",
+      "t": 15.300000000000082,
+      "metric": "penetration.rightToe",
+      "value": 0.008625479516902956
+    },
+    {
+      "clip": "climb",
+      "t": 15.85000000000009,
+      "metric": "penetration.leftToe",
+      "value": 0.021491993966563205
+    },
+    {
+      "clip": "climb",
+      "t": 15.900000000000091,
+      "metric": "penetration.leftToe",
+      "value": 0.008606456249755867
+    },
+    {
+      "clip": "climb",
+      "t": 17.20000000000011,
+      "metric": "penetration.rightToe",
+      "value": 0.023262982741116378
+    },
+    {
+      "clip": "climb",
+      "t": 17.25000000000011,
+      "metric": "penetration.rightToe",
+      "value": 0.013450213270666866
+    },
+    {
+      "clip": "climb",
+      "t": 17.800000000000118,
+      "metric": "penetration.leftToe",
+      "value": 0.023242734786748098
+    },
+    {
+      "clip": "climb",
+      "t": 17.85000000000012,
+      "metric": "penetration.leftToe",
+      "value": 0.013430142970551229
+    },
+    {
+      "clip": "climb",
+      "t": 19.35000000000014,
+      "metric": "penetration.rightToe",
+      "value": 0.008449214297374441
+    },
+    {
+      "clip": "climb",
+      "t": 19.95000000000015,
+      "metric": "penetration.leftToe",
+      "value": 0.02149189778940963
+    },
+    {
+      "clip": "climb",
+      "t": 20.00000000000015,
+      "metric": "penetration.leftToe",
+      "value": 0.008606294655882252
+    },
+    {
+      "clip": "climb",
+      "t": 20.550000000000157,
+      "metric": "penetration.rightToe",
+      "value": 0.021509836969113127
+    },
+    {
+      "clip": "climb",
+      "t": 20.600000000000158,
+      "metric": "penetration.rightToe",
+      "value": 0.008624382379999629
+    },
+    {
+      "clip": "climb",
+      "t": 21.900000000000176,
+      "metric": "penetration.leftToe",
+      "value": 0.02324267987555717
+    },
+    {
+      "clip": "climb",
+      "t": 21.950000000000177,
+      "metric": "penetration.leftToe",
+      "value": 0.013429705700018335
+    },
+    {
+      "clip": "climb",
+      "t": 22.500000000000185,
+      "metric": "penetration.rightToe",
+      "value": 0.023294360939532632
+    },
+    {
+      "clip": "climb",
+      "t": 22.550000000000185,
+      "metric": "penetration.rightToe",
+      "value": 0.013735723707073655
+    },
+    {
+      "clip": "climb",
+      "t": 24.050000000000207,
+      "metric": "penetration.leftToe",
+      "value": 0.008435536057073367
+    },
+    {
+      "clip": "climb",
+      "t": 24.650000000000215,
+      "metric": "penetration.rightToe",
+      "value": 0.02151140207232638
+    },
+    {
+      "clip": "climb",
+      "t": 24.700000000000216,
+      "metric": "penetration.rightToe",
+      "value": 0.008625938578492365
+    },
+    {
+      "clip": "climb",
+      "t": 25.250000000000224,
+      "metric": "penetration.leftToe",
+      "value": 0.02149208600268926
+    },
+    {
+      "clip": "climb",
+      "t": 25.300000000000225,
+      "metric": "penetration.leftToe",
+      "value": 0.008606617378073667
+    },
+    {
+      "clip": "climb",
+      "t": 26.600000000000243,
+      "metric": "penetration.rightToe",
+      "value": 0.02329522244708304
+    },
+    {
+      "clip": "climb",
+      "t": 26.650000000000244,
+      "metric": "penetration.rightToe",
+      "value": 0.013732262376325188
+    },
+    {
+      "clip": "climb",
+      "t": 27.20000000000025,
+      "metric": "penetration.leftToe",
+      "value": 0.023242719530431888
+    },
+    {
+      "clip": "climb",
+      "t": 27.250000000000252,
+      "metric": "penetration.leftToe",
+      "value": 0.013430032895829225
+    },
+    {
+      "clip": "climb",
+      "t": 28.750000000000274,
+      "metric": "penetration.rightToe",
+      "value": 0.02150546134574105
+    },
+    {
+      "clip": "climb",
+      "t": 28.800000000000274,
+      "metric": "penetration.rightToe",
+      "value": 0.008620076189894466
+    },
+    {
+      "clip": "climb",
+      "t": 29.350000000000282,
+      "metric": "penetration.leftToe",
+      "value": 0.021491444792360426
+    },
+    {
+      "clip": "climb",
+      "t": 29.400000000000283,
+      "metric": "penetration.leftToe",
+      "value": 0.008605520135164468
+    },
+    {
+      "clip": "climb",
+      "t": 30.450000000000298,
+      "metric": "penetration.rightToe",
+      "value": 0.00953796461161005
+    },
+    {
+      "clip": "climb",
+      "t": 30.5000000000003,
+      "metric": "penetration.rightToe",
+      "value": 0.01661851463311459
+    },
+    {
+      "clip": "climb",
+      "t": 30.900000000000304,
+      "metric": "penetration.leftToe",
+      "value": 0.022922590089744066
+    },
+    {
+      "clip": "climb",
+      "t": 30.950000000000305,
+      "metric": "penetration.leftToe",
+      "value": 0.011892291535260835
+    },
+    {
+      "clip": "climb",
+      "t": 32.800000000000274,
+      "metric": "penetration.rightToe",
+      "value": 0.018411517345677364
+    },
+    {
+      "clip": "climb",
+      "t": 35.65000000000011,
+      "metric": "penetration.leftToe",
+      "value": 0.022315167241348632
+    },
+    {
+      "clip": "climb",
+      "t": 35.70000000000011,
+      "metric": "penetration.leftToe",
+      "value": 0.010215212359433679
+    },
+    {
+      "clip": "climb",
+      "t": 36.25000000000008,
+      "metric": "penetration.rightToe",
+      "value": 0.021040917933384584
+    },
+    {
+      "clip": "climb",
+      "t": 36.300000000000075,
+      "metric": "penetration.rightToe",
+      "value": 0.00787210327194554
+    },
+    {
+      "clip": "climb",
+      "t": 37.25000000000002,
+      "metric": "penetration.leftToe",
+      "value": 0.020950242825555687
+    },
+    {
+      "clip": "climb",
+      "t": 37.30000000000002,
+      "metric": "penetration.leftToe",
+      "value": 0.007739833898855686
+    },
+    {
+      "clip": "climb",
+      "t": 37.79999999999999,
+      "metric": "penetration.rightToe",
+      "value": 0.023073564223572873
+    },
+    {
+      "clip": "climb",
+      "t": 37.84999999999999,
+      "metric": "penetration.rightToe",
+      "value": 0.012447577587142877
+    },
+    {
+      "clip": "climb",
+      "t": 39.999999999999865,
+      "metric": "penetration.leftToe",
+      "value": 0.020409918425474682
+    },
+    {
+      "clip": "climb",
+      "t": 40.04999999999986,
+      "metric": "penetration.leftToe",
+      "value": 0.006971750846362035
+    },
+    {
+      "clip": "climb",
+      "t": 41.79999999999976,
+      "metric": "penetration.rightToe",
+      "value": 0.012022749516720665
+    },
+    {
+      "clip": "climb",
+      "t": 41.84999999999976,
+      "metric": "penetration.rightToe",
+      "value": 0.01593538906306602
+    },
+    {
+      "clip": "climb",
+      "t": 42.649999999999714,
+      "metric": "penetration.leftToe",
+      "value": 0.00927636133776133
+    },
+    {
+      "clip": "climb",
+      "t": 42.69999999999971,
+      "metric": "penetration.leftToe",
+      "value": 0.02331843410786849
+    }
+  ],
+  "ikSelfCheck": false,
+  "pass": false,
+  "metrics": {
+    "M8_soleClearanceMin": {
+      "value": -0.024728818961211207,
+      "bar": ">= -0.002 m",
+      "pass": false
+    },
+    "M8_rollWindowContactDriftMax": {
+      "value": 0,
+      "bar": "<= 0.005 m (measured against the roll model's own fixed heel/toe/flat contact point, _lastSync.leftFootContact/rightFootContact)",
+      "pass": true
+    },
+    "M9b_footPitchContinuityMax": {
+      "value": 0.171649171048767,
+      "bar": "<= 0.12 rad per sample @ dt=0.05s",
+      "pass": false
+    },
+    "M11_armSwingAmplitude": {
+      "value": 0.10951562867995669,
+      "bar": "[0.1, 0.45] rad (peak-to-peak/2, pooled across both clips)",
+      "pass": true
+    },
+    "M11_armSwingIdleAmplitude": {
+      "value": 0.07431451033844894,
+      "bar": "<= 0.01 rad (breathing only)",
+      "pass": false
+    },
+    "M11_contralateralPhaseCorr": {
+      "value": 0.9891632529347333,
+      "bar": "corr(shoulder_L, adv_R) >= 0.7 (sign assumes the leg rig's local-X sagittal convention also applies to arms -- unverified for arms, see localTwistAboutXRad's comment)",
+      "pass": true
+    },
+    "M12_handForearmToThighClearanceMin": {
+      "value": 0.09211235854253594,
+      "bar": ">= 0.09 m point-to-axis (~0.07 m thigh mesh radius + 0.02 m clearance; bone-segment-centerline approximation, not a true mesh surface)",
+      "pass": true
+    },
+    "M12_caneHandToHandleErrorMax": {
+      "value": 0.07035974985387071,
+      "bar": "<= 0.015 m every sampled frame",
+      "pass": false
+    },
+    "M12_caneReachClampInfo": {
+      "value": {
+        "maxClampMagnitudeM": 0.11474108706374617,
+        "exceedsFraction": 0.0015060240963855422,
+        "samples": 1328
+      },
+      "bar": "informational (no bar) -- flag if exceedsFraction > 0.05 at maxClampMagnitudeM > 0.10 m: not flagged",
+      "pass": true
+    },
+    "M12_caneShaftClearanceMin": {
+      "value": 0.044034517766593145,
+      "bar": ">= 0.03 m vs shin (segment-to-segment centerline distance, both sides; bone-position approximation, not a true mesh/capsule surface)",
+      "pass": true
+    },
+    "M13_pelvisBobAmplitude": {
+      "value": 0.00899947137306678,
+      "bar": "[0.008, 0.035] m (peak-to-peak/2, pooled across both clips)",
+      "pass": true
+    },
+    "M13_pelvisBobIdleAmplitude": {
+      "value": 0.00031876768704541814,
+      "bar": "<= 0.002 m (\"zero\" at idle)",
+      "pass": true
+    },
+    "M13_headVsPelvisAmplitudeRatio": {
+      "value": 1.0477472591587838,
+      "bar": "< 1.0 (head amplitude < pelvis amplitude -- stabilization works)",
+      "pass": false
+    },
+    "M14_existingAcceptanceBars": {
+      "value": {
+        "fkErrorMax": 2.4131525804397245e-05,
+        "plantedDriftMax": 0,
+        "idleFootMotionMax": 0.0044401273860937346,
+        "kneeBendStanceMedianDeg": {
+          "follow": 38.72645735721712,
+          "climb": 54.70005060888386
+        }
+      },
+      "bar": "fkErrorMax<=0.012m, plantedDriftMax<=0.01m, idleFootMotionMax<=0.002m (existing bars, unchanged, shared across clips -- plantedDriftMax measured against the roll model's own contact point, see M8_rollWindowContactDriftMax); kneeBend stanceMedian<=40deg on follow (flat) / <=65deg on climb (F9, 2026-07-10: real stair weight-acceptance flexion is legitimately ~45-60deg, a flat-calibrated 40deg bar misclassifies it)",
+      "pass": false
+    }
+  },
+  "_debugWorstPen": {
+    "pen": 0.024728818961211207,
+    "clip": "climb",
+    "t": 1.4500000000000006,
+    "foot": "rightToe",
+    "toe": {
+      "x": 2.6102786349301357,
+      "y": -0.11455541739365743,
+      "z": 0.41027118103878873
+    },
+    "th": 0.43499999999999994,
+    "footPose": {
+      "x": 2.4873516250447474,
+      "y": -0.10444341189371745,
+      "z": 0.38526386420465136,
+      "yaw": -0.08206601153469414,
+      "planted": false,
+      "swingU": 0.19575067566138266,
+      "liftAt": 1.3333330154418945,
+      "landedAt": null,
+      "nextLiftAt": 3.266666889190674,
+      "strideLen": 0.3006462127003838
+    }
+  },
+  "_debugWorstPitch": {
+    "d": 0.171649171048767,
+    "clip": "climb",
+    "t": 39.49999999999989,
+    "foot": "left",
+    "prevLeftFootPitch": 0.009198750631438409,
+    "leftFootPitch": 0.18084792168020541,
+    "prevRightFootPitch": 5.308125597047664e-09,
+    "rightFootPitch": 5.308124337469269e-09,
+    "leftFootPose": {
+      "x": 7.283888525625291,
+      "y": 0.09407201080126318,
+      "z": 2.03,
+      "yaw": 0.10000390635705117,
+      "planted": true,
+      "swingU": null,
+      "liftAt": null,
+      "landedAt": 37.226234853742234,
+      "nextLiftAt": 39.53333282470703,
+      "strideLen": 0.2780504226705785
+    },
+    "rightFootPose": {
+      "x": 7.384693589546829,
+      "y": -0.09408322758477727,
+      "z": 2.03,
+      "yaw": -0.09999609364294884,
+      "planted": true,
+      "swingU": null,
+      "liftAt": null,
+      "landedAt": 37.79256809465715,
+      "nextLiftAt": 41.266666412353516,
+      "strideLen": 0.2791018486044244
+    },
+    "ls": {
+      "leftFootRollPitchDeg": -10.361823026678593,
+      "rightFootRollPitchDeg": 0,
+      "leftToePitchDeg": 12.088793531125027,
+      "rightToePitchDeg": 0,
+      "speed": 0.09938630121386956
+    }
+  }
+}

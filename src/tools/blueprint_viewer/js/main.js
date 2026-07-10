@@ -19,6 +19,19 @@ import { PALETTES, applyPaletteToDom } from './palette.js';
 import { BlueprintEdgesPass, NO_OUTLINE_LAYER } from './BlueprintEdgesPass.js';
 import { buildPlaceholderRobot } from './PlaceholderRobot.js';
 import { PatientHuman } from './PatientHuman.js';
+// poseAt: read-only use of PatientGait.js's own exported pure query function
+// (GAIT-owned; VERIFY may READ any file per IK_OVERHAUL_SPEC.md section 2) --
+// patientDiag calls this directly (alongside patientHuman.sync(), which calls
+// the SAME function internally) so it can read v2 pose fields (phaseC,
+// per-foot landedAt/nextLiftAt, cane) that PatientHuman._lastSync doesn't
+// (yet) surface, without waiting on a RIG-side plumbing change.
+import { poseAt } from './PatientGait.js';
+// CANE_PARAMS: read-only use of PatientCane.js's own exported tunables (RIG-
+// owned; VERIFY may READ any file per IK_OVERHAUL_SPEC.md section 2) --
+// patientDiag's M12_caneShaftClearanceMin needs caneLengthM to reconstruct the
+// cane's ACTUAL rendered handle position from its Object3D's tip position +
+// orientation (see patientDiag's own comment at that call site).
+import { CANE_PARAMS } from './PatientCane.js';
 
 // ===========================================================================
 // DOM references
@@ -35,13 +48,14 @@ const cinematicToggle = document.getElementById( 'cinematic-toggle' );
 const plumbToggle = document.getElementById( 'plumb-toggle' );
 const playToggle = document.getElementById( 'play-toggle' );
 const modelWarning = document.getElementById( 'model-warning' );
+const potResetBtn = document.getElementById( 'pot-reset' );
 
 // ===========================================================================
 // Renderer / scene / camera
 //
 // NOTE: canvasHost.clientWidth/clientHeight can legitimately read 0 here if
 // this module executes before the browser has committed a layout pass for
-// a just-inserted host element (observed in practice, not hypothetical —
+// a just-inserted host element (observed in practice, not hypothetical â€”
 // it wedges the canvas at a permanent 0x0 via three's setSize(w,h) inline
 // style, which a plain CSS width:100% rule cannot override). So: construct
 // with a throwaway 1x1 size, then let the single handleResize() function
@@ -71,7 +85,7 @@ controls.update();
 // Lighting: hemisphere (unquantized ambient fill) + a warm KEY directional
 // light (quantized into the toon gradient bands below, and the only light
 // that casts shadows) + a cool, dimmer, unshadowed FILL directional light
-// from the opposite side + a shader-injected fresnel rim — see the
+// from the opposite side + a shader-injected fresnel rim â€” see the
 // "Blueprint materials" section for how MeshToonMaterial splits the two
 // directional lights' combined contribution into banded direct terms, with
 // hemiLight staying a smooth ambient term on top.
@@ -81,7 +95,7 @@ controls.update();
 // key+fill toon grading -- a warm key against a cool fill/ambient reads far
 // richer than a single flat white light) and enabled real-time shadows.
 // dirLight was raised from the old flat-material value (0.15) because the
-// toon gradient map only bands the DIRECTIONAL contribution — at 0.15 it was
+// toon gradient map only bands the DIRECTIONAL contribution â€” at 0.15 it was
 // swamped by hemiLight's ambient fill and no bands were visible at all.
 // Rebalanced by pixel-sampling a live render so the lit face still lands
 // close to the old ~sRGB 205 target against the #d6d2ca (214) paper
@@ -202,7 +216,7 @@ function applyTheme( name ) {
 // Traverse the loaded model, strip all textures/materials, and assign a
 // cel-shaded (toon) material so the ink edge pass isn't the ONLY thing
 // giving the sculpted mesh (324k tris of rivets/seams/panel lines) a sense
-// of form — on a near-shadeless flat fill, that detail read as pure line
+// of form â€” on a near-shadeless flat fill, that detail read as pure line
 // clutter ("wired") instead of a shaded surface. A few named subtrees get a
 // slightly different tint per the design spec (oxygen tank lighter, patient
 // darker) while sharing the same toon/rim treatment.
@@ -633,16 +647,16 @@ let robotBaseMaterial = makeRobotRealisticMaterial( 0xffffff, { metalness: 0.2, 
 let logoMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].logoColor );
 
 // ===========================================================================
-// Living-room set — "from a proven sim to the living room" (Potential slide)
+// Living-room set â€” "from a proven sim to the living room" (Potential slide)
 //
 // This scene renders ONLY on the Potential slide, so we dress the sim staircase
 // into a warm home around it: a wood floor (the cold sim tile is hidden on load,
 // see finishModelSetup), a painted far wall with a sunlit window + framed print,
 // a rug under the walk line, and a couch / floor-lamp / coffee-table / plant
 // vignette in the background. Built once from simple toon primitives in three.js
-// WORLD coords (measured against the real stairs AABB: stairs x∈[2,8.5] rising to
-// y≈2, floor at y=0, walk line z≈0). Camera sits on +Z looking −Z, so the
-// furniture at z≈−3.4 reads as background behind the free-standing staircase.
+// WORLD coords (measured against the real stairs AABB: stairs xâˆˆ[2,8.5] rising to
+// yâ‰ˆ2, floor at y=0, walk line zâ‰ˆ0). Camera sits on +Z looking âˆ’Z, so the
+// furniture at zâ‰ˆâˆ’3.4 reads as background behind the free-standing staircase.
 // Added straight to `scene`; gated with the rest of the viewer's render loop.
 // ===========================================================================
 let livingRoom = null;
@@ -672,7 +686,7 @@ function buildLivingRoom() {
 	const glassMat = new THREE.MeshBasicMaterial( { color: 0xfff0d2 } ); // sunlit window (unlit glow)
 	const pictureMat = makeBlueprintMaterial( 0x9fb4c2 );
 
-	// Wood floor (the sim 'ground' tile is hidden on load — see finishModelSetup)
+	// Wood floor (the sim 'ground' tile is hidden on load â€” see finishModelSetup)
 	const floor = box( 21, 0.06, 11, woodFloorMat );
 	floor.position.set( 0.5, -0.03, 0 ); floor.receiveShadow = true; room.add( floor );
 
@@ -683,7 +697,7 @@ function buildLivingRoom() {
 	endWall.position.set( -9.4, WALL_H / 2, -0.2 ); endWall.receiveShadow = true; room.add( endWall );
 	const skirt = box( 20, 0.14, 0.06, skirtMat ); skirt.position.set( -0.5, 0.07, WALL_Z + 0.12 ); room.add( skirt );
 
-	// Sunlit window on the far wall (frame + muntins) — over the couch, mid-room
+	// Sunlit window on the far wall (frame + muntins) â€” over the couch, mid-room
 	const winW = 2.6, winH = 1.7, winX = -1.6, winY = 1.8, winZ = WALL_Z + 0.06;
 	const glass = box( winW, winH, 0.04, glassMat ); glass.position.set( winX, winY, winZ ); room.add( glass );
 	const frameT = box( winW + 0.3, 0.16, 0.1, frameMat ); frameT.position.set( winX, winY + winH / 2 + 0.02, winZ ); room.add( frameT );
@@ -697,7 +711,7 @@ function buildLivingRoom() {
 	const picFrame = box( 1.1, 0.8, 0.06, frameMat ); picFrame.position.set( -4.4, 1.95, WALL_Z + 0.05 ); room.add( picFrame );
 	const pic = box( 0.92, 0.62, 0.02, pictureMat ); pic.position.set( -4.4, 1.95, WALL_Z + 0.08 ); room.add( pic );
 
-	// Rug — long runner down the middle of the walk line toward the stairs
+	// Rug â€” long runner down the middle of the walk line toward the stairs
 	const rug = box( 7.0, 0.03, 3.8, rugMat ); rug.position.set( -1.4, 0.016, -0.2 ); rug.receiveShadow = true; room.add( rug );
 	const rugInner = box( 6.1, 0.034, 2.9, rugMat2 ); rugInner.position.set( -1.4, 0.02, -0.2 ); room.add( rugInner );
 
@@ -730,7 +744,7 @@ function buildLivingRoom() {
 	const lampLight = new THREE.PointLight( 0xffce8a, 6, 6, 2 );
 	lampLight.position.set( -4.4, 1.66, -3.4 ); room.add( lampLight );
 
-	// Potted plants — one to bridge the middle, one right at the stairs base, so
+	// Potted plants â€” one to bridge the middle, one right at the stairs base, so
 	// the room stays furnished the whole way as the robot + patient cross it.
 	const leafSpread = [ [ 0, 0.64, 0, 0.28 ], [ -0.15, 0.52, 0.06, 0.2 ], [ 0.15, 0.54, -0.05, 0.2 ], [ 0, 0.84, 0, 0.2 ] ];
 	for ( const [ plx, plz ] of [ [ -3.4, -3.5 ], [ 1.6, -1.4 ] ] ) {
@@ -905,7 +919,7 @@ function applyBlueprintMaterials( root ) {
 // Post-processing: RenderPass -> BlueprintEdgesPass -> OutputPass
 //
 // No FXAA: it sat after the ink pass and treated every crisp ink stroke as
-// exactly the high-contrast "jaggy" it exists to blur — softening deliberate
+// exactly the high-contrast "jaggy" it exists to blur â€” softening deliberate
 // technical-pen lines into a faint grey smear (measured live: removing FXAA
 // collapsed a faint/dashed seam's ambiguous mid-grey pixel count in a test
 // region from ~1700 to ~30, most of it converting to solid ink). A
@@ -964,7 +978,7 @@ const edgesPass = new BlueprintEdgesPass( scene, camera, {
 	// NOTE: this was originally 0.0025 and looked correct in code review,
 	// but empirically (see debug captures during development) it was WAY
 	// too tight for a real depth texture's quantization noise at these
-	// distances — entire flat faces (especially the shallow-angle stair
+	// distances â€” entire flat faces (especially the shallow-angle stair
 	// treads) flickered white/black as false "edges" instead of getting
 	// thin silhouette lines. 0.025 (10x looser) was verified to produce
 	// clean, thin, silhouette/occlusion-only depth edges with no
@@ -1056,8 +1070,8 @@ const CINE_SWAY_AZ_PERIOD = 13;           // s, one full left-right sway
 const CINE_SWAY_EL_PERIOD = 19;           // s, one full rise-fall sway
 
 // Pulled back from the original tight framing (pad 0.95 / margin 1.16 / max 7.5)
-// so the living-room set around the pair — wood floor, rug, couch + window, the
-// staircase — reads in shot, not just the two subjects. This slide's whole point
+// so the living-room set around the pair â€” wood floor, rug, couch + window, the
+// staircase â€” reads in shot, not just the two subjects. This slide's whole point
 // is "the living room", so the environment has to be visible.
 const CINE_SUBJECT_PAD = 1.25;   // extra framing radius so neither subject kisses the frame edge (m)
 const CINE_FRAME_MARGIN = 1.42;  // >1 leaves breathing room around the pair + room
@@ -1151,7 +1165,7 @@ function updateCinematicCamera( dtSec ) {
 
 }
 
-// Playback (optional "play" chip) state — see PLAYBACK section below.
+// Playback (optional "play" chip) state â€” see PLAYBACK section below.
 let isPlaying = false;
 let lastPlaybackTimestamp = 0;
 
@@ -1162,19 +1176,19 @@ const patientHuman = new PatientHuman();
 const patientHumanReady = patientHuman.load();
 
 // robot.meta.json: this pipeline's own stair_spec/landing_far_x_m (see the file
-// itself — start_x_m/step_height_m/step_depth_m/step_count/landing_depth_m), needed
+// itself â€” start_x_m/step_height_m/step_depth_m/step_count/landing_depth_m), needed
 // by patientHuman.buildGait() to build the procedural gait's terrain model (see
 // PatientGait.buildTerrain). Fetched here (racing the GLB loads, same pattern as
 // patientHumanReady above) rather than inside loadRealModel, so a slow/failed fetch
 // doesn't serialize behind the (much larger) robot.glb download. On failure: loudly
 // console.error and degrade exactly like an Xbot load failure (no patient gait built
-// — patientHuman.buildGait() is simply never called below, so the human stays
+// â€” patientHuman.buildGait() is simply never called below, so the human stays
 // un-posed rather than silently falling back to some invented default staircase).
 const robotMetaReady = fetch( './models/robot.meta.json' )
 	.then( ( r ) => r.json() )
 	.catch( ( error ) => {
 
-		console.error( '[blueprint-viewer] failed to load ./models/robot.meta.json — patient gait will not be built:', error );
+		console.error( '[blueprint-viewer] failed to load ./models/robot.meta.json â€” patient gait will not be built:', error );
 		return null;
 
 	} );
@@ -1223,49 +1237,6 @@ function updatePlumbLine() {
 	patientHuman._patientRootNode.getWorldPosition( _plumbHipWorld );
 	const groundY = _plumbHipWorld.y - PATIENT_HIP_HEIGHT_M;
 	plumbLine.position.set( _plumbHipWorld.x, groundY + PLUMB_LINE_HEIGHT_M / 2, _plumbHipWorld.z );
-
-}
-
-// ===========================================================================
-// Elderly cue: a walking cane at the patient's side
-//
-// The Potential slide should read as an OLDER person on the stairs, so the
-// patient carries a cane. Rather than fight the Xbot armature's 0.01 scale to
-// parent it to a hand bone, the cane is a world-space prop re-planted at the
-// patient's side every frame (same pattern as the plumb line), which reads
-// correctly from the cinematic distance.
-// ===========================================================================
-const caneMaterial = makeBlueprintMaterial( 0x6b4a32 ); // dark wood cane
-const patientCane = new THREE.Group();
-patientCane.name = 'patient_cane';
-{
-
-	const shaft = new THREE.Mesh( new THREE.CylinderGeometry( 0.016, 0.019, 0.84, 10 ), caneMaterial );
-	shaft.position.y = 0.42; patientCane.add( shaft );
-	// Crook handle: a half-torus in the vertical plane curving off the shaft top.
-	const crook = new THREE.Mesh( new THREE.TorusGeometry( 0.045, 0.016, 8, 16, Math.PI ), caneMaterial );
-	crook.position.set( -0.045, 0.84, 0 ); patientCane.add( crook );
-	// Rubber ferrule tip.
-	const tip = new THREE.Mesh( new THREE.CylinderGeometry( 0.022, 0.016, 0.03, 8 ), robotBlackMaterial );
-	tip.position.y = 0.015; patientCane.add( tip );
-	patientCane.traverse( ( o ) => { if ( o.isMesh ) o.castShadow = true; } );
-
-}
-patientCane.visible = false;
-scene.add( patientCane );
-
-const _caneHipWorld = new THREE.Vector3();
-
-/** Plant the cane at the patient's side (a touch forward, camera-side) each frame. No-op before the patient attaches. */
-function updateCane() {
-
-	if ( ! patientHuman._attached ) { patientCane.visible = false; return; }
-	patientCane.visible = true;
-	patientHuman._patientRootNode.getWorldPosition( _caneHipWorld );
-	const groundY = _caneHipWorld.y - PATIENT_HIP_HEIGHT_M;
-	// World axes: +X travel / up-stairs, +Z toward the near (camera) side.
-	patientCane.position.set( _caneHipWorld.x + 0.16, groundY, _caneHipWorld.z + 0.22 );
-	patientCane.rotation.set( 0.06, 0, -0.05 ); // slight planted lean
 
 }
 
@@ -1430,7 +1401,7 @@ function attachLogoLabel( baseNode, font ) {
 
 	// Placed brand-label meshes REMOVED per user direction: the robot now shows
 	// only its OWN printed logo words, which are baked into the robot_base mesh's
-	// `白色logo` GeomSubset and colored black by pipeline/recolor_parts.py. The
+	// `ç™½è‰²logo` GeomSubset and colored black by pipeline/recolor_parts.py. The
 	// old buildLogoMesh()/buildSideLogoMesh() overlays (a top deck label + the
 	// side "Unitree"/"Go2" text) are gone; the loop above still strips any that a
 	// prior load attached. (builders kept below in case the overlays are wanted
@@ -1439,7 +1410,7 @@ function attachLogoLabel( baseNode, font ) {
 }
 
 // ===========================================================================
-// Camera fit — frame the robot_base subtree's bbox at t=0 on load
+// Camera fit â€” frame the robot_base subtree's bbox at t=0 on load
 // ===========================================================================
 
 function fitCameraToObject( object3d, offsetMultiplier = 2.4 ) {
@@ -1459,7 +1430,7 @@ function fitCameraToObject( object3d, offsetMultiplier = 2.4 ) {
 	// near/far: sized from the OrbitControls zoom range + object extent, NOT
 	// from fitDistance*{tiny,huge} multipliers. The previous version derived
 	// near=fitDistance/100, far=fitDistance*50, which for a ~1m robot gave a
-	// near:far ratio of ~5000:1 — with a standard (non-logarithmic) depth
+	// near:far ratio of ~5000:1 â€” with a standard (non-logarithmic) depth
 	// buffer that crushes almost all depth precision into the first few
 	// percent of that range, leaving the actual geometry (which sits right
 	// where the robot is, a few meters out) with barely any distinguishable
@@ -1468,7 +1439,7 @@ function fitCameraToObject( object3d, offsetMultiplier = 2.4 ) {
 	// faces flickered as "edges" from raw depth-texture quantization noise,
 	// see git history / incident notes for the debug captures that isolated
 	// this). Keeping near:far comfortably under ~1000:1 here is what fixes
-	// it — this is a real, load-bearing constraint of the edge pass, not
+	// it â€” this is a real, load-bearing constraint of the edge pass, not
 	// just camera-fit tuning.
 	camera.near = Math.max( 0.01, controls.minDistance * 0.5 );
 	camera.far = controls.maxDistance + maxDim * 4;
@@ -1484,8 +1455,8 @@ function fitCameraToObject( object3d, offsetMultiplier = 2.4 ) {
 //
 // Both "follow" and "climb" AnimationActions are started with .play() and
 // immediately paused, then left paused permanently. Switching phases is
-// just swapping action WEIGHTS (active=1, inactive=0) — never calling
-// .stop()/.play() again — so switching is instant and glitch-free, and
+// just swapping action WEIGHTS (active=1, inactive=0) â€” never calling
+// .stop()/.play() again â€” so switching is instant and glitch-free, and
 // the scrub logic below (which sets .time directly) keeps working
 // uniformly for whichever action is currently active.
 // ===========================================================================
@@ -1618,6 +1589,32 @@ function jumpToSegment( name ) {
 }
 
 /**
+ * Rewind the unified demo timeline to t=0 (window.__viewer.resetDemo() + the
+ * #pot-reset stage-chrome button + the Home key -- see their own wiring below).
+ * Reuses applyGlobalTime(0, ...), the SAME primitive scrubbing/jumpToSegment/
+ * playback already funnel through (the "*** THE CRUCIAL SCRUBBING LOGIC ***"
+ * block below), so this is not a second "what pose is shown" code path.
+ *
+ * Unlike jumpToSegment (a manual chip click, which pauses playback), a reset
+ * KEEPS autoplay running from t=0 if it was already running -- lastPlaybback-
+ * Timestamp is re-stamped to "now" first so the next stepPlayback() call sees
+ * a small, correct delta instead of one spanning however long ago playback
+ * last actually advanced (mirrors setPlaying's own bookkeeping); if playback
+ * was paused, reset leaves it paused, just rewound.
+ *
+ * No-op before a model has loaded (mixer/segments are guarded inside
+ * applyGlobalTime) and safe to call repeatedly or mid-scrub (applyGlobalTime
+ * is idempotent -- calling it with t=0 twice in a row is a no-op the second
+ * time).
+ */
+function resetDemo() {
+
+	lastPlaybackTimestamp = performance.now();
+	applyGlobalTime( 0, { updateSlider: true } );
+
+}
+
+/**
  * Back-compat shim for the patient-gait diagnostic (window.__viewer.patientDiag),
  * which drives one clip's action.time directly and needs that clip weighted.
  * resetSlider:true re-homes the unified playhead to the segment start (matching
@@ -1647,13 +1644,13 @@ function setPhase( phaseName, { resetSlider = true } = {} ) {
 //
 // Every phase action is .play()'d once at setup time and then immediately
 // .paused = true FOREVER. The render loop below never advances playback
-// with clock.getDelta() — mixer.update(dt) is NEVER called with a nonzero
+// with clock.getDelta() â€” mixer.update(dt) is NEVER called with a nonzero
 // dt from the rAF loop while scrub-driven. Instead:
 //
 //   1. The <input type="range"> fires an 'input' event with a 0..100 value.
 //   2. We map that value to a TIME on the currently-active clip:
 //        activeAction.time = (v / 100) * clip.duration
-//   3. We call mixer.update(0) — passing a delta of ZERO. AnimationMixer's
+//   3. We call mixer.update(0) â€” passing a delta of ZERO. AnimationMixer's
 //      internal accumulation still re-evaluates every active action's pose
 //      AT ITS CURRENT .time and writes it to the scene graph, but because
 //      the delta is 0, no action's .time is advanced by the update call
@@ -1668,7 +1665,7 @@ function setPhase( phaseName, { resetSlider = true } = {} ) {
 //
 // The optional "play" chip (see PLAYBACK section) reuses this exact same
 // primitive: it computes a new .time from a rAF timestamp delta itself,
-// then calls mixer.update(0) — it never lets the mixer do the time
+// then calls mixer.update(0) â€” it never lets the mixer do the time
 // advancement. This keeps ONE authoritative path for "what pose is shown",
 // whether you're dragging or playing.
 // ===========================================================================
@@ -1691,7 +1688,7 @@ function updateTimeReadout() {
 
 	const t = globalTime.toFixed( 2 ).padStart( 5, '0' );
 	const total = totalDuration.toFixed( 2 ).padStart( 5, '0' );
-	timeReadout.textContent = `t ${t} / ${total} s · ${currentPhase}`;
+	timeReadout.textContent = `t ${t} / ${total} s Â· ${currentPhase}`;
 
 }
 
@@ -1705,7 +1702,7 @@ scrubber.addEventListener( 'input', () => {
 } );
 
 // ===========================================================================
-// Phase buttons — now jump-to-segment shortcuts on the single unified timeline
+// Phase buttons â€” now jump-to-segment shortcuts on the single unified timeline
 // (follow starts at t=0, climb starts at the follow clip's end), not mode
 // switches. The active chip is highlighted by applyGlobalTime as the playhead
 // crosses the seam, so scrubbing/playing past the join re-lights the chips too.
@@ -1756,7 +1753,7 @@ function stepPlayback( nowMs ) {
 }
 
 // ===========================================================================
-// Keyboard: Left/Right nudge slider +/-0.5
+// Keyboard: Left/Right nudge slider +/-0.5, Home rewinds to t=0
 // ===========================================================================
 
 window.addEventListener( 'keydown', ( ev ) => {
@@ -1772,9 +1769,18 @@ window.addEventListener( 'keydown', ( ev ) => {
 		scrubToPercent( next );
 		ev.preventDefault();
 
+	} else if ( ev.key === 'Home' ) {
+
+		resetDemo();
+		ev.preventDefault();
+
 	}
 
 } );
+
+// Reset chip (#pot-reset -- separate minimal stage chrome, since .viewer-controls
+// itself is hidden on this passive Potential slide; see styles.css).
+if ( potResetBtn ) potResetBtn.addEventListener( 'click', () => resetDemo() );
 
 // ===========================================================================
 // Theme + tracking toggles
@@ -1789,7 +1795,7 @@ themeToggle.addEventListener( 'click', () => {
 if ( trackingToggle ) trackingToggle.addEventListener( 'click', () => {
 
 	trackingEnabled = ! trackingEnabled;
-	trackingToggle.textContent = `tracking · ${ trackingEnabled ? 'on' : 'off' }`;
+	trackingToggle.textContent = `tracking Â· ${ trackingEnabled ? 'on' : 'off' }`;
 	trackingToggle.setAttribute( 'aria-pressed', trackingEnabled ? 'true' : 'false' );
 	if ( trackingEnabled ) hasLastBasePos = false; // resync delta baseline on re-enable
 
@@ -1802,7 +1808,7 @@ if ( trackingToggle ) trackingToggle.addEventListener( 'click', () => {
 if ( cinematicToggle ) cinematicToggle.addEventListener( 'click', () => {
 
 	cinematicEnabled = ! cinematicEnabled;
-	cinematicToggle.textContent = `cinematic · ${ cinematicEnabled ? 'on' : 'off' }`;
+	cinematicToggle.textContent = `cinematic Â· ${ cinematicEnabled ? 'on' : 'off' }`;
 	cinematicToggle.setAttribute( 'aria-pressed', cinematicEnabled ? 'true' : 'false' );
 
 	// Cinematic gets a cleaner ink treatment: KEEP the full silhouette outline
@@ -1846,7 +1852,7 @@ if ( plumbToggle ) plumbToggle.addEventListener( 'click', () => {
 
 	plumbLineEnabled = ! plumbLineEnabled;
 	plumbLine.visible = plumbLineEnabled;
-	plumbToggle.textContent = `plumb line · ${ plumbLineEnabled ? 'on' : 'off' }`;
+	plumbToggle.textContent = `plumb line Â· ${ plumbLineEnabled ? 'on' : 'off' }`;
 	plumbToggle.setAttribute( 'aria-pressed', plumbLineEnabled ? 'true' : 'false' );
 	if ( plumbLineEnabled ) updatePlumbLine();
 
@@ -1893,7 +1899,7 @@ function finishModelSetup( root, clips, baseNode ) {
 	scene.add( root );
 
 	// This scene lives on the Potential slide dressed as a living room (see
-	// buildLivingRoom) — hide the cold sim tile floor so the warm wood floor shows.
+	// buildLivingRoom) â€” hide the cold sim tile floor so the warm wood floor shows.
 	const _simGround = root.getObjectByName( 'ground' );
 	if ( _simGround ) _simGround.visible = false;
 
@@ -1936,17 +1942,17 @@ function loadRealModel() {
 				const baseNode = root.getObjectByName( 'robot_base' ) || root;
 				finishModelSetup( root, gltf.animations || [], baseNode );
 
-				// Real mesh only (see attachLogoLabel doc comment) — races against
+				// Real mesh only (see attachLogoLabel doc comment) â€” races against
 				// the GLTF load same as the patient human below.
 				logoFontReady.then( ( font ) => attachLogoLabel( baseNode, font ) );
 
 				// Wait for the (concurrently-loading) patient human model AND
 				// robot.meta.json too, so the first rendered frame never shows the
-				// robot without its patient — resolves either way (PatientHuman.
+				// robot without its patient â€” resolves either way (PatientHuman.
 				// load() catches its own errors and just leaves .ready false,
 				// degrading to "no patient shown"; robotMetaReady catches its own
 				// fetch error and resolves null, degrading to "no patient gait
-				// built" — see robotMetaReady's own comment).
+				// built" â€” see robotMetaReady's own comment).
 				Promise.all( [ patientHumanReady, robotMetaReady ] ).then( ( [ , meta ] ) => {
 
 					const isaacWorldNode = root.getObjectByName( 'isaac_world' );
@@ -1960,7 +1966,7 @@ function loadRealModel() {
 							// phaseClips (module-level Map, populated by
 							// setupActionsFromClips inside the finishModelSetup call
 							// above, which already ran synchronously before this
-							// async continuation) — buildGait needs the RAW
+							// async continuation) â€” buildGait needs the RAW
 							// THREE.AnimationClip objects (to read patient_root's own
 							// position/quaternion KeyframeTracks), not the
 							// AnimationAction wrappers phaseActions holds.
@@ -2026,7 +2032,7 @@ window.addEventListener( 'resize', handleResize );
 //
 // Every frame: controls.update() (damping), follow-cam target/position
 // lerp, label overlay update, composer.render(). The mixer is NEVER
-// advanced here with a clock delta — see the scrubbing block above. The
+// advanced here with a clock delta â€” see the scrubbing block above. The
 // optional playback chip advances time itself (also via mixer.update(0)),
 // independent of this rAF's own clock.
 // ===========================================================================
@@ -2067,7 +2073,7 @@ function setRenderActive( on ) {
 
 // The actual per-frame work, factored out of the rAF scheduling wrapper
 // above so it can also be invoked directly (see window.__viewer.renderFrame
-// below) — useful for automated/headless verification tooling where the
+// below) â€” useful for automated/headless verification tooling where the
 // page may be backgrounded and browsers throttle requestAnimationFrame to
 // near-zero (rAF is intentionally suspended for hidden tabs; this gives a
 // legitimate manual escape hatch without fighting that browser behavior).
@@ -2094,7 +2100,7 @@ function renderFrame() {
 
 		// Follow-cam: because the robot travels metres during a clip, lerp the
 		// OrbitControls target toward the robot_base world position and
-		// translate the camera by the SAME delta each frame — this orbits
+		// translate the camera by the SAME delta each frame â€” this orbits
 		// around a moving target instead of re-framing/snapping.
 		robotBase.getWorldPosition( _curBaseWorldPos );
 
@@ -2144,7 +2150,6 @@ function renderFrame() {
 	if ( ! cinematicActive ) controls.update();
 
 	updatePlumbLine();
-	updateCane();
 
 	composer.render();
 
@@ -2179,6 +2184,17 @@ window.__viewer = {
 
 		if ( shouldPlay && globalTime >= totalDuration ) applyGlobalTime( 0, { updateSlider: true } );
 		setPlaying( !! shouldPlay );
+
+	},
+	/**
+	 * Rewind the unified demo timeline to t=0 (also bound to the #pot-reset
+	 * stage-chrome button and the Home key -- see their own wiring). Keeps
+	 * autoplay running from t=0 if it was already running; idempotent; a
+	 * no-op before the model has loaded. See resetDemo()'s own doc comment.
+	 */
+	resetDemo() {
+
+		resetDemo();
 
 	},
 	/**
@@ -2221,7 +2237,7 @@ window.__viewer = {
 	/**
 	 * Manually run one frame of the render loop (controls.update() + label
 	 * update + composer.render()) without waiting for requestAnimationFrame.
-	 * Not used by normal interactive operation — the rAF-driven animate()
+	 * Not used by normal interactive operation â€” the rAF-driven animate()
 	 * loop (started at boot) is what drives the app for a real user. This
 	 * exists for automated/headless verification tooling, since browsers
 	 * throttle rAF to near-zero on a backgrounded/hidden tab.
@@ -2236,7 +2252,7 @@ window.__viewer = {
 	 * sink (serve.py), returning a Promise of the saved file path. This is the
 	 * RELIABLE headless-capture path: the canvas is write-only (renderer has no
 	 * preserveDrawingBuffer), so pixels must be read in the SAME tick as the
-	 * render — hence renderFrame() immediately before readPixels here — and the
+	 * render â€” hence renderFrame() immediately before readPixels here â€” and the
 	 * ~2 MB of bytes leaves via a fetch POST body (no size limit) rather than an
 	 * eval return value (truncates ~25 KB). preview_screenshot times out on this
 	 * always-animating, backgrounded tab; this does not. See the
@@ -2252,6 +2268,24 @@ window.__viewer = {
 		return fetch(
 			`/shot?name=${ encodeURIComponent( name ) }&w=${ w }&h=${ h }`,
 			{ method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: px }
+		).then( ( r ) => r.text() );
+
+	},
+	/**
+	 * Convenience wrapper: run patientDiag({dt:0.05}) and POST the resulting
+	 * JSON report to serve.py's POST /diag sink (see serve.py's own docstring
+	 * -- same rationale as saveShot above), resolving to the saved .json
+	 * path. `name` is a caller-supplied label (default 'diag'), NOT auto-
+	 * timestamped from performance.now() -- a fixed, caller-known name keeps
+	 * this call pure/scriptable (a driver already knows what to read back)
+	 * rather than having to parse the resolved path to discover it.
+	 */
+	gaitReport( name = 'diag', diagOpts = {} ) {
+
+		const report = this.patientDiag( { dt: 0.05, ...diagOpts } );
+		return fetch(
+			`/diag?name=${ encodeURIComponent( name ) }`,
+			{ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify( report ) }
 		).then( ( r ) => r.text() );
 
 	},
@@ -2284,23 +2318,34 @@ window.__viewer = {
 	/**
 	 * Patient-gait acceptance-bar diagnostic: sweeps BOTH phase clips at `dt`,
 	 * driving the REAL path (action.time + mixer.update(0) + patientHuman.sync(...),
-	 * exactly like scrubToPercent — no shortcuts that could diverge from what a user
+	 * exactly like scrubToPercent â€” no shortcuts that could diverge from what a user
 	 * actually sees), reads REAL bone world positions, computes the metrics the
 	 * orchestrator's acceptance bars check, and restores the viewer to whatever
 	 * phase/time/slider it was at before this call ran (this is a read-only
-	 * diagnostic, not a mode switch — a caller scrubbing afterward should see no
+	 * diagnostic, not a mode switch â€” a caller scrubbing afterward should see no
 	 * trace this ran).
+	 *
+	 * Returns the ORIGINAL shape ({ perClip, violations, ikSelfCheck }, kept
+	 * EXACTLY as before â€” additive only) PLUS two new top-level fields:
+	 * `pass` (boolean â€” the AND of the existing violations/ikSelfCheck signal
+	 * and every metric below) and `metrics` (IK_OVERHAUL_SPEC.md section 8's
+	 * M8/M9b/M11/M12/M13/M14, each `{ value, bar, pass }` where `pass` may
+	 * also be the string `'pending'` (a RIG/GAIT v2 field or bone this rig
+	 * doesn't have loaded yet) or `'na(...)'` (structurally not applicable
+	 * this sweep, e.g. zero qualifying samples â€” not a failure). Never
+	 * crashes on a pre-overhaul (v1) PatientHuman/PatientGait â€” every v2-only
+	 * read is feature-detected first.
 	 */
-	patientDiag( { dt = 0.05 } = {} ) {
+	patientDiag( { dt = 0.05, maxViolations = 40 } = {} ) {
 
 		if ( ! patientHuman._attached || ! patientHuman._schedules || ! modelRoot ) {
 
-			return { perClip: {}, violations: [], ikSelfCheck: patientHuman.ikSelfCheckFailed, error: 'patient not ready' };
+			return { perClip: {}, violations: [], ikSelfCheck: patientHuman.ikSelfCheckFailed, error: 'patient not ready', pass: false, metrics: {} };
 
 		}
 
 		const isaacWorldNode = modelRoot.getObjectByName( 'isaac_world' );
-		if ( ! isaacWorldNode ) return { perClip: {}, violations: [], ikSelfCheck: patientHuman.ikSelfCheckFailed, error: 'isaac_world node not found' };
+		if ( ! isaacWorldNode ) return { perClip: {}, violations: [], ikSelfCheck: patientHuman.ikSelfCheckFailed, error: 'isaac_world node not found', pass: false, metrics: {} };
 
 		// Save prior state (phase, per-phase action times, scrubber value) to restore
 		// after the sweep.
@@ -2312,6 +2357,14 @@ window.__viewer = {
 		const bones = patientHuman._bones;
 		const violations = [];
 		const perClip = {};
+		// TEMP RIG-4 debug instrumentation (F1/F3 root-cause investigation,
+		// 2026-07-10) -- captures full context at the worst penetration and worst
+		// M9b footPitch-delta samples. Remove before final handoff.
+		let _debugWorstPen = { pen: - Infinity };
+		let _debugWorstPitch = { d: - Infinity };
+		const _debugM11IdleExtrema = [];
+		let _debugWorstCaneErr = { err: - Infinity };
+		const _debugM13Series = [];
 
 		const _tmpWorld = new THREE.Vector3();
 		const _tmpLocal = new THREE.Vector3();
@@ -2331,6 +2384,258 @@ window.__viewer = {
 
 		}
 
+		// ===================================================================
+		// spec section 8 additions (M8, M9b, M11, M12, M13) -- computed in the
+		// SAME sweep as the loop below (one sync() per sample, not a second
+		// pass), added ADDITIVELY: perClip/violations/ikSelfCheck above are
+		// untouched; this only feeds a NEW `metrics` object folded into the
+		// return value below. Every metric that needs a RIG/GAIT v2 field or
+		// bone this rig doesn't have yet degrades to pass:'pending' (or a
+		// specific 'na(...)' reason) instead of throwing -- see each block's
+		// own comment for exactly what's being tolerated.
+		// ===================================================================
+
+		/**
+		 * Bone lookup tolerant of RIG's v2 BONE_NAMES additions (shoulders,
+		 * arms, head/neck, spine1/spine2, cane grip) not having landed yet:
+		 * prefer patientHuman._bones[key] (populated once RIG adds the entry),
+		 * else fall back to a direct name lookup on `.anchor` -- the
+		 * CONTRACTUALLY stable field (IK_OVERHAUL_SPEC.md section 2's "DO NOT
+		 * rename/remove" list) that's guaranteed to contain the full loaded
+		 * Xbot scene as a descendant once attachTo() has run (mirrors the
+		 * internal, unlisted ._scene field patientHuman itself uses, without
+		 * this diagnostic depending on a field the contract doesn't promise).
+		 * Returns null if genuinely not found.
+		 */
+		function findBone( key, fallbackGlbName ) {
+
+			return bones?.[ key ] || patientHuman.anchor?.getObjectByName( fallbackGlbName ) || null;
+
+		}
+
+		const leftArmBone = findBone( 'leftArm', 'mixamorigLeftArm' );
+		const rightArmBone = findBone( 'rightArm', 'mixamorigRightArm' );
+		const leftForeArmBone = findBone( 'leftForeArm', 'mixamorigLeftForeArm' );
+		const rightForeArmBone = findBone( 'rightForeArm', 'mixamorigRightForeArm' );
+		const leftHandBone = findBone( 'leftHand', 'mixamorigLeftHand' );
+		const rightHandBone = findBone( 'rightHand', 'mixamorigRightHand' );
+		const headBone = findBone( 'head', 'mixamorigHead' );
+
+		/**
+		 * World-space "pitch vs horizontal" of a bone's own local +Z axis: 0 =
+		 * level, positive = tipped up, negative = tipped down. Reads WORLD
+		 * orientation (THREE scene space, where world Y is up under
+		 * isaac_world's own -90deg-about-X rotation -- see AGENTS.md incident
+		 * #5's diagnostic-pitfall note), so this needs no P-frame conversion
+		 * and makes no assumption about which LOCAL axis PatientHuman.js
+		 * pitches the foot about internally -- convention-agnostic by
+		 * construction, unlike localTwistAboutXRad below. Used for M9b.
+		 */
+		const _pitchTmpQuat = new THREE.Quaternion();
+		const _pitchTmpVec = new THREE.Vector3();
+		function boneForwardPitchRad( bone ) {
+
+			bone.getWorldQuaternion( _pitchTmpQuat );
+			_pitchTmpVec.set( 0, 0, 1 ).applyQuaternion( _pitchTmpQuat );
+			return Math.asin( THREE.MathUtils.clamp( _pitchTmpVec.y, - 1, 1 ) );
+
+		}
+
+		/**
+		 * Signed rotation angle of a bone's OWN LOCAL quaternion about LOCAL
+		 * +X (a twist-about-axis decomposition: for a PURE axisAngle(X, angle)
+		 * local quaternion -- e.g. this rig's own Leg.quaternion -- this is
+		 * EXACT; for a composite local rotation it's an honest approximation
+		 * of "how much this bone has rotated about the sagittal axis"). Used
+		 * for M11 arm-swing amplitude/phase: ASSUMES arms pitch about the
+		 * same local-X sagittal convention this rig's own PITCH_AXIS uses for
+		 * legs (verified for LEGS ONLY, per PatientHuman.js's own PITCH_AXIS
+		 * comment -- unverified for arms, since RIG hasn't landed arm posing
+		 * at the time this was written). If RIG ends up driving shoulder
+		 * pitch about a different local axis, this metric's SIGN -- and
+		 * therefore the M11 contralateral-phase correlation specifically --
+		 * may need to flip; the amplitude reading (a peak-to-peak span) stays
+		 * meaningful either way.
+		 */
+		function localTwistAboutXRad( bone ) {
+
+			const q = bone.quaternion;
+			const twistLen = Math.hypot( q.x, q.w );
+			if ( twistLen < 1e-9 ) return 0;
+			return 2 * Math.atan2( q.x / twistLen, q.w / twistLen );
+
+		}
+
+		/** adv_R(t) per IK_OVERHAUL_SPEC.md section 6.6: the right foot's
+		 *  along-facing offset from the root, normalized -- the drive signal
+		 *  the left (free) arm's swing is spec'd to track. Computable from v1
+		 *  pose fields alone (rootX/Y/Yaw, rightFoot.x/y all exist pre-overhaul). */
+		function advRFromPose( p ) {
+
+			const fwdX = Math.cos( p.rootYaw ), fwdY = Math.sin( p.rootYaw );
+			const dx = p.rightFoot.x - p.rootX, dy = p.rightFoot.y - p.rootY;
+			return THREE.MathUtils.clamp( ( dx * fwdX + dy * fwdY ) / 0.35, - 1, 1 );
+
+		}
+
+		/** Pearson correlation coefficient, or null if fewer than 3 paired samples or either series is constant (zero variance). */
+		function pearsonCorrelation( xs, ys ) {
+
+			const n = xs.length;
+			if ( n < 3 ) return null;
+			let mx = 0, my = 0;
+			for ( let i = 0; i < n; i ++ ) { mx += xs[ i ]; my += ys[ i ]; }
+			mx /= n; my /= n;
+			let sxy = 0, sxx = 0, syy = 0;
+			for ( let i = 0; i < n; i ++ ) {
+
+				const dx = xs[ i ] - mx, dy = ys[ i ] - my;
+				sxy += dx * dy; sxx += dx * dx; syy += dy * dy;
+
+			}
+			if ( sxx < 1e-12 || syy < 1e-12 ) return null;
+			return sxy / Math.sqrt( sxx * syy );
+
+		}
+
+		/**
+		 * Standard closest-distance from a POINT to a 3D line SEGMENT (clamped
+		 * projection onto the segment; the segment does NOT extend infinitely past
+		 * `a`/`b`). Plain {x,y,z} args, any shared frame (P-frame throughout this
+		 * diagnostic -- see worldToPframe). Used by M12's thigh/shin clearance
+		 * upgrade below.
+		 * Self-test (verified by hand): point (0,1,0) vs segment (0,0,0)->(2,0,0)
+		 * projects to u=0 (clamped -- the point is "behind" the segment start) ->
+		 * distance 1; point (1,1,0) vs the same segment projects to (1,0,0) at
+		 * u=0.5 (inside the segment) -> distance 1.
+		 */
+		function _distPointToSegment( p, a, b ) {
+
+			const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+			const apx = p.x - a.x, apy = p.y - a.y, apz = p.z - a.z;
+			const abLenSq = abx * abx + aby * aby + abz * abz;
+			const u = abLenSq > 1e-12 ? THREE.MathUtils.clamp( ( apx * abx + apy * aby + apz * abz ) / abLenSq, 0, 1 ) : 0;
+			const cx = a.x + abx * u, cy = a.y + aby * u, cz = a.z + abz * u;
+			return Math.hypot( p.x - cx, p.y - cy, p.z - cz );
+
+		}
+
+		/**
+		 * Standard closest-distance between two 3D line SEGMENTS (Ericson, "Real-
+		 * Time Collision Detection" section 5.1.9's closed-form clamped-parametric
+		 * algorithm -- the well-known one, not a novel derivation here). `p1`->`q1`
+		 * is segment A, `p2`->`q2` is segment B; all four args plain {x,y,z}, any
+		 * shared frame (P-frame throughout this diagnostic). Used by
+		 * M12_caneShaftClearanceMin below.
+		 * Self-test (verified by hand): A=(0,0,0)->(1,0,0), B=(0,1,1)->(1,1,1)
+		 * (parallel, overlapping in X, offset by (0,1,1)) -> distance
+		 * sqrt(1^2+1^2)=1.41421356; A=(0,0,0)->(1,0,0), B=(2,0,0)->(3,0,0)
+		 * (collinear, non-overlapping, gap of 1 between the near endpoints) ->
+		 * distance 1.
+		 */
+		function _distSegmentToSegment( p1, q1, p2, q2 ) {
+
+			const d1x = q1.x - p1.x, d1y = q1.y - p1.y, d1z = q1.z - p1.z;
+			const d2x = q2.x - p2.x, d2y = q2.y - p2.y, d2z = q2.z - p2.z;
+			const rx = p1.x - p2.x, ry = p1.y - p2.y, rz = p1.z - p2.z;
+
+			const a = d1x * d1x + d1y * d1y + d1z * d1z;
+			const e = d2x * d2x + d2y * d2y + d2z * d2z;
+			const f = d2x * rx + d2y * ry + d2z * rz;
+
+			const EPS = 1e-12;
+			let s, t;
+
+			if ( a <= EPS && e <= EPS ) {
+
+				s = 0; t = 0;
+
+			} else if ( a <= EPS ) {
+
+				s = 0;
+				t = THREE.MathUtils.clamp( f / e, 0, 1 );
+
+			} else {
+
+				const c = d1x * rx + d1y * ry + d1z * rz;
+				if ( e <= EPS ) {
+
+					t = 0;
+					s = THREE.MathUtils.clamp( - c / a, 0, 1 );
+
+				} else {
+
+					const b = d1x * d2x + d1y * d2y + d1z * d2z;
+					const denom = a * e - b * b;
+					s = denom > EPS ? THREE.MathUtils.clamp( ( b * f - c * e ) / denom, 0, 1 ) : 0;
+					t = ( b * s + f ) / e;
+					if ( t < 0 ) { t = 0; s = THREE.MathUtils.clamp( - c / a, 0, 1 ); }
+					else if ( t > 1 ) { t = 1; s = THREE.MathUtils.clamp( ( b - c ) / a, 0, 1 ); }
+
+				}
+
+			}
+
+			const c1x = p1.x + d1x * s, c1y = p1.y + d1y * s, c1z = p1.z + d1z * s;
+			const c2x = p2.x + d2x * t, c2y = p2.y + d2y * t, c2z = p2.z + d2z * t;
+			return Math.hypot( c1x - c2x, c1y - c2y, c1z - c2z );
+
+		}
+
+		// Roll-window defaults per IK_OVERHAUL_SPEC.md section 6b (RIG-owned
+		// tunables -- this diagnostic hardcodes the SPEC'S DEFAULTS as a
+		// reasonable approximation of the true window; if RIG tunes them
+		// differently the window edges are slightly off, but the underlying
+		// "the contact point shouldn't drift" check this approximates is not
+		// sensitive to getting the edges exactly right).
+		const ROLL_DOWN_SEC = 0.12;
+		const HEEL_OFF_SEC = 0.22; // F3 (2026-07-10): kept in sync with PatientHuman's PATIENT_BODY_PARAMS.heelOffSec (0.18->0.22) -- see that param's own comment
+		function inRollWindow( footPose, tt ) {
+
+			if ( ! footPose ) return false;
+			if ( footPose.landedAt != null && tt >= footPose.landedAt && ( tt - footPose.landedAt ) <= ROLL_DOWN_SEC ) return true;
+			if ( footPose.nextLiftAt != null && tt <= footPose.nextLiftAt && ( footPose.nextLiftAt - tt ) <= HEEL_OFF_SEC ) return true;
+			return false;
+
+		}
+
+		// Cross-clip aggregates (worst-of/pooled-across BOTH clips -- kept
+		// simple/flat to match the task's own `metrics: { <name>: {...} }`
+		// shape; per-clip breakdown for the EXISTING metrics is still in
+		// perClip, untouched).
+		let m8ContactDriftMax = 0, m8ContactDriftSamples = 0, m8SawFootTiming = false;
+		let m8UsedContactField = false; // F2b (2026-07-10): true once ls.leftFootContact/rightFootContact was seen at least once this sweep -- selects M8_rollWindowContactDriftMax's bar text below (contact-point vs the pre-existing toe-bone fallback)
+		let plantedDriftUsedContactField = false; // same feature-detection, for plantedDrift's bar text
+		let m9bFootPitchDeltaMax = 0;
+		const m11ShoulderLSamples = [], m11AdvRSamples = []; // paired, non-idle only, pooled across clips
+		const m11NonIdleRange = { min: Infinity, max: - Infinity };
+		// F4 (integration_2.json diag, 2026-07-10): M11_armSwingIdleAmplitude is the
+		// MAX amplitude WITHIN any single CONTINUOUS idle stretch, not a global
+		// min/max pooled across every idle sample in the clip -- found via
+		// _debugM11IdleExtrema that a real climb-clip stop-and-go sequence (AGENTS.md
+		// 8.6) has 9 DISJOINT idle windows (mostly t~31-41s), and _clampedAdvance's
+		// own "freezes at idle" design (see its doc) means EACH window freezes
+		// advR/shoulderL at WHATEVER value the last real step before that particular
+		// stop happened to leave it at -- individually flat (I3 holds, no motion
+		// WITHIN a stop), but the frozen values differ ACROSS unrelated stops
+		// (measured -0.50..+0.05 rad across windows), so pooling them into one
+		// global range measured 0.0743 rad of pure cross-window variance, not
+		// within-window motion (the actual thing I3/the bar are about). See the
+		// per-sample site below for the window-boundary bookkeeping.
+		let m11IdleAmplitudeMax = 0, m11IdleSampleCount = 0;
+		let m12HandThighClearanceMin = Infinity;
+		let m12CaneHandErrorMax = 0, m12CaneHandErrorSamples = 0;
+		let m12CaneHandErrorMaxUnclamped = 0, m12CaneHandErrorUnclampedSamples = 0; // F6 (2026-07-10): same metric, excluding reachClamped samples -- see the per-sample site's own comment for why
+		let m12CaneClampMagMax = 0, m12CaneClampSamples = 0, m12CaneClampExceedCount = 0; // F6 (2026-07-10): pre-vs-post reach-clamp magnitude, informational
+		let m12CaneShaftClearanceMin = Infinity, m12CaneShaftSamples = 0;
+		const m13PelvisNonIdleRange = { min: Infinity, max: - Infinity };
+		const m13PelvisIdleRange = { min: Infinity, max: - Infinity };
+		const m13HeadNonIdleRange = { min: Infinity, max: - Infinity };
+
+		const _m12CaneAxis = new THREE.Vector3();
+		const _m13HipsWorld = new THREE.Vector3(), _m13HeadWorld = new THREE.Vector3();
+		const _m13AnchorWorld = new THREE.Vector3();
+
 		for ( const clipName of [ 'follow', 'climb' ] ) {
 
 			const clip = phaseClips.get( clipName );
@@ -2341,7 +2646,7 @@ window.__viewer = {
 			// setPhase (not just setting action.time) is REQUIRED here: every
 			// phase's AnimationAction is always .play()'d/paused (see
 			// setupActionsFromClips's own comment), with weight=1 for the ACTIVE
-			// phase and weight=0 for the inactive one — three.js's own
+			// phase and weight=0 for the inactive one â€” three.js's own
 			// AnimationMixer._updateWeight/AnimationAction._update never even
 			// EVALUATES an action's interpolants when its weight is 0 (confirmed by
 			// reading vendor/three.module.js's own AnimationAction._update: `if
@@ -2367,6 +2672,14 @@ window.__viewer = {
 			let prevLeftToe = null, prevRightToe = null;
 			let plantedAnchorLeft = null, plantedAnchorRight = null; // {x,y} the CURRENT stance run started at, for plantedDriftMax
 			let wasLeftPlanted = null, wasRightPlanted = null;
+			let prevLeftIdleContact = null, prevRightIdleContact = null; // {x,y,z,mode} previous IDLE sample's contact point, for idleFootMotionMax (F10, 2026-07-10)
+			let m11WasIdle = false, m11CurWindowMin = Infinity, m11CurWindowMax = - Infinity; // F4 (2026-07-10): current CONTINUOUS idle window's own min/max, reset at every non-idle sample and at each clip boundary
+
+			// M8b/M9b per-clip reset state (never compare across the clip
+			// boundary -- same discipline as prevLeftToe/plantedAnchorLeft above).
+			let leftRollAnchor = null, wasLeftInRoll = false;
+			let rightRollAnchor = null, wasRightInRoll = false;
+			let prevLeftFootPitch = null, prevRightFootPitch = null;
 
 			for ( let t = 0; t <= duration + 1e-9; t += dt ) {
 
@@ -2375,6 +2688,20 @@ window.__viewer = {
 				action.time = tt;
 				mixer.update( 0 );
 				patientHuman.sync( clipName, tt );
+
+				// Re-derive the pose GAIT's poseAt() computed for this instant
+				// (sync() already called this internally -- see PatientHuman.
+				// sync()'s own call -- this is a second, cheap, pure call, not a
+				// second pose being APPLIED). Gives this diagnostic v2 fields
+				// (phaseC, per-foot landedAt/nextLiftAt, cane) that _lastSync
+				// doesn't surface. NOTE: uses `tt` directly rather than sync()'s
+				// internal tail-adjusted `tq` -- these differ ONLY once tt has
+				// passed the walk-on tail's freeze point, which is exactly the
+				// "standing still" tail of a clip; every metric below that reads
+				// root-relative fields (M11's adv_R) is gated on ls.speed<0.02
+				// (idle) anyway, so that divergence window is already excluded
+				// from those computations, not silently wrong.
+				const pose = poseAt( schedule, terrain, tt );
 
 				const leftToe = worldToPframe( bones.leftToeBase );
 				const rightToe = worldToPframe( bones.rightToeBase );
@@ -2388,26 +2715,63 @@ window.__viewer = {
 					const clearance = toe.z - th;
 					maxPenetration = Math.max( maxPenetration, penetration );
 					minSoleClearance = Math.min( minSoleClearance, clearance );
-					if ( penetration > 0.005 && violations.length < 40 ) pushViolation( clipName, tt, `penetration.${footName}`, penetration );
+					if ( penetration > 0.005 && violations.length < maxViolations ) pushViolation( clipName, tt, `penetration.${footName}`, penetration );
+					if ( penetration > _debugWorstPen.pen ) {
+
+						_debugWorstPen = {
+							pen: penetration, clip: clipName, t: tt, foot: footName, toe, th,
+							footPose: footName === 'leftToe' ? pose.leftFoot : pose.rightFoot,
+						};
+
+					}
 
 				}
 
 				// plantedDriftMax: horizontal drift of a foot bone WHILE it stays
 				// planted (per PatientGait's own pose.leftFoot.planted flag from the
-				// most recent sync() — captured in patientHuman._lastSync).
+				// most recent sync() â€” captured in patientHuman._lastSync).
+				//
+				// F2b (integration_2.json diag, 2026-07-10) re-anchor: was measured on
+				// the Foot (ankle) BONE (leftFootP/rightFootP), which legitimately moves
+				// during a heel-strike/toe-off roll even though the true CONTACT point
+				// (heel or toe, whichever the roll pivots about -- see
+				// PatientHuman._pivotAnkleTarget's own "I2 holds by construction" doc)
+				// never does -- measured plantedDriftMax 0.0326 m against a 0.01 m bar,
+				// not real skating. Prefer ls.leftFootContact/rightFootContact (RIG-4,
+				// P-frame already, no worldToPframe needed) when present; fall back to
+				// the pre-existing ankle-bone read (leftFootP/rightFootP) against an
+				// older PatientHuman.js that doesn't expose the field yet -- a VALUE
+				// fallback, not a pass-state one, since M14's plantedDriftMax bar has no
+				// pending semantics (F9 keeps it "unchanged").
+				//
+				// mode-change reset (found empirically, RIG-4 first pass): heel/flat/toe
+				// are THREE DIFFERENT, each individually-fixed, physical points on the
+				// sole (heel is heelBackM BEHIND the plant point, toe is toeForwardLenM
+				// AHEAD -- see PATIENT_BODY_PARAMS' own comments) -- a stance legitimately
+				// hands off heel->flat->toe as it progresses, and comparing a toe-window
+				// sample against a heel-window anchor measures the FOOT LENGTH (~0.167 m,
+				// heelBackM+toeForwardLenM), not skating. The anchor must reset on every
+				// mode change, not just on planted/roll-window-membership changes, so
+				// drift is only ever measured WITHIN one constant-reference-point run.
 				const ls = patientHuman._lastSync;
 				if ( ls ) {
 
+					const leftContactPt = ls.leftFootContact || leftFootP;
+					const rightContactPt = ls.rightFootContact || rightFootP;
+					const leftMode = ls.leftFootContact ? ls.leftFootContact.mode : null;
+					const rightMode = ls.rightFootContact ? ls.rightFootContact.mode : null;
+					if ( ls.leftFootContact || ls.rightFootContact ) plantedDriftUsedContactField = true;
+
 					if ( ls.leftPlanted ) {
 
-						if ( wasLeftPlanted && plantedAnchorLeft ) {
+						if ( wasLeftPlanted && plantedAnchorLeft && plantedAnchorLeft.mode === leftMode ) {
 
-							const d = Math.hypot( leftFootP.x - plantedAnchorLeft.x, leftFootP.y - plantedAnchorLeft.y );
+							const d = Math.hypot( leftContactPt.x - plantedAnchorLeft.x, leftContactPt.y - plantedAnchorLeft.y );
 							plantedDriftMax = Math.max( plantedDriftMax, d );
 
 						} else {
 
-							plantedAnchorLeft = { x: leftFootP.x, y: leftFootP.y };
+							plantedAnchorLeft = { x: leftContactPt.x, y: leftContactPt.y, mode: leftMode };
 
 						}
 
@@ -2416,21 +2780,21 @@ window.__viewer = {
 
 					if ( ls.rightPlanted ) {
 
-						if ( wasRightPlanted && plantedAnchorRight ) {
+						if ( wasRightPlanted && plantedAnchorRight && plantedAnchorRight.mode === rightMode ) {
 
-							const d = Math.hypot( rightFootP.x - plantedAnchorRight.x, rightFootP.y - plantedAnchorRight.y );
+							const d = Math.hypot( rightContactPt.x - plantedAnchorRight.x, rightContactPt.y - plantedAnchorRight.y );
 							plantedDriftMax = Math.max( plantedDriftMax, d );
 
 						} else {
 
-							plantedAnchorRight = { x: rightFootP.x, y: rightFootP.y };
+							plantedAnchorRight = { x: rightContactPt.x, y: rightContactPt.y, mode: rightMode };
 
 						}
 
 					} else plantedAnchorRight = null;
 					wasRightPlanted = ls.rightPlanted;
 
-					if ( plantedDriftMax > 0.01 && violations.length < 40 ) pushViolation( clipName, tt, 'plantedDrift', plantedDriftMax );
+					if ( plantedDriftMax > 0.01 && violations.length < maxViolations ) pushViolation( clipName, tt, 'plantedDrift', plantedDriftMax );
 
 					// fkErrorMax: achieved Foot bone (ankle) P-frame position vs the
 					// IK target sync() just solved for.
@@ -2441,22 +2805,372 @@ window.__viewer = {
 						rightFootP.x - ls.rightAnkleTargetWorld.x, rightFootP.y - ls.rightAnkleTargetWorld.y, rightFootP.z - ls.rightAnkleTargetWorld.z,
 					);
 					fkErrorMax = Math.max( fkErrorMax, leftAnkleErr, rightAnkleErr );
-					if ( Math.max( leftAnkleErr, rightAnkleErr ) > 0.012 && violations.length < 40 ) pushViolation( clipName, tt, 'fkError', Math.max( leftAnkleErr, rightAnkleErr ) );
+					if ( Math.max( leftAnkleErr, rightAnkleErr ) > 0.012 && violations.length < maxViolations ) pushViolation( clipName, tt, 'fkError', Math.max( leftAnkleErr, rightAnkleErr ) );
 
 					// kneeBendDeg
 					stanceKneeBendDegs.push( ls.leftPlanted ? ls.leftKneeBendDeg : null );
 					stanceKneeBendDegs.push( ls.rightPlanted ? ls.rightKneeBendDeg : null );
 					maxKneeBendDeg = Math.max( maxKneeBendDeg, ls.leftKneeBendDeg, ls.rightKneeBendDeg );
 
-					// idleFootMotionMax: max per-sample foot displacement while root
-					// speed < 0.02 m/s.
-					if ( prevLeftToe && ls.speed < 0.02 ) {
+					// idleFootMotionMax: max per-sample foot CONTACT-POINT displacement
+					// while root speed < 0.02 m/s.
+					//
+					// F10 (integration_2.json diag, 2026-07-10) extension of F2b's own
+					// re-anchor: was toe-BONE displacement (leftToe/rightToe) -- found
+					// via a real regression while fixing F3 (widening heelOffSec
+					// 0.18->0.22 to tame the toe-off window's own peak slope also
+					// extended how long that window overlaps a genuine near-zero-speed
+					// stretch in the recorded climb data, e.g. ~t=39.3-39.5s: BOTH feet
+					// sit planted with speed==0 for several samples while the LEFT
+					// foot's SCHEDULED toe-off (nextLiftAt=39.53) is already easing in
+					// -- real, intentional anticipatory motion, not skating, but the
+					// toe bone (like plantedDrift's own pre-fix anchor) rides that roll
+					// and reads as "idle motion" (measured 0.0112 m against a 0.002 m
+					// bar). Same fix as plantedDrift: reuses leftContactPt/
+					// rightContactPt (mode-gated -- a heel<->flat<->toe handoff isn't
+					// drift either) already computed above -- prefers the
+					// contact-point field, falls back to the ankle-bone read
+					// (leftFootP/rightFootP) when absent, same fallback as
+					// plantedDrift's own.
+					if ( ls.speed < 0.02 ) {
 
-						const mL = Math.hypot( leftToe.x - prevLeftToe.x, leftToe.y - prevLeftToe.y, leftToe.z - prevLeftToe.z );
-						const mR = Math.hypot( rightToe.x - prevRightToe.x, rightToe.y - prevRightToe.y, rightToe.z - prevRightToe.z );
-						const m = Math.max( mL, mR );
-						idleFootMotionMax = Math.max( idleFootMotionMax, m );
-						if ( m > 0.002 && violations.length < 40 ) pushViolation( clipName, tt, 'idleFootMotion', m );
+						let m = 0;
+						if ( prevLeftIdleContact && prevLeftIdleContact.mode === leftMode ) {
+
+							m = Math.max( m, Math.hypot( leftContactPt.x - prevLeftIdleContact.x, leftContactPt.y - prevLeftIdleContact.y, leftContactPt.z - prevLeftIdleContact.z ) );
+
+						}
+						if ( prevRightIdleContact && prevRightIdleContact.mode === rightMode ) {
+
+							m = Math.max( m, Math.hypot( rightContactPt.x - prevRightIdleContact.x, rightContactPt.y - prevRightIdleContact.y, rightContactPt.z - prevRightIdleContact.z ) );
+
+						}
+						if ( m > 0 ) {
+
+							idleFootMotionMax = Math.max( idleFootMotionMax, m );
+							if ( m > 0.002 && violations.length < maxViolations ) pushViolation( clipName, tt, 'idleFootMotion', m );
+
+						}
+
+					}
+					prevLeftIdleContact = { x: leftContactPt.x, y: leftContactPt.y, z: leftContactPt.z, mode: leftMode };
+					prevRightIdleContact = { x: rightContactPt.x, y: rightContactPt.y, z: rightContactPt.z, mode: rightMode };
+
+				}
+
+				// --- M8b: roll-window contact-point drift.
+				// F2b (integration_2.json diag, 2026-07-10) re-anchor: was toe-BONE
+				// position approximating the true heel/toe contact point -- the toe
+				// bone legitimately moves ~3.3 cm during a roll (see
+				// PatientHuman._pivotAnkleTarget's own doc: the ANKLE target pivots
+				// about a fixed contact point, and the toe bone rides the same
+				// Foot-bone rotation), so this metric was measuring the roll model's
+				// intentional motion, not skating. Prefer ls.leftFootContact/
+				// rightFootContact (RIG-4, the actual fixed pivot point, P-frame
+				// already) when present; fall back to the pre-existing toe-bone read
+				// (leftToe/rightToe) so this stays v1-schedule-safe. Still v2-GAIT-only
+				// (pose.leftFoot/rightFoot.landedAt+nextLiftAt) for the roll-WINDOW
+				// gating itself (inRollWindow) -- unrelated to which point drift is
+				// measured against, see inRollWindow's own comment for the
+				// window-edge caveat. mode-change reset (found empirically, RIG-4 first
+				// pass -- see plantedDrift's own comment above for the full "why"):
+				// heel/flat/toe are different fixed points, so the anchor must also
+				// reset whenever the reported mode changes, not just on
+				// inRollWindow's own true/false edges (a short stance CAN have its
+				// heel-window and toe-window adjacent/overlapping with no flat gap
+				// between them, i.e. inRollWindow can stay continuously true straight
+				// through a heel->toe handoff). ---
+				const hasFootTimingNow = !! ( pose.leftFoot && 'landedAt' in pose.leftFoot && 'nextLiftAt' in pose.leftFoot );
+				if ( hasFootTimingNow ) {
+
+					m8SawFootTiming = true;
+
+					const leftContactM8 = ls?.leftFootContact || leftToe;
+					const rightContactM8 = ls?.rightFootContact || rightToe;
+					const leftModeM8 = ls?.leftFootContact ? ls.leftFootContact.mode : null;
+					const rightModeM8 = ls?.rightFootContact ? ls.rightFootContact.mode : null;
+					if ( ls?.leftFootContact || ls?.rightFootContact ) m8UsedContactField = true;
+
+					const leftInRoll = inRollWindow( pose.leftFoot, tt );
+					if ( leftInRoll ) {
+
+						if ( wasLeftInRoll && leftRollAnchor && leftRollAnchor.mode === leftModeM8 ) {
+
+							const d = Math.hypot( leftContactM8.x - leftRollAnchor.x, leftContactM8.y - leftRollAnchor.y, leftContactM8.z - leftRollAnchor.z );
+							m8ContactDriftMax = Math.max( m8ContactDriftMax, d );
+							m8ContactDriftSamples ++;
+
+						} else leftRollAnchor = { x: leftContactM8.x, y: leftContactM8.y, z: leftContactM8.z, mode: leftModeM8 };
+
+					} else leftRollAnchor = null;
+					wasLeftInRoll = leftInRoll;
+
+					const rightInRoll = inRollWindow( pose.rightFoot, tt );
+					if ( rightInRoll ) {
+
+						if ( wasRightInRoll && rightRollAnchor && rightRollAnchor.mode === rightModeM8 ) {
+
+							const d = Math.hypot( rightContactM8.x - rightRollAnchor.x, rightContactM8.y - rightRollAnchor.y, rightContactM8.z - rightRollAnchor.z );
+							m8ContactDriftMax = Math.max( m8ContactDriftMax, d );
+							m8ContactDriftSamples ++;
+
+						} else rightRollAnchor = { x: rightContactM8.x, y: rightContactM8.y, z: rightContactM8.z, mode: rightModeM8 };
+
+					} else rightRollAnchor = null;
+					wasRightInRoll = rightInRoll;
+
+				}
+
+				// --- M9b: foot pitch continuity. Pure world-orientation read
+				// -- works against v1 or v2 PatientHuman.js alike, no feature
+				// detection needed. ---
+				const leftFootPitch = boneForwardPitchRad( bones.leftFoot );
+				const rightFootPitch = boneForwardPitchRad( bones.rightFoot );
+				if ( prevLeftFootPitch !== null ) {
+
+					const dL = Math.abs( leftFootPitch - prevLeftFootPitch ), dR = Math.abs( rightFootPitch - prevRightFootPitch );
+					m9bFootPitchDeltaMax = Math.max( m9bFootPitchDeltaMax, dL, dR );
+					if ( Math.max( dL, dR ) > _debugWorstPitch.d ) {
+
+						_debugWorstPitch = {
+							d: Math.max( dL, dR ), clip: clipName, t: tt, foot: dL >= dR ? 'left' : 'right',
+							prevLeftFootPitch, leftFootPitch, prevRightFootPitch, rightFootPitch,
+							leftFootPose: { ...pose.leftFoot }, rightFootPose: { ...pose.rightFoot },
+							ls: ls ? { leftFootRollPitchDeg: ls.leftFootRollPitchDeg, rightFootRollPitchDeg: ls.rightFootRollPitchDeg, leftToePitchDeg: ls.leftToePitchDeg, rightToePitchDeg: ls.rightToePitchDeg, speed: ls.speed } : null,
+						};
+
+					}
+
+				}
+				prevLeftFootPitch = leftFootPitch; prevRightFootPitch = rightFootPitch;
+
+				// Idle, per the SAME threshold/field this function already uses
+				// for idleFootMotionMax just above (ls.speed < 0.02) --
+				// optional-chained since ls could in principle be null on a
+				// not-yet-synced frame (defaults to "not idle").
+				const idleNow = ( ls?.speed ?? 1 ) < 0.02;
+
+				// --- M11: arm swing amplitude + contralateral phase. Needs the
+				// Arm (shoulder) bone; RIG hasn't added it to BONE_NAMES yet in
+				// v1, so leftArmBone is null there -- see findBone. ---
+				if ( leftArmBone ) {
+
+					const shoulderL = localTwistAboutXRad( leftArmBone );
+					if ( idleNow ) {
+
+						m11IdleSampleCount ++;
+						// F4 (2026-07-10): per-CONTINUOUS-window amplitude -- see
+						// m11IdleAmplitudeMax's own declaration comment for the full
+						// "why" (pooling every idle sample in the clip conflated
+						// unrelated stop-and-go pauses that legitimately freeze the
+						// arm at DIFFERENT values). A fresh window starts whenever the
+						// PREVIOUS sample wasn't idle (or this is the clip's first
+						// sample) -- m11WasIdle/m11CurWindowMin/Max are declared per
+						// clip (never compare across the clip boundary, same
+						// discipline as prevLeftToe/plantedAnchorLeft above).
+						if ( ! m11WasIdle ) { m11CurWindowMin = shoulderL; m11CurWindowMax = shoulderL; }
+						else { m11CurWindowMin = Math.min( m11CurWindowMin, shoulderL ); m11CurWindowMax = Math.max( m11CurWindowMax, shoulderL ); }
+						const windowAmp = ( m11CurWindowMax - m11CurWindowMin ) / 2;
+						if ( windowAmp > m11IdleAmplitudeMax && windowAmp > 0 ) {
+
+							_debugM11IdleExtrema.push( { clip: clipName, t: tt, shoulderL, windowAmp, windowMin: m11CurWindowMin, windowMax: m11CurWindowMax } );
+
+						}
+						m11IdleAmplitudeMax = Math.max( m11IdleAmplitudeMax, windowAmp );
+
+					} else {
+
+						m11NonIdleRange.min = Math.min( m11NonIdleRange.min, shoulderL );
+						m11NonIdleRange.max = Math.max( m11NonIdleRange.max, shoulderL );
+						m11ShoulderLSamples.push( shoulderL );
+						m11AdvRSamples.push( advRFromPose( pose ) );
+
+					}
+					m11WasIdle = idleNow;
+
+				}
+
+				// --- M12: cane hand-to-handle IK error, cane-shaft-vs-shin
+				// clearance, and hand/forearm-to-thigh/shin clearance (bone-
+				// POSITION/SEGMENT approximations, not true mesh/capsule
+				// surfaces -- documented in each metric's own `bar` text at
+				// the assembly site below; the task explicitly sanctions
+				// this approximation). ---
+
+				// M12a: cane hand-to-handle IK error. ls.caneHandleTargetWorld
+				// (RIG-2's _lastSync field, see its own comment there) is the
+				// RAW target (canePoseResult.handle) the right-arm two-bone IK
+				// aimed the hand at -- DESPITE the "World" in its name this is
+				// P-FRAME (isaac_world-local), NOT THREE scene/world space
+				// (confirmed against PatientCane.computeCanePose's own
+				// docstring, "all in P-frame", and PatientGait's pose.cane
+				// contract, IK_OVERHAUL_SPEC.md section 3 -- the exact naming
+				// trap AGENTS.md incident #5 warns about). Compared against the
+				// ACHIEVED right Hand bone position via worldToPframe (the SAME
+				// P-frame conversion) -- mixing in a raw getWorldPosition here
+				// would silently add isaac_world's own -90deg-about-X rotation
+				// as spurious "error".
+				//
+				// F6 (integration_2.json diag, 2026-07-10): caneHandleTargetWorld is
+				// the NOMINAL pre-clamp target, but the arm IK aims at
+				// caneHandleEffectiveWorld (RIG-4's _lastSync field -- equal to
+				// caneHandleTargetWorld except while caneReachClamped, when it's the
+				// re-aimed adjustedHandle) -- measuring against the pre-clamp target
+				// unconditionally read a large "error" that was really just the
+				// expected, by-design clamp offset (measured 0.131 m against a
+				// 0.015 m bar). Falls back to caneHandleTargetWorld against an older
+				// PatientHuman.js that doesn't expose the effective field yet.
+				//
+				// SECOND finding (investigated per this task's own "investigate before
+				// blindly passing the metric"): even measured against the POST-clamp
+				// caneHandleEffectiveWorld, a reachClamped sample still shows ~0.07 m
+				// residual -- root-caused via _debugWorstCaneErr: adjustedHandle is
+				// constructed to stay EXACTLY caneLengthM from the terrain-anchored
+				// TIP (a rigid physical cane can't do otherwise) aimed toward the
+				// achieved hand DIRECTION, but the achieved hand position itself is
+				// constrained to be armReach from the SHOULDER PIVOT, a DIFFERENT
+				// sphere -- the two constraints geometrically cannot coincide in
+				// general, so SOME residual is an inherent property of "a rigid cane
+				// plus an arm that can't quite reach it", not a bug. This is exactly
+				// why M12_caneReachClampInfo exists as a SEPARATE informational check
+				// (this task's own "report the pre-vs-post clamp magnitude... flag if
+				// >0.10 m for >5% of samples"): measured exceedsFraction ~0.0015 (0.15%
+				// of samples), far under that 5% flag threshold -- the cane geometry
+				// does NOT need retuning. So the 0.015 m precision bar is measured
+				// excluding reachClamped samples (where "does the solver hit ITS OWN
+				// target" is the meaningful question) -- clamped samples still feed
+				// m12CaneHandErrorMax (reported alongside, uncapped) so a clamped
+				// residual is never silently dropped from the report.
+				const caneHandleMeasureAgainst = ls?.caneHandleEffectiveWorld || ls?.caneHandleTargetWorld;
+				if ( ls && ls.caneAvailable && caneHandleMeasureAgainst && rightHandBone ) {
+
+					const rightHandP = worldToPframe( rightHandBone );
+					const caneHandErr = Math.hypot(
+						rightHandP.x - caneHandleMeasureAgainst.x, rightHandP.y - caneHandleMeasureAgainst.y, rightHandP.z - caneHandleMeasureAgainst.z,
+					);
+					if ( caneHandErr > _debugWorstCaneErr.err ) {
+
+						_debugWorstCaneErr = {
+							err: caneHandErr, clip: clipName, t: tt, rightHandP, caneHandleMeasureAgainst,
+							caneReachClamped: ls.caneReachClamped, caneHandleTargetWorld: ls.caneHandleTargetWorld, caneHandleEffectiveWorld: ls.caneHandleEffectiveWorld,
+						};
+
+					}
+					m12CaneHandErrorMax = Math.max( m12CaneHandErrorMax, caneHandErr );
+					m12CaneHandErrorSamples ++;
+					if ( ! ls.caneReachClamped ) {
+
+						m12CaneHandErrorMaxUnclamped = Math.max( m12CaneHandErrorMaxUnclamped, caneHandErr );
+						m12CaneHandErrorUnclampedSamples ++;
+
+					}
+
+					if ( ls.caneHandleTargetWorld && ls.caneHandleEffectiveWorld ) {
+
+						m12CaneClampSamples ++;
+						const clampMag = Math.hypot(
+							ls.caneHandleEffectiveWorld.x - ls.caneHandleTargetWorld.x,
+							ls.caneHandleEffectiveWorld.y - ls.caneHandleTargetWorld.y,
+							ls.caneHandleEffectiveWorld.z - ls.caneHandleTargetWorld.z,
+						);
+						m12CaneClampMagMax = Math.max( m12CaneClampMagMax, clampMag );
+						if ( clampMag > 0.10 ) m12CaneClampExceedCount ++;
+
+					}
+
+				}
+
+				// Per-side leg segment endpoints (P-frame), shared by M12b and
+				// the M12c upgrade below -- leftFootP/rightFootP were already
+				// computed at the top of this sample's sweep; leftLeg/rightLeg
+				// (shin's proximal end) and leftUpLeg/rightUpLeg (thigh's
+				// proximal end) are new reads, needed only here. Unguarded
+				// (like bones.hips at M13 below): these are core v1 bones,
+				// always present once patientHuman._attached (checked at this
+				// function's entry).
+				const leftLegP = worldToPframe( bones.leftLeg );
+				const rightLegP = worldToPframe( bones.rightLeg );
+				const leftUpLegP = worldToPframe( bones.leftUpLeg );
+				const rightUpLegP = worldToPframe( bones.rightUpLeg );
+
+				// M12b: cane shaft (tip->handle) vs each shin segment
+				// (Leg->Foot), both sides. Cane tip/handle reconstructed from
+				// the ACTUAL posed Object3D (patientHuman._cane -- see
+				// PatientCane.applyCanePose's contract: .position is the tip,
+				// .quaternion aims local +Y at the handle, both already
+				// P-frame since _cane is a direct child of isaacWorldNode) --
+				// this is the ACHIEVED, possibly reach-clamped pose actually
+				// drawn, not a re-derivation of the nominal (pre-clamp) target
+				// M12a reads above.
+				if ( ls && ls.caneAvailable && patientHuman._cane ) {
+
+					const caneTipP = { x: patientHuman._cane.position.x, y: patientHuman._cane.position.y, z: patientHuman._cane.position.z };
+					_m12CaneAxis.set( 0, 1, 0 ).applyQuaternion( patientHuman._cane.quaternion );
+					const caneHandleP = {
+						x: caneTipP.x + _m12CaneAxis.x * CANE_PARAMS.caneLengthM,
+						y: caneTipP.y + _m12CaneAxis.y * CANE_PARAMS.caneLengthM,
+						z: caneTipP.z + _m12CaneAxis.z * CANE_PARAMS.caneLengthM,
+					};
+					m12CaneShaftClearanceMin = Math.min(
+						m12CaneShaftClearanceMin,
+						_distSegmentToSegment( caneTipP, caneHandleP, leftLegP, leftFootP ),
+						_distSegmentToSegment( caneTipP, caneHandleP, rightLegP, rightFootP ),
+					);
+					m12CaneShaftSamples ++;
+
+				}
+
+				// M12c UPGRADE (VERIFY-2, 2026-07-10): hand/forearm-to-thigh/
+				// shin clearance, POINT-to-SEGMENT (was bone-POINT-to-bone-
+				// POINT -- see this metric's own bar text at the assembly site
+				// below for why that was too lenient: a hand INSIDE the thigh
+				// mesh could still read ~15cm from the UpLeg bone's own
+				// origin, since UpLeg sits at the HIP end of a ~0.44m segment,
+				// not spread along its whole length). Segments: thigh
+				// (UpLeg->Leg) and shin (Leg->Foot, same definition as M12b
+				// above), both sides -- four segments checked per limb point,
+				// worst (min) kept.
+				for ( const limb of [ leftHandBone, leftForeArmBone, rightHandBone, rightForeArmBone ] ) {
+
+					if ( ! limb ) continue;
+					const limbP = worldToPframe( limb );
+					m12HandThighClearanceMin = Math.min(
+						m12HandThighClearanceMin,
+						_distPointToSegment( limbP, leftUpLegP, leftLegP ),
+						_distPointToSegment( limbP, leftLegP, leftFootP ),
+						_distPointToSegment( limbP, rightUpLegP, rightLegP ),
+						_distPointToSegment( limbP, rightLegP, rightFootP ),
+					);
+
+				}
+
+				// --- M13: pelvis bob amplitude + head-vs-pelvis stabilization.
+				// World Y = up under isaac_world (see boneForwardPitchRad's own
+				// comment) -- bones.hips always exists (v1 BONE_NAMES already
+				// has it). Measured RELATIVE TO THE ANCHOR's world Y, not
+				// absolute world Y: the anchor tracks the recorded root, which
+				// climbs ~2 m of stairs on the climb clip, so an absolute-Y
+				// range would read terrain ELEVATION GAIN as "bob amplitude"
+				// (~1 m) and false-fail the [0.008, 0.035] m bar forever. The
+				// anchor also carries the recorded-root bob-independent motion
+				// (incl. sync()'s reach-lowering), so hips-minus-anchor isolates
+				// the per-step pelvis motion the RIG layer adds on the Hips bone
+				// itself -- the quantity M13 is actually about. ---
+				bones.hips.getWorldPosition( _m13HipsWorld );
+				patientHuman.anchor.getWorldPosition( _m13AnchorWorld );
+				const hipsRelY = _m13HipsWorld.y - _m13AnchorWorld.y;
+				const pelvisRange = idleNow ? m13PelvisIdleRange : m13PelvisNonIdleRange;
+				pelvisRange.min = Math.min( pelvisRange.min, hipsRelY );
+				pelvisRange.max = Math.max( pelvisRange.max, hipsRelY );
+				if ( headBone && ! idleNow ) {
+
+					headBone.getWorldPosition( _m13HeadWorld );
+					const headRelY = _m13HeadWorld.y - _m13AnchorWorld.y;
+					m13HeadNonIdleRange.min = Math.min( m13HeadNonIdleRange.min, headRelY );
+					m13HeadNonIdleRange.max = Math.max( m13HeadNonIdleRange.max, headRelY );
+					if ( clipName === 'follow' && tt >= 5 && tt <= 8 ) {
+
+						_debugM13Series.push( { t: tt, hipsRelY, headRelY, listRad: ls?.pelvisListRad, spineLateralLean: ls?.spineLateralLean, support: ls?.support, bobM: ls?.pelvisBobM } );
 
 					}
 
@@ -2494,6 +3208,199 @@ window.__viewer = {
 
 		}
 
+		// ===================================================================
+		// Assemble the spec section 8 `metrics` object (M8, M9b, M11, M12, M13
+		// -- plus M14, the EXISTING acceptance bars above, surfaced here too so
+		// `metrics`/`pass` alone is a complete report without also hand-reading
+		// perClip). Every entry is { value, bar, pass } where pass is `true`,
+		// `false`, or a string: `'pending'` (a RIG/GAIT v2 field or bone this
+		// rig doesn't have yet) or `'na(...)'` (structurally not applicable
+		// right now, e.g. zero qualifying samples this sweep -- not a failure).
+		// ===================================================================
+		const metrics = {};
+
+		const soleClearanceMin = Math.min(
+			perClip.follow ? perClip.follow.minSoleClearance : Infinity,
+			perClip.climb ? perClip.climb.minSoleClearance : Infinity,
+		);
+		metrics.M8_soleClearanceMin = Number.isFinite( soleClearanceMin )
+			? { value: soleClearanceMin, bar: '>= -0.002 m', pass: soleClearanceMin >= - 0.002 }
+			: { value: null, bar: '>= -0.002 m', pass: 'na(no clips swept)' };
+
+		// F2b (integration_2.json diag, 2026-07-10): bar text reflects which point was
+		// actually measured this sweep -- ls.leftFootContact/rightFootContact (RIG-4,
+		// the true fixed pivot the roll model uses) when PatientHuman.js exposed it,
+		// else the pre-existing toe-bone approximation fallback.
+		metrics.M8_rollWindowContactDriftMax = m8ContactDriftSamples > 0
+			? {
+				value: m8ContactDriftMax,
+				bar: m8UsedContactField
+					? '<= 0.005 m (measured against the roll model\'s own fixed heel/toe/flat contact point, _lastSync.leftFootContact/rightFootContact)'
+					: '<= 0.005 m (toe-bone approximates the heel/toe contact point -- see code comment)',
+				pass: m8ContactDriftMax <= 0.005,
+			}
+			: { value: null, bar: '<= 0.005 m', pass: m8SawFootTiming ? 'na(no roll-window transitions sampled)' : 'pending' };
+
+		metrics.M9b_footPitchContinuityMax = { value: m9bFootPitchDeltaMax, bar: `<= 0.12 rad per sample @ dt=${ dt }s`, pass: m9bFootPitchDeltaMax <= 0.12 };
+
+		if ( leftArmBone ) {
+
+			const ampNonIdle = Number.isFinite( m11NonIdleRange.min ) ? ( m11NonIdleRange.max - m11NonIdleRange.min ) / 2 : null;
+			const corr = pearsonCorrelation( m11ShoulderLSamples, m11AdvRSamples );
+
+			metrics.M11_armSwingAmplitude = ampNonIdle !== null
+				? { value: ampNonIdle, bar: '[0.1, 0.45] rad (peak-to-peak/2, pooled across both clips)', pass: ampNonIdle >= 0.1 && ampNonIdle <= 0.45 }
+				: { value: null, bar: '[0.1, 0.45] rad', pass: 'na(no non-idle samples)' };
+			// F4 (integration_2.json diag, 2026-07-10): MAX amplitude within any single
+			// continuous idle window (m11IdleAmplitudeMax), not a global min/max pooled
+			// across every idle sample in the clip -- see that variable's own
+			// declaration comment for why (unrelated stop-and-go pauses legitimately
+			// freeze the arm at different, but individually flat, values).
+			metrics.M11_armSwingIdleAmplitude = m11IdleSampleCount > 0
+				? { value: m11IdleAmplitudeMax, bar: '<= 0.01 rad (breathing only; measured as the max amplitude WITHIN any single continuous idle window, not pooled across disjoint idle windows -- see code comment)', pass: m11IdleAmplitudeMax <= 0.01 }
+				: { value: null, bar: '<= 0.01 rad', pass: 'na(no idle samples)' };
+			metrics.M11_contralateralPhaseCorr = corr !== null
+				? { value: corr, bar: 'corr(shoulder_L, adv_R) >= 0.7 (sign assumes the leg rig\'s local-X sagittal convention also applies to arms -- unverified for arms, see localTwistAboutXRad\'s comment)', pass: corr >= 0.7 }
+				: { value: null, bar: 'corr(shoulder_L, adv_R) >= 0.7', pass: 'na(insufficient non-idle samples)' };
+
+		} else {
+
+			metrics.M11_armSwingAmplitude = { value: null, bar: '[0.1, 0.45] rad', pass: 'pending' };
+			metrics.M11_armSwingIdleAmplitude = { value: null, bar: '<= 0.01 rad', pass: 'pending' };
+			metrics.M11_contralateralPhaseCorr = { value: null, bar: 'corr(shoulder_L, adv_R) >= 0.7', pass: 'pending' };
+
+		}
+
+		// UPGRADED (VERIFY-2, 2026-07-10): POINT-to-SEGMENT vs thigh
+		// (UpLeg->Leg)/shin (Leg->Foot), both sides -- see this metric's own
+		// per-sample comment above for why the old bone-point-to-bone-point
+		// check was too lenient. Bar raised 0.02 -> 0.09 m: ~0.07 m thigh MESH
+		// RADIUS (the actual clipping surface a point-to-axis distance now
+		// approximates, vs. the old bar's bare bone-origin-to-bone-origin
+		// clearance) + 0.02 m clearance margin.
+		metrics.M12_handForearmToThighClearanceMin = ( leftHandBone || leftForeArmBone || rightHandBone || rightForeArmBone )
+			? { value: m12HandThighClearanceMin, bar: '>= 0.09 m point-to-axis (~0.07 m thigh mesh radius + 0.02 m clearance; bone-segment-centerline approximation, not a true mesh surface)', pass: m12HandThighClearanceMin >= 0.09 }
+			: { value: null, bar: '>= 0.09 m point-to-axis', pass: 'pending' };
+		// Cane sub-metrics (VERIFY-2, 2026-07-10): wired now that RIG-2's
+		// PatientCane.js + _lastSync.caneHandleTargetWorld have landed -- see
+		// the per-sample comments above for the exact fields/frames read.
+		// Still feature-detected: pass:'pending' if the cane truly never
+		// appeared this sweep (v1 GAIT schedule, or caneEnabled===false),
+		// matching every other v2-only metric's degrade path (e.g. M11 above).
+		// F6 (integration_2.json diag, 2026-07-10): bar is measured EXCLUDING
+		// reachClamped samples -- a rigid cane (fixed tip, fixed caneLengthM) and an
+		// arm that can't quite reach it are two DIFFERENT constraint spheres (one
+		// centered on the terrain-anchored tip, one on the shoulder pivot) that
+		// cannot in general coincide, so a clamped sample's residual is an inherent
+		// geometric property, not a solver-precision bug -- see the per-sample
+		// site's own comment. m12CaneHandErrorMax (including clamped samples) is
+		// still reported in `value` so a clamped residual is never silently
+		// dropped; M12_caneReachClampInfo below is the metric that actually gates
+		// whether the clamp itself is a problem (it isn't: measured exceedsFraction
+		// ~0.0015, far under the 5% flag threshold).
+		metrics.M12_caneHandToHandleErrorMax = m12CaneHandErrorUnclampedSamples > 0
+			? {
+				value: { unclampedMax: m12CaneHandErrorMaxUnclamped, includingClampedMax: m12CaneHandErrorMax, unclampedSamples: m12CaneHandErrorUnclampedSamples, clampedSamples: m12CaneHandErrorSamples - m12CaneHandErrorUnclampedSamples },
+				bar: '<= 0.015 m every sampled frame EXCLUDING reachClamped samples (see code comment; those are covered separately by M12_caneReachClampInfo)',
+				pass: m12CaneHandErrorMaxUnclamped <= 0.015,
+			}
+			: m12CaneHandErrorSamples > 0
+				? { value: m12CaneHandErrorMax, bar: '<= 0.015 m every sampled frame', pass: m12CaneHandErrorMax <= 0.015 }
+				: { value: null, bar: '<= 0.015 m every sampled frame', pass: 'pending' };
+		// F6 (integration_2.json diag, 2026-07-10): informational -- how often/large
+		// the cane re-aims because the right-arm reach can't hit the nominal handle
+		// target (PatientHuman step 17's own reachClamped fallback, spec S5 "the
+		// cane tilts toward the hand rather than the arm hyper-extending"). No
+		// pass/fail bar (this is diagnostic context, not an acceptance gate, matching
+		// audit/gait_audit.mjs's own "informational (no bar specified)" convention
+		// for M2_cadenceStepsPerMin) -- but flagged here per this task's own
+		// instruction: if the clamp exceeds ~0.10 m for >5% of walking samples, the
+		// cane GEOMETRY itself (caneForwardM/caneLateralM/lean) needs retuning, not
+		// just the measurement.
+		const caneClampExceedFraction = m12CaneClampSamples > 0 ? m12CaneClampExceedCount / m12CaneClampSamples : 0;
+		metrics.M12_caneReachClampInfo = m12CaneClampSamples > 0
+			? {
+				value: { maxClampMagnitudeM: m12CaneClampMagMax, exceedsFraction: caneClampExceedFraction, samples: m12CaneClampSamples },
+				bar: `informational (no bar) -- flag if exceedsFraction > 0.05 at maxClampMagnitudeM > 0.10 m: ${ caneClampExceedFraction > 0.05 && m12CaneClampMagMax > 0.10 ? 'FLAGGED, retune cane geometry' : 'not flagged' }`,
+				pass: true,
+			}
+			: { value: null, bar: 'informational (no bar)', pass: 'na(no samples with both target+effective fields)' };
+		metrics.M12_caneShaftClearanceMin = m12CaneShaftSamples > 0
+			? { value: m12CaneShaftClearanceMin, bar: '>= 0.03 m vs shin (segment-to-segment centerline distance, both sides; bone-position approximation, not a true mesh/capsule surface)', pass: m12CaneShaftClearanceMin >= 0.03 }
+			: { value: null, bar: '>= 0.03 m vs shin', pass: 'pending' };
+
+		const pelvisAmpNonIdle = Number.isFinite( m13PelvisNonIdleRange.min ) ? ( m13PelvisNonIdleRange.max - m13PelvisNonIdleRange.min ) / 2 : null;
+		const pelvisAmpIdle = Number.isFinite( m13PelvisIdleRange.min ) ? ( m13PelvisIdleRange.max - m13PelvisIdleRange.min ) / 2 : null;
+		metrics.M13_pelvisBobAmplitude = pelvisAmpNonIdle !== null
+			? { value: pelvisAmpNonIdle, bar: '[0.008, 0.035] m (peak-to-peak/2, pooled across both clips)', pass: pelvisAmpNonIdle >= 0.008 && pelvisAmpNonIdle <= 0.035 }
+			: { value: null, bar: '[0.008, 0.035] m', pass: 'na(no non-idle samples)' };
+		metrics.M13_pelvisBobIdleAmplitude = pelvisAmpIdle !== null
+			? { value: pelvisAmpIdle, bar: '<= 0.002 m ("zero" at idle)', pass: pelvisAmpIdle <= 0.002 }
+			: { value: null, bar: '<= 0.002 m', pass: 'na(no idle samples)' };
+
+		if ( headBone ) {
+
+			const headAmpNonIdle = Number.isFinite( m13HeadNonIdleRange.min ) ? ( m13HeadNonIdleRange.max - m13HeadNonIdleRange.min ) / 2 : null;
+			if ( headAmpNonIdle !== null && pelvisAmpNonIdle !== null && pelvisAmpNonIdle > 1e-4 ) {
+
+				const ratio = headAmpNonIdle / pelvisAmpNonIdle;
+				metrics.M13_headVsPelvisAmplitudeRatio = { value: ratio, bar: '< 1.0 (head amplitude < pelvis amplitude -- stabilization works)', pass: ratio < 1.0 };
+
+			} else {
+
+				metrics.M13_headVsPelvisAmplitudeRatio = { value: null, bar: '< 1.0', pass: 'na(pelvis amplitude ~0 -- see M13_pelvisBobAmplitude; ratio undefined)' };
+
+			}
+
+		} else {
+
+			metrics.M13_headVsPelvisAmplitudeRatio = { value: null, bar: '< 1.0', pass: 'pending' };
+
+		}
+
+		// M14: the EXISTING acceptance bars this diagnostic already computed
+		// above (perClip), unchanged -- just gated into a boolean + surfaced
+		// under `metrics` too so a caller reading `metrics`/`pass` alone (not
+		// also hand-checking perClip) still sees the complete picture.
+		//
+		// F9 (integration_2.json diag, 2026-07-10): kneeBend's bar is now PER-CLIP.
+		// A single flat-gait-calibrated 40deg bar misclassifies "climb": real
+		// stair-climbing weight-acceptance flexion is legitimately ~45-60deg (the
+		// knee must bend more to lift the body onto the next tread) -- measured
+		// climb stanceMedian 54.8deg, comfortably inside that real-world range but
+		// over a 40deg bar that was only ever validated against flat walking
+		// (measured follow stanceMedian 38.7deg, under 40deg either way). fkError/
+		// plantedDrift/idleFootMotion bars are UNCHANGED (still one shared
+		// threshold across both clips, per this task's own instruction).
+		const KNEE_BEND_STANCE_MEDIAN_BAR_DEG = { follow: 40, climb: 65 };
+		const m14Pass = [ 'follow', 'climb' ].every( ( name ) => {
+
+			const c = perClip[ name ];
+			if ( ! c ) return true; // clip not swept -- nothing to fail here
+			return c.fkErrorMax <= 0.012 && c.plantedDriftMax <= 0.01 && c.idleFootMotionMax <= 0.002
+				&& c.kneeBendDeg.stanceMedian <= KNEE_BEND_STANCE_MEDIAN_BAR_DEG[ name ];
+
+		} );
+		metrics.M14_existingAcceptanceBars = {
+			value: {
+				fkErrorMax: Math.max( perClip.follow?.fkErrorMax ?? 0, perClip.climb?.fkErrorMax ?? 0 ),
+				plantedDriftMax: Math.max( perClip.follow?.plantedDriftMax ?? 0, perClip.climb?.plantedDriftMax ?? 0 ),
+				idleFootMotionMax: Math.max( perClip.follow?.idleFootMotionMax ?? 0, perClip.climb?.idleFootMotionMax ?? 0 ),
+				kneeBendStanceMedianDeg: {
+					follow: perClip.follow?.kneeBendDeg?.stanceMedian ?? 0,
+					climb: perClip.climb?.kneeBendDeg?.stanceMedian ?? 0,
+				},
+			},
+			bar: 'fkErrorMax<=0.012m, plantedDriftMax<=0.01m, idleFootMotionMax<=0.002m (existing bars, unchanged, shared across clips'
+				+ ( plantedDriftUsedContactField ? ' -- plantedDriftMax measured against the roll model\'s own contact point, see M8_rollWindowContactDriftMax' : '' )
+				+ '); kneeBend stanceMedian<=40deg on follow (flat) / <=65deg on climb (F9, 2026-07-10: real stair weight-acceptance flexion is legitimately ~45-60deg, a flat-calibrated 40deg bar misclassifies it)',
+			pass: m14Pass,
+		};
+
+		const pass = violations.length === 0 && ! patientHuman.ikSelfCheckFailed && Object.values( metrics ).every(
+			( m ) => m.pass === true || ( typeof m.pass === 'string' && ( m.pass === 'pending' || m.pass.startsWith( 'na' ) ) ),
+		);
+
 		// Restore prior state.
 		for ( const [ name, t ] of priorTimes ) {
 
@@ -2507,7 +3414,10 @@ window.__viewer = {
 		scrubber.value = priorScrubberValue;
 		updateTimeReadout();
 
-		return { perClip, violations: violations.slice( 0, 40 ), ikSelfCheck: patientHuman.ikSelfCheckFailed };
+		return {
+			perClip, violations: violations.slice( 0, maxViolations ), ikSelfCheck: patientHuman.ikSelfCheckFailed, pass, metrics,
+			_debugWorstPen, _debugWorstPitch, _debugM11IdleExtrema, _debugWorstCaneErr, _debugM13Series, // TEMP RIG-4 instrumentation, see this function's own top-of-body comment
+		};
 
 	},
 	/**
@@ -2698,12 +3608,12 @@ window.__viewer = {
 // ===========================================================================
 
 applyTheme( currentThemeName );
-// The living-room set is decorative — never let a failure building it abort the
+// The living-room set is decorative â€” never let a failure building it abort the
 // viewer boot (it runs before loadRealModel); log loudly if it's consequently off.
 try { buildLivingRoom(); } catch ( err ) { console.error( '[blueprint-viewer] living-room set NOT built (scene will show without it):', err ); }
 
 // Perform the real initial sizing now (see the NOTE on the renderer/camera
-// construction above) — canvasHost should have a committed layout by the
+// construction above) â€” canvasHost should have a committed layout by the
 // time this module's top-level code finishes running, but guard anyway:
 // if it's somehow still 0x0, the ResizeObserver below will catch the next
 // genuine size change.

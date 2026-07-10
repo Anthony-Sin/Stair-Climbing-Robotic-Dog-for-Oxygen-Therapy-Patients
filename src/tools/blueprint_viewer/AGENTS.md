@@ -549,3 +549,82 @@ this file only covers gotchas specific to this pipeline/viewer.
   an error large enough to be obvious once measured (0.92m), but only once someone
   actually re-verifies numerically after the "fix" rather than trusting that fixing
   the geometry fixed the whole bug.
+
+### 15 — Two-bone IK solver assumed a COLLINEAR bind pose; Xbot's real UpLeg/Leg/Foot offsets are not (2026-07-10): "verified bit-identical to the old solver" was verifying the wrong thing
+- **TRIGGER:** Touching `js/PatientHuman.js`'s `_solveTwoBoneIK`/`_buildChainGeometry`,
+  `_REST_DIR`, `this._legChain`/`this._armChain`, or `_runIkSelfCheck`'s error bar --
+  or trusting ANY docstring near the two-bone solver that claims a specific verified
+  error number without re-running the probe cited in that same comment.
+- **LESSON:** The two-bone leg/arm IK modelled BOTH segments of a chain as pointing
+  along a single hardcoded `_REST_DIR=(0,-1,0)` ("straight down") at bind, with only
+  scalar lengths L1/L2. Xbot's REAL bind-pose offsets are NOT collinear: parsing
+  `Xbot.glb`'s own JSON chunk directly (world-position deltas at bind, the same
+  technique this file's L1/L2 measurement already used) gives
+  `UpLeg->Leg = (0, -0.44370, +0.00285)` m and `Leg->Foot = (0, -0.44428, -0.02982)`
+  m -- a ~4.21 deg angle BETWEEN the two segments (the shin alone sits ~3.84 deg off
+  pure "straight down"), confirmed via three independent methods agreeing to 3+
+  decimals (raw GLB parse, `Vector3.angleTo`, and the closed-form `phi0` derivation
+  below). The pre-existing solver's OWN docstring asserted "reproduces the pre-existing
+  leg solver's output bit-identically -- verified via this rewrite's own Node probe (50
+  random leg targets, max |Δquat|=0, |Δknee|=0)" -- that check compared the
+  generalized-but-still-`_REST_DIR`-fed solver against ITSELF (old code vs. a
+  re-transcription of the same old code), never against Xbot.glb's actual bind
+  translations, so it could not have caught this: a live-app FK check (achieved bone
+  world position vs. IK target, through the REAL rig) measured a worst-case ~0.03 m
+  error at EVERY test target, `ikSelfCheckFailed=true`, and a stance knee-bend
+  inflated well past a natural walking range.
+  FIX: `_buildChainGeometry(v1, v2, hingeAxis)` precomputes, once at load(), the real
+  bind vectors' hinge-axis-aligned components (`x1`/`x2`) and perpendicular "planar"
+  components (`p1Len`/`p2Len`/the signed bind angle `phi0` between them); the
+  generalized `_solveTwoBoneIK` solves the medial bone's local rotation `theta` from
+  the closed-form `reach(theta)^2 = |v1|^2+|v2|^2+2*(x1*x2+p1Len*p2Len*cos(theta+phi0))`
+  (reduces EXACTLY to the old collinear law-of-cosines when phi0=0, x1=x2=0) and swings
+  the hip quaternion onto the target using `u(theta)`'s OWN achieved direction (not
+  v1's bind direction, which is only correct when v1 IS the whole chain's direction).
+  Verified via REAL `THREE.Object3D` FK chains (not analytic reconstruction) built from
+  the same parsed bind translations, across 231 targets (200 random-reachable + the 6
+  self-check offsets + 25 stance-typical): old solver max error 3.27e-2 m, new solver
+  max error ~5e-15 m (machine precision, several orders of magnitude under the 1e-6 m
+  bar; exact figure varies a few e-15 by random seed/run, always machine-precision) --
+  including the pelvis-compensated path
+  (list=0.05/yaw=0.06 rad) and the arm's own chain (which turned out to already be
+  ~2e-4 deg from collinear -- effectively fine before this fix, now on the same
+  real-vector footing for consistency/future-rig-swap robustness). `_runIkSelfCheck`'s
+  bar tightened 0.01m -> 0.005m accordingly.
+  A SECOND, independent finding surfaced while writing the verification probe: for a
+  GIVEN achieved reach `d`, "the angle between two segments of fixed length spanning
+  `d`" is a plain law-of-cosines identity, IDENTICAL whether or not the segments are
+  collinear at bind -- i.e. the OLD solver's reported `kneeBend` was never numerically
+  wrong FOR THE d IT ACTUALLY ACHIEVED; the bug was always that aiming along the wrong
+  bind direction made the ACHIEVED `d` (hence the real foot position) wrong. This is
+  why the fix adds a SEPARATE `anatomicalBendRad` field (the true angle between the
+  achieved thigh/shin directions) for `_lastSync.leftKneeBendDeg`/`rightKneeBendDeg`
+  rather than reusing `kneeBend`/theta (which is measured from a non-straight bind
+  pose and is NOT the anatomical angle at theta=0).
+  A THIRD finding, left deliberately unresolved (see `_runIkSelfCheck`'s own doc
+  comment): its pelvis-rotated case (b) reuses case (a)'s already-near-max-reach
+  offset (0.99x) under an UNRELATED ~3.5cm pivot shift, which can and does construct a
+  target (~0.898 m required reach) that exceeds the chain's absolute physical
+  L1+L2 bound (~0.889 m) -- confirmed the OLD solver clamps this identical case too, so
+  it is a pre-existing property of the self-check's own test-offset reuse, not a
+  solver defect, and not a scenario the real `sync()` pipeline would ever present
+  unmodified (its own step-7 anchor-lowering exists precisely to avoid this class of
+  overreach before it reaches the solver). Left as-is rather than rescaled, so
+  `_runIkSelfCheck`'s aggregate `worstError` (~0.0137 m, entirely attributable to this
+  ONE sub-case) may still exceed the tightened 0.005 m bar for this understood, benign
+  reason even though every genuinely-reachable target solves to machine precision.
+- **WHY:** Same failure shape as incidents #8/#12/#14: a verification pass that
+  re-derives or analytically reconstructs a value INSTEAD OF cross-checking it against
+  the REAL asset's own measured data will happily confirm a self-consistent but wrong
+  model forever (#8 never computed the actual resulting angle a reach constant
+  produced; #12 reused a discrete-terrain helper against a data source with a
+  fundamentally different, continuous character without checking; #14 measured a
+  clearance constant once at bind pose and assumed it generalized to every angle) --
+  here, the solver's own "verified bit-identical" comment was comparing the code
+  against ITSELF, never against `Xbot.glb`'s actual bind translations, which is
+  precisely the CLAUDE.md 8.7 pattern (a safety/correctness claim that cites no line
+  numbers or external ground truth rots the moment you stop re-checking it against
+  reality). Fixed 2026-07-10 by parameterizing the solver on the real measured bind
+  VECTORS instead of one assumed shared direction, and by verifying every claim in
+  this entry against real `Xbot.glb` parses and real `THREE.Object3D` FK, not a
+  second hand-derivation.

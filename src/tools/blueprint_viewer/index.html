@@ -196,6 +196,14 @@
 									<span class="pj-node pj-next"><span class="pj-dot"></span>The living room<b>next</b></span>
 								</div>
 								<div id="pot-viewer-cap">the whole system, end-to-end — headed from the sim to the living room</div>
+								<!-- Minimal stage chrome: rewind the unified demo timeline to t=0
+								     (window.__viewer.resetDemo(), also bound to the Home key). Deliberately
+								     OUTSIDE .viewer-controls (that whole bar is display:none on this
+								     passive, autoplaying slide — see the rule below) so a reset stays
+								     reachable without exposing the full scrub UI. -->
+								<button type="button" id="pot-reset" aria-label="Restart demo from the beginning">
+									<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v4h4" /></svg>
+								</button>
 								<div class="viewer-controls" hidden aria-hidden="true">
 									<div id="phase-buttons" role="group" aria-label="Animation phase">
 										<button type="button" class="phase-chip" id="phase-follow" data-phase="follow" aria-pressed="true">phase 1 · follow</button>

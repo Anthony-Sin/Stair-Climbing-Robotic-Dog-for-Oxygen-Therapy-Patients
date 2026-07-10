@@ -890,6 +890,32 @@ button { font: inherit; color: inherit; }
    Potential is a passive, autoplaying cinematic view. */
 .viewer-controls { display: none; }
 
+/* Reset chip (window.__viewer.resetDemo(), also bound to the Home key): a
+   small circular icon button in the stage's top-right corner, styled like
+   #hero-zoom's .hero-zoombtn siblings elsewhere in this deck so the "stage
+   chrome" language stays consistent even though .viewer-controls itself is
+   hidden here (see the rule above). Placed top-right so it never collides
+   with #pot-journey (top-center) or #pot-viewer-cap (bottom-left). */
+#pot-reset {
+	position: absolute;
+	top: clamp(14px, 1.8vw, 22px);
+	right: clamp(14px, 1.8vw, 22px);
+	z-index: 8;
+	width: 34px;
+	height: 34px;
+	display: grid;
+	place-items: center;
+	border-radius: 50%;
+	border: 1px solid var(--ink);
+	background: color-mix(in srgb, var(--sheet) 78%, transparent);
+	color: var(--ink);
+	cursor: pointer;
+	pointer-events: auto;
+	transition: background 130ms ease, color 130ms ease;
+}
+#pot-reset svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+#pot-reset:hover { background: var(--ink); color: var(--sheet); }
+
 /* =====================================================================
    Emphasis: bold key words in body copy so paragraphs aren't a flat wall of
    text (the <b> tags come from content.js). Bold reads as a stronger weight

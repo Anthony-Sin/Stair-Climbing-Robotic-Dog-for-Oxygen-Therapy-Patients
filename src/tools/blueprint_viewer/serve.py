@@ -21,9 +21,20 @@ the bytes never pass through the agent's text channel (where large base64 blobs
 get truncated/corrupted). The browser side is ``window.__viewer.saveShot(name)``.
 SHOT_DIR env overrides the default (``<this dir>/shots``). See the
 ``blueprint-viewer-capture-and-swap-pitfalls`` note.
+
+Diagnostic sink
+---------------
+``POST /diag?name=<n>`` accepts a JSON body (e.g. the object
+``window.__viewer.patientDiag(...)`` returns) and pretty-writes it to
+``<DIAG_DIR>/<n>.json``. Same rationale/shape as the screenshot sink above
+(a diagnostic report is easy to hand-inspect once it's a file on disk, and a
+POST body has no size limit unlike an eval return value) — the browser side is
+``window.__viewer.gaitReport(name)``. DIAG_DIR env overrides the default
+(``<this dir>/diag``).
 """
 import functools
 import http.server
+import json
 import os
 import struct
 import sys
@@ -32,6 +43,7 @@ import zlib
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 _SHOT_DIR = os.environ.get("SHOT_DIR") or os.path.join(_DIR, "shots")
+_DIAG_DIR = os.environ.get("DIAG_DIR") or os.path.join(_DIR, "diag")
 
 
 def _png_bytes(width: int, height: int, rgba_bottom_up: bytes) -> bytes:
@@ -70,9 +82,24 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802 (http.server naming)
         parsed = urllib.parse.urlparse(self.path)
-        if parsed.path != "/shot":
-            self.send_error(404, "only POST /shot is supported")
-            return
+        if parsed.path == "/shot":
+            self._handle_shot(parsed)
+        elif parsed.path == "/diag":
+            self._handle_diag(parsed)
+        else:
+            self.send_error(404, "only POST /shot and POST /diag are supported")
+
+    def _reply_with_path(self, out):
+        """Shared success response for both sinks: the saved file's path as
+        plain text (200), matching the ORIGINAL /shot response byte-for-byte."""
+        payload = out.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _handle_shot(self, parsed):
         try:
             q = urllib.parse.parse_qs(parsed.query)
             name = (q.get("name", ["shot"])[0]) or "shot"
@@ -94,12 +121,32 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as exc:  # surface the reason to the browser caller
             self.send_error(400, f"shot failed: {exc}")
             return
-        payload = out.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
+        self._reply_with_path(out)
+
+    def _handle_diag(self, parsed):
+        try:
+            q = urllib.parse.parse_qs(parsed.query)
+            name = (q.get("name", ["diag"])[0]) or "diag"
+            name = os.path.basename(name)  # no path traversal, same as /shot
+            if not name.lower().endswith(".json"):
+                name += ".json"
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            # Round-trip through json.loads/dump (rather than writing the raw
+            # body straight to disk) so a malformed payload 400s here instead
+            # of silently saving unparseable JSON, and so the file is always
+            # pretty-printed regardless of how compact the browser's
+            # JSON.stringify output was.
+            data = json.loads(body.decode("utf-8"))
+            os.makedirs(_DIAG_DIR, exist_ok=True)
+            out = os.path.join(_DIAG_DIR, name)
+            with open(out, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2, sort_keys=False)
+                fh.write("\n")
+        except Exception as exc:  # surface the reason to the browser caller
+            self.send_error(400, f"diag failed: {exc}")
+            return
+        self._reply_with_path(out)
 
 
 def main() -> None:
@@ -107,7 +154,8 @@ def main() -> None:
     handler = functools.partial(NoCacheHandler, directory=_DIR)
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), handler)
     print(f"blueprint viewer: http://127.0.0.1:{port}/  (serving {_DIR}, no-cache)")
-    print(f"  screenshot sink: POST /shot  ->  {_SHOT_DIR}")
+    print(f"  screenshot sink:   POST /shot  ->  {_SHOT_DIR}")
+    print(f"  diagnostic sink:   POST /diag  ->  {_DIAG_DIR}")
     server.serve_forever()
 
 
