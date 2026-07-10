@@ -6,6 +6,7 @@ defaults here are the live run contract -- e.g. --locomotion-policy pgtt and
 --handoff-climb-backend blind_rl.
 """
 import argparse
+import os
 from pathlib import Path  # noqa: F401  (re-exported for back-compat; used by prior top-level code)
 
 # Facade re-export (Phase 2 structural split). REPO_ROOT moved verbatim to
@@ -97,9 +98,13 @@ def build_parser() -> argparse.ArgumentParser:
                              "oxygen-patient asset rigged to the NVIDIA biped skeleton). Empty = the "
                              "default Biped_Setup mannequin. The asset is localized under "
                              "sim/isaac/assets/characters/ and posed by the procedural gait.")
-    parser.add_argument("--patient-anim-mode", type=str, default="clip",
+    _patient_anim_default = os.environ.get("SIM_PATIENT_ANIM_MODE", "clip")
+    if _patient_anim_default not in ("clip", "procedural"):
+        _patient_anim_default = "clip"
+    parser.add_argument("--patient-anim-mode", type=str, default=_patient_anim_default,
                         choices=["clip", "procedural"],
-                        help="How the patient is animated. 'clip' (default) plays the character's "
+                        help="How the patient is animated. 'clip' (default; SIM_PATIENT_ANIM_MODE "
+                             "overrides) plays the character's "
                              "baked walk SkelAnimation as full per-bone mocap on flat ground "
                              "(realistic), falling back to the analytic foot-planting gait for the "
                              "stair-climb (until a stair-climb clip is supplied). 'procedural' uses "
@@ -114,6 +119,14 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Do not switch the Isaac viewport to the dynamic Go2 follow camera")
     parser.add_argument("--final-scene", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--final-scene-env", type=str, default="hospital", help=argparse.SUPPRESS)
+    parser.add_argument("--living-room", action="store_true",
+                        default=(os.environ.get("SIM_LIVING_ROOM", "") == "1"),
+                        help="Living-room scene variant: spawn collidable household furniture "
+                             "(sofa, coffee table, bookshelf, ...) on the flat approach and make "
+                             "the patient walk a realistic winding route that weaves AROUND them "
+                             "before rejoining the stair centreline and climbing (instead of the "
+                             "straight line / simple left-right zigzag). Same robot/patient/stair "
+                             "stack otherwise. Defaults on when SIM_LIVING_ROOM=1 (run_living_room.bat).")
     parser.add_argument("--no-hold-motion-until-command", dest="hold_motion_until_command",
                         action="store_false", default=True,
                         help="Let autonomous scene motion start before the Docker/controller command stream is seen")

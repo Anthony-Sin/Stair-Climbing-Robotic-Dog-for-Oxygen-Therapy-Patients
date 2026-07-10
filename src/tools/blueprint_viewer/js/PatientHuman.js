@@ -125,6 +125,103 @@ const BONE_NAMES = {
 };
 
 // ===========================================================================
+// Elderly-patient colouring by 3D BODY REGION (silver hair / pale skin / dusty-teal
+// knit sweater / grey trousers / brown slippers), applied as a per-vertex COLOR
+// attribute -- NOT a diffuse texture.
+//
+// WHY vertex colours and not a baked texture map: Xbot's UV islands OVERLAP/mirror
+// (measured: a single atlas texel is shared by torso AND foot vertices), so ANY
+// diffuse map keyed to those UVs cross-contaminates -- the torso ends up sampling
+// the feet's texels and renders as bare skin. Vertex colours are keyed to each
+// vertex's own 3D position, never to UVs, so overlap is irrelevant. This mirrors
+// the ROBOT, which already ships baked COLOR_0 vertex colours (main.js).
+// patientRegionKey() below is the SOLE source of truth for the region layout (the
+// earlier texture baker that shared this logic has been retired). Coords are
+// model-space bind pose (x lateral, y up 0..~1.81, z front(+)/back(-)).
+//
+// Colours are authored as sRGB hex; `new THREE.Color(hex)` converts to the
+// renderer's LINEAR working space on construction (ColorManagement on), which is
+// the space a `color` vertex attribute is read in (same convention as the robot's
+// baked-linear COLOR_0). MeshToonMaterial multiplies this into its white base
+// colour and still hard-bands it, so the toon look + fresnel rim are unchanged.
+const PATIENT_REGION_COLORS = {
+	skin:      new THREE.Color( 0xE8C9B2 ), // warm pale elderly skin
+	hair:      new THREE.Color( 0xEAE9E3 ), // soft silver-white
+	cardigan:  new THREE.Color( 0x6E9894 ), // dusty teal knit sweater
+	cardigan2: new THREE.Color( 0x567C79 ), // darker teal -- ribbed hem/cuff/collar trim
+	trousers:  new THREE.Color( 0x968E80 ), // soft warm-grey slacks
+	shoes:     new THREE.Color( 0x5C4A3C ), // muted brown slippers
+};
+
+/** Region key for a model-space bind-pose point. Order = specific -> general.
+ *  Sole source of truth for the patient's region layout; see the block comment above. */
+function patientRegionKey( x, y, z ) {
+
+	const ax = Math.abs( x );
+
+	// Head (y >= 1.52): a full head of silver-white hair (crown + back + sides +
+	// temples) with a hairline across the forehead, leaving a clean central face.
+	// Geometry (measured on Beta_Surface): head y 1.50..1.806, z -0.121(back)..0.128(front),
+	// x +-0.178; the face-front occupies ~y 1.58..1.78, z > 0.
+	if ( y >= 1.52 ) {
+
+		if ( y < 1.58 ) return 'skin';        // neck
+		if ( y >= 1.71 ) return 'hair';       // crown + top of the scalp (front AND back)
+		if ( z <= 0.02 ) return 'hair';       // back + sides of the skull
+		if ( ax >= 0.11 ) return 'hair';      // temples / over the ears -- frames the face
+		return 'skin';                        // central face below the hairline (kept clean -- painted features read uncanny)
+
+	}
+
+	// Arms (horizontal T-pose band): long knit sleeves -> ribbed cuff -> bare hands.
+	if ( ax >= 0.24 && y >= 1.15 ) {
+
+		if ( ax >= 0.71 ) return 'skin';      // hands
+		if ( ax > 0.665 ) return 'cardigan2'; // ribbed cuff
+		return 'cardigan';                    // long sleeve
+
+	}
+
+	// Torso: one solid closed knit sweater cut LONG as a tunic over the hips (hides
+	// Xbot's stock waist-pinch); a darker-teal ribbed crew collar at the FRONT
+	// neckline only, ribbed hem below. The collar is teal (not a cream/shirt tone):
+	// a pale collar reads as bare skin under the warm key light, and a z-symmetric
+	// collar wrongly painted the upper BACK too -- so it's gated to the front (z > 0).
+	if ( y >= 0.92 ) {
+
+		if ( y >= 1.46 && ax < 0.13 && z > 0.0 ) return 'cardigan2'; // front crew-neck ribbed trim
+		if ( y < 0.99 ) return 'cardigan2';                          // ribbed sweater hem
+		return 'cardigan';
+
+	}
+
+	// Trousers over the legs, then slippers.
+	if ( y >= 0.13 ) return 'trousers';
+	return 'shoes';
+
+}
+
+/** Bake a per-vertex `color` attribute onto `geometry` from patientRegionKey() of
+ *  each vertex's bind-pose position (geometry.attributes.position is pre-skinning
+ *  local space, i.e. the model-space T-pose coords the region thresholds expect). */
+function paintPatientRegionColors( geometry ) {
+
+	const pos = geometry.attributes.position;
+	if ( ! pos ) return;
+	const colors = new Float32Array( pos.count * 3 );
+	for ( let i = 0; i < pos.count; i ++ ) {
+
+		const c = PATIENT_REGION_COLORS[ patientRegionKey( pos.getX( i ), pos.getY( i ), pos.getZ( i ) ) ];
+		colors[ i * 3 ] = c.r;
+		colors[ i * 3 + 1 ] = c.g;
+		colors[ i * 3 + 2 ] = c.b;
+
+	}
+	geometry.setAttribute( 'color', new THREE.BufferAttribute( colors, 3 ) );
+
+}
+
+// ===========================================================================
 // Small local math helpers (kept separate from PatientGait.js's own -- this module
 // operates on THREE.Vector3/Quaternion, PatientGait.js is deliberately THREE-free)
 // ===========================================================================
@@ -510,6 +607,11 @@ export class PatientHuman {
 			}
 
 			node.material = tintMaterial;
+			// Elderly-patient colouring: per-vertex COLOR from 3D body region (the
+			// shared tintMaterial has vertexColors=true). NOT a diffuse texture --
+			// Xbot's UVs overlap, so a map cross-contaminates the torso; see
+			// paintPatientRegionColors' block comment.
+			paintPatientRegionColors( node.geometry );
 			// 2026-07-10 lighting pass: the patient now casts a shadow (adds real
 			// depth/grounding to the scene) but still doesn't receive one --
 			// self-shadowing a skinned mesh from one directional key light reads as

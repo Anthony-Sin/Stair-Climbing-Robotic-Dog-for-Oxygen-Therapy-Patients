@@ -23,6 +23,10 @@ import time
 from typing import Any, Dict, List, Optional, Set
 from core.vision.single_person_tracker import SinglePersonTracker
 from core.control.person_follower import PersonFollower, PersonFollowingConfig
+from core.control.obstacle_avoidance import (
+    AvoidanceConfig as ObstacleAvoidanceConfig,
+    compute_obstacle_avoidance,
+)
 from core.vision.depth_processor import DepthProcessor
 from core.control.pid_controller import SlewRateLimiter
 from core.args_parser import parse_args
@@ -138,8 +142,24 @@ def main():
         verbose=args.debug,
         consistency_frames=args.stairs_consistency_frames,
         consistency_required=args.stairs_consistency_required,
+        detect_obstacles=bool(getattr(args, "avoid_obstacles", False)),
     )
     yolo_stairs.initialize()
+
+    # Reactive furniture avoidance config (control.obstacle_avoidance). Inert unless
+    # --avoid-obstacles is set: with no furniture classes queried, result["obstacles"]
+    # stays empty and the blend below is skipped, so the default sim is unchanged.
+    _avoid_cfg = ObstacleAvoidanceConfig(
+        range_m=float(getattr(args, "avoid_range_m", 2.0)),
+        engage_m=float(getattr(args, "avoid_engage_m", 1.3)),
+        cone_deg=float(getattr(args, "avoid_cone_deg", 24.0)),
+        margin_deg=float(getattr(args, "avoid_margin_deg", 12.0)),
+        slow_range_m=float(getattr(args, "avoid_slow_range_m", 1.1)),
+        min_speed_factor=float(getattr(args, "avoid_min_speed_factor", 0.35)),
+        max_yaw_rad=float(getattr(args, "avoid_max_yaw_rad", 0.6)),
+        yaw_gain=float(getattr(args, "avoid_yaw_gain", 1.0)),
+    )
+    _avoid_enabled = bool(getattr(args, "avoid_obstacles", False))
 
     # Depth-based near-field stair detector (Rec 2): geometrically profiles the
     # parkour depth camera column data so stair detection stays reliable even when
@@ -720,6 +740,25 @@ def main():
                     if _stair_yolo_bbox is not None:
                         last_stairs_bbox = list(_stair_yolo_bbox)
                         last_stairs_conf = float(stairs_result.get("conf", 0.0))
+
+                # Furniture obstacles (from the SAME YOLO-World pass, non-stair classes):
+                # attach a depth range to each so the reactive avoidance can rank them.
+                # Only built when --avoid-obstacles is on (else the list is always empty).
+                _avoid_obstacles_frame = []
+                if _avoid_enabled:
+                    for _ob in stairs_result.get("obstacles", []) or []:
+                        _obb = _ob.get("bbox")
+                        if not _obb or len(_obb) < 4:
+                            continue
+                        try:
+                            _orng = DepthProcessor.foreground_depth_bimodal(depth_img, _obb)
+                        except Exception:
+                            _orng = None
+                        _avoid_obstacles_frame.append({
+                            "bbox": _obb, "range_m": _orng,
+                            "label": _ob.get("label", ""), "conf": _ob.get("conf", 0.0),
+                        })
+                    debug_info["avoid_obstacles_seen"] = len(_avoid_obstacles_frame)
 
                 # Depth-based near-field stair detection (Rec 2): the geometric depth column
                 # profiler, merged with YOLO -- it keeps stairs_detected True when YOLO blanks

@@ -2809,6 +2809,12 @@ def main() -> None:
     spawn_obstacles(world)
     spawn_scene_visual_details(world)
 
+    # Living-room variant: collidable household furniture on the flat approach that
+    # the patient's winding route (built in PatientLocomotionState) weaves around.
+    if getattr(args, "living_room", False):
+        from env.living_room import spawn_living_room
+        spawn_living_room(world)
+
     stage = None
     try:
         import omni.usd

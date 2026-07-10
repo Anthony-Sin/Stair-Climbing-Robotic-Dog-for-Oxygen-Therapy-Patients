@@ -175,7 +175,12 @@ function applyTheme( name ) {
 	// into groundMaterial.map (see makeGroundTileTexture) and the material's own
 	// .color stays neutral white always (set once at creation) so the toon shading
 	// modulates the texture's own colors instead of double-tinting them.
-	if ( patientMaterial ) patientMaterial.color.set( palette.patientColor );
+	// patientMaterial.color deliberately NOT re-tinted here: the patient's colours
+	// now live in a per-vertex COLOR attribute (baked by 3D body region in
+	// PatientHuman.attachTo, since Xbot's overlapping UVs defeat a texture map) and
+	// the material's own .color stays neutral white so the toon shading modulates
+	// the vertex colours instead of double-tinting them -- same reasoning as
+	// groundMaterial. (palette.patientColor is now unused.)
 	// robotMaterial / robotFootMaterial are realistic PBR with intrinsic hardware
 	// colors (dark metal / rubber, same in both themes) -- deliberately NOT
 	// re-tinted from the palette here (the old palette.robotColor line was removed
@@ -600,7 +605,23 @@ groundMaterial.map = makeGroundTileTexture( PALETTES[ currentThemeName ].groundC
 // robot's colors are intrinsic to the hardware (same in both themes), so they
 // live here rather than in the theme palette -- applyTheme no longer re-tints
 // the robot (its palette.robotColor line was removed).
-let patientMaterial = makeBlueprintMaterial( PALETTES[ currentThemeName ].patientColor );
+//
+// The patient reads as an elderly oxygen-therapy patient (silver hair, pale
+// skin/hands, a dusty-teal knit sweater cut long over the hips, grey trousers,
+// brown slippers) via a PER-VERTEX COLOR attribute keyed to each vertex's 3D body
+// region -- NOT a diffuse texture. A texture map is impossible here: Xbot's UV
+// islands overlap/mirror (a single texel is shared by torso AND foot verts), so
+// any map keyed to those UVs cross-contaminates and the torso renders as bare
+// skin. Vertex colours are keyed to 3D position, never UVs -- see
+// PatientHuman.js's paintPatientRegionColors(). Same pattern as the robot's baked
+// COLOR_0 below: white base .color so the vertex colour IS the albedo (applyTheme
+// no longer re-tints the patient), toon banding + fresnel rim still apply on top.
+let patientMaterial = makeBlueprintMaterial( 0xffffff );
+patientMaterial.vertexColors = true; // per-vertex region colours are baked on in PatientHuman.attachTo
+// Distinct program cache key so this vertexColors material never reuses a plain
+// (vertexColors:false) 'bp-plain' toon program -- same cache-collision guard as the
+// grain material above (see makeBlueprintMaterial's customProgramCacheKey comment).
+patientMaterial.customProgramCacheKey = () => 'bp-patient-vc';
 let robotMaterial = makeRobotRealisticMaterial( 0xc0c0c0, { metalness: 0.2, roughness: 0.5, envMapIntensity: 1.0 } ); // SILVER (#C0C0C0) Go2 body/legs -- matte painted-plastic shell (low metalness so it reads as painted plastic, not chrome); carries the thighs
 let robotBlackMaterial = makeRobotRealisticMaterial( 0x232629, { metalness: 0.0, roughness: 0.85, envMapIntensity: 0.5 } ); // matte near-black -- the foot contact balls. 0x232629 == the LINEAR BLACK baked into the COLOR_0 meshes, so the black foot ball meets the black calf foot-pad with no seam.
 // robot_base + the four calves carry a baked COLOR_0 (silver shell + BLACK for
@@ -2208,6 +2229,30 @@ window.__viewer = {
 	renderFrame() {
 
 		renderFrame();
+
+	},
+	/**
+	 * Capture the current frame to a PNG on disk via the dev server's POST /shot
+	 * sink (serve.py), returning a Promise of the saved file path. This is the
+	 * RELIABLE headless-capture path: the canvas is write-only (renderer has no
+	 * preserveDrawingBuffer), so pixels must be read in the SAME tick as the
+	 * render — hence renderFrame() immediately before readPixels here — and the
+	 * ~2 MB of bytes leaves via a fetch POST body (no size limit) rather than an
+	 * eval return value (truncates ~25 KB). preview_screenshot times out on this
+	 * always-animating, backgrounded tab; this does not. See the
+	 * `blueprint-viewer-capture-and-swap-pitfalls` note.
+	 */
+	saveShot( name = 'shot' ) {
+
+		renderFrame(); // same tick: drawing buffer still holds the composited frame
+		const gl = renderer.getContext();
+		const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+		const px = new Uint8Array( w * h * 4 );
+		gl.readPixels( 0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px );
+		return fetch(
+			`/shot?name=${ encodeURIComponent( name ) }&w=${ w }&h=${ h }`,
+			{ method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: px }
+		).then( ( r ) => r.text() );
 
 	},
 	/**

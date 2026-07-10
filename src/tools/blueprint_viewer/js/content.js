@@ -294,19 +294,19 @@ function teamCard() {
 	</div>`;
 }
 
-// Opening / title visual: a scattered "photo pile" — two Isaac Sim renders plus
-// the REAL hardware shot (the actual Go2 fitted with the O₂ payload), so the
-// problem slide shows the thing already exists, not just a render.
+// Opening / title visual: two Isaac Sim renders leaning open like a box's
+// flaps, with the REAL hardware shot resting flat as the box beneath them —
+// so the problem slide shows the thing already exists, not just a render.
 function problemPhotos() {
 	return `<div class="hero-photos">
+		<figure class="hp-back"><img src="./assets/renders/stairs_climb.png" alt="The robot dog climbing a full staircase behind an oxygen-therapy patient" /></figure>
+		<figure class="hp-front"><img src="./assets/renders/patient_carry.png" alt="Close-up: the Go2 carrying the patient's oxygen concentrator up the stairs" /></figure>
 		<figure class="hp-real">
 			<img src="./assets/renders/real_go2.png" alt="The real Unitree Go2 fitted with the oxygen-concentrator payload, on the floor of a lab" />
 			<figcaption>the real Go2 + O₂ payload</figcaption>
 		</figure>
-		<figure class="hp-back"><img src="./assets/renders/stairs_climb.png" alt="The robot dog climbing a full staircase behind an oxygen-therapy patient" /></figure>
-		<figure class="hp-front"><img src="./assets/renders/patient_carry.png" alt="Close-up: the Go2 carrying the patient's oxygen concentrator up the stairs" /></figure>
-		<figcaption class="hero-photos-cap">Isaac Sim renders — and the real hardware carrying the oxygen</figcaption>
-	</div>`;
+	</div>
+	<figcaption class="hero-photos-cap">Isaac Sim renders — and the real hardware carrying the oxygen</figcaption>`;
 }
 
 // "Higher stairs slow it down": real per-height climb time (s) at the heights it
@@ -382,7 +382,7 @@ export function buildCopyHTML( copy ) {
 // ---------------------------------------------------------------------------
 export const CONTENT = {
 	's-problem': {
-		group: 'Problem', title: 'Tethered to the tank, stopped by the stairs',
+		group: 'Problem', title: 'TASH — Stair-Climbing Robotic Oxygen Carrier',
 		visual: 'problem',
 		copy: {
 			lead: 'Oxygen-therapy patients are <b>tethered to their supply</b> — wherever they go, the concentrator goes too.',

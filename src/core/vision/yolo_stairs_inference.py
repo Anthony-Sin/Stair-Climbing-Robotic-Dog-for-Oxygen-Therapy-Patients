@@ -8,10 +8,23 @@ import numpy as np
 # Configure local logging
 LOGGER = logging.getLogger("cable.vision.yolo_stairs")
 
+# Stairs query vocabulary (unchanged). Kept FIRST in the combined class list so a
+# detection's class index < len(STAIRS_CLASSES) marks it as a stair, not furniture.
+STAIRS_CLASSES = ["stairs", "staircase", "steps", "brick stairs", "brick steps", "concrete stairs"]
+# Household-furniture vocabulary, appended only when detect_obstacles=True. These feed
+# the reactive obstacle avoidance (control.obstacle_avoidance); the staircase stays in
+# STAIRS_CLASSES so the dog still climbs stairs rather than dodging them.
+OBSTACLE_CLASSES = ["couch", "sofa", "armchair", "chair", "table", "coffee table",
+                    "cabinet", "bookshelf", "television", "potted plant"]
+
 class YoloStairsInference:
     """
     Handles parallel open-vocabulary stairs detection using YOLO-World.
     Runs predictions on a separate thread to maintain main loop speed.
+
+    With ``detect_obstacles=True`` the SAME inference also returns furniture
+    obstacle boxes (``result["obstacles"]``) split from the stairs by class index --
+    one model pass, stairs behaviour unchanged.
     """
     def __init__(
         self,
@@ -20,15 +33,22 @@ class YoloStairsInference:
         verbose: bool = False,
         consistency_frames: int = 5,
         consistency_required: int = 3,
+        detect_obstacles: bool = False,
+        obstacle_confidence: float = 0.25,
     ):
         self.verbose = verbose
         self.confidence = confidence
         self.model_path = model_path
         self.model = None
+        self.detect_obstacles = bool(detect_obstacles)
+        self.obstacle_confidence = float(obstacle_confidence)
+        # Class list actually set on the model + the stairs/furniture split point.
+        self._class_names = list(STAIRS_CLASSES) + (list(OBSTACLE_CLASSES) if self.detect_obstacles else [])
+        self._n_stair_classes = len(STAIRS_CLASSES)
         self.consistency_frames = max(1, int(consistency_frames))
         self.consistency_required = max(1, min(int(consistency_required), self.consistency_frames))
         self._positive_history: Deque[bool] = deque(maxlen=self.consistency_frames)
-        
+
         self._lock = threading.Lock()
         self._latest_image = None
         self._latest_result = {
@@ -39,6 +59,7 @@ class YoloStairsInference:
             "positive_count": 0,
             "consistency_frames": self.consistency_frames,
             "consistency_required": self.consistency_required,
+            "obstacles": [],
         }
         self._thread = None
         self._stop_event = threading.Event()
@@ -64,9 +85,11 @@ class YoloStairsInference:
                 )
             else:
                 try:
-                    # Define queries/classes dynamically
-                    self.model.set_classes(["stairs", "staircase", "steps", "brick stairs", "brick steps", "concrete stairs"])
-                    LOGGER.info("YOLO-World initialized and classes set to ['stairs', 'staircase', 'steps', 'brick stairs', 'brick steps', 'concrete stairs']")
+                    # Define queries/classes dynamically. Stairs first, then (optionally)
+                    # furniture -- the split index is self._n_stair_classes.
+                    self.model.set_classes(self._class_names)
+                    LOGGER.info("YOLO-World initialized and classes set to %s (obstacles=%s)",
+                                self._class_names, self.detect_obstacles)
                 except Exception as e:
                     LOGGER.warning("set_classes() failed (%s); proceeding with model's existing vocab", e)
             
@@ -131,18 +154,41 @@ class YoloStairsInference:
                 detected = False
                 best_bbox = None
                 best_conf = 0.0
+                obstacles = []
 
                 if results and len(results) > 0:
                     boxes = results[0].boxes
                     if boxes is not None and len(boxes) > 0:
-                        # Find the highest confidence detection
                         conf_array = boxes.conf.cpu().numpy()
-                        if len(conf_array) > 0:
-                            best_idx = int(np.argmax(conf_array))
-                            best_conf = float(conf_array[best_idx])
-                            if best_conf >= self.confidence:
-                                detected = True
-                                best_bbox = boxes.xyxy[best_idx].cpu().numpy().tolist()
+                        xyxy = boxes.xyxy.cpu().numpy()
+                        # Class index -> stair vs furniture (indices < _n_stair_classes are stairs).
+                        if boxes.cls is not None:
+                            cls_array = boxes.cls.cpu().numpy().astype(int)
+                        else:
+                            cls_array = np.zeros(len(conf_array), dtype=int)
+                        # Best STAIRS box only (class-aware) -- preserves the stairs detection
+                        # when furniture classes are also present. With obstacles off, every
+                        # box is a stair, so this is identical to the old argmax-over-all.
+                        best_stair_idx = -1
+                        best_stair_conf = 0.0
+                        for i in range(len(conf_array)):
+                            ci = int(cls_array[i]) if i < len(cls_array) else 0
+                            cf = float(conf_array[i])
+                            if ci < self._n_stair_classes:
+                                if cf > best_stair_conf:
+                                    best_stair_conf = cf
+                                    best_stair_idx = i
+                            elif self.detect_obstacles and cf >= self.obstacle_confidence:
+                                obstacles.append({
+                                    "bbox": [float(v) for v in xyxy[i].tolist()],
+                                    "conf": cf,
+                                    "label": (self._class_names[ci]
+                                              if ci < len(self._class_names) else str(ci)),
+                                })
+                        best_conf = best_stair_conf  # for the raw-confidence log below
+                        if best_stair_idx >= 0 and best_stair_conf >= self.confidence:
+                            detected = True
+                            best_bbox = [float(v) for v in xyxy[best_stair_idx].tolist()]
 
                 loop_counter += 1
                 if loop_counter % 50 == 0:
@@ -164,6 +210,7 @@ class YoloStairsInference:
                         "positive_count": int(positive_count),
                         "consistency_frames": self.consistency_frames,
                         "consistency_required": self.consistency_required,
+                        "obstacles": obstacles,
                         "ts_unix": time.time(),
                         "ts_monotonic": time.monotonic(),
                     }

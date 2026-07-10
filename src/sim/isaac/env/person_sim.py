@@ -66,7 +66,8 @@ class PatientLocomotionState:
         # feet floating). Ground-truth Z stays on the smooth ramp (no GT regression).
         self.visual_pz = get_terrain_height(self.x, self.y)
         # 2D waypoints: default scene stays straight; final scene prepends a
-        # turning hospital corridor route before rejoining the stair centreline.
+        # turning hospital corridor route before rejoining the stair centreline;
+        # living-room prepends a serpentine route that weaves around the furniture.
         if env_state.args.final_scene:
             from final_scene import build_patient_route
             self.waypoints = build_patient_route(
@@ -74,6 +75,9 @@ class PatientLocomotionState:
                 _stairs,
                 start_xy=(self.x, self.y),
             )
+        elif getattr(env_state.args, "living_room", False):
+            from env.living_room import build_living_room_route
+            self.waypoints = build_living_room_route((self.x, self.y), _stairs)
         else:
             self.waypoints = [(self.x, self.y)]
             turns = getattr(env_state.args, "person_approach_turns", 0)

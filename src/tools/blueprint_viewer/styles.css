@@ -76,11 +76,15 @@ button { font: inherit; color: inherit; }
 	scroll-snap-stop: always;
 }
 
-/* Content + solution-step slides frame their content in a paper sheet. */
+/* Content + solution-step slides frame their content in a paper sheet.
+   max-height caps them at one viewport: without it, an oversized visual (e.g.
+   an aspect-ratio photo block) can inflate .slide past 100dvh and push its
+   lower half below the fold, unreachable by normal scroll-snap navigation. */
 .slide.content,
 .slide.sol-step {
 	display: flex;
 	padding: var(--sheet-margin);
+	max-height: 100dvh;
 }
 
 /* =====================================================================
@@ -280,13 +284,16 @@ button { font: inherit; color: inherit; }
 
 .hero-art { width: 100%; max-width: 560px; color: var(--ink); }
 
-/* Opening / title visual: two framed Isaac renders in a slightly overlapping
-   photo pair (replaces the old line-art SVG). White mats + drop shadow read as
-   printed photos on the paper sheet, in either theme. */
+/* Opening / title visual: two Isaac renders leaning outward like a box's open
+   flaps, with the real-hardware shot lying flat as the box beneath them
+   (sketch reference: a V of two tilted flaps sitting on a rectangle). White
+   mats + drop shadow read as printed photos on the paper sheet, in either
+   theme. */
 .hero-photos {
 	position: relative;
-	width: 100%;
-	max-width: 540px;
+	height: 100%;
+	width: auto;
+	max-width: 94%;
 	margin: 0 auto;
 	aspect-ratio: 4 / 3.75;
 }
@@ -300,13 +307,19 @@ button { font: inherit; color: inherit; }
 	box-shadow: 0 18px 40px rgba(0, 0, 0, 0.34);
 }
 .hero-photos figure img { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: 7px; }
-/* Real-hardware polaroid is the CENTREPIECE — front and centre, on top of the
-   two Isaac renders, which peek out at the top-right / bottom-left corners. */
-.hp-real  { width: 58%; top: 19%; left: 21%; transform: rotate(-2deg); z-index: 4; }
-.hp-real img { height: auto; }
-.hp-real figcaption { margin-top: 4px; text-align: center; font-family: var(--font-mono); font-size: 10px; line-height: 1.2; color: var(--ink); opacity: 0.78; }
-.hp-back  { width: 43%; top: 1%; right: 1%; transform: rotate(4.5deg); z-index: 2; }
-.hp-front { width: 47%; bottom: 11%; left: 0; transform: rotate(-5deg); z-index: 1; }
+/* The two Isaac renders are the "flaps" — tall cards anchored into the
+   top-left / top-right corners (not bunched in the middle), tilted outward so
+   their bottom tips still reach the top edge of the real-hardware box below. */
+.hp-back, .hp-front { width: 36%; aspect-ratio: 3 / 4; top: 10.8%; transform-origin: bottom center; }
+.hp-back  { left: 10%; transform: rotate(-26deg); z-index: 2; }
+.hp-front { right: 10%; transform: rotate(26deg); z-index: 3; }
+/* Real-hardware polaroid is the BOX — flat and spanning corner-to-corner at
+   the base. It sits forward of the two leaning flaps (highest z-index): it's
+   proof the thing is real hardware, not a render, so it shouldn't read as
+   tucked behind them. */
+.hp-real  { width: 84%; height: 37%; left: 8%; bottom: 2%; transform: rotate(0deg); z-index: 4; }
+.hp-real img { height: 100%; }
+.hp-real figcaption { position: absolute; left: 0; right: 0; bottom: -20px; text-align: center; font-family: var(--font-mono); font-size: 10px; line-height: 1.2; color: var(--ink); opacity: 0.78; }
 .hero-photos-cap {
 	position: absolute;
 	right: 0;
@@ -754,7 +767,7 @@ button { font: inherit; color: inherit; }
    (flat follow + five rising stair heights) taking most of the width; RIGHT =
    the OpenCV/YOLO follow HUD + an explainer. The 3D viewer moved to Potential.
    ===================================================================== */
-.slide.demo-real { display: flex; padding: var(--sheet-margin); }
+.slide.demo-real { display: flex; padding: var(--sheet-margin); max-height: 100dvh; }
 
 .demo-sheet {
 	flex: 1;
@@ -1004,6 +1017,12 @@ button { font: inherit; color: inherit; }
 	.hero-charts.cols-2 { grid-template-columns: 1fr; }
 
 	.slide-copy { border-left: none; border-top: 1px solid var(--sheet-border); }
+
+	/* Stacked layout: the visual row's width is the definite axis (full sheet
+	   width) instead of height (shared with the copy row below it), so drive
+	   .hero-photos off width again here — the height-driven rule above needs a
+	   tall single-row visual pane, which no longer exists once columns stack. */
+	.hero-photos { width: 100%; height: auto; }
 
 	#hero-leaders, #hero-callouts { display: none; }
 
