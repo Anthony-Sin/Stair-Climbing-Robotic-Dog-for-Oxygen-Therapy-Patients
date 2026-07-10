@@ -3903,3 +3903,271 @@ loadRealModel().then( () => {
 	}
 
 }
+
+// ===========================================================================
+// Headless screenshot-series auto-run hook (round 2 of the patient IK/gait
+// overhaul, VISUAL-VERIFY pass -- see audit/run_shot_series.py). Opt-in via
+// `?shotseries=1` on the page URL; a no-op (nothing below even reads
+// location.search) for normal interactive/deck usage. Mirrors the
+// `?gaittrace=1` hook above: runs AFTER window.__viewer.ready resolves, so
+// the sweep never races the GLB/patient attach.
+//
+// For each (tGlobal, label, view) capture point below: scrubs the REAL
+// unified timeline via applyGlobalTime() (the SAME primitive
+// scrubToPercent()/jumpToSegment() use -- never a shortcut), points the
+// camera at a fixed WORLD-SPACE offset from the patient's CURRENT root
+// position (recomputed every capture -- "consistent" means the same offset
+// formula each time, not a hardcoded world position, since the patient is at
+// a different place on the route at every tGlobal), renders one frame and
+// saves it via window.__viewer.saveShot(). Read-only wrt gait/rig state: only
+// scrubs (through the same applyGlobalTime() everything else uses) and moves
+// the camera; never touches patientHuman/PatientGait state directly. Saves
+// and restores phase/per-action time/scrubber/isPlaying/tracking/cinematic/
+// camera pose afterward, mirroring patientDiag()/gaitTrace()'s own
+// save-restore blocks above (same fields, same order).
+//
+// Sets document.title = 'SHOTS_DONE' on success (or 'SHOTS_ERROR: <msg>' on
+// failure) as a convenience signal; the headless driver's PRIMARY completion
+// check is diag/shotseries_manifest.json actually landing on disk (POSTed to
+// serve.py's EXISTING POST /diag sink -- same one gaitReport() above already
+// uses, no new server endpoint needed) listing every filename this run
+// expects to exist in shots/, since the exact shot COUNT is dynamic (the
+// trailing idle-window capture is conditional -- see _findIdleWindow below).
+// ===========================================================================
+{
+
+	const _shotQP = new URLSearchParams( location.search );
+	if ( _shotQP.get( 'shotseries' ) === '1' ) {
+
+		window.__viewer.ready
+			.then( () => _runShotSeries() )
+			.then( () => { document.title = 'SHOTS_DONE'; } )
+			.catch( ( err ) => {
+
+				console.error( '[blueprint-viewer] shotseries auto-run failed:', err );
+				document.title = 'SHOTS_ERROR: ' + ( err && err.message ? err.message : String( err ) );
+
+			} );
+
+	}
+
+	/**
+	 * World-space (THREE scene convention: Y up -- NOT the GLB's own
+	 * isaac_world P-frame where Z is up, see AGENTS.md incident #4) camera
+	 * offset relative to the patient's CURRENT root position for a given
+	 * view. 'side' sits ~90deg around the vertical axis from '34' so it reads
+	 * as a genuinely different viewing angle (profile-ish for a
+	 * roughly-forward-walking patient) without this hook needing to read the
+	 * patient's own instantaneous heading. Magnitude is scaled up from the
+	 * viewer's own default boot camera (camera.position (1.6,1.2,2.2) around
+	 * target (0,0.5,0), see top of this file) to comfortably fit a full
+	 * standing adult + cane + a little floor at this PerspectiveCamera's 45deg
+	 * fov.
+	 */
+	function _shotOffset( view ) {
+
+		const R = 3.0;
+		const azDeg = view === 'side' ? 122 : 35;
+		const az = THREE.MathUtils.degToRad( azDeg );
+		const camH = view === 'side' ? 1.15 : 1.4;
+		return new THREE.Vector3( R * Math.cos( az ), camH, R * Math.sin( az ) );
+
+	}
+
+	const _shotPatientPos = new THREE.Vector3();
+
+	/**
+	 * Point camera+controls at the patient's CURRENT world position for
+	 * `view`, using the SAME direct position.set()+target.set()+
+	 * controls.update() idiom the module's own boot code uses above (no
+	 * lookAt shortcut -- OrbitControls.update() derives orientation from
+	 * position/target itself).
+	 */
+	function _positionCameraForPatient( view ) {
+
+		patientHuman.anchor.getWorldPosition( _shotPatientPos );
+		const off = _shotOffset( view );
+		camera.position.set( _shotPatientPos.x + off.x, _shotPatientPos.y + off.y, _shotPatientPos.z + off.z );
+		controls.target.set( _shotPatientPos.x, _shotPatientPos.y + 0.9, _shotPatientPos.z );
+		controls.update();
+
+	}
+
+	/** shot_<sec>s_<label>[_f<n>]_<view>.png -- see module comment above. */
+	function _fmtSec( t ) {
+
+		const s = t.toFixed( 2 ).replace( /0+$/, '' ).replace( /\.$/, '' );
+		const [ intPart, decPart ] = s.split( '.' );
+		const ip = intPart.padStart( 2, '0' );
+		return decPart ? `${ ip }_${ decPart }` : ip;
+
+	}
+
+	function _shotName( t, label, view, frameIdx ) {
+
+		const parts = [ 'shot', `${ _fmtSec( t ) }s`, label ];
+		if ( frameIdx != null ) parts.push( `f${ frameIdx }` );
+		parts.push( view );
+		return parts.join( '_' ) + '.png';
+
+	}
+
+	/**
+	 * Scan the patient's ALREADY-BUILT gait schedules (patientHuman._schedules
+	 * -- see PatientGait.js buildSchedule(), samples[i] = {t,x,y,zRoot,yaw,
+	 * ...}) for a sustained (>=0.3s) run of ground-plane root speed under a
+	 * loose idle floor (PatientGait.js DEFAULT_GAIT_PARAMS.idleSpeedThreshold
+	 * is 0.02 m/s; this uses a looser 0.05 since it is picking a
+	 * REPRESENTATIVE screenshot moment, not re-deriving a correctness gate),
+	 * excluding segment boundaries (t<0.15 or t>duration-0.15 -- boot/settle
+	 * artifacts, not a genuine mid-walk idle) and the already-separately-
+	 * captured 23.3s handoff moment (+-1.0s, so the two don't just duplicate
+	 * each other). Pure read of precomputed schedule data -- does NOT scrub
+	 * the viewer. Returns { tGlobal, segName, speed } or null if no such
+	 * window exists anywhere on the timeline.
+	 */
+	function _findIdleWindow() {
+
+		const THRESH = 0.05;
+		const MIN_SUSTAIN = 0.3;
+		for ( const segName of [ 'follow', 'climb' ] ) {
+
+			const schedule = patientHuman._schedules && patientHuman._schedules[ segName ];
+			const seg = segments.find( ( s ) => s.name === segName );
+			if ( ! schedule || ! schedule.samples || schedule.samples.length < 3 || ! seg ) continue;
+			const samples = schedule.samples;
+			let runStart = null;
+			for ( let i = 1; i < samples.length; i ++ ) {
+
+				const a = samples[ i - 1 ], b = samples[ i ];
+				const dt = b.t - a.t;
+				if ( dt <= 1e-6 ) continue;
+				const speed = Math.hypot( b.x - a.x, b.y - a.y ) / dt;
+				const tGlobalMid = seg.start + ( a.t + b.t ) / 2;
+				const nearBoundary = a.t < 0.15 || b.t > seg.duration - 0.15;
+				const nearHandoff = Math.abs( tGlobalMid - 23.3 ) < 1.0;
+
+				if ( speed < THRESH && ! nearBoundary && ! nearHandoff ) {
+
+					if ( runStart === null ) runStart = a.t;
+					if ( b.t - runStart >= MIN_SUSTAIN ) {
+
+						return { tGlobal: seg.start + ( runStart + b.t ) / 2, segName, speed };
+
+					}
+
+				} else {
+
+					runStart = null;
+
+				}
+
+			}
+
+		}
+
+		return null;
+
+	}
+
+	async function _runShotSeries() {
+
+		if ( ! patientHuman._attached || ! patientHuman._schedules || ! modelRoot ) {
+
+			throw new Error( 'shotseries: patient not ready (call after window.__viewer.ready resolves)' );
+
+		}
+
+		// Save EVERYTHING this sweep might touch, exactly like patientDiag()/
+		// gaitTrace()'s own save-restore blocks above (mirrored on purpose),
+		// plus the camera/playback/mode state this hook additionally drives.
+		const priorPhase = currentPhase;
+		const priorTimes = new Map();
+		for ( const [ pname, action ] of phaseActions ) priorTimes.set( pname, action.time );
+		const priorScrubberValue = scrubber.value;
+		const priorIsPlaying = isPlaying;
+		const priorTracking = trackingEnabled;
+		const priorCinematic = cinematicEnabled;
+		const priorCamPos = camera.position.clone();
+		const priorTarget = controls.target.clone();
+
+		if ( priorIsPlaying ) setPlaying( false );
+		// Tracking/cinematic camera modes both reassert camera.position from
+		// robot-base motion or their own state inside renderFrame() (called by
+		// saveShot() below) -- left on, either would stomp the framing this
+		// hook sets per-capture.
+		trackingEnabled = false;
+		cinematicEnabled = false;
+
+		const captures = [];
+		captures.push( { t: 6.0, label: 'straight', view: '34' } );
+		captures.push( { t: 6.0, label: 'straight', view: 'side' } );
+		for ( let i = 0; i < 6; i ++ ) {
+
+			const t = 6.0 + i * ( 1.3 / 5 ); // 6 frames, both endpoints included, one full stride
+			captures.push( { t, label: 'stride', view: '34', frameIdx: i + 1 } );
+
+		}
+
+		captures.push( { t: 12.5, label: 'turn', view: '34' } );
+		captures.push( { t: 16.0, label: 'turn', view: '34' } );
+		captures.push( { t: 21.5, label: 'stairentry', view: '34' } );
+		captures.push( { t: 21.5, label: 'stairentry', view: 'side' } );
+		captures.push( { t: 23.3, label: 'handoff', view: '34' } );
+		captures.push( { t: 35.0, label: 'climbapproach', view: '34' } );
+		captures.push( { t: 50.0, label: 'climbstairs', view: '34' } );
+		captures.push( { t: 50.0, label: 'climbstairs', view: 'side' } );
+		captures.push( { t: 64.0, label: 'topland', view: '34' } );
+
+		const idle = _findIdleWindow();
+		if ( idle ) captures.push( { t: idle.tGlobal, label: 'idle', view: '34' } );
+
+		const manifest = {
+			shots: [],
+			idle: idle ? { tGlobal: idle.tGlobal, segName: idle.segName, speed: idle.speed } : null,
+		};
+
+		for ( const cap of captures ) {
+
+			applyGlobalTime( cap.t, { updateSlider: false } );
+			_positionCameraForPatient( cap.view );
+			const name = _shotName( cap.t, cap.label, cap.view, cap.frameIdx );
+			await window.__viewer.saveShot( name );
+			manifest.shots.push( { name, tGlobal: cap.t, label: cap.label, view: cap.view } );
+
+		}
+
+		// Restore prior state -- identical pattern to patientDiag()/
+		// gaitTrace() above, plus this hook's own additional camera/mode saves.
+		for ( const [ name, t ] of priorTimes ) {
+
+			const action = phaseActions.get( name );
+			if ( action ) action.time = t;
+
+		}
+
+		setPhase( priorPhase, { resetSlider: false } );
+		mixer.update( 0 );
+		patientHuman.sync( priorPhase, phaseActions.get( priorPhase )?.time ?? 0 );
+		scrubber.value = priorScrubberValue;
+		updateTimeReadout();
+
+		trackingEnabled = priorTracking;
+		cinematicEnabled = priorCinematic;
+		if ( trackingEnabled ) hasLastBasePos = false; // resync delta baseline on re-enable, same as the tracking-toggle click handler above
+		camera.position.copy( priorCamPos );
+		controls.target.copy( priorTarget );
+		controls.update();
+		if ( priorIsPlaying ) setPlaying( true );
+
+		// POST last (after state restore) so a manifest-write failure can never
+		// leave the viewer stuck in the scrubbed/tracking-disabled state.
+		await fetch( `/diag?name=${ encodeURIComponent( 'shotseries_manifest' ) }`, {
+			method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify( manifest ),
+		} ).then( ( r ) => r.text() );
+
+		return manifest;
+
+	}
+
+}
