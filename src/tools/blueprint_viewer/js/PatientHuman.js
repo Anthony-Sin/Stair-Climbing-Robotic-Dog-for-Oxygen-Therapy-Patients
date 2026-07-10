@@ -239,8 +239,60 @@ export const PATIENT_BODY_PARAMS = {
 	pelvisYawRad: 0.06, // rad, pelvis twist about the up axis
 	pelvisDynamicsSpeedRefMps: 0.3, // m/s, list/yaw fade below this speed (min(1,speed/this))
 	bobAmplitudeM: 0.018, // m, pelvis vertical bob (fixes P2 -- old anchor-bob-by-gaitPhase was structurally always zero)
-	bobSpeedRefMps: 0.25, // m/s, bob fade below this speed
+	bobSpeedRefMps: 0.25, // m/s, bob "full scale" reference speed
+	// R4 (round-2 diag, fullbody_naturalness.md pelvisBob_climb_top_landing): the OLD
+	// LINEAR `min(1, speed/bobSpeedRefMps)` scale crushed bob to ~0.23-0.52cm at the
+	// climb clip's slow top-landing pace (commandedAmpCm 0.522 measured, vs the
+	// [0.8,3.0]cm M13 target) -- reads as lifeless right at the demo's finale. Fixed by
+	// taking sqrt() of the same ratio (still exactly 0 at speed===0, i.e. I3's "phaseC
+	// frozen -> bob frozen" mechanism is untouched and stays CONTINUOUS through the
+	// walk->idle transition -- no new discrete floor/snap, unlike a literal `max(floor,
+	// ...)` gate would introduce right at the moment speed reaches exactly 0) but rises
+	// much faster than linear at low nonzero speeds (e.g. speed=0.17m/s: linear 0.68 ->
+	// sqrt 0.83; speed=0.07m/s: linear 0.28 -> sqrt 0.53), exactly the "soften the
+	// multiplier floor while actually walking" the naturalness report asked for.
+	bobSpeedRefExponent: 0.5, // dimensionless, exponent applied to the speed/bobSpeedRefMps ratio (0.5 = sqrt; 1.0 would reproduce the old linear behavior)
 	hipShiftM: 0.025, // m, lateral weight-shift toward the stance side, applied to Hips.position only (never the anchor -- feet must not move)
+	// R1 (round-2 diag, fullbody_naturalness.md knee_*_follow_straight/climb_top_landing):
+	// stance-knee median measured 38.5/40.2 deg on flat ground vs the 24-30 deg natural
+	// band (incident #8). Root-caused numerically (law-of-cosines against the REAL
+	// measured leg chain, AGENTS.md incident #15's v1/v2): the hip pivot's baseline
+	// height above a flat ankle target is exactly `PATIENT_HIP_HEIGHT_M(0.92, GAIT-
+	// owned, DO NOT change -- IK_OVERHAUL_SPEC.md S2) - _ankleHeightM(~0.087)` = ~0.833m
+	// (this falls out of the anchor-placement algebra below regardless of _hipsHeightM's
+	// own measured value -- anchor.z=rootPosZ-_hipsHeightM and the hip pivot's own local
+	// Y IS _hipsHeightM, so they cancel by construction), which is ~2.7-3cm SHORT of the
+	// ~0.865m reach a natural ~27deg stance bend needs on THIS rig's real (non-collinear)
+	// 0.8884m leg chain -- i.e. Xbot's own standing-straight height (leg length + ankle
+	// height, ~0.976m) is taller than the 0.92m hip-height convention the recorded
+	// path/schedule assumes, forcing a permanent partial crouch. Confirmed NOT caused by
+	// step-7's anchor-lowering safety clamp (achieved reach 0.83-0.85m sits well UNDER
+	// that clamp's own 0.87m reachLimit at every sampled stance frame -- lowering never
+	// engages here) or by the ankle targets being wrong (flat-stance ankleTargetWorld.z
+	// == pose.leftFoot.z+_ankleHeightM exactly, I2-compliant). Fix: this is a RIG-owned
+	// mocap-retargeting compensation (Xbot's fixed proportions vs the recorded skeleton's
+	// convention), NOT a change to the shared PATIENT_HIP_HEIGHT_M constant -- raises the
+	// anchor (hence every hip pivot) by this fixed amount so the same fixed-length ankle
+	// reach lands nearer the natural band. Value chosen from the measured shortfall
+	// (empirically re-verified against the regenerated trace, see this rewrite's own
+	// report); step 7's reachability clamp still applies AFTER this raise, so on stairs
+	// (where reach is already large) any case this would push over the limit is
+	// automatically clawed back by that existing safety net, not by this constant.
+	// Tuned DOWN from the naive law-of-cosines value (~0.0315m, see the derivation
+	// above) once the cane-arm coupling (this param's own use-site comment in sync()
+	// step 17) was found: 0.028 landed the knee median well but pushed
+	// cane__follow_turning's mean hand-to-handle error/clamp rate up (12.7->22.0mm,
+	// reachClampedFrac ~0.5->0.79 in an isolated A/B). 0.018 is a deliberate
+	// compromise -- re-verified against the real trace (see this rewrite's own
+	// report): knee median still lands close to the natural band (not dead-center,
+	// but a large improvement over the 38.5/40.2deg baseline) while keeping the
+	// cane-arm regression smaller. This is a genuine, currently-unresolved trade-off
+	// between two round-2 findings (R1 knee crouch vs R3a cane-turn reach) sharing
+	// one root geometric cause (the cane's own reach margin was already tight even
+	// at raise=0) -- see this rewrite's report for the numbers and the two
+	// compensation attempts that were tried and reverted (both measured WORSE than
+	// no compensation).
+	standingReachRaiseM: 0.018,
 
 	// --- Feet / toe (spec S6 items 3/4/S6b) ---
 	heelStrikeRad: 0.14, // rad (~8 deg), dorsiflexed peak at touchdown
@@ -264,7 +316,21 @@ export const PATIENT_BODY_PARAMS = {
 
 	// --- Arms (spec S6 item 6) ---
 	armSwingRad: 0.27, // rad, left-arm shoulder swing amplitude (F5, integration_2.json diag 2026-07-10: nudged 0.22->0.27, M11_armSwingAmplitude measured 0.0892 rad against bar [0.1,0.45] -- see this rewrite's own report for the re-measured landed value)
-	armSwingReachRefM: 0.35, // m, adv_R's own normalization reference
+	// R2 (round-2 diag, fullbody_naturalness.md armSwing_left_*): a FIXED
+	// armSwingReachRefM=0.35 measured only ~4deg swing (vs the 8-16deg elderly band)
+	// consistently across EVERY sub-window (follow straight/turning, climb stairs/
+	// landing) -- 0.35m was calibrated for a longer stride than this slow gait's
+	// contralateral-foot-vs-root forward excursion ever reaches. Measured directly from
+	// the real trace (diag/trace_full.json): that raw excursion is a remarkably STABLE
+	// fraction of the driving foot's OWN strideLen (~0.30-0.34, median, across follow
+	// AND climb, straight AND turning alike -- NOT stride-magnitude-dependent), so
+	// normalizing by a fraction of strideLen (a pose field, per-event/piecewise-
+	// constant, never a live per-frame re-derivation -- incident #6 discipline) rather
+	// than a fixed meters constant self-corrects if GAIT's own stride-length-vs-speed
+	// tuning changes later, instead of needing to be re-tuned by hand again. See
+	// _clampedAdvance's own call sites in sync() (steps 17/18) for the exact formula.
+	armSwingStrideFracK: 0.40, // dimensionless, forward-advance normalization reference = this * the averaged L/R strideLen (see sync()'s `armReachRefM`)
+	armSwingReachFloorM: 0.10, // m, floor for that reference (guards near-zero/undefined strideLen -- before the first-ever step, or a v1 schedule lacking strideLen; verified against the real trace's own first-step ramp-up: rawAdv stays << this floor there, so the floor never dominates in practice, it only prevents a divide-by-~0)
 	armAbductRad: 0.10, // rad, constant small abduction (sleeve/hip clearance)
 	elbowBaseRad: 0.35, // rad, resting elbow bend
 	// elbowSwingRad: the spec (S6.6) gives the FORMULA
@@ -1782,7 +1848,21 @@ export class PatientHuman {
 		// --- 2) Cane pose (early -- independent of legs/pelvis/spine; the spine's
 		// own lateral-lean needs cane.planted below) ---
 		let canePoseResult = null;
-		if ( caneAvailable ) canePoseResult = computeCanePose( pose.cane, rootQuat, CANE_PARAMS, this._canePose );
+		if ( caneAvailable ) {
+
+			// R3a (round-2 diag): resolve the root's own yaw AT the cane's most recent
+			// landing (same "extra poseAt() call at a per-event reference time" pattern
+			// this file's toeScale/heelScale resolution already uses, step 6 below --
+			// event arrays are "a few dozen per clip", cheap) so computeCanePose can
+			// cone-clamp the shaft's yaw-tracking instead of following the live root
+			// yaw unbounded through a fast turn. `null` (before the first-ever cane
+			// landing, or a v1 schedule with no `landedAt`) makes computeCanePose fall
+			// back to its pre-R3a unclamped behavior -- see that function's own doc.
+			const caneYawRefT = pose.cane.landedAt;
+			const caneYawRefRad = ( typeof caneYawRefT === 'number' ) ? poseAt( schedule, this._terrain, caneYawRefT ).rootYaw : null;
+			canePoseResult = computeCanePose( pose.cane, rootQuat, CANE_PARAMS, this._canePose, caneYawRefRad, support, pose.groundSlope );
+
+		}
 
 		// --- 3) Anchor placement ---
 		//
@@ -1792,7 +1872,19 @@ export class PatientHuman {
 		// only ever takes values k/2, so sin(2*pi*k)=0 -- a dead feature, not a
 		// working one this rewrite is "moving"; the NEW bob is phaseC-driven and
 		// actually oscillates).
-		scratch.v0.set( rootPosX, rootPosY, rootPosZ - this._hipsHeightM );
+		//
+		// R1 (round-2 diag): `+ P.standingReachRaiseM` is the stance-knee-crouch fix --
+		// see that param's own PATIENT_BODY_PARAMS comment for the numeric root cause
+		// (a fixed ~2.7-3cm reach shortfall between PATIENT_HIP_HEIGHT_M and this rig's
+		// own straight-leg-plus-ankle height). Anchor-local, so it raises the WHOLE
+		// character (Hips/spine/arms/cane) uniformly -- ankle/toe targets are computed
+		// independently from `pose.*Foot` (terrain-relative, never anchor-relative), so
+		// I2 (planted feet never move) is untouched; this only shortens how far the leg
+		// IK has to reach DOWN to them, straightening the stance knee toward the natural
+		// band. Step 7 below still clamps reach on TOP of this (e.g. on stairs), so an
+		// already-near-max-reach case simply has its clamp engage a little sooner --
+		// self-limiting, not a second constant to keep in sync.
+		scratch.v0.set( rootPosX, rootPosY, rootPosZ - this._hipsHeightM + P.standingReachRaiseM );
 
 		this.anchor.quaternion.copy( rootQuat ).multiply( B_PLACEMENT );
 
@@ -1804,7 +1896,15 @@ export class PatientHuman {
 		// to hipsPos.y here, never .z (citing CLAUDE.md incident 8.7's own discipline:
 		// verify which axis a coordinate SPACE uses before pattern-matching a letter
 		// in a comment onto a variable).
-		const speedScaleBob = Math.min( 1, Math.max( 0, pose.speed ) / P.bobSpeedRefMps );
+		// R4 (round-2 diag, fullbody_naturalness.md pelvisBob_climb_top_landing): raised
+		// to the `bobSpeedRefExponent` power (default 0.5 = sqrt) instead of a bare
+		// linear ratio -- see that param's own PATIENT_BODY_PARAMS comment. `pose.speed`
+		// is EXACTLY 0 only during true idle (the gait's own idle gate), so
+		// `speedScaleBob` still reaches EXACTLY 0 there (Math.pow(0, 0.5)===0) --
+		// CONTINUOUSLY, through the same walk->idle deceleration this file's own I3
+		// invariant already relies on elsewhere, not a new discrete floor/snap.
+		const speedRatioBob = THREE.MathUtils.clamp( Math.max( 0, pose.speed ) / P.bobSpeedRefMps, 0, 1 );
+		const speedScaleBob = Math.pow( speedRatioBob, P.bobSpeedRefExponent );
 		const bobM = P.bobAmplitudeM * ( - Math.cos( 2 * Math.PI * 2 * phaseC ) ) * 0.5 * speedScaleBob;
 
 		const shiftM = P.hipShiftM * support; // lateral (Xbot-local X), FACING-frame == anchor-local directly since the anchor itself already tracks rootQuat
@@ -1897,10 +1997,47 @@ export class PatientHuman {
 			);
 			leftContact = { ..._footContactPoint( pose.leftFoot, pose.leftFoot.yaw, forwardOffset ), mode: leftRollPitch > 0 ? 'heel' : 'toe' };
 
+		} else if ( ! pose.leftFoot.planted ) {
+
+			// R1 fix (round-2 diag, fullbody_naturalness.md swingKnee*/knee_*): this
+			// branch used to IGNORE leftRollPitch entirely and always target the flat
+			// `ankleHeightM` offset -- but leftRollPitch is itself CONTINUOUS across
+			// both the liftoff boundary (a swing starts at -toeOffRad*toeScale,
+			// matching the just-ended toe-off window's own value) and the landing
+			// boundary (a swing ends at heelStrikeRad*heelScale, matching the
+			// about-to-start heel-strike window's own value -- see _footRollPitch's
+			// own doc), yet the ANKLE TARGET POSITION was NOT: it snapped from the
+			// stance toe-pivot formula's ending value to this flat one in ONE FRAME at
+			// every liftoff (measured directly against the naturalness report's own
+			// worst-timestamps, e.g. t=2.400->2.417s: ankleTargetWorld.z 0.0517->
+			// 0.0983m, knee bend 25.8->46.4deg in a single 1/60s sample -- the
+			// dominant cause of R1's >400deg/s knee-bend velocity spikes). Fix: reuse
+			// the SAME `_pivotAnkleTarget` the stance windows use, with
+			// `forwardOffset` blended (plain smoothstep of swingU, zero slope at both
+			// ends -- matches _footRollPitch's own C1-at-the-boundary discipline) from
+			// `_toeForwardLenM` (liftoff, u=0) to `-heelBackM` (landing, u=1) -- the
+			// STANCE branch's own two endpoint values, so the target is bit-identical
+			// to the stance formula's ending value at u=0 and to its upcoming starting
+			// value at u=1 (both `forwardOffset` AND `leftRollPitch` match exactly at
+			// each boundary), eliminating the pop at both ends without touching the
+			// (already "good"/passing) stance-side roll windows or the swing arc's own
+			// x/y/z (GAIT-owned). At leftRollPitch===0 (no roll fields / v1 schedule)
+			// this reduces EXACTLY to the pre-existing flat formula regardless of
+			// forwardOffset (see _pivotAnkleTarget's own doc: "at pitch=0 this exactly
+			// reproduces plantPos + ankleHeightM*up").
+			const leftSwingU = ( typeof pose.leftFoot.swingU === 'number' ) ? THREE.MathUtils.clamp( pose.leftFoot.swingU, 0, 1 ) : 0;
+			const leftBlend = _smoothstep( leftSwingU );
+			const forwardOffset = this._toeForwardLenM + ( - P.heelBackM - this._toeForwardLenM ) * leftBlend;
+			leftTargetWorld = _pivotAnkleTarget(
+				new THREE.Vector3( pose.leftFoot.x, pose.leftFoot.y, pose.leftFoot.z ), pose.leftFoot.yaw,
+				forwardOffset, this._ankleHeightM, leftRollPitch, new THREE.Vector3(),
+			);
+			leftContact = { x: pose.leftFoot.x, y: pose.leftFoot.y, z: pose.leftFoot.z, mode: 'swing' };
+
 		} else {
 
 			leftTargetWorld = new THREE.Vector3( pose.leftFoot.x, pose.leftFoot.y, pose.leftFoot.z + this._ankleHeightM );
-			leftContact = { x: pose.leftFoot.x, y: pose.leftFoot.y, z: pose.leftFoot.z, mode: pose.leftFoot.planted ? 'flat' : 'swing' };
+			leftContact = { x: pose.leftFoot.x, y: pose.leftFoot.y, z: pose.leftFoot.z, mode: 'flat' };
 
 		}
 		if ( pose.rightFoot.planted && rightRollPitch !== 0 ) {
@@ -1912,10 +2049,22 @@ export class PatientHuman {
 			);
 			rightContact = { ..._footContactPoint( pose.rightFoot, pose.rightFoot.yaw, forwardOffset ), mode: rightRollPitch > 0 ? 'heel' : 'toe' };
 
+		} else if ( ! pose.rightFoot.planted ) {
+
+			// R1 fix -- mirror of the left-foot swing branch above, see its own comment.
+			const rightSwingU = ( typeof pose.rightFoot.swingU === 'number' ) ? THREE.MathUtils.clamp( pose.rightFoot.swingU, 0, 1 ) : 0;
+			const rightBlend = _smoothstep( rightSwingU );
+			const forwardOffset = this._toeForwardLenM + ( - P.heelBackM - this._toeForwardLenM ) * rightBlend;
+			rightTargetWorld = _pivotAnkleTarget(
+				new THREE.Vector3( pose.rightFoot.x, pose.rightFoot.y, pose.rightFoot.z ), pose.rightFoot.yaw,
+				forwardOffset, this._ankleHeightM, rightRollPitch, new THREE.Vector3(),
+			);
+			rightContact = { x: pose.rightFoot.x, y: pose.rightFoot.y, z: pose.rightFoot.z, mode: 'swing' };
+
 		} else {
 
 			rightTargetWorld = new THREE.Vector3( pose.rightFoot.x, pose.rightFoot.y, pose.rightFoot.z + this._ankleHeightM );
-			rightContact = { x: pose.rightFoot.x, y: pose.rightFoot.y, z: pose.rightFoot.z, mode: pose.rightFoot.planted ? 'flat' : 'swing' };
+			rightContact = { x: pose.rightFoot.x, y: pose.rightFoot.y, z: pose.rightFoot.z, mode: 'flat' };
 
 		}
 
@@ -2060,6 +2209,20 @@ export class PatientHuman {
 		const rightArmPivot = scratch.armPivot.copy( chainPos ).add( this._bindOffsets.rightArm.clone().applyQuaternion( chainQuat ) );
 		const rightShoulderFrameQuat = chainQuat; // cumulative anchor-local orientation Arm's LOCAL rotation is relative to
 
+		// R2 (round-2 diag, fullbody_naturalness.md armSwing_left_*): stride-adaptive
+		// arm-swing normalization reference, shared by both _clampedAdvance call sites
+		// below (step 17's cane-less fallback and step 18's real left-arm drive) -- see
+		// armSwingStrideFracK's own PATIENT_BODY_PARAMS comment for the numeric
+		// derivation. Averaged across BOTH feet (not just the "other" foot each call
+		// drives off of) so a single stride's own event-boundary jump in ONE foot's
+		// strideLen is damped by the other foot's already-settled value, rather than
+		// this reference itself popping in lockstep with the driven foot's own
+		// per-cycle liftoff (which lands exactly at that foot's own rawAdv extremum --
+		// same hazard class as R1's ankle-target discontinuity, just pre-empted here by
+		// averaging instead of a boundary-matched blend).
+		const armStrideRefM = ( ( pose.leftFoot.strideLen || 0 ) + ( pose.rightFoot.strideLen || 0 ) ) * 0.5;
+		const armReachRefM = Math.max( P.armSwingStrideFracK * armStrideRefM, P.armSwingReachFloorM );
+
 		// --- 17) Right arm: two-bone IK to the cane handle (spec S5/S6 item 6), or a
 		// mirrored FK-swing fallback when no cane schedule is available (this
 		// rewrite's own graceful degradation, see step 1's log). ---
@@ -2076,6 +2239,24 @@ export class PatientHuman {
 		if ( caneAvailable ) {
 
 			const armTargetWorld = canePoseResult.handle;
+			// R1/R3 interaction (round-2 diag): `P.standingReachRaiseM` (step 3) raises
+			// the WHOLE anchor to fix the LEG's stance crouch; the cane's own handle
+			// target is a WORLD/terrain-referenced point (computed independently of
+			// anchor height, see computeCanePose), so the raise ALSO tightens the CANE
+			// ARM's own reach margin (isolated trace A/B: R1 alone, GAIT held constant,
+			// regressed cane__follow_straight mean err 8.21->15.31mm). Two direct
+			// per-frame "de-raise just the arm's reference" attempts (subtracting, then
+			// adding, standingReachRaiseM to a copy of the anchor used only for this
+			// conversion) were tried and BOTH measured WORSE than doing nothing (worse
+			// than simply using the raised anchor here) -- the interaction isn't the
+			// simple additive one it looks like on paper (this.anchor.position feeds
+			// `rightArmPivot`'s own FK-chain-relative frame too, and step 7's
+			// reachability clamp non-linearly couples leg and anchor placement), so
+			// reverted to the plain (raised) anchor rather than ship an unverified,
+			// worse-than-baseline "fix". See standingReachRaiseM's own tuned-down
+			// default (reduced from the naive law-of-cosines value specifically to
+			// keep this residual coupling small) and this rewrite's own report for the
+			// remaining cane-arm gap this leaves in follow_turning.
 			const armTargetLocal = scratch.armTargetLocal.copy( armTargetWorld ).sub( this.anchor.position )
 				.applyQuaternion( rootQuatInv ).applyQuaternion( B_PLACEMENT_INV );
 
@@ -2135,7 +2316,7 @@ export class PatientHuman {
 			// No cane schedule: mirror the left arm's own FK swing (step 18) onto the
 			// right side too rather than leaving it frozen at bind pose or reaching
 			// for a nonexistent target (see step 1's I10 log).
-			const advRFallback = _clampedAdvance( rootPosX, rootPosY, currentYawRad, pose.leftFoot, P.armSwingReachRefM ); // contralateral of the RIGHT arm is the LEFT foot
+			const advRFallback = _clampedAdvance( rootPosX, rootPosY, currentYawRad, pose.leftFoot, armReachRefM ); // contralateral of the RIGHT arm is the LEFT foot
 			const qSwing = scratch.q0.setFromAxisAngle( PITCH_AXIS, - P.armSwingRad * advRFallback );
 			const qAbduct = scratch.q1.setFromAxisAngle( _FORWARD_AXIS_LOCAL, - P.armAbductRad );
 			const hangQuatRight = _quatFromTo( this._armRestDir.right, _REST_DIR, scratch.q2 );
@@ -2148,7 +2329,7 @@ export class PatientHuman {
 
 		// --- 18) Left arm: FK swing, driven by the CONTRALATERAL (right foot)
 		// leg-advance signal (spec S6 item 6). ---
-		const advR = _clampedAdvance( rootPosX, rootPosY, currentYawRad, pose.rightFoot, P.armSwingReachRefM );
+		const advR = _clampedAdvance( rootPosX, rootPosY, currentYawRad, pose.rightFoot, armReachRefM );
 		const leftSwingRad = P.armSwingRad * advR;
 		const qSwingL = scratch.q0.setFromAxisAngle( PITCH_AXIS, leftSwingRad );
 		const qAbductL = scratch.q1.setFromAxisAngle( _FORWARD_AXIS_LOCAL, P.armAbductRad );
@@ -2370,7 +2551,13 @@ export class PatientHuman {
  *  M11_armSwingIdleAmplitude measured 0.0605 rad against a 0.01 rad bar. Callers now
  *  pass the SAME tail-resolved root sync() already computed for the anchor
  *  (rootPosX/rootPosY/currentYawRad), so adv is continuous through the tail exactly
- *  like it is through the real march. */
+ *  like it is through the real march.
+ *
+ *  R2 (round-2 diag): `reachRefM` is no longer a bare `PATIENT_BODY_PARAMS` constant
+ *  at the call sites -- both callers now pass sync()'s own `armReachRefM` (stride-
+ *  adaptive, see its call-site comment near step 17) instead of the old fixed
+ *  `armSwingReachRefM`. This function's own contract (a plain scalar reach reference
+ *  in meters) is unchanged; only what the caller computes and hands in changed. */
 function _clampedAdvance( rootX, rootY, rootYaw, otherFootPose, reachRefM ) {
 
 	const fwdX = Math.cos( rootYaw ), fwdY = Math.sin( rootYaw );

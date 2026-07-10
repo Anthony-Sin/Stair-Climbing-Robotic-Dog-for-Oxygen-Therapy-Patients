@@ -32,6 +32,46 @@ export const CANE_PARAMS = {
 	handleLengthM: 0.05, // knob's own long-axis extent (capsule "length" param, excludes the two end caps)
 	tipRadiusM: 0.02, // spec S5 "~2 cm" rubber ferrule
 	tipLengthM: 0.03,
+	// R3a (round-2 diag, fullbody_naturalness.md cane_follow_turning): the shaft's
+	// lean axis used to be re-aimed EVERY frame from the LIVE root yaw
+	// (`axisWorld = (sin(lean),0,cos(lean)).applyQuaternion(rootQuat)`), regardless of
+	// whether the tip was planted -- fine for a JUST-planted cane (yaw ~= the yaw it
+	// was planted at) but during a fast body turn (measured: one real turn in the
+	// follow clip sweeps rootYaw ~85deg in ~1.5s while a single cane plant persists),
+	// the handle swings through a WIDE arc around the world-fixed tip even though a
+	// real planted cane's own lean barely moves once planted -- pushing the target
+	// out of the right arm's comfortable reach (reachClampedFrac measured 57% of
+	// frames in turns, vs 31.5%/0.4% straight/stairs) and, since a clamped reach
+	// visibly separates the hand from the cane's own (rigid-length) handle by design
+	// (spec S5 "the cane tilts toward the hand rather than the arm hyper-extending"),
+	// that clamp rate directly drives the measured 16.3mm mean / 70.4mm max hand-to-
+	// handle gap. Fix (see computeCanePose's own `yawRefRad` parameter): the shaft's
+	// yaw is now CONE-CLAMPED to within this many radians of the root's own yaw AT
+	// the cane's most recent landing, rather than tracking the live yaw unbounded --
+	// the tip still stays EXACTLY planted (unaffected, GAIT-owned), only the shaft's
+	// ANGLE is constrained, so the arm absorbs a bounded, not unbounded, yaw mismatch.
+	caneHandleYawConeRad: THREE.MathUtils.degToRad( 15 ),
+	// R3b (round-2 diag, fullbody_naturalness.md caneDeadArm_climb_on_stairs): the
+	// right hand reads "dead" (near-zero speed) on 82.5% of stair-climb samples --
+	// investigated (not a GAIT-side scheduling gap: cane landedAt events fire 1:1 with
+	// left-foot landedAt events on stairs, same cadence, nothing sparse) and traced to
+	// geometry, not scheduling: while the cane is PLANTED, `lean` held an exactly
+	// CONSTANT value (`plantedLean`) for the whole (much longer, on stairs' slower
+	// cadence) stance -- and since the right arm is two-bone IK'd to chase that SAME
+	// fixed external point, no amount of shoulder/elbow joint-space wiggle can make
+	// the HAND visibly move (the IK just re-solves internal angles to keep gripping
+	// the same still target); only moving the TARGET itself reads as "alive". Fix:
+	// a small, deterministic (pose-field-driven, see computeCanePose's own `support`
+	// parameter) sway added to `lean` while planted, proportional to the SAME
+	// continuous weight-shift signal (`support`) already driving the spine's own
+	// cane-load lean and the right shoulder's load modulation -- ties the cane's own
+	// subtle motion to a physically-motivated cause (leaning into the cane a little
+	// more/less as weight shifts) rather than an arbitrary time-based wiggle. SCOPED
+	// to `abs(groundSlope) > 0` (computeCanePose's own `groundSlope` parameter) --
+	// a first attempt without that gate regressed the OTHER cane windows' reach
+	// margin (see computeCanePose's own doc comment for the numeric before/after
+	// that caught it); this magnitude is only verified safe ON the staircase.
+	caneLoadSwayRad: 0.012,
 };
 
 // Colors matched to the RETIRED decorative cane (main.js, pre-overhaul lines
@@ -77,6 +117,12 @@ const _CANE_GRADIENT_MAP = _makeToonGradientMap( [ 0.35, 0.65, 1.0 ] );
 // natural axis, matching the retired cane's own Y-up construction style). Posing the
 // group is then just "aim local +Y at the desired world direction" (applyCanePose).
 const _LOCAL_UP = new THREE.Vector3( 0, 1, 0 );
+
+// P-frame "up" axis (yaw rotation axis) -- this module's OWN copy of the same
+// constant PatientHuman.js's `_UP_Z` names (see this file's header: zero cross-file
+// coupling, so a small duplicate is preferred over an import). Used only by R3a's
+// yaw-cone clamp below.
+const _UP_Z = new THREE.Vector3( 0, 0, 1 );
 
 /** Shortest-arc quaternion rotating unit vector `a` onto unit vector `b`. Standard
  *  cross/dot construction (antiparallel case picks an arbitrary perpendicular axis
@@ -223,8 +269,48 @@ function _smoothstep3( u, startVal, midVal, endVal ) {
  * untouched and mixes forward/lateral by the current yaw) -- no separate yaw
  * extraction/trig needed, and no cross-file B_PLACEMENT-style basis change either
  * (this module never touches Xbot's own local convention at all -- see header).
+ *
+ * `yawRefRad` (R3a, round-2 diag): the root's own yaw AT the cane's most recent
+ * landing (`poseAt(...).rootYaw` at `pose.landedAt`, resolved by the CALLER -- this
+ * module stays zero-PatientGait-coupled per its own header, so it never calls
+ * `poseAt` itself, matching PatientHuman.js's own established "resolve a reference
+ * time, pass a plain number in" pattern for toeScale/heelScale). `null`/`undefined`
+ * (no landing yet, or a v1 schedule with no `landedAt`) falls back to the live yaw
+ * unclamped -- bit-identical to this function's pre-R3a behavior. When provided, the
+ * shaft's own yaw is cone-clamped to within `params.caneHandleYawConeRad` of
+ * `yawRefRad` rather than tracking the live root yaw unbounded (see
+ * `caneHandleYawConeRad`'s own CANE_PARAMS comment for the root cause this fixes).
+ * Applied uniformly whether planted or swinging (the swing pendulum lean ALSO used
+ * the live yaw before this fix, and the same wide-turn arc affected both).
+ *
+ * `support` (R3b, round-2 diag): the top-level `pose.support` PatientGait v2 field
+ * (NOT `pose.cane`'s own sub-object -- caller passes it through), `0` by default
+ * (pre-R3b behavior: a perfectly static planted lean). Adds a small continuous sway
+ * to `lean` ONLY while planted (see `caneLoadSwayRad`'s own CANE_PARAMS comment for
+ * why this needs to move the TARGET, not just a joint angle, to read as "alive").
+ *
+ * `groundSlope` (R3b, round-2 diag, first-attempt regression fix): the top-level
+ * `pose.groundSlope` field, `0` by default. The FIRST version of this sway applied
+ * unconditionally on every planted frame -- it fixed the stairs "dead arm" finding
+ * (handNearZeroFrac 0.825->0.661) but, verified against a re-generated trace,
+ * REGRESSED cane__follow_straight/follow_turning/climb_top_landing's hand-to-handle
+ * error and reachClampedFrac (e.g. climb_top_landing mean err 3.79->12.29mm, clamp
+ * 22.9%->50.5%) -- those windows' cane-arm reach margin was ALREADY tight even
+ * before this fix (baseline reachClampedFrac 22.9-57%), so ANY extra target motion
+ * pushes it over the edge more often; root-caused by isolating a non-turning
+ * (rootYaw constant) climb_top_landing window where the error still oscillated in
+ * lockstep with `support` -- proof the sway itself (not the yaw-cone clamp above)
+ * was the regression source. Scoping the sway to `abs(groundSlope) > 0` (i.e.
+ * ACTUALLY on a staircase run, terrain-driven, not a flat approach/landing/follow
+ * segment -- the exact region caneDeadArm_climb_on_stairs was measured in) fixes
+ * both: elsewhere `slopeScale` is exactly 0 (bit-identical to pre-R3b, no
+ * regression risk), on stairs it ramps up over a small slope band rather than
+ * switching on with a hard step (avoiding a NEW discontinuity at the stairs
+ * boundary on top of the one `pose.groundSlope` itself already has there --
+ * pre-existing, already relied on unconditionally by sync()'s own torso-lean model,
+ * not introduced by this fix).
  */
-export function computeCanePose( pose, rootQuat, params = CANE_PARAMS, out = { tip: new THREE.Vector3(), axisWorld: new THREE.Vector3(), handle: new THREE.Vector3(), leanRad: 0 } ) {
+export function computeCanePose( pose, rootQuat, params = CANE_PARAMS, out = { tip: new THREE.Vector3(), axisWorld: new THREE.Vector3(), handle: new THREE.Vector3(), leanRad: 0 }, yawRefRad = null, support = 0, groundSlope = 0 ) {
 
 	out.tip.set( pose.x, pose.y, pose.z );
 
@@ -238,12 +324,33 @@ export function computeCanePose( pose, rootQuat, params = CANE_PARAMS, out = { t
 		// either boundary.
 		lean = _smoothstep3( pose.swingU, plantedLean, params.caneSwingLeanMaxRad, plantedLean );
 
+	} else if ( pose.planted ) {
+
+		// R3b: small planted-phase "alive-ness" sway, see this function's own doc --
+		// scaled by `slopeScale` so it's a no-op off the actual staircase.
+		const slopeScale = Math.min( 1, Math.abs( groundSlope ) / 0.05 );
+		lean = plantedLean + params.caneLoadSwayRad * support * slopeScale;
+
 	}
 	out.leanRad = lean;
 
+	// R3a: cone-clamp the shaft's effective yaw to `yawRefRad` (see this function's
+	// own doc comment above) rather than always using the live `rootQuat` directly.
+	let axisQuat = rootQuat;
+	if ( typeof yawRefRad === 'number' ) {
+
+		const currentYaw = 2 * Math.atan2( rootQuat.z, rootQuat.w ); // patient_root is yaw-only (see this function's own header note), same extraction PatientHuman's sync() uses for currentYawRad
+		const rawDelta = currentYaw - yawRefRad;
+		const wrappedDelta = Math.atan2( Math.sin( rawDelta ), Math.cos( rawDelta ) ); // wrap to (-pi,pi] before clamping, so a near-+-pi turn doesn't clamp the WRONG way round
+		const clampedDelta = THREE.MathUtils.clamp( wrappedDelta, - params.caneHandleYawConeRad, params.caneHandleYawConeRad );
+		axisQuat = new THREE.Quaternion().setFromAxisAngle( _UP_Z, yawRefRad + clampedDelta );
+
+	}
+
 	// Facing-frame axis (forward-component, 0 lateral, up-component), rotated into
-	// P-frame by the current yaw -- see this function's own doc comment above.
-	out.axisWorld.set( Math.sin( lean ), 0, Math.cos( lean ) ).applyQuaternion( rootQuat );
+	// P-frame by the (possibly cone-clamped, see above) yaw -- see this function's own
+	// doc comment above.
+	out.axisWorld.set( Math.sin( lean ), 0, Math.cos( lean ) ).applyQuaternion( axisQuat );
 
 	out.handle.copy( out.tip ).addScaledVector( out.axisWorld, params.caneLengthM );
 
