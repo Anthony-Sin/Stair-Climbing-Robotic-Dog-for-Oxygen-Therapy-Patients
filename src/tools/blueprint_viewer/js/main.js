@@ -3421,6 +3421,237 @@ window.__viewer = {
 
 	},
 	/**
+	 * TRACE RECORDER (round 2 of the patient IK/gait overhaul -- see
+	 * IK_OVERHAUL_SPEC.md and audit/TRACE_SCHEMA.md). Unlike patientDiag above
+	 * (which computes AGGREGATE pass/fail metrics and judges them against bars),
+	 * this sweeps the SAME real applyGlobalTime()/patientHuman.sync() path at a
+	 * FIXED dt across the whole unified timeline and records one RAW, unjudged
+	 * sample per frame: PatientGait.poseAt()'s scheduler fields, bone world
+	 * positions/orientations converted into the isaac_world LOCAL (P-frame,
+	 * Z-up) frame per AGENTS.md incident #5's diagnostic-pitfall note, cane tip/
+	 * handle, terrain heights under each foot + the root, and a snapshot of
+	 * every patientHuman._lastSync field -- pure data for a downstream analyzer
+	 * to mine for trajectory/timing/naturalness issues, no pass/fail here.
+	 *
+	 * Mirrors patientDiag's sweep/save-restore machinery exactly: same
+	 * setPhase()/action.time/mixer.update(0)/patientHuman.sync() sequence per
+	 * sample (never a shortcut that could diverge from what a user actually
+	 * sees), same save-before/restore-after of phase, per-action times, and the
+	 * scrubber value (read-only instrument, not a mode switch -- a caller
+	 * scrubbing afterward sees no trace this ran). Deterministic: dt is fixed
+	 * and nothing in the sweep itself reads Math.random/Date.now (meta.
+	 * generatedAt is a wall-clock stamp for HUMANS reading the file, not
+	 * consumed by anything downstream, consistent with I1's determinism
+	 * contract applying to the gait/rig code being measured, not to this
+	 * recorder's own bookkeeping).
+	 *
+	 * POSTs the resulting JSON to serve.py's POST /diag sink (same rationale/
+	 * pattern as gaitReport above -- a ~5-10 MB report at default dt is well
+	 * past any eval-return-value truncation limit) and resolves to the saved
+	 * file's path text. `name` defaults to 'trace_full' (files land in
+	 * diag/<name>.json). See audit/TRACE_SCHEMA.md for the exact schema and
+	 * audit/run_browser_trace.py for the headless driver that triggers this via
+	 * the `?gaittrace=1` boot query param below.
+	 */
+	gaitTrace( { dt = 1 / 60, name = 'trace_full' } = {} ) {
+
+		if ( ! patientHuman._attached || ! patientHuman._schedules || ! modelRoot ) {
+
+			return Promise.reject( new Error( 'gaitTrace: patient not ready (call after window.__viewer.ready resolves)' ) );
+
+		}
+
+		const isaacWorldNode = modelRoot.getObjectByName( 'isaac_world' );
+		if ( ! isaacWorldNode ) return Promise.reject( new Error( 'gaitTrace: isaac_world node not found' ) );
+
+		// Save prior state, exactly like patientDiag above.
+		const priorPhase = currentPhase;
+		const priorTimes = new Map();
+		for ( const [ pname, action ] of phaseActions ) priorTimes.set( pname, action.time );
+		const priorScrubberValue = scrubber.value;
+
+		const bones = patientHuman._bones;
+
+		const _tmpWorld = new THREE.Vector3();
+		const _tmpLocal = new THREE.Vector3();
+		const _tmpWorldQuat = new THREE.Quaternion();
+		const _tmpParentQuatInv = new THREE.Quaternion();
+		const _tmpLocalQuat = new THREE.Quaternion();
+		const _tmpEuler = new THREE.Euler();
+
+		/** getWorldPosition() then convert into isaac_world's own LOCAL (P-frame)
+		 * meters -- identical technique to patientDiag's own worldToPframe above
+		 * (AGENTS.md incident #5). */
+		function boneP( bone ) {
+
+			bone.getWorldPosition( _tmpWorld );
+			isaacWorldNode.worldToLocal( _tmpLocal.copy( _tmpWorld ) );
+			return { x: _tmpLocal.x, y: _tmpLocal.y, z: _tmpLocal.z };
+
+		}
+
+		/**
+		 * Decompose a bone's WORLD orientation into isaac_world's own local
+		 * (P-frame: up=Z, forward=X, lateral=Y -- AGENTS.md incident #4) basis,
+		 * then extract yaw(about P-frame Z)/pitch(about P-frame Y)/roll(about
+		 * P-frame X) via THREE.Euler order 'ZYX'. IMPORTANT CAVEAT (documented
+		 * in full in audit/TRACE_SCHEMA.md): this is the bone's RAW achieved
+		 * orientation, which includes PatientHuman.js's fixed B_PLACEMENT
+		 * bind-convention-reconciliation rotation baked in (Xbot's own bind
+		 * pose is not identity in THIS basis -- see AGENTS.md incident #4) --
+		 * it is NOT zero at rest. Compare relative values/ranges across the
+		 * trace, or against the trace's own first idle sample, not against an
+		 * assumed zero.
+		 */
+		function boneYawPitchRollDeg( bone ) {
+
+			bone.getWorldQuaternion( _tmpWorldQuat );
+			isaacWorldNode.getWorldQuaternion( _tmpParentQuatInv ).invert();
+			_tmpLocalQuat.copy( _tmpParentQuatInv ).multiply( _tmpWorldQuat );
+			_tmpEuler.setFromQuaternion( _tmpLocalQuat, 'ZYX' );
+			return {
+				yawDeg: THREE.MathUtils.radToDeg( _tmpEuler.z ),
+				pitchDeg: THREE.MathUtils.radToDeg( _tmpEuler.y ),
+				rollDeg: THREE.MathUtils.radToDeg( _tmpEuler.x ),
+			};
+
+		}
+
+		function footFields( f ) {
+
+			return {
+				x: f.x, y: f.y, z: f.z, yaw: f.yaw, planted: f.planted, swingU: f.swingU,
+				liftAt: f.liftAt, landedAt: f.landedAt, nextLiftAt: f.nextLiftAt, strideLen: f.strideLen,
+			};
+
+		}
+
+		const segmentsOut = [];
+
+		for ( const clipName of [ 'follow', 'climb' ] ) {
+
+			const clip = phaseClips.get( clipName );
+			const action = phaseActions.get( clipName );
+			const schedule = patientHuman._schedules[ clipName ];
+			if ( ! clip || ! action || ! schedule ) continue;
+
+			// setPhase REQUIRED before driving action.time -- see patientDiag's own
+			// comment at its identical call site for why (weight=0 actions are never
+			// evaluated by AnimationMixer).
+			setPhase( clipName, { resetSlider: false } );
+
+			const terrain = patientHuman._terrain;
+			const duration = clip.duration;
+			const segMeta = segments.find( ( s ) => s.name === clipName );
+			const segStart = segMeta ? segMeta.start : 0; // ties tGlobal to the SAME unified-timeline mapping applyGlobalTime()/segmentAtGlobalTime() use
+
+			const samples = [];
+
+			for ( let t = 0; t <= duration + 1e-9; t += dt ) {
+
+				const tt = Math.min( t, duration );
+
+				action.time = tt;
+				mixer.update( 0 );
+				patientHuman.sync( clipName, tt );
+
+				// Re-derive the same pose sync() just computed internally (cheap,
+				// pure -- see patientDiag's identical call for the "tail-adjusted tq"
+				// divergence caveat, which only matters after the walk-on tail's
+				// freeze point).
+				const pose = poseAt( schedule, terrain, tt );
+				const ls = patientHuman._lastSync ? { ...patientHuman._lastSync } : null;
+
+				const leftToeP = boneP( bones.leftToeBase );
+				const rightToeP = boneP( bones.rightToeBase );
+
+				samples.push( {
+					tGlobal: segStart + tt,
+					tLocal: tt,
+					pose: {
+						rootX: pose.rootX, rootY: pose.rootY, rootZ: pose.rootZ, rootYaw: pose.rootYaw,
+						speed: pose.speed, groundSlope: pose.groundSlope,
+						phaseC: pose.phaseC, support: pose.support, gaitPhaseLegacy: pose.gaitPhase,
+						leftFoot: footFields( pose.leftFoot ), rightFoot: footFields( pose.rightFoot ),
+						cane: pose.cane ? {
+							x: pose.cane.x, y: pose.cane.y, z: pose.cane.z, planted: pose.cane.planted,
+							swingU: pose.cane.swingU, liftAt: pose.cane.liftAt, landedAt: pose.cane.landedAt,
+							nextLiftAt: pose.cane.nextLiftAt,
+						} : null,
+					},
+					bones: {
+						hips: boneP( bones.hips ), spine2: boneP( bones.spine2 ), head: boneP( bones.head ),
+						leftArm: boneP( bones.leftArm ), rightArm: boneP( bones.rightArm ),
+						leftHand: boneP( bones.leftHand ), rightHand: boneP( bones.rightHand ),
+						leftFoot: boneP( bones.leftFoot ), rightFoot: boneP( bones.rightFoot ),
+						leftToeBase: leftToeP, rightToeBase: rightToeP,
+					},
+					pelvisOrientDeg: boneYawPitchRollDeg( bones.hips ),
+					spine2YawDeg: boneYawPitchRollDeg( bones.spine2 ).yawDeg,
+					cane: {
+						tip: pose.cane ? { x: pose.cane.x, y: pose.cane.y, z: pose.cane.z } : null,
+						handleTarget: ls && ls.caneHandleTargetWorld ? ls.caneHandleTargetWorld : null,
+						handleEffective: ls && ls.caneHandleEffectiveWorld ? ls.caneHandleEffectiveWorld : null,
+					},
+					terrain: {
+						underRoot: terrain.heightAt( pose.rootX ),
+						underLeftToe: terrain.heightAt( leftToeP.x ),
+						underRightToe: terrain.heightAt( rightToeP.x ),
+					},
+					lastSync: ls,
+				} );
+
+			}
+
+			segmentsOut.push( { name: clipName, duration, samples } );
+
+		}
+
+		// Restore prior state, exactly like patientDiag above.
+		for ( const [ pname, t ] of priorTimes ) {
+
+			const action = phaseActions.get( pname );
+			if ( action ) action.time = t;
+
+		}
+		setPhase( priorPhase, { resetSlider: false } );
+		mixer.update( 0 );
+		patientHuman.sync( priorPhase, phaseActions.get( priorPhase )?.time ?? 0 );
+		scrubber.value = priorScrubberValue;
+		updateTimeReadout();
+
+		const report = {
+			meta: {
+				generatedAt: new Date().toISOString(),
+				dt,
+				// Browser JS has no git access; audit/run_browser_trace.py patches
+				// this field in-place after saving (reads `git rev-parse HEAD`
+				// itself) -- see that script's own comment. null here just means
+				// "not yet patched", not "detached from git".
+				headCommit: null,
+				schemaVersion: 1,
+				columns: {
+					tGlobal: 's, unified follow+climb timeline position (matches the scrubber/time-readout)',
+					tLocal: 's, time within this segment\'s own clip (matches AnimationAction.time)',
+					'pose.*': 'PatientGait.poseAt(schedule, terrain, tLocal) -- IK_OVERHAUL_SPEC.md section 3 contract, verbatim field names/meanings',
+					'bones.*': '{x,y,z} meters, isaac_world LOCAL (P-frame, Z-up) -- getWorldPosition() then isaacWorldNode.worldToLocal(), per AGENTS.md incident #5',
+					pelvisOrientDeg: 'Hips bone {yawDeg,pitchDeg,rollDeg}, P-frame axes (yaw=Z,pitch=Y,roll=X), RAW achieved orientation -- includes the fixed B_PLACEMENT bind offset, NOT zero at rest, see gaitTrace()\'s own boneYawPitchRollDeg comment',
+					spine2YawDeg: 'Spine2 bone yaw only (same convention/caveat as pelvisOrientDeg), for spine-vs-pelvis counter-rotation analysis',
+					'cane.*': 'tip = pose.cane P-frame position; handleTarget/handleEffective = patientHuman._lastSync.caneHandleTargetWorld/caneHandleEffectiveWorld (already P-frame, pre/post reach-clamp) -- all null if pose.cane is null (no v2 cane schedule)',
+					'terrain.*': 'terrain.heightAt(x) meters under the root X and each toe bone\'s P-frame X',
+					lastSync: 'shallow clone of patientHuman._lastSync as it stood right after this sample\'s sync() call -- whatever fields exist on the loaded PatientHuman.js version, verbatim field names',
+				},
+			},
+			segments: segmentsOut,
+		};
+
+		return fetch(
+			`/diag?name=${ encodeURIComponent( name ) }`,
+			{ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify( report ) },
+		).then( ( r ) => r.text() );
+
+	},
+	/**
 	 * EDGE-COVERAGE PROBE (the "what's in the outline and what isn't" diagnostic).
 	 *
 	 * For the CURRENT camera/frame, measures per robot part how much of its
@@ -3638,3 +3869,37 @@ loadRealModel().then( () => {
 	resolveReady();
 
 } );
+
+// ===========================================================================
+// Headless trace auto-run hook (audit/run_browser_trace.py's driver -- round 2
+// of the patient IK/gait overhaul, see audit/TRACE_SCHEMA.md). Opt-in via
+// `?gaittrace=1[&dt=0.0167][&name=trace_full]` on the page URL; a no-op
+// (nothing below even reads location.search) for normal interactive/deck
+// usage. Runs AFTER window.__viewer.ready resolves -- the SAME "everything
+// ready" moment loadRealModel()'s own .then/.catch above both funnel through
+// via resolveReady() -- so the sweep never races the GLB/patient attach.
+// Sets document.title = 'TRACE_DONE' on success (or 'TRACE_ERROR: <msg>' on
+// failure) purely as a convenience signal; the headless driver's PRIMARY
+// completion check is diag/<name>.json actually landing on disk (see that
+// script's own comment for why the title is a nice-to-have, not load-bearing).
+// ===========================================================================
+{
+
+	const _gaitTraceQP = new URLSearchParams( location.search );
+	if ( _gaitTraceQP.get( 'gaittrace' ) === '1' ) {
+
+		const _traceDt = parseFloat( _gaitTraceQP.get( 'dt' ) ) || ( 1 / 60 );
+		const _traceName = _gaitTraceQP.get( 'name' ) || 'trace_full';
+		window.__viewer.ready
+			.then( () => window.__viewer.gaitTrace( { dt: _traceDt, name: _traceName } ) )
+			.then( () => { document.title = 'TRACE_DONE'; } )
+			.catch( ( err ) => {
+
+				console.error( '[blueprint-viewer] gaitTrace auto-run failed:', err );
+				document.title = 'TRACE_ERROR: ' + ( err && err.message ? err.message : String( err ) );
+
+			} );
+
+	}
+
+}
