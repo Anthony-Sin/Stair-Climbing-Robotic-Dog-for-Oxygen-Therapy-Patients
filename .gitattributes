@@ -1,2 +1,8 @@
 *.usd filter=lfs diff=lfs merge=lfs -text
 *.stbzcj filter=lfs diff=lfs merge=lfs -text
+
+# Shell scripts MUST stay LF even on a Windows checkout (core.autocrlf=true otherwise
+# rewrites them CRLF, and bash/WSL then dies with `set: : invalid option name` on the
+# trailing \r). Force LF so runpod_setup_rl.sh / train_local_rl.sh run under WSL.
+*.sh text eol=lf
+*.bash text eol=lf

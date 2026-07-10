@@ -93,6 +93,8 @@ def _build_patch_params(args) -> "config_patch.StairPatchParams":
         "ascent_reward": args.ascent_reward,
         "roll_penalty": args.roll_penalty,
         "crest_reward": args.crest_reward,
+        "track_lin_vel_weight": args.track_lin_vel_weight,
+        "max_init_terrain_level": args.max_init_terrain_level,
         "com_jitter_m": args.com_jitter_m,
     }
     accepted = {f.name for f in dataclasses.fields(config_patch.StairPatchParams)}
@@ -284,6 +286,12 @@ def main(argv: Optional[list] = None) -> int:
     ap.add_argument("--ascent-reward", type=float, default=envb.get_float("FT_RL_ASCENT_REWARD", 1.0))
     ap.add_argument("--roll-penalty", type=float, default=envb.get_float("FT_RL_ROLL_PENALTY", -2.0))
     ap.add_argument("--crest-reward", type=float, default=envb.get_float("FT_RL_CREST_REWARD", 0.5))
+    ap.add_argument("--track-lin-vel-weight", type=float, default=envb.get_float("FT_RL_TRACK_LINVEL_W", 3.0),
+                    help="forward-velocity tracking reward weight (robot_lab ships 3.0). Trim (~1.5) so the "
+                         "policy stops banking flat-ground speed instead of climbing.")
+    ap.add_argument("--max-init-terrain-level", type=int, default=envb.get_int("FT_RL_MAX_INIT_TERRAIN_LEVEL", 5),
+                    help="initial terrain-difficulty spread cap (robot_lab ships 5). Raise (~8) to start more "
+                         "envs on the tall risers when the velocity curriculum plateaus below the real step.")
     ap.add_argument("--com-jitter-m", type=float, default=envb.get_float("FT_RL_COM_JITTER", 0.02))
 
     ap.add_argument("--python", default=envb.get_str("FT_RL_PYTHON"),
@@ -353,11 +361,13 @@ def main(argv: Optional[list] = None) -> int:
         # 1) patch: write the stairs+payload cfg module + register the task (idempotent)
         params = _build_patch_params(args)
         LOGGER.info("[patch] params: lin_vel_x_max=%s step_h=(%s,%s) step_w=(%s|%s..%s) "
-                    "tall_start=%s orient=%s ascent=%s roll=%s crest=%s com_jitter=%s",
+                    "tall_start=%s orient=%s ascent=%s roll=%s crest=%s track_linvel=%s "
+                    "max_init_level=%s com_jitter=%s",
                     args.lin_vel_x_max, args.step_height_min, args.step_height_max,
                     args.step_width_nominal, args.step_width_min, args.step_width_max,
                     args.tall_start_prop, args.orientation_reward, args.ascent_reward,
-                    args.roll_penalty, args.crest_reward, args.com_jitter_m)
+                    args.roll_penalty, args.crest_reward, args.track_lin_vel_weight,
+                    args.max_init_terrain_level, args.com_jitter_m)
         if dry:
             LOGGER.info("[patch] would write %s.py + register %s in %s",
                         config_patch.STAIRS_CFG_MODULE, args.task, config_patch.go2_config_pkg(repo))

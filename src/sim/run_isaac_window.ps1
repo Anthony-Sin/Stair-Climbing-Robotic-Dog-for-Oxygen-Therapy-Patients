@@ -12,6 +12,9 @@ param(
     [double]$PgttActionScale = 0.5,
     [double]$PgttHeightscanScale = 1.0,
     [double]$Go2X = -4.5,
+    # Patient spawn X. Default -3.5 (isaac_env's own default); run_sim.ps1 sets it further back
+    # (-4.6) for the living-room maze so the four-bend weave has room to spread.
+    [double]$PersonX = -3.5,
     [string]$ParkourHeadingMode = "hybrid",
     [switch]$Sim2RealValidationCam,
     [switch]$SelfTestWalk,
@@ -205,7 +208,7 @@ if ($WarmIsaac) {
 # it STATIC and well off the robot's forward lane (default -3.5,0 sits directly in the path,
 # and a constant-forward drive would collide with it on every terrain).
 $benchArg = ""
-$personArgs = "--person-move"
+$personArgs = "--person-move --person-x $PersonX --person-y 0.0"
 if ($Bench) { $benchArg = "--bench" }
 if ($Bench -or $SelfTestWalk -or $StairWaypointTest) {
     # Open-loop constant-forward drive (bench / self-test / waypoint-test) would collide

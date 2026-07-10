@@ -83,6 +83,14 @@ class StairPatchParams:
     ascent_reward: float = 1.0            # NEW vertical-progress reward weight; 0 disables (finding B)
     roll_penalty: float = -2.0            # NEW roll-only anti-tip penalty; 0 disables (finding B)
     crest_reward: float = 0.5             # NEW: reward a level torso on flat (clean dismount off the top); 0 disables
+    track_lin_vel_weight: float = 3.0     # forward-velocity tracking weight (robot_lab ships 3.0). The 6-8k
+    #                                       run earned ~2.4 here vs ~0.08 from ascent -> the policy banked
+    #                                       flat-speed tracking instead of climbing. Trim toward ascent (e.g.
+    #                                       1.5) so the climb is the dominant payoff, not shuffling on the flat.
+    max_init_terrain_level: int = 5       # initial terrain-difficulty spread cap (robot_lab ships 5). The
+    #                                       velocity curriculum plateaued ~3.7 (~0.11 m risers; the real 0.15 m
+    #                                       is level ~6). Raise (e.g. 8) so more envs START on the tall risers,
+    #                                       training the hard step even when promotion stalls.
     com_jitter_m: float = 0.02            # +/- jitter around payload CoM offset for the CoM DR event (finding A)
     add_com_event: bool = True            # allow disabling the CoM event on an API-lacking IsaacLab (finding A)
     obs_noise_scale: float = 0.0          # optional obs-noise DR knob; 0 == inherit parent (finding G)
@@ -324,6 +332,19 @@ class {STAIRS_CFG_CLASS}(UnitreeGo2RoughEnvCfg):
         # roll-only anti-tip term below so sideways toppling is still punished.
         self.rewards.flat_orientation_l2.weight = {params.orientation_reward}
 {ascent_term}{roll_term}{crest_term}
+        # --- rebalance: forward-tracking vs climbing --------------------------
+        # Stock track_lin_vel_xy_exp (3.0) out-earns the ascent reward ~30:1, so the policy
+        # banks flat-ground velocity tracking and never commits to the climb. Trim it here so
+        # the ascent term can win. hasattr-guarded so an upstream rename can't hard-crash.
+        if hasattr(self.rewards, "track_lin_vel_xy_exp"):
+            self.rewards.track_lin_vel_xy_exp.weight = {params.track_lin_vel_weight}
+
+        # --- start on the hard risers ----------------------------------------
+        # The velocity terrain-curriculum plateaus below the real 0.15 m step, so raise the
+        # initial level cap: more envs spawn on the tall risers every episode, giving the
+        # climb a training signal even when curriculum promotion stalls.
+        self.scene.terrain.max_init_terrain_level = {params.max_init_terrain_level}
+
         # --- match the DEPLOYED PD gains (rl_locomotion_policy kp={params.kp}, kd={params.kd}) ---
         # robot_lab ships stiffness=25.0; the sim deploys kp=20.0, so align here to keep
         # the retrained policy consistent with the gains it runs under in Isaac.

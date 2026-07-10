@@ -26,6 +26,7 @@ __pycache__/
 .cache/
 .venv/
 venv/
+.venv_rl/
 
 # ROS/colcon build outputs
 build/

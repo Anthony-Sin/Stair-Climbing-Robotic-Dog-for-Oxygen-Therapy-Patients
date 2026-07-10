@@ -1552,6 +1552,15 @@ if ($NoIsaac) {
     $IsaacRawLog = Join-Path $DebugDir "isaac_raw.log"
     $IsaacFilteredLog = Join-Path $LogsDir "isaac_console.log"
     $IsaacEventLog = Join-Path $DebugDir "isaac_env.jsonl"
+
+    # Living-room maze starts the patient further back (-4.6, vs isaac_env's -3.5 default) so the
+    # four-bend weave has room to spread, with the dog ~1 m behind it (-5.6). Only when the user
+    # has not overridden the spawns. Default sim / non-living-room runs are untouched.
+    $PersonX = -3.5
+    if ($env:SIM_LIVING_ROOM -eq '1') {
+        $PersonX = -4.6
+        if (-not $PSBoundParameters.ContainsKey('Go2X')) { $Go2X = -5.6 }
+    }
     $isaacArgs = @(
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
@@ -1567,6 +1576,7 @@ if ($NoIsaac) {
         "-PgttActionScale", [string]$PgttActionScale,
         "-PgttHeightscanScale", [string]$PgttHeightscanScale,
         "-Go2X", [string]$Go2X,
+        "-PersonX", [string]$PersonX,
         "-ParkourHeadingMode", $ParkourHeadingMode,
         "-ParkourMaskFill", $ParkourMaskFill,
         # Staircase preset (now selectable via -StairPreset). The launcher previously passed NOTHING,
@@ -1843,12 +1853,12 @@ if ($NoDockerRun) {
     if ($StairSquareUp -and -not $NoStairSquareUp) {
         $visionArgs += "--stair-square-up"
     }
-    # Reactive furniture-obstacle avoidance. The PERIMETER living-room layout keeps every
-    # prop off the patient's lane (validated >=0.60 m clearance), so avoidance is unnecessary
-    # AND was implicated in the on-stair climb stall: the straight-route blind_rl sweep with
-    # NO avoidance climbed all 14x 0.15 m steps, while the living-room WITH avoidance mounted
-    # ~2 steps then stalled (the depth avoider reads the upper treads as a wall). So it is now
-    # OPT-IN only (SIM_AVOID_OBSTACLES=1), not auto-on for living-room. Default sim unaffected.
+    # Reactive furniture-obstacle avoidance. The living-room maze now puts obstacles IN the
+    # lane (the patient detours around each), and the dog trails near the centreline, so it
+    # NEEDS avoidance to steer around them -- opt in with SIM_AVOID_OBSTACLES=1. The earlier
+    # on-stair stall (depth avoider reading the treads as a wall) is now prevented by a hard
+    # one-way latch in main.py that kills avoidance for good once the stairs are seen, so the
+    # blind_rl climb is unaffected. Default sim (no in-lane props) is untouched either way.
     if ($env:SIM_AVOID_OBSTACLES -eq '1') {
         $visionArgs += "--avoid-obstacles"
     }

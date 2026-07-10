@@ -1801,7 +1801,15 @@ def update_person_patrol(person, dt: float) -> None:
         dy = ty - state.y
         dist = math.hypot(dx, dy)
 
-        if dist <= 0.35:
+        # Waypoint arrival radius. The living-room FLAT approach uses a TIGHTER radius so the
+        # patient traces its angular four-bend weave instead of rounding it into a near-straight
+        # sway: with the 0.35 m default the follower switches target 0.35 m early and cuts every
+        # corner, collapsing +-0.60 m waypoints to a ~+-0.30 m walked path. On the STAIRS (and in
+        # the default sim) it stays 0.35 m, so the proven climb path is unchanged.
+        _arrive_radius = 0.35
+        if getattr(args, "living_room", False) and not state.stair_phase_started:
+            _arrive_radius = 0.18
+        if dist <= _arrive_radius:
             state.current_wp_idx += 1
             if state.current_wp_idx >= len(state.waypoints):
                 state.current_wp_idx = len(state.waypoints) - 1

@@ -27,6 +27,23 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$HERE/../.." && pwd)"
 
+# apt needs root. On a RunPod pod we ARE root (SUDO=""); under WSL2 the default user is not,
+# so prefix with sudo when available (it may prompt ONCE for the WSL password). If neither
+# root nor sudo, the apt step is best-effort and simply skips (guarded below).
+SUDO=""
+if [ "$(id -u)" -ne 0 ]; then
+  command -v sudo >/dev/null 2>&1 && SUDO="sudo"
+fi
+
+# WSL commonly mounts /tmp as a small RAM-backed tmpfs (~3-8 GB). Isaac Sim's multi-GB wheels
+# (extscache_kit alone is ~3 GB) download through a tempfile and OVERFLOW that tmpfs with
+# "No space left on device", even though the real ext4 disk has tens of GB free. Redirect
+# TMPDIR to the real disk and disable pip's on-disk cache so a ~30 GB stack fits a tight drive.
+export TMPDIR="${FT_RL_TMPDIR:-$HOME/.ft_tmp}"
+mkdir -p "$TMPDIR"
+export PIP_NO_CACHE_DIR=1
+echo "== temp/cache: TMPDIR=$TMPDIR (off the /tmp tmpfs), PIP_NO_CACHE_DIR=1 =="
+
 PYTHON_VERSION="${FT_RL_PYTHON_VERSION:-3.11}"            # Isaac Sim 5.1 uses python 3.11 (4.5 needs 3.10, 6.0 needs 3.12)
 ISAACSIM_VERSION="${FT_RL_ISAACSIM_VERSION:-5.1.0}"        # 5.1 matches IsaacLab v2.3.2's URDF importer API (4.5 does NOT)
 ISAACLAB_URL="${FT_RL_ISAACLAB_URL:-https://github.com/isaac-sim/IsaacLab.git}"
@@ -63,17 +80,20 @@ echo "== GPU graphics libs + Vulkan ICD (Isaac Sim needs a GPU graphics context,
 # the userspace graphics libs and, if the container lacks the NVIDIA Vulkan ICD pointer file,
 # create one pointing at the NVIDIA driver lib that IS mounted. Harmless if already present.
 # (A truly clean fix is to launch the pod with NVIDIA_DRIVER_CAPABILITIES=all.)
-apt-get update -qq 2>/dev/null && apt-get install -y \
+$SUDO apt-get update -qq 2>/dev/null && $SUDO apt-get install -y \
   libglu1-mesa libgl1 libegl1 libvulkan1 vulkan-tools \
   libxrandr2 libxinerama1 libxcursor1 libxi6 libxkbcommon0 >/dev/null 2>&1 \
   || echo "  (apt graphics-libs step skipped/failed -- continuing)"
-if [ -f /usr/lib/x86_64-linux-gnu/libGLX_nvidia.so.0 ] \
+# The NVIDIA driver lib is at the standard path on a pod, but under WSL2 it lives in
+# /usr/lib/wsl/lib -- accept either so the ICD gets created on both.
+NV_GLX="$(ls /usr/lib/x86_64-linux-gnu/libGLX_nvidia.so.0 /usr/lib/wsl/lib/libGLX_nvidia.so.0 2>/dev/null | head -1 || true)"
+if [ -n "$NV_GLX" ] \
    && [ ! -e /usr/share/vulkan/icd.d/nvidia_icd.json ] \
    && [ ! -e /etc/vulkan/icd.d/nvidia_icd.json ]; then
-  mkdir -p /usr/share/vulkan/icd.d
-  printf '{\n  "file_format_version": "1.0.0",\n  "ICD": { "library_path": "libGLX_nvidia.so.0", "api_version": "1.3.194" }\n}\n' \
-    > /usr/share/vulkan/icd.d/nvidia_icd.json
-  echo "  created /usr/share/vulkan/icd.d/nvidia_icd.json (was missing)"
+  $SUDO mkdir -p /usr/share/vulkan/icd.d 2>/dev/null || true
+  printf '{\n  "file_format_version": "1.0.0",\n  "ICD": { "library_path": "%s", "api_version": "1.3.194" }\n}\n' "$NV_GLX" \
+    | $SUDO tee /usr/share/vulkan/icd.d/nvidia_icd.json >/dev/null 2>&1 \
+    && echo "  created /usr/share/vulkan/icd.d/nvidia_icd.json (was missing)" || true
 fi
 # Force Vulkan to use ONLY the NVIDIA ICD so a duplicate/software (llvmpipe) ICD can't make
 # Isaac Sim see the GPU twice ("Multiple ICDs found -> instability/crash").
@@ -117,7 +137,17 @@ python -c "import isaaclab" || { echo "ERROR: isaaclab core still not importable
 
 echo "== robot_lab (clone + editable install) =="
 if [ ! -d "$REPO_DIR/.git" ]; then
-  git clone --branch "$REPO_BRANCH" "$REPO_URL" "$REPO_DIR"
+  if [ -d "$REPO_DIR" ] && [ -n "$(ls -A "$REPO_DIR" 2>/dev/null)" ]; then
+    # dir exists but is NOT a git repo (e.g. a logs/ dir a local staging step pre-created):
+    # a plain `git clone` into it would abort. Clone into a temp and merge so nothing is lost.
+    echo "  $REPO_DIR exists but is not a git checkout -- cloning to temp and merging"
+    _tmp="$(mktemp -d)"
+    git clone --branch "$REPO_BRANCH" "$REPO_URL" "$_tmp/robot_lab"
+    cp -a "$_tmp/robot_lab/." "$REPO_DIR/"
+    rm -rf "$_tmp"
+  else
+    git clone --branch "$REPO_BRANCH" "$REPO_URL" "$REPO_DIR"
+  fi
 else
   echo "  $REPO_DIR already cloned"
 fi

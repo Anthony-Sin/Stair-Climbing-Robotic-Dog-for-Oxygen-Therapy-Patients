@@ -2,11 +2,12 @@
 
 Opt-in via ``--living-room`` (isaac_args) / ``SIM_LIVING_ROOM=1`` (run_living_room.bat).
 It restages the SAME proven robot / patient / stair-climb stack from the default sim
-inside a furnished living room: a handful of collidable household props (sofa, coffee
-table, bookshelf, armchair, TV console, ...) sit on the flat approach floor, and the
-patient walks a realistic serpentine route that weaves AROUND them before rejoining the
-stair centreline and climbing -- instead of the old straight line / simple left-right
-zigzag (``--person-approach-turns``).
+(pgtt walk + blind_rl climb -- the policy pair that actually reaches the top landing)
+inside a furnished living room: ten collidable household props (sofa, coffee table,
+bookshelf, armchair, TV console, ottoman, ...) sit on the flat approach floor, three of
+them standing IN the lane, and the patient walks a realistic THREE-bend route that weaves
+AROUND them (+Y, -Y, +Y) before rejoining the stair centreline and climbing -- instead of
+the old straight line / simple left-right zigzag (``--person-approach-turns``).
 
 Design contract (matches ``final_scene``):
   * The staircase base is FIXED at x = 2.0 (``StairSpec.start_x_m``); every prop and
@@ -68,30 +69,38 @@ class Furniture:
         return self.cy + self.sy / 2.0
 
 
-# Household furniture. A few "gate" pieces sit near the centreline to force the
-# serpentine weave; the rest frame the room against the side walls. Heights and
-# footprints are roughly life-sized. All are collidable (FixedCuboid) so the run is
-# a genuine obstacle course.
+# Household furniture. Two "gate" pieces stand IN the centre lane (not along the
+# walls) and force the patient's right-then-left weave; the rest are a real seating
+# group + media wall + entry nook that frame the room. Heights and footprints are
+# roughly life-sized. All are collidable (FixedCuboid) so the run is a genuine
+# obstacle course. Proven policy pair: pgtt walk + blind_rl climb (see run_sim.ps1).
 FURNITURE: Tuple[Furniture, ...] = (
-    # A REAL room, not two wall-rows: a main SEATING GROUP on the -Y side (a long couch
-    # with a coffee table PROTRUDING into the room in front of it and an armchair at its
-    # far end), a MEDIA WALL opposite on +Y (loveseat + TV console), and an ENTRY nook
-    # (bookshelf, lamp, side table). The patient strolls in and curves gently UP around the
-    # protruding coffee table, then centres for the stairs. Still bounded by the two rules
-    # that made the climb work: gentle turns (dog keeps the patient in view) + a straight
-    # centred run-up to the first riser. Clearances validated to CLEARANCE_MIN_M below.
-    # --- main seating group (-Y) ---
-    Furniture("sofa_wall", -1.20, -1.60, 2.30, 0.80, 0.75, (0.34, 0.30, 0.28)),    # long couch along the -Y wall
-    Furniture("coffee_table", -1.20, -0.75, 0.90, 0.70, 0.42, (0.42, 0.28, 0.15)), # wood table IN FRONT of it (protrudes to centre)
-    Furniture("armchair", 0.45, -1.25, 0.90, 0.90, 0.80, (0.34, 0.42, 0.32)),      # accent chair at the group's far end
-    Furniture("end_table", -2.75, -1.45, 0.55, 0.55, 0.50, (0.40, 0.26, 0.14)),    # side table at the couch's near end
-    Furniture("floor_lamp", -3.00, -2.10, 0.28, 0.28, 1.55, (0.78, 0.74, 0.62)),   # floor lamp, -Y corner
-    # --- media wall (+Y), facing the seating group ---
-    Furniture("tv_console", -0.70, 1.90, 2.00, 0.40, 0.55, (0.14, 0.14, 0.16)),    # TV unit on the +Y wall
-    Furniture("sofa_center", -2.50, 1.45, 1.40, 0.95, 0.75, (0.60, 0.52, 0.40)),   # loveseat, +Y, facing the group
-    Furniture("bookshelf", -3.72, 1.70, 0.90, 0.45, 1.80, (0.28, 0.18, 0.10)),     # bookshelf, +Y entry corner
-    # --- accent by the stairs ---
-    Furniture("plant", 1.40, 1.00, 0.42, 0.42, 1.25, (0.18, 0.42, 0.20)),          # potted plant by the stair base
+    # A REAL, lived-in room. FOUR compact obstacles stand IN the lane (near the centreline),
+    # one per bend, so the patient must DETOUR AROUND each -- an angular four-bend course, not a
+    # sway past wall furniture. Because the dog trails near the centreline (it does NOT copy the
+    # patient's weave), those in-lane props sit right where it drives, so it steers around them
+    # with its depth obstacle-avoidance (run with SIM_AVOID_OBSTACLES=1; avoidance is hard-latched
+    # OFF once the stairs are seen, so the pgtt walk + blind_rl climb is unaffected). The rest
+    # frame the room along the two walls + entry corners, well off the lane. The last leg is a
+    # straight, CENTRED run-up to the first riser. validate_layout checks that the kinematic
+    # patient does not visually clip a prop (>= CLEARANCE_MIN_M against the SIMULATED WALKED PATH).
+    # --- IN-PATH obstacles: four compact props sit ON the lane (near y=0), one per bend, so
+    #     the patient must DETOUR AROUND each. The dog trails near the centreline (measured
+    #     Y in [-0.16,+0.23] while the patient wove +-0.48), so it would drive straight INTO
+    #     these -- its depth obstacle-avoidance (SIM_AVOID_OBSTACLES=1) steers it around them.
+    #     Each is nudged ~0.12 m to the side the patient does NOT take, so the detour gap is clear.
+    Furniture("coffee_table", -3.67, -0.24, 0.55, 0.45, 0.45, (0.42, 0.28, 0.15)), # obstacle 1: patient detours +Y around it
+    Furniture("ottoman",      -2.64,  0.28, 0.50, 0.50, 0.45, (0.30, 0.34, 0.40)), # obstacle 2: patient detours -Y around it
+    Furniture("plant",        -1.59, -0.20, 0.42, 0.42, 1.25, (0.18, 0.42, 0.20)), # obstacle 3: patient detours +Y around it
+    Furniture("side_table",   -0.47,  0.20, 0.48, 0.48, 0.55, (0.40, 0.26, 0.14)), # obstacle 4: patient detours -Y around it
+    # --- framing along the two walls + entry corners (well off the lane; avoidance ignores them) ---
+    Furniture("sofa_wall",    -2.40, -2.15, 2.30, 0.80, 0.75, (0.34, 0.30, 0.28)), # long couch along the -Y wall
+    Furniture("armchair",     -4.20, -1.95, 0.90, 0.90, 0.80, (0.34, 0.42, 0.32)), # accent chair, -Y entry
+    Furniture("floor_lamp",   -4.85, -2.30, 0.28, 0.28, 1.55, (0.78, 0.74, 0.62)), # floor lamp, -Y corner
+    Furniture("sofa_center",  -2.40,  2.15, 1.55, 0.90, 0.75, (0.60, 0.52, 0.40)), # loveseat on the +Y wall
+    Furniture("tv_console",    0.40,  2.10, 2.00, 0.40, 0.55, (0.14, 0.14, 0.16)), # TV unit, +Y wall toward the stairs
+    Furniture("bookshelf",    -4.60,  1.95, 0.90, 0.45, 1.80, (0.28, 0.18, 0.10)), # bookshelf, +Y entry corner
+    Furniture("end_table",     0.30, -1.85, 0.55, 0.55, 0.50, (0.40, 0.26, 0.14)), # side table, -Y wall near the stairs
 )
 
 
@@ -130,28 +139,50 @@ _ARCHVIS_CDN_BASE = "https://omniverse-content-production.s3-us-west-2.amazonaws
 # ---------------------------------------------------------------------------
 # Interior legs only (spawn prepended, stair approach snapped in build_living_room_route).
 ROUTE_LEGS: Tuple[Vec2, ...] = (
-    (-2.50, 0.05),   # enter roughly centred between the +Y loveseat and the -Y couch
-    (-1.15, 0.40),   # curve UP to pass above the coffee table that protrudes into the room
-    (0.30, 0.10),    # ease back toward centre past the seating group
-    (1.90, 0.00),    # straight, CENTRED, head-on run-up to the stairs (snapped at runtime)
+    (-3.54,  0.60),  # bend 1: detour +Y (left) around the coffee table in the lane
+    (-2.48, -0.60),  # bend 2: detour -Y (right) around the ottoman in the lane
+    (-1.42,  0.60),  # bend 3: detour +Y around the potted plant in the lane
+    (-0.36, -0.60),  # bend 4: detour -Y around the side table in the lane
+    (0.70,   0.00),  # settle back onto the centreline past the seating group
+    (1.90,   0.00),  # straight, CENTRED, head-on run-up to the stairs (snapped to the riser at runtime)
 )
-# NOTE: the last two legs give a straight centred run-up. Without it the winding route
+# NOTE 1: a genuine FOUR-bend course (+Y, -Y, +Y, -Y) -- the patient detours AROUND one
+# in-lane obstacle per bend, an angular staircase-style path, NOT "mostly straight". The
+# WAYPOINTS swing +-0.60 m; because the patient's follower switches target within the arrival
+# radius (isaac_env: 0.18 m on the living-room flat, tightened from 0.35 m, which rounded the
+# old routes down to a near-straight +-0.30 m ACTUAL sway), the ACTUAL walked path swings
+# ~+-0.48 m with ~56 deg corners -- winding, still a safe margin under the ~90 deg hairpins that
+# lose the follower. The DOG does NOT copy this weave (it trails near the centreline), so the
+# in-lane obstacles need depth avoidance (SIM_AVOID_OBSTACLES=1); the FOUR-bend geometry is
+# tuned so the patient's own detour and the dog's avoidance take the SAME side of each prop.
+# NOTE 2: starts further back (PATIENT_START_X_M = -4.6, was -3.5) so the four bends have room
+# to spread and the corners stay off the sharp-turn cliff.
+# NOTE 3: the last two legs give a straight, CENTRED run-up. Without it the winding route
 # delivered the trailing dog to the first riser off-centre (y~0.44, yaw ~-11 deg) and it
 # ground against the riser/handrail instead of mounting (run_sim_20260710_015851_696).
 
+# Patient spawn X (= --person-x for the living room, set by run_sim.ps1 -> run_isaac_window.ps1).
+# The route's first waypoint is this spawn; starting further back (-4.6, vs the -3.5 default)
+# gives the four-bend maze room to spread so the corners stay gentle.
+PATIENT_START_X_M = -4.6
+# Waypoint arrival radius the patient follower uses on the living-room FLAT approach (mirrors
+# isaac_env.update_person_patrol). Tightened from the shipped 0.35 m so the patient traces the
+# angular waypoint path instead of rounding it down to a near-straight sway. Used to SIMULATE
+# the actual walked path for furniture-clearance validation.
+FLAT_ARRIVE_RADIUS_M = 0.18
+
 # Room extent (for logging / bounds validation only; the physics floor is the
 # infinite default ground plane).
-ROOM_X: Vec2 = (-4.2, 2.0)
+ROOM_X: Vec2 = (-5.1, 2.0)
 ROOM_Y: Vec2 = (-2.6, 2.6)
 
-# Minimum clearance required from the route CENTRELINE to any furniture face. The
-# kinematic patient is driven exactly along this path; the DOG trails it at a ~1.0 m
-# standoff with its own depth-avoidance envelope, so the binding constraint is the
-# dog, not the mannequin. Raised 0.45 -> 0.60 m after run_sim_20260710_005402_091:
-# the dog over-closed and PARKED at the old 0.95 m hairpin gap ~4 m short of the
-# stairs (patient then pace-waited -> mutual standstill). 0.60 m leaves the
-# ~0.31 m-wide Go2 body ~0.44 m of side room to trail through the gentler weave.
-CLEARANCE_MIN_M = 0.60
+# Minimum clearance from the WALKED path to any furniture face. With obstacles now sitting
+# IN the lane (the patient detours around them) and the dog steering around them with its own
+# depth avoidance (SIM_AVOID_OBSTACLES=1), this is only a COSMETIC check that the kinematic
+# patient does not visually clip a prop -- NOT a dog-clearance guarantee (avoidance owns that
+# at runtime). So it is small (0.15 m); the in-path obstacles are meant to be close. The wall
+# framing clears the path by a metre+.
+CLEARANCE_MIN_M = 0.15
 # Waypoints closer than this get skipped by the 0.35 m arrival threshold; keep legs
 # comfortably longer so the patient visits every turn.
 WAYPOINT_SPACING_MIN_M = 0.70
@@ -239,13 +270,63 @@ def _seg_furniture_dist(a: Vec2, b: Vec2, f: Furniture) -> float:
     return best
 
 
-def validate_layout(*, verbose: bool = True) -> dict:
-    """Assert the route clears every furniture box and legs are well-spaced.
+def _simulate_walked_path(waypoints: List[Vec2], arrive: float = FLAT_ARRIVE_RADIUS_M) -> List[Vec2]:
+    """Replicate isaac_env.update_person_patrol's flat-approach motion to recover the ACTUAL
+    path the patient walks (and the dog follows): step straight toward the current waypoint,
+    switch to the next when within ``arrive``. Returns a polyline decimated to ~8 cm. The dog
+    follows THIS, not the raw waypoints (which swing wider/sharper because the follower cuts
+    each corner by ``arrive``), so furniture clearance is validated against it. speed/dt only
+    set sample density; the path shape depends on ``arrive`` and the waypoints."""
+    if len(waypoints) < 2:
+        return [(float(x), float(y)) for (x, y) in waypoints]
+    speed, dt = 0.35, 1.0 / 60.0
+    x, y = float(waypoints[0][0]), float(waypoints[0][1])
+    idx = 1
+    out: List[Vec2] = [(x, y)]
+    for _ in range(400000):
+        tx, ty = float(waypoints[idx][0]), float(waypoints[idx][1])
+        dx, dy = tx - x, ty - y
+        d = math.hypot(dx, dy)
+        if d <= arrive:
+            if idx >= len(waypoints) - 1:
+                break
+            idx += 1
+            continue
+        x += dx / d * speed * dt
+        y += dy / d * speed * dt
+        if math.hypot(x - out[-1][0], y - out[-1][1]) >= 0.08:
+            out.append((x, y))
+    last = (float(waypoints[-1][0]), float(waypoints[-1][1]))
+    if math.hypot(last[0] - out[-1][0], last[1] - out[-1][1]) > 1e-6:
+        out.append(last)
+    return out
 
-    Returns a summary dict; raises AssertionError with a specific message on the
-    first violation so a layout edit gets an actionable failure.
+
+def _path_max_turn_deg(path: List[Vec2]) -> float:
+    """Sharpest heading change along a polyline (degrees). Reported so a layout edit can see
+    the ACTUAL corner the follow dog faces (the two runs that climbed had 36 / 51 deg)."""
+    worst = 0.0
+    for i in range(1, len(path) - 1):
+        a0 = math.atan2(path[i][1] - path[i - 1][1], path[i][0] - path[i - 1][0])
+        a1 = math.atan2(path[i + 1][1] - path[i][1], path[i + 1][0] - path[i][0])
+        t = abs(math.degrees(a1 - a0))
+        t = min(t, 360.0 - t)
+        worst = max(worst, t)
+    return worst
+
+
+def validate_layout(*, verbose: bool = True) -> dict:
+    """Assert the WALKED path clears every furniture box and legs are well-spaced.
+
+    Clearance is checked against the simulated actual path (``_simulate_walked_path``), not the
+    raw waypoints, because that is where the patient/dog actually go. Returns a summary dict;
+    raises AssertionError with a specific message on the first violation.
     """
-    route = build_living_room_route((-3.5, 0.0))
+    route = build_living_room_route((PATIENT_START_X_M, 0.0))
+    walked = _simulate_walked_path(route)
+    walk_turn = _path_max_turn_deg(walked)
+    walk_ymin = min(p[1] for p in walked)
+    walk_ymax = max(p[1] for p in walked)
     # 1. Route stays in the room and every turn is in front of the stairs.
     for (x, y) in route[:-1]:
         assert x < STAIR_START_X_M, (
@@ -273,17 +354,23 @@ def validate_layout(*, verbose: bool = True) -> dict:
             f"the 0.35 m arrival threshold may skip a turn"
         )
 
-    # 4. Clearance: every route segment vs every furniture box.
+    # 4. Clearance: every WALKED-path segment vs every furniture box (the dog follows the
+    #    simulated actual path, not the raw waypoints).
     worst = (float("inf"), None, None)
     rows = []
-    for i in range(len(route) - 1):
-        a, b = route[i], route[i + 1]
+    for i in range(len(walked) - 1):
+        a, b = walked[i], walked[i + 1]
         for f in FURNITURE:
             d = _seg_furniture_dist(a, b, f)
-            rows.append((d, i, f.name))
             if d < worst[0]:
                 worst = (d, i, f.name)
-    rows.sort(key=lambda r: r[0])
+    # tightest clearance per furniture piece (for the printout)
+    per_piece = {}
+    for f in FURNITURE:
+        per_piece[f.name] = min(
+            _seg_furniture_dist(walked[i], walked[i + 1], f) for i in range(len(walked) - 1)
+        )
+    rows = sorted(((d, nm) for nm, d in per_piece.items()), key=lambda r: r[0])
 
     if verbose:
         print("=== living-room layout ===")
@@ -293,23 +380,26 @@ def validate_layout(*, verbose: bool = True) -> dict:
             print(f"  {f.name:14s} centre=({f.cx:+.2f},{f.cy:+.2f}) "
                   f"size=({f.sx:.2f}x{f.sy:.2f}x{f.sz:.2f}) "
                   f"foot X[{f.x_min:+.2f},{f.x_max:+.2f}] Y[{f.y_min:+.2f},{f.y_max:+.2f}]")
-        print(f"route ({len(route)} flat waypoints):")
+        print(f"route ({len(route)} flat waypoints, start x={PATIENT_START_X_M}):")
         for k, (x, y) in enumerate(route):
             print(f"  wp{k}: ({x:+.2f}, {y:+.2f})")
+        print(f"WALKED path (arrive={FLAT_ARRIVE_RADIUS_M} m): actual sway "
+              f"[{walk_ymin:+.2f}, {walk_ymax:+.2f}] m   max corner {walk_turn:.0f} deg")
         print(f"min waypoint spacing: {worst_gap:.2f} m  (need >= {WAYPOINT_SPACING_MIN_M})")
-        print("tightest 5 segment/furniture clearances:")
-        for d, i, nm in rows[:5]:
-            print(f"  seg {i}->{i+1} vs {nm:14s}: {d:.3f} m")
-        print(f"MIN CLEARANCE: {worst[0]:.3f} m at seg {worst[1]}->{worst[1]+1} "
-              f"vs {worst[2]}  (need >= {CLEARANCE_MIN_M})")
+        print("tightest 5 walked-path/furniture clearances:")
+        for d, nm in rows[:5]:
+            print(f"  {nm:14s}: {d:.3f} m")
+        print(f"MIN CLEARANCE: {worst[0]:.3f} m vs {worst[2]}  (need >= {CLEARANCE_MIN_M})")
 
     assert worst[0] >= CLEARANCE_MIN_M, (
-        f"route seg {worst[1]}->{worst[1]+1} clears '{worst[2]}' by only "
-        f"{worst[0]:.3f} m (< {CLEARANCE_MIN_M}); widen the gap or move the waypoint"
+        f"walked path clears '{worst[2]}' by only {worst[0]:.3f} m "
+        f"(< {CLEARANCE_MIN_M}); move the prop or the waypoint"
     )
     return {
         "min_clearance_m": round(worst[0], 3),
         "min_waypoint_spacing_m": round(worst_gap, 3),
+        "walked_sway_m": [round(walk_ymin, 2), round(walk_ymax, 2)],
+        "walked_max_corner_deg": round(walk_turn, 1),
         "furniture_count": len(FURNITURE),
         "route_waypoints": len(route),
     }

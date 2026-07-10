@@ -162,6 +162,12 @@ def main():
         yaw_gain=float(getattr(args, "avoid_yaw_gain", 1.0)),
     )
     _avoid_enabled = bool(getattr(args, "avoid_obstacles", False))
+    # One-way latch: once the stairs are seen / the climb engages, furniture avoidance is
+    # OFF for the rest of the run and NEVER re-enables. The per-frame gate below already
+    # suppresses avoidance on/approaching the stairs, but that depends on stairs_detected
+    # staying latched frame-to-frame; this hard latch guarantees a depth blip near the treads
+    # can never re-open avoidance mid-climb (the failure that made avoidance stall the climb).
+    _avoid_perma_off = False
 
     # Depth-based near-field stair detector (Rec 2): geometrically profiles the
     # parkour depth camera column data so stair detection stays reliable even when
@@ -1279,8 +1285,16 @@ def main():
             # while on / approaching the stairs -- the staircase is a SEPARATE YOLO-World class
             # and never appears in the obstacle list, so stairs are still climbed, not dodged.
             debug_info["avoid_active"] = False
+            # Hard, one-way latch: the first sign of the stairs / climb kills furniture
+            # avoidance for the rest of the run (there is no furniture to dodge on or past
+            # the stairs; keeping it alive there risks reading the treads as a wall).
+            if (bool(debug_info.get("stairs_detected", False))
+                    or bool(debug_info.get("stairs_action_active", False))
+                    or bool(_climbing_latched)):
+                _avoid_perma_off = True
             _avoid_gate = (
                 _avoid_enabled
+                and not _avoid_perma_off
                 and bool(debug_info.get("person_detected", False))
                 and bool(_avoid_obstacles_frame)
                 and not bool(debug_info.get("stairs_detected", False))
