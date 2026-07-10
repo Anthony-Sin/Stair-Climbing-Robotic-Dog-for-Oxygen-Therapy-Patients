@@ -142,6 +142,88 @@ def compute_obstacle_avoidance(
     return out
 
 
+def depth_obstacles(
+    depth_img,
+    person_gap_m: Optional[float] = None,
+    *,
+    band_y0: float = 0.45,
+    band_y1: float = 0.68,
+    n_cols: int = 16,
+    near_max_m: float = 2.2,
+    clearance_m: float = 0.35,
+    min_valid: int = 12,
+    percentile: float = 12.0,
+) -> List[Dict[str, Any]]:
+    """Depth-camera obstacle detector -- works on ANY solid thing ahead, no recognition.
+
+    Scans a horizontal band near the image horizon (``band_y0..band_y1`` as fractions
+    of height) split into ``n_cols`` columns; a column whose robust near-depth is
+    closer than ``min(near_max_m, person_gap - clearance_m)`` is a vertical obstacle
+    BETWEEN the dog and the patient. Gating on the person gap is what rejects both the
+    FLOOR (recedes to > gap at the horizon) and the PATIENT itself (sits at ~gap, not
+    nearer). Adjacent obstacle columns are merged into one synthetic box, returned in
+    the same ``{"bbox", "range_m", "label"}`` shape the YOLO-World furniture obstacles
+    use -- so ``compute_obstacle_avoidance`` treats both identically.
+
+    Returns [] when there is nothing nearer than the patient (open path).
+    """
+    import numpy as np
+
+    if depth_img is None:
+        return []
+    if hasattr(depth_img, "get_data"):
+        depth_img = depth_img.get_data()
+    if depth_img is None or getattr(depth_img, "size", 0) == 0:
+        return []
+
+    h, w = depth_img.shape[:2]
+    y0 = int(max(0.0, min(1.0, band_y0)) * h)
+    y1 = int(max(0.0, min(1.0, band_y1)) * h)
+    if y1 <= y0 or w <= 0:
+        return []
+
+    # Only flag things closer than the patient (minus a clearance) -- rejects the floor
+    # and the followed patient, leaving genuine in-the-way obstacles.
+    thr_m = float(near_max_m)
+    if person_gap_m is not None and float(person_gap_m) > 0.0:
+        thr_m = min(near_max_m, float(person_gap_m) - float(clearance_m))
+    if thr_m <= 0.2:
+        return []  # patient right in front; nothing to steer around
+
+    band = depth_img[y0:y1, :]
+    col_w = max(1, w // n_cols)
+    near = [float("inf")] * n_cols
+    hi = near_max_m * 1000.0
+    for c in range(n_cols):
+        cs = c * col_w
+        ce = min(w, cs + col_w)
+        sl = band[:, cs:ce]
+        valid = sl[(sl >= 100) & (sl <= hi)]
+        if valid.size >= min_valid:
+            near[c] = float(np.percentile(valid.astype(np.float32), percentile)) / 1000.0
+
+    # Cluster adjacent obstacle columns into synthetic obstacle boxes.
+    groups: List[List[int]] = []
+    cur: List[int] = []
+    for c in range(n_cols):
+        if near[c] < thr_m:
+            cur.append(c)
+        elif cur:
+            groups.append(cur)
+            cur = []
+    if cur:
+        groups.append(cur)
+
+    out: List[Dict[str, Any]] = []
+    for g in groups:
+        x1 = g[0] * col_w
+        x2 = min(w, (g[-1] + 1) * col_w)
+        rng = min(near[c] for c in g)
+        out.append({"bbox": [float(x1), float(y0), float(x2), float(y1)],
+                    "range_m": float(rng), "label": "depth"})
+    return out
+
+
 if __name__ == "__main__":
     # Host self-check: sign + skirt-direction geometry, no perception deps.
     cx, fx = 640.0, 924.4  # 1280-wide D435 RGB (fx = width*26/36)
@@ -172,4 +254,19 @@ if __name__ == "__main__":
     r4 = compute_obstacle_avoidance(obs_far, person_left, cx, fx, cfg)
     assert not r4["active"], r4
     print("beyond-range obstacle    -> ignored:", r4["active"])
-    print("\nOK: obstacle-avoidance geometry self-check passed")
+
+    # --- depth_obstacles: near vertical strip found, patient-gap background rejected ---
+    import numpy as np
+    depth = np.full((720, 1280), 1200, dtype=np.uint16)   # 1.2 m background (~patient gap)
+    depth[:, 500:700] = 500                                 # 0.5 m obstacle strip, cols ~6-8
+    dobs = depth_obstacles(depth, person_gap_m=1.2)
+    assert len(dobs) == 1, dobs
+    bx1, _, bx2, _ = dobs[0]["bbox"]
+    assert 440 <= bx1 <= 520 and 680 <= bx2 <= 760, dobs
+    assert abs(dobs[0]["range_m"] - 0.5) < 0.05, dobs
+    print("depth strip @0.5m, gap 1.2m ->", dobs)
+    # Nothing nearer than the patient -> no depth obstacle (open path).
+    depth_open = np.full((720, 1280), 1100, dtype=np.uint16)
+    assert depth_obstacles(depth_open, person_gap_m=1.2) == [], "open path should be clear"
+    print("open path (all ~gap)      -> no depth obstacle")
+    print("\nOK: obstacle-avoidance + depth-detector self-checks passed")

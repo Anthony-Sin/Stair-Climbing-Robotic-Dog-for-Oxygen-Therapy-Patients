@@ -607,6 +607,41 @@ def parse_args():
                         help='Lower-center ROI height fraction for front obstacle depth sampling')
 
     # -----------------------------------------------------------------------
+    # Reactive furniture avoidance (control.obstacle_avoidance). OFF by default so
+    # the proven default sim is unchanged; run_sim enables it for --living-room runs.
+    # When on, YOLO-World also queries furniture classes and the flat-follow steer is
+    # blended around detected obstacles (the staircase is a separate class, never
+    # avoided). Self-gating: inert when nothing is detected.
+    # -----------------------------------------------------------------------
+    parser.add_argument('--avoid-obstacles', action='store_true', default=False,
+                        help='Enable reactive furniture-obstacle avoidance (YOLO-World furniture '
+                             'detection + steer-around). Off by default; the dog steers around '
+                             'couches/tables between it and the patient instead of wedging.')
+    parser.add_argument('--avoid-range-m', type=float, default=2.0,
+                        help='Ignore obstacles farther than this (m) from the avoidance steer.')
+    parser.add_argument('--avoid-engage-m', type=float, default=1.3,
+                        help='Avoidance blend weight saturates to 1.0 at/below this range (m).')
+    parser.add_argument('--avoid-cone-deg', type=float, default=24.0,
+                        help='Forward driving cone (deg); only obstacles overlapping it are avoided.')
+    parser.add_argument('--avoid-margin-deg', type=float, default=12.0,
+                        help='Steer this far (deg) past the skirted obstacle edge for clearance.')
+    parser.add_argument('--avoid-slow-range-m', type=float, default=1.1,
+                        help='Cut forward speed below this range (m) when an obstacle is ~dead-ahead.')
+    parser.add_argument('--avoid-min-speed-factor', type=float, default=0.35,
+                        help='Floor on the forward-speed cut near an obstacle (fraction of commanded vx).')
+    parser.add_argument('--avoid-max-yaw-rad', type=float, default=0.6,
+                        help='Clamp on the avoidance heading magnitude (rad).')
+    parser.add_argument('--avoid-yaw-gain', type=float, default=1.0,
+                        help='Gain mapping the avoidance heading target to the rotation_cmd twist.')
+    parser.add_argument('--avoid-depth-band-y0', type=float, default=0.45,
+                        help='Top of the depth-obstacle scan band (fraction of image height). '
+                             'Near the horizon so the floor (which recedes far there) is not '
+                             'flagged as an obstacle.')
+    parser.add_argument('--avoid-depth-band-y1', type=float, default=0.68,
+                        help='Bottom of the depth-obstacle scan band (fraction of image height). '
+                             'Kept above the very bottom rows (the floor right at the dog).')
+
+    # -----------------------------------------------------------------------
     # Low-level Locomotion Policy
     # -----------------------------------------------------------------------
     low_level_group = parser.add_argument_group("Low-level Locomotion")

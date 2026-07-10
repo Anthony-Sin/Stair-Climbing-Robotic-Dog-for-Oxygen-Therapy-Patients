@@ -73,18 +73,54 @@ class Furniture:
 # footprints are roughly life-sized. All are collidable (FixedCuboid) so the run is
 # a genuine obstacle course.
 FURNITURE: Tuple[Furniture, ...] = (
-    # --- gate pieces: the patient visibly curves AROUND each of these two ---
-    Furniture("coffee_table", -2.30, 0.40, 0.90, 0.70, 0.42, (0.42, 0.28, 0.15)),  # wood; patient passes below it
-    Furniture("sofa_center", -0.20, -0.55, 1.40, 0.95, 0.75, (0.60, 0.52, 0.40)),  # beige couch; patient passes above it
-    # --- side / wall framing pieces (the route clears these comfortably) ---
-    Furniture("sofa_wall", -2.55, 1.90, 2.30, 0.80, 0.75, (0.30, 0.36, 0.46)),     # blue-grey sofa on the +Y wall
-    Furniture("bookshelf", -3.60, -1.95, 0.90, 0.45, 1.80, (0.28, 0.18, 0.10)),    # dark walnut on the -Y wall
-    Furniture("armchair", -1.05, -2.05, 0.90, 0.90, 0.80, (0.34, 0.42, 0.32)),     # green chair, -Y side
-    Furniture("tv_console", 0.60, 2.15, 2.00, 0.40, 0.55, (0.14, 0.14, 0.16)),     # charcoal TV unit, +Y wall
-    Furniture("end_table", 1.10, -1.75, 0.55, 0.55, 0.50, (0.40, 0.26, 0.14)),     # wood side table, -Y side
-    Furniture("plant", 1.70, 1.55, 0.42, 0.42, 1.25, (0.18, 0.42, 0.20)),          # potted plant, +Y decor
-    Furniture("floor_lamp", -3.45, 1.10, 0.28, 0.28, 1.55, (0.78, 0.74, 0.62)),    # brass floor lamp, +Y decor
+    # A REAL room, not two wall-rows: a main SEATING GROUP on the -Y side (a long couch
+    # with a coffee table PROTRUDING into the room in front of it and an armchair at its
+    # far end), a MEDIA WALL opposite on +Y (loveseat + TV console), and an ENTRY nook
+    # (bookshelf, lamp, side table). The patient strolls in and curves gently UP around the
+    # protruding coffee table, then centres for the stairs. Still bounded by the two rules
+    # that made the climb work: gentle turns (dog keeps the patient in view) + a straight
+    # centred run-up to the first riser. Clearances validated to CLEARANCE_MIN_M below.
+    # --- main seating group (-Y) ---
+    Furniture("sofa_wall", -1.20, -1.60, 2.30, 0.80, 0.75, (0.34, 0.30, 0.28)),    # long couch along the -Y wall
+    Furniture("coffee_table", -1.20, -0.75, 0.90, 0.70, 0.42, (0.42, 0.28, 0.15)), # wood table IN FRONT of it (protrudes to centre)
+    Furniture("armchair", 0.45, -1.25, 0.90, 0.90, 0.80, (0.34, 0.42, 0.32)),      # accent chair at the group's far end
+    Furniture("end_table", -2.75, -1.45, 0.55, 0.55, 0.50, (0.40, 0.26, 0.14)),    # side table at the couch's near end
+    Furniture("floor_lamp", -3.00, -2.10, 0.28, 0.28, 1.55, (0.78, 0.74, 0.62)),   # floor lamp, -Y corner
+    # --- media wall (+Y), facing the seating group ---
+    Furniture("tv_console", -0.70, 1.90, 2.00, 0.40, 0.55, (0.14, 0.14, 0.16)),    # TV unit on the +Y wall
+    Furniture("sofa_center", -2.50, 1.45, 1.40, 0.95, 0.75, (0.60, 0.52, 0.40)),   # loveseat, +Y, facing the group
+    Furniture("bookshelf", -3.72, 1.70, 0.90, 0.45, 1.80, (0.28, 0.18, 0.10)),     # bookshelf, +Y entry corner
+    # --- accent by the stairs ---
+    Furniture("plant", 1.40, 1.00, 0.42, 0.42, 1.25, (0.18, 0.42, 0.20)),          # potted plant by the stair base
 )
+
+
+# Realistic Omniverse ArchVis Residential furniture meshes, one per prop
+# (paths S3-verified 2026-07-09). Referenced onto the stage when they resolve;
+# each is auto-oriented (up-axis read at runtime) and uniformly scaled to FIT
+# INSIDE its Furniture footprint box, then placed on the floor at the box centre.
+# The COLLISION is always the same invisible footprint box as the plain-box
+# variant, so the validated route + depth-avoidance envelope are provably
+# unchanged -- the mesh is a purely visual skin. Any piece whose asset fails to
+# resolve/compose falls back to its visible coloured box, and
+# SIM_LIVING_ROOM_BOXES=1 forces the plain-box variant for the whole scene.
+# Paths are relative to the ArchVis root (the sibling of the Isaac assets root,
+# e.g. ".../Assets/ArchVis/...").
+FURNITURE_USD = {
+    "coffee_table": "ArchVis/Residential/Furniture/CoffeeTables/Midtown.usd",
+    "sofa_center":  "ArchVis/Residential/Furniture/Sofas/Moline.usd",
+    "sofa_wall":    "ArchVis/Residential/Furniture/Sofas/Arnold.usd",
+    "bookshelf":    "ArchVis/Residential/Furniture/Bookshelves/Delmar.usd",
+    "armchair":     "ArchVis/Residential/Furniture/Chairs/Armchair.usd",
+    "tv_console":   "ArchVis/Residential/Furniture/MediaTables/Manchester.usd",
+    "end_table":    "ArchVis/Residential/Furniture/EndTables/Ellendale.usd",
+    "plant":        "ArchVis/Residential/Plants/Plant_01.usd",
+    "floor_lamp":   "ArchVis/Residential/Lighting/Floor Lamps/BrassFloorLamp.usd",
+}
+
+# ArchVis assets are not version-forked (unlike Isaac/<ver>/...), so a single CDN
+# fallback URL mirrors the Isaac-assets-root resolution the person/hospital loaders use.
+_ARCHVIS_CDN_BASE = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/"
 
 
 # ---------------------------------------------------------------------------
@@ -94,12 +130,14 @@ FURNITURE: Tuple[Furniture, ...] = (
 # ---------------------------------------------------------------------------
 # Interior legs only (spawn prepended, stair approach snapped in build_living_room_route).
 ROUTE_LEGS: Tuple[Vec2, ...] = (
-    (-2.30, -0.95),  # veer into the lower lane, curving below the coffee table
-    (-1.38, -0.95),  # hold the lower lane out to the clear gap between the table and the sofa
-    (-1.38, 0.90),   # turn and cross up through the furniture-free gap into the upper lane
-    (0.85, 0.90),    # travel the upper lane above the centre sofa, out past its far end
-    (1.90, 0.00),    # curve back down and rejoin the stair centreline (snapped at runtime)
+    (-2.50, 0.05),   # enter roughly centred between the +Y loveseat and the -Y couch
+    (-1.15, 0.40),   # curve UP to pass above the coffee table that protrudes into the room
+    (0.30, 0.10),    # ease back toward centre past the seating group
+    (1.90, 0.00),    # straight, CENTRED, head-on run-up to the stairs (snapped at runtime)
 )
+# NOTE: the last two legs give a straight centred run-up. Without it the winding route
+# delivered the trailing dog to the first riser off-centre (y~0.44, yaw ~-11 deg) and it
+# ground against the riser/handrail instead of mounting (run_sim_20260710_015851_696).
 
 # Room extent (for logging / bounds validation only; the physics floor is the
 # infinite default ground plane).
@@ -107,11 +145,13 @@ ROOM_X: Vec2 = (-4.2, 2.0)
 ROOM_Y: Vec2 = (-2.6, 2.6)
 
 # Minimum clearance required from the route CENTRELINE to any furniture face. The
-# kinematic patient is driven exactly along this path, so 0.45 m still leaves the
-# ~0.5 m-wide mannequin a visible gap (~0.20 m) and the ~0.31 m-wide Go2 body that
-# follows it ~0.29 m -- enough to weave the gaps on a first-look run. Widen this (and
-# re-space the furniture) if the follow controller is seen clipping a prop.
-CLEARANCE_MIN_M = 0.45
+# kinematic patient is driven exactly along this path; the DOG trails it at a ~1.0 m
+# standoff with its own depth-avoidance envelope, so the binding constraint is the
+# dog, not the mannequin. Raised 0.45 -> 0.60 m after run_sim_20260710_005402_091:
+# the dog over-closed and PARKED at the old 0.95 m hairpin gap ~4 m short of the
+# stairs (patient then pace-waited -> mutual standstill). 0.60 m leaves the
+# ~0.31 m-wide Go2 body ~0.44 m of side room to trail through the gentler weave.
+CLEARANCE_MIN_M = 0.60
 # Waypoints closer than this get skipped by the 0.35 m arrival threshold; keep legs
 # comfortably longer so the patient visits every turn.
 WAYPOINT_SPACING_MIN_M = 0.70
@@ -278,13 +318,179 @@ def validate_layout(*, verbose: bool = True) -> dict:
 # ---------------------------------------------------------------------------
 # Isaac spawn (imports Isaac lazily so the module stays system-python importable).
 # ---------------------------------------------------------------------------
-def spawn_living_room(world) -> int:
-    """Spawn the collidable household furniture into the live Isaac scene.
+def _import_isaac_refs():
+    """Resolve the nucleus + add_reference helpers across Isaac SDK versions
+    (same branch isaac_env / final_scene use)."""
+    try:
+        import omni.isaac.core.utils.nucleus as nucleus_utils
+        from omni.isaac.core.utils.stage import add_reference_to_stage
+    except ModuleNotFoundError:
+        import isaacsim.storage.native as nucleus_utils
+        from isaacsim.core.utils.stage import add_reference_to_stage
+    return nucleus_utils, add_reference_to_stage
 
-    Called from ``isaac_env.main`` right after ``spawn_obstacles`` when
-    ``args.living_room`` is set. Returns the number of props spawned.
+
+def _archvis_uri_candidates(relpath, assets_root):
+    """Full URIs to try for an ArchVis-relative path: the local assets root (the
+    ArchVis collection is the sibling of ``.../Assets/Isaac/<ver>``) first, then the
+    S3 CDN. Spaces are %20-encoded so https/omniverse URIs resolve."""
+    enc = relpath.replace(" ", "%20")
+    cands = []
+    if assets_root:
+        base = assets_root.rstrip("/")
+        idx = base.rfind("/Isaac/")
+        base = base[:idx] if idx != -1 else base  # ".../Assets"
+        cands.append(base.rstrip("/") + "/" + enc)
+    cands.append(_ARCHVIS_CDN_BASE + enc)
+    out, seen = [], set()
+    for c in cands:
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
+
+
+def _resolve_archvis_uri(relpath, assets_root, nucleus_utils):
+    """First candidate confirmed by ``is_file``; else the CDN candidate to ATTEMPT
+    (composition is validated by the caller, which falls back to a box on failure)."""
+    cands = _archvis_uri_candidates(relpath, assets_root)
+    for c in cands:
+        try:
+            if nucleus_utils.is_file(c):
+                return c
+        except Exception:
+            pass
+    return cands[-1] if cands else None
+
+
+def _read_up_axis(uri):
+    """Up-axis ('Y'/'Z') of the referenced layer. ArchVis assets are typically
+    Y-up; Isaac's stage is Z-up and references are NOT auto-rotated, so we read the
+    source metadata to know whether to stand the mesh up. Populates the Sdf layer
+    cache, so the subsequent reference reuses this open (no double download)."""
+    try:
+        from pxr import Usd, UsdGeom
+        s = Usd.Stage.Open(uri)
+        if s is not None:
+            return UsdGeom.GetStageUpAxis(s)
+    except Exception:
+        pass
+    return "Z"
+
+
+def _spawn_real_furniture(stage, f, uri, up_axis, root, add_reference_to_stage):
+    """Reference the real mesh under a wrapper Xform, correct its up-axis, uniformly
+    scale it to FIT INSIDE the ``f`` footprint, and seat it on the floor at the box
+    centre. Returns the PLACED world-space AABB ``(min_xyz, max_xyz)`` on success (so
+    the collider can be sized to exactly what the depth camera sees), or ``None`` on
+    any degenerate bound so the caller falls back to a box."""
+    from pxr import Usd, UsdGeom, Gf
+
+    wrapper = f"{root}/{f.name}"
+    model = f"{wrapper}/Model"
+    if stage.GetPrimAtPath(wrapper).IsValid():
+        stage.RemovePrim(wrapper)
+    UsdGeom.Xform.Define(stage, wrapper)
+    add_reference_to_stage(usd_path=uri, prim_path=model)
+
+    model_prim = stage.GetPrimAtPath(model)
+    if model_prim and model_prim.IsValid():
+        try:
+            model_prim.Load()  # pull payloads so the bound is computable
+        except Exception:
+            pass
+    if not model_prim or not model_prim.IsValid() or not model_prim.GetChildren():
+        return None
+
+    wrapper_prim = stage.GetPrimAtPath(wrapper)
+    xf = UsdGeom.Xformable(wrapper_prim)
+    xf.ClearXformOpOrder()
+    # op order [translate, rotate, scale] => point transformed by scale first, then
+    # the up-axis rotation, then placement -- so scale is applied in asset-local space.
+    t_op = xf.AddTranslateOp()
+    r_op = xf.AddRotateXYZOp()
+    s_op = xf.AddScaleOp()
+    rot = Gf.Vec3f(90.0, 0.0, 0.0) if str(up_axis).upper().startswith("Y") else Gf.Vec3f(0.0, 0.0, 0.0)
+    r_op.Set(rot)
+    s_op.Set(Gf.Vec3f(1.0, 1.0, 1.0))
+    t_op.Set(Gf.Vec3d(0.0, 0.0, 0.0))
+
+    bbox = UsdGeom.BBoxCache(
+        Usd.TimeCode.Default(),
+        [UsdGeom.Tokens.default_, UsdGeom.Tokens.render],
+        useExtentsHint=True,
+    )
+    rng = bbox.ComputeWorldBound(wrapper_prim).ComputeAlignedRange()
+    if rng.IsEmpty():
+        return None
+    mn, mx = rng.GetMin(), rng.GetMax()
+    dx = max(mx[0] - mn[0], 1e-6)
+    dy = max(mx[1] - mn[1], 1e-6)
+    dz = max(mx[2] - mn[2], 1e-6)
+    s = min(f.sx / dx, f.sy / dy, f.sz / dz)  # uniform fit-inside (proportions kept)
+    if not (0.0 < s < float("inf")):
+        return None
+    s_op.Set(Gf.Vec3f(s, s, s))
+
+    bbox.Clear()
+    rng2 = bbox.ComputeWorldBound(wrapper_prim).ComputeAlignedRange()
+    if rng2.IsEmpty():
+        return None
+    mn2, mx2 = rng2.GetMin(), rng2.GetMax()
+    cx_now = 0.5 * (mn2[0] + mx2[0])
+    cy_now = 0.5 * (mn2[1] + mx2[1])
+    dz_placed = float(mx2[2] - mn2[2])
+    t_op.Set(Gf.Vec3d(float(f.cx - cx_now), float(f.cy - cy_now), float(-mn2[2])))
+    # Placed AABB, snapped to the floor (base z = 0) and centred at the box (cx, cy).
+    placed_min = (f.cx - 0.5 * float(mx2[0] - mn2[0]), f.cy - 0.5 * float(mx2[1] - mn2[1]), 0.0)
+    placed_max = (f.cx + 0.5 * float(mx2[0] - mn2[0]), f.cy + 0.5 * float(mx2[1] - mn2[1]), dz_placed)
+    return placed_min, placed_max
+
+
+def _add_footprint_collider(world, stage, f, root, FixedCuboid, np, *, visible, aabb=None):
+    """The collidable footprint box. When a real mesh is drawn on top we keep this
+    box for physics but hide its visual (``visible=False``) and size it to the mesh's
+    placed AABB (so collision matches exactly what the depth camera sees); when the
+    mesh is absent it IS the prop (``visible=True``), the plain-box variant sized to
+    the nominal footprint."""
+    from pxr import UsdGeom
+
+    if aabb is not None:
+        (x0, y0, z0), (x1, y1, z1) = aabb
+        cx, cy = 0.5 * (x0 + x1), 0.5 * (y0 + y1)
+        sx, sy, sz = max(x1 - x0, 1e-3), max(y1 - y0, 1e-3), max(z1 - z0, 1e-3)
+    else:
+        cx, cy, sx, sy, sz = f.cx, f.cy, f.sx, f.sy, f.sz
+
+    prim_path = f"{root}/{f.name}_collider" if not visible else f"{root}/{f.name}"
+    name = f"living_room_{f.name}_col" if not visible else f"living_room_{f.name}"
+    world.scene.add(
+        FixedCuboid(
+            prim_path=prim_path,
+            name=name,
+            position=np.array([cx, cy, sz / 2.0], dtype=float),
+            scale=np.array([sx, sy, sz], dtype=float),
+            color=np.array(f.color, dtype=float),
+        )
+    )
+    if not visible:
+        prim = stage.GetPrimAtPath(prim_path)
+        if prim and prim.IsValid():
+            UsdGeom.Imageable(prim).CreateVisibilityAttr().Set(UsdGeom.Tokens.invisible)
+
+
+def spawn_living_room(world) -> int:
+    """Spawn the household furniture into the live Isaac scene.
+
+    Each prop is a realistic Omniverse ArchVis mesh (``FURNITURE_USD``) skinned over
+    an invisible collidable footprint box; any mesh that fails to resolve falls back
+    to a visible coloured box. Set ``SIM_LIVING_ROOM_BOXES=1`` to force plain boxes.
+
+    Called from ``isaac_env.main`` right after ``spawn_obstacles`` (before
+    ``world.reset()``) when ``args.living_room`` is set. Returns the prop count.
     """
     import logging
+    import os
     import numpy as np
     from sim_logging_utils import log_event
     from env import env_state
@@ -294,32 +500,78 @@ def spawn_living_room(world) -> int:
     except ModuleNotFoundError:
         from isaacsim.core.api.objects import FixedCuboid
 
-    root = "/World/LivingRoom"
-    spawned = 0
-    for f in FURNITURE:
+    import omni.usd
+    stage = omni.usd.get_context().get_stage()
+
+    force_boxes = os.environ.get("SIM_LIVING_ROOM_BOXES") == "1"
+    nucleus_utils = add_reference_to_stage = None
+    assets_root = None
+    if not force_boxes:
         try:
-            world.scene.add(
-                FixedCuboid(
-                    prim_path=f"{root}/{f.name}",
-                    name=f"living_room_{f.name}",
-                    position=np.array([f.cx, f.cy, f.sz / 2.0], dtype=float),
-                    scale=np.array([f.sx, f.sy, f.sz], dtype=float),
-                    color=np.array(f.color, dtype=float),
-                )
-            )
-            spawned += 1
+            nucleus_utils, add_reference_to_stage = _import_isaac_refs()
+            try:
+                assets_root = nucleus_utils.get_assets_root_path()
+            except Exception:
+                assets_root = None
         except Exception as exc:
             log_event(
-                env_state.LOGGER, logging.WARNING, "living_room_prop_failed",
-                f"Failed to spawn living-room prop {f.name}",
-                prim_path=f"{root}/{f.name}", error=str(exc),
+                env_state.LOGGER, logging.WARNING, "living_room_refs_unavailable",
+                "Could not import Isaac reference helpers; using plain boxes",
+                error=str(exc),
             )
+            add_reference_to_stage = None
+
+    root = "/World/LivingRoom"
+    spawned = 0
+    real = 0
+    real_props = []
+    for f in FURNITURE:
+        used_real = False
+        relpath = FURNITURE_USD.get(f.name)
+        if add_reference_to_stage is not None and relpath:
+            try:
+                uri = _resolve_archvis_uri(relpath, assets_root, nucleus_utils)
+                up_axis = _read_up_axis(uri) if uri else "Z"
+                placed = _spawn_real_furniture(stage, f, uri, up_axis, root, add_reference_to_stage) if uri else None
+                if placed is not None:
+                    _add_footprint_collider(world, stage, f, root, FixedCuboid, np, visible=False, aabb=placed)
+                    used_real = True
+                    real += 1
+                    real_props.append(f.name)
+            except Exception as exc:
+                log_event(
+                    env_state.LOGGER, logging.WARNING, "living_room_real_asset_failed",
+                    f"Real mesh for {f.name} failed; falling back to a box",
+                    prop=f.name, uri=relpath, error=str(exc),
+                )
+                try:
+                    if stage.GetPrimAtPath(f"{root}/{f.name}").IsValid():
+                        stage.RemovePrim(f"{root}/{f.name}")
+                except Exception:
+                    pass
+                used_real = False
+
+        if not used_real:
+            try:
+                _add_footprint_collider(world, stage, f, root, FixedCuboid, np, visible=True)
+            except Exception as exc:
+                log_event(
+                    env_state.LOGGER, logging.WARNING, "living_room_prop_failed",
+                    f"Failed to spawn living-room prop {f.name}",
+                    prim_path=f"{root}/{f.name}", error=str(exc),
+                )
+                continue
+        spawned += 1
 
     log_event(
         env_state.LOGGER, logging.INFO, "living_room_spawned",
-        f"Living-room furniture spawned ({spawned}/{len(FURNITURE)} props); "
-        f"patient weaves a winding route around them before the stairs",
+        f"Living-room furniture spawned ({spawned}/{len(FURNITURE)} props, "
+        f"{real} realistic meshes); patient weaves a winding route around them "
+        f"before the stairs",
         prop_count=spawned,
+        realistic_mesh_count=real,
+        realistic_props=real_props,
+        boxed_props=[f.name for f in FURNITURE if f.name not in real_props],
         props=[f.name for f in FURNITURE],
         room_x=list(ROOM_X),
         room_y=list(ROOM_Y),

@@ -1843,6 +1843,15 @@ if ($NoDockerRun) {
     if ($StairSquareUp -and -not $NoStairSquareUp) {
         $visionArgs += "--stair-square-up"
     }
+    # Reactive furniture-obstacle avoidance. The PERIMETER living-room layout keeps every
+    # prop off the patient's lane (validated >=0.60 m clearance), so avoidance is unnecessary
+    # AND was implicated in the on-stair climb stall: the straight-route blind_rl sweep with
+    # NO avoidance climbed all 14x 0.15 m steps, while the living-room WITH avoidance mounted
+    # ~2 steps then stalled (the depth avoider reads the upper treads as a wall). So it is now
+    # OPT-IN only (SIM_AVOID_OBSTACLES=1), not auto-on for living-room. Default sim unaffected.
+    if ($env:SIM_AVOID_OBSTACLES -eq '1') {
+        $visionArgs += "--avoid-obstacles"
+    }
     $visionCommand = $visionArgs -join " "
 
     # Record the FULLY-RESOLVED flag set (the exact argv this run launches with, after the

@@ -26,6 +26,8 @@ from core.control.person_follower import PersonFollower, PersonFollowingConfig
 from core.control.obstacle_avoidance import (
     AvoidanceConfig as ObstacleAvoidanceConfig,
     compute_obstacle_avoidance,
+    depth_obstacles as _depth_obstacles,
+    bearing_rad as _obstacle_bearing_rad,
 )
 from core.vision.depth_processor import DepthProcessor
 from core.control.pid_controller import SlewRateLimiter
@@ -672,6 +674,11 @@ def main():
                 processing_fps = 1.0 / max(1e-6, current_time - prev_time)
                 prev_time      = current_time
 
+                # Per-frame reactive-avoidance state (populated from the YOLO-World furniture
+                # obstacles below; consumed at the follow-command + yaw_err injection points).
+                _avoid_obstacles_frame = []
+                _avoid_result = None
+
                 follow_start_ts = time.perf_counter()
                 if main_person is not None:
                     last_seen_person = main_person
@@ -746,6 +753,7 @@ def main():
                 # Only built when --avoid-obstacles is on (else the list is always empty).
                 _avoid_obstacles_frame = []
                 if _avoid_enabled:
+                    # (a) YOLO-World furniture boxes (semantic; fires on realistic meshes).
                     for _ob in stairs_result.get("obstacles", []) or []:
                         _obb = _ob.get("bbox")
                         if not _obb or len(_obb) < 4:
@@ -758,6 +766,29 @@ def main():
                             "bbox": _obb, "range_m": _orng,
                             "label": _ob.get("label", ""), "conf": _ob.get("conf", 0.0),
                         })
+                    _n_yolo_obs = len(_avoid_obstacles_frame)
+                    # (b) Depth-driven obstacles -- any solid thing between the dog and the
+                    # patient, so avoidance works even when YOLO-World doesn't recognise the
+                    # furniture (e.g. plain sim boxes). Gated on the person gap (rejects floor
+                    # + the patient). Suppressed when stairs are ahead (the staircase is a
+                    # vertical structure we CLIMB, not avoid).
+                    _n_depth_obs = 0
+                    if not bool(debug_info.get("stairs_detected", False)):
+                        try:
+                            _depth_obs = _depth_obstacles(
+                                depth_img,
+                                person_gap_m=debug_info.get("depth_distance_m"),
+                                near_max_m=float(args.avoid_range_m),
+                                clearance_m=float(args.obstacle_target_clearance),
+                                band_y0=float(args.avoid_depth_band_y0),
+                                band_y1=float(args.avoid_depth_band_y1),
+                            )
+                        except Exception:
+                            _depth_obs = []
+                        _avoid_obstacles_frame.extend(_depth_obs)
+                        _n_depth_obs = len(_depth_obs)
+                    debug_info["avoid_obstacles_yolo"] = _n_yolo_obs
+                    debug_info["avoid_obstacles_depth"] = _n_depth_obs
                     debug_info["avoid_obstacles_seen"] = len(_avoid_obstacles_frame)
 
                 # Depth-based near-field stair detection (Rec 2): the geometric depth column
@@ -875,6 +906,11 @@ def main():
                 current_time   = time.perf_counter()
                 processing_fps = 1.0 / max(1e-6, current_time - prev_time)
                 prev_time      = current_time
+
+                # Avoidance state must exist on the YOLO-bypass path too (no stairs block here),
+                # else the shared follow-command code below reads an undefined name.
+                _avoid_obstacles_frame = []
+                _avoid_result = None
 
                 follow_start_ts = time.perf_counter()
 
@@ -1235,6 +1271,46 @@ def main():
             trans_x_cmd = _apply_no_reverse_follow_policy(
                 args, trans_x_cmd, debug_info, source="post_follow_shaping"
             )
+
+            # --- Reactive furniture avoidance (control.obstacle_avoidance) -----------------
+            # Steer the flat-ground follow AROUND detected furniture and slow near it, so the
+            # dog no longer wedges into a couch/table sitting between it and the patient (which
+            # also occludes the patient and breaks the follow). Gated to flat-follow: never
+            # while on / approaching the stairs -- the staircase is a SEPARATE YOLO-World class
+            # and never appears in the obstacle list, so stairs are still climbed, not dodged.
+            debug_info["avoid_active"] = False
+            _avoid_gate = (
+                _avoid_enabled
+                and bool(debug_info.get("person_detected", False))
+                and bool(_avoid_obstacles_frame)
+                and not bool(debug_info.get("stairs_detected", False))
+                and not bool(debug_info.get("stairs_action_active", False))
+                and not bool(_climbing_latched)
+            )
+            if _avoid_gate:
+                _cam_cx = float(getattr(person_follower.config, "camera_cx", 640.0))
+                _cam_fx = float(getattr(person_follower.config, "camera_fx", 924.4))
+                _person_bearing = None
+                if main_person is not None:
+                    _pbb = main_person.get("bbox")
+                    if _pbb is not None and len(_pbb) >= 4:
+                        _person_bearing = _obstacle_bearing_rad(
+                            0.5 * (float(_pbb[0]) + float(_pbb[2])), _cam_cx, _cam_fx)
+                _avoid_result = compute_obstacle_avoidance(
+                    _avoid_obstacles_frame, _person_bearing, _cam_cx, _cam_fx, _avoid_cfg)
+                if _avoid_result.get("active"):
+                    _w = float(_avoid_result["weight"])
+                    _yt = float(_avoid_result["yaw_target_rad"])
+                    # Slow near the obstacle, and blend the follow yaw toward the skirt heading.
+                    # rotation_cmd (wz) and yaw_target share the +left/CCW sign convention.
+                    trans_x_cmd = float(trans_x_cmd) * float(_avoid_result["speed_factor"])
+                    rotation_cmd = (1.0 - _w) * float(rotation_cmd) + _w * (_yt * float(_avoid_cfg.yaw_gain))
+                    debug_info["avoid_active"] = True
+                    debug_info["avoid_weight"] = round(_w, 3)
+                    debug_info["avoid_yaw_target_deg"] = round(math.degrees(_yt), 1)
+                    debug_info["avoid_speed_factor"] = round(float(_avoid_result["speed_factor"]), 3)
+                    debug_info["avoid_threat_range_m"] = _avoid_result["threat_range_m"]
+                    debug_info["avoid_pass_side"] = _avoid_result["pass_side"]
 
             # Enforce zero-movement policy when the target person is not detected, both on ground
             # and on stairs -- but PRESERVE the follower's lost-search yaw so the dog can rotate
@@ -1982,6 +2058,13 @@ def main():
                     yaw_err_raw = float(np.clip(yaw_err_raw, -1.0, 1.0))
                 else:
                     debug_info["stairs_square_up_active"] = False
+                # Fold the reactive-avoidance heading into the self-steer hint too (the hybrid
+                # parkour policy steers from yaw_err), so it agrees with the wz twist blended
+                # into rotation_cmd above -- same avoidance weight on both channels.
+                if _avoid_result is not None and _avoid_result.get("active"):
+                    _aw = float(_avoid_result["weight"])
+                    _ayt = float(_avoid_result["yaw_target_rad"])
+                    yaw_err_raw = float(np.clip((1.0 - _aw) * yaw_err_raw + _aw * _ayt, -1.0, 1.0))
                 yaw_err_cmd = float(np.clip(yaw_err_limiter.update(yaw_err_raw), -1.0, 1.0))
                 debug_info["yaw_err_raw"] = round(yaw_err_raw, 4)
                 debug_info["yaw_err_cmd"] = round(yaw_err_cmd, 4)
