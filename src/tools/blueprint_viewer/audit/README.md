@@ -132,3 +132,37 @@ report.
 - New synthetic fixture: add a `buildXSamples()` generator (same `{t,x,y,zRoot,
   yaw,groundRef}` shape as `PatientGait.extractPathSamples`'s own output) and
   one more `cases.x = auditSchedule(...)` call in `main()`.
+
+## Round 2: scheduler-tier naturalness analysis (`trace_scheduler.mjs` +
+`analyze_scheduler.py`)
+
+`gait_audit.mjs` (above) answers "does the gait meet its own mechanical bars"
+(pass/fail). These two files answer a different question — "of everything that
+DOES pass, what still reads as unnatural, and by how much" — by keeping the
+FULL per-frame time series instead of collapsing straight to pass/fail, so
+curve-shape metrics (cadence-vs-speed, turning asymmetry, swing vertical-
+profile shape, autocorrelation/rhythm purity, ...) become computable.
+
+```powershell
+# 1) Sweep poseAt() at 60 Hz for the real clips + a parametric synthetic fixture
+#    bench (speed sweep, curvature arcs, stop-and-go, speed ramp) and write the
+#    full per-frame series to audit/out/strace_<case>.json (+ strace_index.json).
+node audit/trace_scheduler.mjs
+
+# 2) Consume those strace files and produce a ranked findings report.
+python audit/analyze_scheduler.py
+# -> audit/out/scheduler_naturalness.json (per-metric, per-case
+#    {value, humanNorm, verdict, worstTimestamps, notes})
+# -> audit/out/scheduler_naturalness.md   (ranked, human-readable findings)
+```
+
+`trace_scheduler.mjs`'s own header documents the full `strace_<case>.json`
+schema; `analyze_scheduler.py`'s own header documents every human-norm
+reference (walk-ratio invariance, stride-time CV, double-support fraction,
+swing toe-clearance shape, stair pacing) each metric is checked against, with
+citations. Both scripts follow the same `--module`/idiom conventions as
+`gait_audit.mjs` (dynamic `import()` of a PatientGait.js-shaped ES module,
+30 fps synthetic samples, the same `buildParams()`/`buildFlatTerrain()`
+tricks) without editing that file — its own fixture generators are
+unexported, so the round-2 generators are written fresh in the same shape
+rather than imported.
