@@ -37,10 +37,10 @@
     },
     {
       "path": "src/sim/models/locomotion/go2_robot_lab_policy.pt",
-      "sha256": "9f14cb95e74ac9e5e30954da0fc0c33eaa41e337852ebed19fcee869279ade0b",
-      "size_bytes": 769376,
+      "sha256": "93612080a1087b13515e54d57e9e6d505cefe5ea0d24241176e3be5de6e42693",
+      "size_bytes": 769298,
       "purpose": "Blind RL locomotion policy (climb backend)",
-      "source": "TODO(source): trained RL artifact with no public URL -- record the training run id / release asset that produced this exact sha256, or attach it to a project release so a fresh clone can fetch it.",
+      "source": "O2 stair fine-tune 2026-07-11, run 2026-07-11_12-03-47 model_3200.pt (stock-seeded 3-stage payload curriculum; exported via robot_lab play.py). Previous pretrain baseline preserved as go2_robot_lab_policy.pt.bak_pre_o2stage3_20260711 (sha256 9f14cb95e74ac9e5e30954da0fc0c33eaa41e337852ebed19fcee869279ade0b).",
       "portable": true
     },
     {

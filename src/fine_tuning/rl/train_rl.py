@@ -89,6 +89,7 @@ def _build_patch_params(args) -> "config_patch.StairPatchParams":
         "step_width_min": args.step_width_min,
         "step_width_max": args.step_width_max,
         "tall_start_proportion": args.tall_start_prop,
+        "tall_step_min": args.tall_step_min,
         "orientation_reward": args.orientation_reward,
         "ascent_reward": args.ascent_reward,
         "roll_penalty": args.roll_penalty,
@@ -96,6 +97,12 @@ def _build_patch_params(args) -> "config_patch.StairPatchParams":
         "track_lin_vel_weight": args.track_lin_vel_weight,
         "max_init_terrain_level": args.max_init_terrain_level,
         "com_jitter_m": args.com_jitter_m,
+        "upward_weight": args.upward_weight,
+        "lin_vel_z_weight": args.lin_vel_z_weight,
+        "lin_vel_x_min": args.lin_vel_x_min,
+        "fall_limit_angle_deg": args.fall_limit_angle_deg,
+        "spawn_tilt_max_rad": args.spawn_tilt_max_rad,
+        "payload_mass_scale": args.payload_mass_scale,
     }
     accepted = {f.name for f in dataclasses.fields(config_patch.StairPatchParams)}
     kwargs = {k: v for k, v in wanted.items() if k in accepted}
@@ -282,6 +289,12 @@ def main(argv: Optional[list] = None) -> int:
     ap.add_argument("--step-width-min", type=float, default=envb.get_float("FT_RL_STEP_W_MIN", 0.28))
     ap.add_argument("--step-width-max", type=float, default=envb.get_float("FT_RL_STEP_W_MAX", 0.34))
     ap.add_argument("--tall-start-prop", type=float, default=envb.get_float("FT_RL_TALL_START_PROP", 0.2))
+    ap.add_argument("--tall-step-min", type=float, default=envb.get_float("FT_RL_TALL_STEP_MIN", 0.2),
+                    help="easy edge of the TALL sub-terrain's OWN step-height ramp (m); robot_lab/this "
+                         "cfg ship a fixed (0.2, 0.2) tall pit, which at curriculum difficulty 0 is an "
+                         "unwinnable well for a policy that cannot yet climb 0.15 m (20%% of envs spawn "
+                         "trapped at the pit bottom, dragging tracking averages and gradient quality at "
+                         "level 0). Lower (~0.10) to give the tall tile a difficulty ramp instead.")
     ap.add_argument("--orientation-reward", type=float, default=envb.get_float("FT_RL_ORIENT_REWARD", -1.0))
     ap.add_argument("--ascent-reward", type=float, default=envb.get_float("FT_RL_ASCENT_REWARD", 1.0))
     ap.add_argument("--roll-penalty", type=float, default=envb.get_float("FT_RL_ROLL_PENALTY", -2.0))
@@ -293,6 +306,42 @@ def main(argv: Optional[list] = None) -> int:
                     help="initial terrain-difficulty spread cap (robot_lab ships 5). Raise (~8) to start more "
                          "envs on the tall risers when the velocity curriculum plateaus below the real step.")
     ap.add_argument("--com-jitter-m", type=float, default=envb.get_float("FT_RL_COM_JITTER", 0.02))
+    ap.add_argument("--upward-weight", type=float, default=envb.get_float("FT_RL_UPWARD_WEIGHT", 1.0),
+                    help="rewards.upward weight (robot_lab ships 1.0). This term pays ~4/step for "
+                         "merely standing upright at level 0 -- 53%% of the positive reward budget "
+                         "in run 2026-07-10_21-39-53, out-earning ascent_rate ~32:1. Trim (~0.25) so "
+                         "standing still stops being profitable on its own.")
+    ap.add_argument("--lin-vel-z-weight", type=float, default=envb.get_float("FT_RL_LINVELZ_WEIGHT", -2.0),
+                    help="rewards.lin_vel_z_l2 weight (robot_lab ships -2.0). Ease toward -1.0 so the "
+                         "vertical velocity a genuinely climbing policy produces is not punished as "
+                         "hard as it is on flat ground.")
+    ap.add_argument("--lin-vel-x-min", type=float, default=envb.get_float("FT_RL_LINVELX_MIN", 0.0),
+                    help="forward-velocity command floor (m/s); robot_lab/this cfg ship 0.0, so the "
+                         "command range straddles zero and 'stand still' is a legal (and, via the "
+                         "exp tracking kernel, near-optimal) command -- earning ~85%% of "
+                         "track_lin_vel_xy_exp in run 2026-07-10_21-39-53. Raise (~0.2) to close that.")
+    ap.add_argument("--fall-limit-angle-deg", type=float, default=envb.get_float("FT_RL_FALL_LIMIT_ANGLE", 60.0),
+                    help="terminations.fell_over trip angle (deg); 0 disables. The parent robot_lab cfg "
+                         "NULLS the contact-based fall termination (rough_env_cfg.py:155), so a fallen "
+                         "robot never resets -- it flails for the rest of the 20 s episode, poisoning "
+                         "gradients and pinning the terrain curriculum at level 0 (CLAUDE.md 8.11). "
+                         "Uses ORIENTATION (mdp.bad_orientation), not contact, so it does not "
+                         "false-positive on a legitimate stair-ascent belly-drag.")
+    ap.add_argument("--spawn-tilt-max-rad", type=float, default=envb.get_float("FT_RL_SPAWN_TILT_MAX", 0.15),
+                    help="reset-pose roll/pitch spawn-tilt cap (rad); 0 keeps the parent's stock +/-pi. "
+                         "The parent spawns at UNIFORM +/-pi roll/pitch (rough_env_cfg.py:61-62) -- a "
+                         "self-righting curriculum that only coheres with the parent's DISABLED fall "
+                         "termination. Paired with --fall-limit-angle-deg it now executes ~8/9 of "
+                         "robots at birth (observed fell_over ~= 0.855-0.866, CLAUDE.md 8.12). Default "
+                         "0.15 rad (~8.6 deg) keeps mild spawn robustness without birth-executions.")
+    ap.add_argument("--payload-mass-scale", type=float, default=envb.get_float("FT_RL_PAYLOAD_MASS_SCALE", 1.0),
+                    help="Stage-1 payload curriculum (config_patch.StairPatchParams.payload_mass_scale). "
+                         "Scales ONLY the added-mass DR band (payload.added_mass_range()), not the CoM "
+                         "offset. The full ~1.6-3.5 kg band makes climb attempts terminal for a fresh "
+                         "policy, which then rationally parks at the first riser (run 2026-07-11 "
+                         "stock-seed: fell_over 21-32%%, ascent_rate exactly 0 for 1200 iters). Train "
+                         "stage 1 at a fraction (e.g. 0.3) so climbing is survivable/learnable, then "
+                         "resume at 1.0 (full tank mass) once the policy can climb.")
 
     ap.add_argument("--python", default=envb.get_str("FT_RL_PYTHON"),
                     help="Python interpreter with Isaac Sim (default: this one).")
@@ -360,14 +409,17 @@ def main(argv: Optional[list] = None) -> int:
     try:
         # 1) patch: write the stairs+payload cfg module + register the task (idempotent)
         params = _build_patch_params(args)
-        LOGGER.info("[patch] params: lin_vel_x_max=%s step_h=(%s,%s) step_w=(%s|%s..%s) "
-                    "tall_start=%s orient=%s ascent=%s roll=%s crest=%s track_linvel=%s "
-                    "max_init_level=%s com_jitter=%s",
-                    args.lin_vel_x_max, args.step_height_min, args.step_height_max,
+        LOGGER.info("[patch] params: lin_vel_x=(%s,%s) step_h=(%s,%s) step_w=(%s|%s..%s) "
+                    "tall_start=%s tall_step_min=%s orient=%s ascent=%s roll=%s crest=%s track_linvel=%s "
+                    "max_init_level=%s com_jitter=%s upward=%s lin_vel_z=%s fall_limit_angle_deg=%s "
+                    "spawn_tilt_max_rad=%s payload_mass_scale=%s",
+                    args.lin_vel_x_min, args.lin_vel_x_max, args.step_height_min, args.step_height_max,
                     args.step_width_nominal, args.step_width_min, args.step_width_max,
-                    args.tall_start_prop, args.orientation_reward, args.ascent_reward,
+                    args.tall_start_prop, args.tall_step_min, args.orientation_reward, args.ascent_reward,
                     args.roll_penalty, args.crest_reward, args.track_lin_vel_weight,
-                    args.max_init_terrain_level, args.com_jitter_m)
+                    args.max_init_terrain_level, args.com_jitter_m,
+                    args.upward_weight, args.lin_vel_z_weight, args.fall_limit_angle_deg,
+                    args.spawn_tilt_max_rad, args.payload_mass_scale)
         if dry:
             LOGGER.info("[patch] would write %s.py + register %s in %s",
                         config_patch.STAIRS_CFG_MODULE, args.task, config_patch.go2_config_pkg(repo))

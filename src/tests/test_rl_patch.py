@@ -52,9 +52,12 @@ def test_stairs_cfg_module_renders_valid_python():
     assert f"class {config_patch.STAIRS_CFG_CLASS}(UnitreeGo2RoughEnvCfg)" in text
     assert "super().__post_init__()" in text
     # terrain now brackets the real stair: a nominal + tall sub-terrain (plus width
-    # variants) rather than a single proportion=1.0 stairs sub-terrain.
-    assert '"pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(' in text
-    assert '"pyramid_stairs_tall": terrain_gen.MeshPyramidStairsTerrainCfg(' in text
+    # variants) rather than a single proportion=1.0 stairs sub-terrain. Uses the INVERTED
+    # pyramid class (pit terrain, spawn at the bottom) so the policy trains genuine ASCENT
+    # -- the regular (non-inverted) class spawns on the elevated top platform and trains
+    # descent instead (CLAUDE.md incident 8.10).
+    assert '"pyramid_stairs": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(' in text
+    assert '"pyramid_stairs_tall": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(' in text
     assert "step_width=0.305" in text                                 # real target tread
     assert "ranges.lin_vel_x = (0.0, 0.6)" in text                    # modest forward bump
     assert "ranges.lin_vel_y = (0.0, 0.0)" in text                    # no strafing
@@ -94,11 +97,24 @@ _FAKE_ROUGH_ENV_CFG = '''\
 class UnitreeGo2RoughEnvCfg:
     def __post_init__(self):
         # tokens verify_patch_targets scans for:
+        self.events.randomize_reset_base.params = {
+            "pose_range": {
+                "x": (-0.5, 0.5),
+                "y": (-0.5, 0.5),
+                "z": (0.0, 0.2),
+                "roll": (-3.14, 3.14),
+                "pitch": (-3.14, 3.14),
+                "yaw": (-3.14, 3.14),
+            },
+        }
         self.events.randomize_rigid_body_mass_base = None
         self.rewards.flat_orientation_l2 = None
+        self.rewards.upward = None
+        self.rewards.lin_vel_z_l2 = None
         self.commands.base_velocity = None
         self.scene.terrain.terrain_generator = None
         self.scene.robot.actuators["legs"] = None
+        self.terminations.illegal_contact = None
         self.disable_zero_weight_rewards()
 '''
 
@@ -165,17 +181,25 @@ def test_reward_terms_present():
     # non-zero weights -> both reward fns + RewTerms are rendered
     on = config_patch.render_stairs_cfg_module(payload)
     ast.parse(on)
-    for tok in ("_reward_ascent_rate", "_reward_roll_l2", "_reward_crest_level",
+    for tok in ("_RewardAscentRate", "_reward_roll_l2", "_reward_crest_level",
                 "self.rewards.ascent_rate = RewTerm", "self.rewards.roll_l2 = RewTerm",
                 "self.rewards.crest_level = RewTerm", "root_lin_vel_w", "projected_gravity_b",
                 "import torch"):
         assert tok in on, tok
+    # the ascent term is now a STATEFUL class (2026-07-11 farming-exploit fix, CLAUDE.md
+    # 8.13): pays new-best height only, so a climb-retreat-reclimb oscillation cannot
+    # farm it the way the old clamped-positive-velocity function could.
+    assert "class _RewardAscentRate(ManagerTermBase):" in on
+    assert "def reset(self, env_ids=None) -> None:" in on
+    assert "self.h_best = torch.maximum(self.h_best, h)" in on
+    assert "gain / env.step_dt" in on
+    assert "from isaaclab.managers import ManagerTermBase" in on
     # zero weights -> neither the fns nor the terms are emitted (no dead code)
     off = config_patch.render_stairs_cfg_module(
         payload, config_patch.StairPatchParams(ascent_reward=0.0, roll_penalty=0.0, crest_reward=0.0)
     )
     ast.parse(off)
-    for tok in ("_reward_ascent_rate", "_reward_roll_l2", "_reward_crest_level",
+    for tok in ("_RewardAscentRate", "_reward_roll_l2", "_reward_crest_level",
                 "ascent_rate", "roll_l2", "crest_level"):
         assert tok not in off, tok
     print("reward terms OK  (ascent/roll/crest rendered when non-zero, omitted when zero)")

@@ -125,6 +125,51 @@ python -m pip install -e "$RobotLabDir\source\robot_lab"
 Write-Host "`n== 6. Installing requirements_rl.txt == "
 python -m pip install -r "$PSScriptRoot\requirements_rl.txt"
 
+# Apply Windows compatibility patches (tensordict ABI conflict)
+Write-Host "`n== Apply Windows compatibility patches (tensordict ABI conflict) == "
+$TensorDictCDll = Join-Path $VenvDir "Lib\site-packages\tensordict\_C.pyd"
+if (Test-Path $TensorDictCDll) {
+    Write-Host "Disabling tensordict C++ extension (Windows ABI conflict)..."
+    Rename-Item -Path $TensorDictCDll -NewName "_C.pyd.bak" -Force
+}
+
+$TensorDictUtils = Join-Path $VenvDir "Lib\site-packages\tensordict\utils.py"
+if (Test-Path $TensorDictUtils) {
+    Write-Host "Patching tensordict utils.py for pure Python fallback..."
+    $UtilsContent = Get-Content -Raw -Path $TensorDictUtils
+    
+    $TargetImport = 'from tensordict._C import (  # noqa: F401  # @manual=//pytorch/tensordict:_C
+    _unravel_key_to_tuple as _unravel_key_to_tuple_cpp,
+    unravel_key as unravel_key_cpp,
+    unravel_key_list as unravel_key_list_cpp,
+    unravel_keys as unravel_keys_cpp,
+)'
+    
+    $ReplacementImport = 'try:
+    from tensordict._C import (  # noqa: F401  # @manual=//pytorch/tensordict:_C
+        _unravel_key_to_tuple as _unravel_key_to_tuple_cpp,
+        unravel_key as unravel_key_cpp,
+        unravel_key_list as unravel_key_list_cpp,
+        unravel_keys as unravel_keys_cpp,
+    )
+    _HAS_C = True
+except ImportError:
+    _HAS_C = False
+    _unravel_key_to_tuple_cpp = None
+    unravel_key_cpp = None
+    unravel_key_list_cpp = None
+    unravel_keys_cpp = None'
+
+    if ($UtilsContent.Contains($TargetImport)) {
+        $UtilsContent = $UtilsContent.Replace($TargetImport, $ReplacementImport)
+        $UtilsContent = $UtilsContent.Replace('if not is_compiling():', 'if _HAS_C and not is_compiling():')
+        Set-Content -Path $TensorDictUtils -Value $UtilsContent -NoNewline
+        Write-Host "tensordict utils.py successfully patched."
+    } else {
+        Write-Host "tensordict utils.py already patched or has different content."
+    }
+}
+
 # 8. Run Preflight verification
 Write-Host "`n== 7. Running Preflight Verification == "
 $env:FT_RL_REPO_DIR = $RobotLabDir

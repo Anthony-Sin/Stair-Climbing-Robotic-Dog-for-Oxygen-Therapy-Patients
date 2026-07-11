@@ -20,19 +20,76 @@ $ResumeSrc = if ($env:FT_RL_RESUME_SRC) { $env:FT_RL_RESUME_SRC } else { Join-Pa
 $ResumeTar = if ($env:FT_RL_RESUME_TAR) { $env:FT_RL_RESUME_TAR } else { Join-Path $DL "_o2stair_tmp\trained_o2stair_FULL.tar" }
 
 # Reward tuning defaults (overridable via env)
+# NOTE (2026-07-11): falls now TERMINATE the episode via train_rl.py's default
+# --fall-limit-angle-deg 60 -> terminations.fell_over = bad_orientation(60 deg) (see
+# CLAUDE.md 8.11). Every run before 2026-07-11 had NO fall termination (robot_lab nulls
+# illegal_contact), so their "100% time_out" telemetry included invisible fallen-and-
+# flailing episode time, not just cautious/successful ones.
 $Orient = if ($env:FT_RL_ORIENT_REWARD) { $env:FT_RL_ORIENT_REWARD } else { "-0.5" }
 $Ascent = if ($env:FT_RL_ASCENT_REWARD) { $env:FT_RL_ASCENT_REWARD } else { "3.0" }
-$TrackLinVel = if ($env:FT_RL_TRACK_LINVEL_W) { $env:FT_RL_TRACK_LINVEL_W } else { "1.5" }
-$MaxLevel = if ($env:FT_RL_MAX_INIT_TERRAIN_LEVEL) { $env:FT_RL_MAX_INIT_TERRAIN_LEVEL } else { 8 }
-$LinVelX = if ($env:FT_RL_LINVELX_MAX) { $env:FT_RL_LINVELX_MAX } else { "0.4" }
-$ExploreExtra = if ($env:FT_RL_EXPLORE_EXTRA) { $env:FT_RL_EXPLORE_EXTRA } else { "agent.algorithm.entropy_coef=0.02 agent.policy.init_noise_std=1.2" }
+# track_lin_vel 1.5 -> 2.5: run 2026-07-10_21-39-53 still let "stand still" earn ~85% of the
+# exp-kernel tracking reward at 1.5; raising it alone would make that worse, so it only moves
+# together with the new lin-vel-x-min floor below (which removes the zero-speed freebie).
+$TrackLinVel = if ($env:FT_RL_TRACK_LINVEL_W) { $env:FT_RL_TRACK_LINVEL_W } else { "2.5" }
+# max_init_terrain_level 8 -> 6: level 8 dropped the resumed level-3.7 policy onto mean
+# level ~5, past what the XY-distance-only curriculum could hold -> mass demotion. 6 is a
+# gentler cliff (paired with the ascent-aware curriculum fix in config_patch.py).
+$MaxLevel = if ($env:FT_RL_MAX_INIT_TERRAIN_LEVEL) { $env:FT_RL_MAX_INIT_TERRAIN_LEVEL } else { 6 }
+# lin_vel_x ceiling 0.4 -> 0.8: paired with the new floor (LinVelXMin) so the command range
+# no longer straddles zero -- "stand still" stops being a legal, near-optimal command.
+$LinVelX = if ($env:FT_RL_LINVELX_MAX) { $env:FT_RL_LINVELX_MAX } else { "0.8" }
+# lin_vel_x floor: was implicitly 0.0 (commands.base_velocity.ranges.lin_vel_x = (0.0, max)),
+# which let a motionless policy earn ~85% of track_lin_vel_xy_exp (exp kernel, std=0.5) --
+# root cause (3) of the run 2026-07-10_21-39-53 collapse. Force it to actually move.
+$LinVelXMin = if ($env:FT_RL_LINVELX_MIN) { $env:FT_RL_LINVELX_MIN } else { "0.2" }
+# upward weight 1.0 -> 0.25: stock `upward` = square(1 - proj_grav_z) pays ~4/step for just
+# standing upright at level 0 -- 53% of the positive reward budget in run 2026-07-10_21-39-53,
+# earnable without ever moving, and it out-earned ascent_rate ~32:1 (root cause (1)).
+$UpwardWeight = if ($env:FT_RL_UPWARD_WEIGHT) { $env:FT_RL_UPWARD_WEIGHT } else { "0.25" }
+# lin_vel_z weight -2.0 -> -1.0: stock punishes ANY vertical velocity, including the vz a
+# genuinely climbing policy needs to produce; ease it so climbing isn't fighting its own
+# penalty term as hard (paired with rebalancing ascent vs. upward/tracking above).
+$LinVelZWeight = if ($env:FT_RL_LINVELZ_WEIGHT) { $env:FT_RL_LINVELZ_WEIGHT } else { "-1.0" }
+# tall_step_min 0.10: the "pyramid_stairs_tall" sub-terrain ships a FIXED (0.2, 0.2) step
+# height even at curriculum difficulty 0 -- an unwinnable pit for a policy that can't yet
+# climb 0.15 m, so 20% of envs spawn permanently trapped at the pit bottom, dragging
+# tracking averages and gradient quality at level 0 (observed run 2026-07-11_01-53: stuck
+# at terrain level 0 with flat tracking reward). Lowering the tile's OWN easy edge gives it
+# a difficulty ramp like the other three sub-terrains instead of a fixed hard floor.
+$TallStepMin = if ($env:FT_RL_TALL_STEP_MIN) { $env:FT_RL_TALL_STEP_MIN } else { "0.10" }
+# tall_start_prop 0.2 -> 0.10: halve the hard-tile share of the terrain mix while the
+# ramped tall tile (above) is re-learned from scratch at the easy end; full exposure to the
+# hard edge returns via the difficulty ramp/curriculum rather than a large fixed-hard slice.
+$TallProp = if ($env:FT_RL_TALL_START_PROP) { $env:FT_RL_TALL_START_PROP } else { "0.10" }
+# payload_mass_scale: stage-1 payload curriculum (see config_patch.py StairPatchParams.payload_mass_scale
+# docstring) -- scales ONLY the added-mass DR band, not the CoM offset, so a fresh/staged policy can
+# learn to climb before facing the full ~1.6-3.5 kg tank load. 1.0 = full mass (default, no staging).
+$PayloadMassScale = if ($env:FT_RL_PAYLOAD_MASS_SCALE) { $env:FT_RL_PAYLOAD_MASS_SCALE } else { "1.0" }
+# entropy_coef 0.008 -> 0.005: 0.008 stabilized noise_std around ~0.7, but sigma decay was
+# too slow for tracking precision to recover -- run 2026-07-11_01-53 held track reward flat
+# (+0.05/500 iters) with terrain level pinned at 0 while sigma~0.7 execution noise itself
+# capped precision. 0.005 is safe to try now ONLY because the reward landscape that made
+# 0.002 dangerous is gone: 0.002 froze exploration under the OLD landscape where "stand
+# still" was a legal, near-optimal command (no lin_vel_x floor) and `upward` paid ~4/step
+# for merely standing upright (53% of the positive reward budget) -- both are now
+# structurally removed (LinVelXMin floor above; UpwardWeight trimmed to 0.25), so a
+# lower-noise policy is no longer rewarded for freezing in place.
+# 0.002 collapsed exploration (run 2026-07-10_21-39-53: noise_std 1.01 -> 0.33, policy froze
+# into "stand still"); 0.02 EXPLODED it (run 2026-07-10_23-41-18: noise_std 1.0 -> 1.93,
+# entropy bonus out-paid the rebalanced/trimmed task rewards, policy became a noise-ball --
+# error_vel_xy 1.04, reward -18.6 from action_rate/joint_acc thrash, stuck at level 0).
+# Healthy band to watch on the monitor: noise_std settling ~0.5-1.2, neither trending to
+# extremes. init_noise_std only matters on fresh (non-resume) runs; resume loads std from
+# the checkpoint.
+$ExploreExtra = if ($env:FT_RL_EXPLORE_EXTRA) { $env:FT_RL_EXPLORE_EXTRA } else { "agent.algorithm.entropy_coef=0.005 agent.policy.init_noise_std=1.2" }
 
 Write-Host "============================================="
 Write-Host "  NATIVE WINDOWS ISAAC TRAINING RUNNER"
 Write-Host "============================================="
 Write-Host "repo=$RobotLabDir  exptid=$ExptId  load_run=$LoadRun  num_envs=$NumEnvs  +iters=$AddIters"
-Write-Host "resume_ckpt=$ResumeCkpt  orient=$Orient  ascent=$Ascent  track_linvel=$TrackLinVel  max_level=$MaxLevel  linvel_x=$LinVelX"
-Write-Host "explore=$ExploreExtra"
+Write-Host "resume_ckpt=$ResumeCkpt  orient=$Orient  ascent=$Ascent  track_linvel=$TrackLinVel  max_level=$MaxLevel  linvel_x=$LinVelXMin..$LinVelX"
+Write-Host "upward=$UpwardWeight  linvel_z=$LinVelZWeight  tall_step_min=$TallStepMin  tall_prop=$TallProp  explore=$ExploreExtra"
+Write-Host "payload_mass_scale=$PayloadMassScale"
 Write-Host "============================================="
 
 # Verify setup
@@ -112,10 +169,16 @@ try {
         "--num-envs", $NumEnvs.ToString(),
         "--max-iters", $AddIters.ToString(),
         "--lin-vel-x-max", $LinVelX,
+        "--lin-vel-x-min", $LinVelXMin,
         "--orientation-reward", $Orient,
         "--ascent-reward", $Ascent,
         "--track-lin-vel-weight", $TrackLinVel,
-        "--max-init-terrain-level", $MaxLevel.ToString()
+        "--max-init-terrain-level", $MaxLevel.ToString(),
+        "--upward-weight", $UpwardWeight,
+        "--lin-vel-z-weight", $LinVelZWeight,
+        "--tall-step-min", $TallStepMin,
+        "--tall-start-prop", $TallProp,
+        "--payload-mass-scale", $PayloadMassScale
     )
     
     # Safely combine default runner args and user-supplied scripts arguments ($args)

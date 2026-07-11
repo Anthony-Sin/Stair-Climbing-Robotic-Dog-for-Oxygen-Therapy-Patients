@@ -29,6 +29,7 @@ Run standalone against a checkout:
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import re
 import sys
@@ -78,6 +79,15 @@ class StairPatchParams:
     step_width_min: float = 0.28          # tread-depth randomisation band, narrow edge (finding C)
     step_width_max: float = 0.34          # tread-depth randomisation band, wide edge (finding C)
     tall_start_proportion: float = 0.2    # fraction of terrain that is a fixed TALL step (finding C)
+    tall_step_min: float = 0.2            # easy edge of the TALL tile's step-height ramp (m).
+    #                                       Default (0.2) matches the current fixed behaviour
+    #                                       (dataclass-defaults-are-stock convention). A fixed
+    #                                       (0.2, 0.2) tall pit at curriculum difficulty 0 is an
+    #                                       unwinnable well for a policy that cannot yet climb
+    #                                       0.15 m: 20% of envs spawn trapped at the pit bottom,
+    #                                       dragging tracking averages and gradient quality at
+    #                                       level 0. Lower this (e.g. 0.10) to give the tall tile
+    #                                       a difficulty ramp instead of a fixed hard floor.
     orientation_reward: float = -1.0      # flat_orientation_l2 weight; was -2.5, eased so climb
     #                                       PITCH is not over-penalised (finding B)
     ascent_reward: float = 1.0            # NEW vertical-progress reward weight; 0 disables (finding B)
@@ -93,9 +103,96 @@ class StairPatchParams:
     #                                       training the hard step even when promotion stalls.
     com_jitter_m: float = 0.02            # +/- jitter around payload CoM offset for the CoM DR event (finding A)
     add_com_event: bool = True            # allow disabling the CoM event on an API-lacking IsaacLab (finding A)
+    payload_mass_scale: float = 1.0       # NEW stage-1 payload curriculum knob (2026-07-11): the full
+    #                                       payload.added_mass_range() band (~1.6-3.5 kg) makes climb
+    #                                       attempts terminal for a fresh policy seeded from the stock
+    #                                       walker -- it then rationally learns climbing = death and
+    #                                       parks at the first riser instead (run 2026-07-11 stock-seed:
+    #                                       fell_over 21-32%, ascent_rate exactly 0 for 1200 iters). Fix:
+    #                                       stage the payload -- train stage 1 at a FRACTION of tank mass
+    #                                       (e.g. 0.3) so climbing is survivable/learnable, then resume
+    #                                       training at full mass (1.0) once the policy can climb.
+    #                                       Scales BOTH the ADDED-MASS range (payload.added_mass_range())
+    #                                       AND the CoM-SHIFT CENTER (com_shift_m below) by this same
+    #                                       factor, leaving only the +/-com_jitter_m DR band unscaled.
+    #                                       CORRECTED 2026-07-11 -- the original version of this knob
+    #                                       scaled ONLY the mass and left the CoM-shift-center at the
+    #                                       full-tank value, reasoning that CoM offset is a fixed
+    #                                       geometric mount point independent of tank mass. That reasoning
+    #                                       was PHYSICALLY WRONG: the combined CoM displacement of
+    #                                       robot+tank scales ~proportionally with the added-mass fraction
+    #                                       (shift = m_tank*d / (m_robot+m_tank)), so a lighter staged tank
+    #                                       still displaces the combined CoM by proportionally less -- a
+    #                                       light tank levered at the FULL tank's rearward(-x)/elevated(+z)
+    #                                       moment models a physically inconsistent object, and one that is
+    #                                       MORE destabilizing per kg of carried mass than the real thing.
+    #                                       EMPIRICAL CONFIRMATION (stage-1 run 2026-07-11 ~08:4x, stock
+    #                                       seed, mass scaled 0.3, CoM moment left unscaled at the
+    #                                       full-tank value): fell_over 91% of episodes from iteration ~59,
+    #                                       with ascent_rate pinned ~0.0008 from iteration one (never
+    #                                       climbing at all, not merely slow to start); the policy then
+    #                                       learned to park -- fell_over declined 91%->26% by iteration 509
+    #                                       while ascent_rate stayed ~0 (a fall-then-park signature: fall
+    #                                       until standing still is discovered, then stop moving). The
+    #                                       unscaled rear-high CoM moment is the prime destabilizer suspect,
+    #                                       especially ON THE INCLINE (a rear-high CoM shrinks the
+    #                                       backward-topple margin while climbing; parking flat stays
+    #                                       stable, matching the observed learned response). The deployed
+    #                                       sim where the stock policy climbs cleanly carries NO payload
+    #                                       CoM shift at all, so an artificially strong moment here is pure
+    #                                       training-time liability with no deployment-time counterpart to
+    #                                       justify it.
     obs_noise_scale: float = 0.0          # optional obs-noise DR knob; 0 == inherit parent (finding G)
     kp: float = 20.0                      # deployed stiffness (rl_locomotion_policy); robot_lab ships 25
     kd: float = 0.5                       # deployed damping (matches robot_lab default, set for clarity)
+
+    # --- 2026-07-10_21-39-53 collapse fix (terrain-level 5.2 -> 0.12, 100% timeouts) -----
+    upward_weight: float = 1.0            # rewards.upward weight; robot_lab ships 1.0. This term
+    #                                       (square(1 - proj_grav_z)) pays ~4/step for merely standing
+    #                                       upright at level 0 -- 53% of the positive reward budget in
+    #                                       the collapsed run, earnable without moving, out-earning
+    #                                       ascent_rate ~32:1. Trim toward ~0.25.
+    lin_vel_z_weight: float = -2.0        # rewards.lin_vel_z_l2 weight; robot_lab ships -2.0. Punishes
+    #                                       ANY vertical velocity, including the vz a genuinely
+    #                                       climbing policy must produce. Ease toward ~-1.0.
+    lin_vel_x_min: float = 0.0            # commands.base_velocity.ranges.lin_vel_x floor (m/s); was
+    #                                       implicitly 0.0 (range (0.0, lin_vel_x_max) straddles zero),
+    #                                       so "stand still" is a legal command that earns ~85% of
+    #                                       track_lin_vel_xy_exp (exp kernel, std=0.5) -- the collapsed
+    #                                       run's root cause (3). Raise toward ~0.2 to deny that.
+
+    # --- 2026-07-11 fall-termination fix (falls never reset; flailing poisoned batches) ---
+    fall_limit_angle_deg: float = 60.0    # NEW terminations.fell_over trip angle (deg); 0 disables.
+    #                                       The parent robot_lab cfg NULLS the contact-based fall
+    #                                       termination (self.terminations.illegal_contact = None,
+    #                                       rough_env_cfg.py:155), so nothing terminates a fallen
+    #                                       robot -- it flails for the rest of the 20 s episode
+    #                                       (runs 2026-07-11_01-07-28 / _01-53-35 / _02-37-51:
+    #                                       error_vel_xy invariant ~0.85, upward-reward mean implying
+    #                                       ~40% fallen time), poisoning gradients and pinning the
+    #                                       terrain curriculum at level 0. Use ORIENTATION, not
+    #                                       contact: on stair ascent the policy legitimately
+    #                                       belly-drags on risers (baseline min body height ~0.15 m),
+    #                                       so a contact-based termination would false-positive on
+    #                                       valid climbing. A 60 deg tip is unrecoverable for a blind
+    #                                       quadruped while the legitimate ~-20 deg nose-down climb
+    #                                       pitch and ordinary roll wobble stay legal.
+
+    # --- 2026-07-11 spawn-tilt fix (pairs with the fall termination above) ---------------
+    spawn_tilt_max_rad: float = 0.15      # NEW reset-pose roll/pitch spawn-tilt cap (rad); 0 keeps
+    #                                       stock +/-pi. The parent spawns at UNIFORM +/-pi roll AND
+    #                                       pitch (self.events.randomize_reset_base.params["pose_range"],
+    #                                       rough_env_cfg.py:61-62) -- a self-righting curriculum that
+    #                                       only coheres with the parent's DISABLED contact-based fall
+    #                                       termination (illegal_contact = None, rough_env_cfg.py:155).
+    #                                       Our fall_limit_angle_deg termination above now executes any
+    #                                       robot that spawns past 60 deg tilted: a uniform +/-pi spawn
+    #                                       lands there ~8/9 of the time geometrically, and observed
+    #                                       Episode_Termination/fell_over ~= 0.855-0.866 (mean episode
+    #                                       length 82-165, runs 2026-07-11_02-37-51 / _04-01-05) matches
+    #                                       P(upright-ish spawn) ~= 1/9 almost exactly -- wasting ~7/8 of
+    #                                       samples on birth-executions, not policy failures. 0.15 rad
+    #                                       ~= 8.6 deg keeps mild spawn robustness without them.
 
 
 def render_stairs_cfg_module(
@@ -103,10 +200,26 @@ def render_stairs_cfg_module(
 ) -> str:
     """Return the full text of the generated ``o2_stairs_env_cfg.py`` module."""
     lo, hi = payload.added_mass_range()
+    # Stage-1 payload curriculum (params.payload_mass_scale): scale the added-mass DR band
+    # AND the CoM-shift center below by the same factor (2026-07-11 physics fix -- see
+    # StairPatchParams.payload_mass_scale for why a mass-only scale was physically wrong).
+    # Re-rounded to mm precision so 1.0 (the default/full-mass stage) reproduces the exact
+    # unscaled (lo, hi) rendered before this knob existed.
+    lo = round(lo * params.payload_mass_scale, 3)
+    hi = round(hi * params.payload_mass_scale, 3)
     com = payload.com_m
     shift = payload.com_shift_m
     inertia = payload.inertia_diag
-    cx, cy, cz = payload.com_range(params.com_jitter_m)
+    # Scale the CoM-SHIFT CENTER by payload_mass_scale (combined-CoM displacement scales
+    # ~proportionally with the added-mass fraction), then re-apply the +/-com_jitter_m DR
+    # band around the SCALED center -- jitter is domain-randomisation robustness noise, not
+    # part of the tank's physical geometry, so it is left unscaled. Replicates
+    # PayloadNumbers.com_range's own rounding (round(c +/- j, 6)) so payload_mass_scale=1.0
+    # reproduces byte-identical output to calling payload.com_range(params.com_jitter_m)
+    # directly (1.0 * float is exact, so scaled_shift == shift bit-for-bit at scale=1.0).
+    scaled_shift = tuple(s * params.payload_mass_scale for s in shift)
+    _com_jitter = abs(float(params.com_jitter_m))
+    cx, cy, cz = tuple((round(c - _com_jitter, 6), round(c + _com_jitter, 6)) for c in scaled_shift)
 
     # --- terrain sub-terrain proportions (must sum to 1.0) --------------------
     # A fixed TALL first-riser sub-terrain drills "starts" (the reported failure is
@@ -126,10 +239,69 @@ def render_stairs_cfg_module(
     if params.ascent_reward != 0.0:
         reward_fns += '''
 
-def _reward_ascent_rate(env, asset_cfg=SceneEntityCfg("robot")):
-    """Reward upward world-frame velocity (climbing) -- clamped to non-negative."""
-    asset = env.scene[asset_cfg.name]
-    return asset.data.root_lin_vel_w[:, 2].clamp(min=0.0)
+class _RewardAscentRate(ManagerTermBase):
+    """Stateful "pay each new-best height once" ascent-progress reward.
+
+    REPLACES a clamped-positive-velocity formulation
+    (root_lin_vel_w[:, 2].clamp(min=0.0)) that a 64-env numeric trajectory eval of the
+    trained policy PROVED is reward-farmable: because descending back down a riser is
+    FREE (the clamp zeroes the negative half of a path-independent quantity), a
+    climb-retreat-reclimb oscillation banks the ascent reward on every up-swing without
+    ever making net progress out of the terrain pit -- 42/49 non-escaping envs showed
+    exactly this rise-then-fall height signature (eval 2026-07-11; see CLAUDE.md
+    incident 8.13). This term instead tracks each env's best-ever height above its
+    (curriculum-mutable) terrain origin -- h_best, re-anchored to the POST-RESET spawn
+    height in reset() -- and pays only the marginal NEW-BEST gain each step,
+    (h - h_best).clamp(min=0.0), so each riser is paid EXACTLY ONCE: a monotonic climb
+    earns the identical integral as the old velocity term, while sliding back down and
+    re-climbing the same risers earns nothing (h never exceeds the prior best).
+
+    Divided by env.step_dt so weight * dt * (gain / dt) == weight * gain -- the reward
+    manager's per-step dt multiplication (RewardManager.compute) cancels out, keeping
+    this term's scale (meters of NEW height climbed) directly comparable to the old
+    velocity-based formulation's (weight * meters climbed).
+    """
+
+    def __init__(self, cfg: RewTerm, env):
+        super().__init__(cfg, env)
+        self._asset_cfg: SceneEntityCfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
+        self.asset = env.scene[self._asset_cfg.name]
+        # Lazily (re)built by _ensure_buffer on first use, not eagerly here, so a
+        # construction-time ordering quirk (asset data not yet valid when this class is
+        # instantiated) self-heals on the first real __call__/reset instead of baking in
+        # a garbage buffer.
+        self.h_best: torch.Tensor | None = None
+
+    def _current_height(self, env) -> torch.Tensor:
+        """Root height above this env's terrain origin (env_origins moves on curriculum
+        promote/demote, but is fixed for the duration of any one episode)."""
+        return self.asset.data.root_pos_w[:, 2] - env.scene.env_origins[:, 2]
+
+    def _ensure_buffer(self, env) -> None:
+        if self.h_best is None or self.h_best.shape[0] != env.num_envs:
+            self.h_best = self._current_height(env).clone()
+
+    def reset(self, env_ids=None) -> None:
+        # ManagerBasedRLEnv._reset_idx runs event_manager.apply(mode="reset")  --  which
+        # teleports the robot to its new spawn pose via randomize_reset_base  --  BEFORE
+        # reward_manager.reset(env_ids) reaches here, so root_pos_w already reflects the
+        # NEW spawn. Re-anchoring h_best to it now is required: skipping this would pay
+        # a huge spurious gain on the first post-reset step (stale low h_best vs a
+        # possibly higher new spawn) or pay nothing for the rest of the episode (stale
+        # high h_best carried over from the env's PREVIOUS episode).
+        self._ensure_buffer(self._env)
+        h_now = self._current_height(self._env)
+        if env_ids is None:
+            self.h_best.copy_(h_now)
+        else:
+            self.h_best[env_ids] = h_now[env_ids]
+
+    def __call__(self, env, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+        self._ensure_buffer(env)
+        h = self._current_height(env)
+        gain = (h - self.h_best).clamp(min=0.0)
+        self.h_best = torch.maximum(self.h_best, h)
+        return gain / env.step_dt
 '''
     if params.roll_penalty != 0.0:
         reward_fns += '''
@@ -143,16 +315,76 @@ def _reward_roll_l2(env, asset_cfg=SceneEntityCfg("robot")):
         reward_fns += '''
 
 def _reward_crest_level(env, asset_cfg=SceneEntityCfg("robot")):
-    """Reward a LEVEL torso whenever the robot is NOT actively climbing -- i.e. on the
-    flat base or (crucially) the flat TOP landing. It stays free to pitch mid-climb,
-    but is explicitly paid to flatten out and walk OFF the crest cleanly instead of
-    nose-diving as it tops out. `flat` == projected-gravity XY near zero (level); the
-    vertical-speed gate switches the term OFF during the climb (large |vz|) and ON on
-    flat ground, so it never fights the climbing pitch."""
+    """Reward a LEVEL torso whenever the robot is NOT actively climbing AND has genuinely
+    made progress climbing OUT of the terrain pit -- i.e. NOT idling flat at spawn,
+    collecting this term for free. It stays free to pitch mid-climb, but is explicitly paid
+    to flatten out instead of nose-diving once it is done with the stairs. `flat` ==
+    projected-gravity XY near zero (level); the vertical-speed gate switches the term OFF
+    during the climb (large |vz|) and ON on flat ground, so it never fights the climbing
+    pitch.
+
+    TERRAIN NOTE: this cfg's sub-terrains are MeshInvertedPyramidStairsTerrainCfg, whose
+    generated origin sits at the PIT BOTTOM of each patch
+    (mesh_terrains.inverted_pyramid_stairs_terrain() returns origin z =
+    -(num_steps + 1) * step_height, mesh_terrains.py:246; IsaacLab's terrain_generator.py
+    writes that straight into env_origins) -- so the robot SPAWNS in the pit, and
+    "genuinely elevated / made progress" is root_z - env_origin_z large (climbed well above
+    spawn). Contrast the REGULAR (non-inverted) MeshPyramidStairsTerrainCfg, whose
+    pyramid_stairs_terrain() spawns the robot on the ELEVATED TOP PLATFORM instead (origin
+    z = +(num_steps + 1) * step_height, mesh_terrains.py:146) -- there this same check
+    would need the mirror-image env_origin_z - root_z form."""
     asset = env.scene[asset_cfg.name]
     flat = torch.exp(-5.0 * torch.sum(torch.square(asset.data.projected_gravity_b[:, :2]), dim=1))
     on_flat = (asset.data.root_lin_vel_w[:, 2].abs() < 0.1).float()
-    return flat * on_flat
+    env_origins = env.scene.env_origins
+    height_gain = asset.data.root_pos_w[:, 2] - env_origins[:, 2] - _SPAWN_Z_M
+    elevated = (height_gain > 0.5).float()
+    return flat * on_flat * elevated
+'''
+
+    # --- ascent-aware terrain-level curriculum (structural fix; always rendered) ---
+    # Clone of IsaacLab's terrain_levels_vel (isaaclab_tasks/.../mdp/curriculums.py:27-56)
+    # that ALSO promotes/demotes on vertical progress, not XY distance alone. Fixes: run
+    # 2026-07-10_21-39-53's XY-only curriculum mass-demoted a level-3.7 policy the moment
+    # max_init_terrain_level dropped it onto a harder mean level, with no height credit for
+    # a robot that IS genuinely working the stairs but hasn't cleared the XY bar yet.
+    curriculum_fn = '''
+
+def _curriculum_terrain_levels_o2(env, env_ids, asset_cfg=SceneEntityCfg("robot")):
+    """Ascent-aware terrain-level curriculum; clone of IsaacLab's stock terrain_levels_vel
+    that also promotes/demotes on vertical progress, not XY distance alone.
+
+    TERRAIN NOTE: this cfg's sub-terrains are MeshInvertedPyramidStairsTerrainCfg (a pit
+    that climbs UP and outward). IsaacLab's inverted_pyramid_stairs_terrain() places
+    env_origins at the PIT BOTTOM of each patch (origin z = -(num_steps + 1) * step_height,
+    mesh_terrains.py:246) and the robot spawns there -- "made real progress" is therefore a
+    large POSITIVE height_gain (climbed well above spawn), not a negative one. Contrast the
+    REGULAR (non-inverted) MeshPyramidStairsTerrainCfg, whose pyramid_stairs_terrain()
+    spawns the robot on the ELEVATED TOP PLATFORM instead (origin z =
+    +(num_steps + 1) * step_height, mesh_terrains.py:146) and so DESCENDS -- there, "made
+    real progress" would be the mirror-image NEGATIVE height_gain. If these sub-terrains
+    are ever swapped back to the regular (descending) class, flip both comparisons back to
+    the negative-height_gain form (move_up on height_gain < -1.0, move_down gated on
+    height_gain > -0.3)."""
+    asset = env.scene[asset_cfg.name]
+    terrain = env.scene.terrain
+    command = env.command_manager.get_command("base_velocity")
+
+    distance = torch.norm(asset.data.root_pos_w[env_ids, :2] - env.scene.env_origins[env_ids, :2], dim=1)
+    height_gain = asset.data.root_pos_w[env_ids, 2] - env.scene.env_origins[env_ids, 2] - _SPAWN_Z_M
+
+    # move up: stock XY-distance bar, OR has genuinely climbed >1.0 m above spawn (out of
+    # the pit) -- credits a robot mid-traversal that hasn't crossed the XY bar yet.
+    move_up = (distance > terrain.cfg.terrain_generator.size[0] / 2) | (height_gain > 1.0)
+    # move down: stock under-distance bar, AND has barely climbed out of the pit
+    # (height_gain < 0.3) -- protects a robot that IS climbing from demotion even if it is
+    # momentarily short of the XY bar.
+    move_down = distance < torch.norm(command[env_ids, :2], dim=1) * env.max_episode_length_s * 0.5
+    move_down &= height_gain < 0.3
+    move_down &= ~move_up
+
+    terrain.update_env_origins(env_ids, move_up, move_down)
+    return torch.mean(terrain.terrain_levels.float())
 '''
 
     # --- body of __post_init__ blocks assembled conditionally -----------------
@@ -161,11 +393,15 @@ def _reward_crest_level(env, asset_cfg=SceneEntityCfg("robot")):
         com_event_block = f'''
         # --- payload CoM tip moment (finding A): randomize the trunk CoM ------
         # The tank's real danger is not its {payload.mass_kg} kg weight but WHERE that
-        # weight sits: rearward (-x) and elevated (+z), a pitch/tip moment. The mass
-        # event above only scales the scalar mass; this event shifts the trunk body's
-        # centre of mass. We centre the per-axis band on how far the payload actually
-        # moves the combined CoM -- com_shift_m ({shift[0]}, {shift[1]}, {shift[2]}) m --
-        # and jitter each axis by +/-{params.com_jitter_m} m for domain randomisation.
+        # weight sits: rearward (-x) and elevated (+z), a pitch/tip moment. We centre the
+        # per-axis band on how far the payload actually moves the combined CoM -- full-tank
+        # com_shift_m ({shift[0]}, {shift[1]}, {shift[2]}) m, scaled by payload_mass_scale=
+        # {params.payload_mass_scale} to ({round(scaled_shift[0], 6)}, {round(scaled_shift[1], 6)}, {round(scaled_shift[2], 6)}) m -- because the
+        # combined-CoM displacement scales ~proportionally with the added-mass fraction
+        # (shift = m_tank*d / (m_robot+m_tank)); a staged, lighter tank sitting at the FULL-
+        # tank moment would model a physically inconsistent object (2026-07-11 fix; see
+        # StairPatchParams.payload_mass_scale). We then jitter each axis by
+        # +/-{params.com_jitter_m} m around the scaled center for domain randomisation.
         # IsaacLab's randomize_rigid_body_com samples com_range and ADDS it to the body's
         # nominal CoM (there is NO operation arg; the add is implicit). Gated by
         # params.add_com_event so a version lacking this event can be run without it.
@@ -192,10 +428,12 @@ def _reward_crest_level(env, asset_cfg=SceneEntityCfg("robot")):
     ascent_term = ""
     if params.ascent_reward != 0.0:
         ascent_term = f'''
-        # vertical-progress reward: pays for climbing (upward world velocity), so the
-        # policy is rewarded for gaining height rather than only for forward command
-        # tracking (which stalls when it noses into a riser). (finding B)
-        self.rewards.ascent_rate = RewTerm(func=_reward_ascent_rate, weight={params.ascent_reward})
+        # vertical-progress reward: pays for climbing NEW BEST height above spawn (not
+        # merely upward velocity), so the policy is rewarded for gaining height rather
+        # than only for forward command tracking (which stalls when it noses into a
+        # riser) -- AND cannot farm the reward by oscillating up and down the same
+        # risers (2026-07-11 exploit fix; see CLAUDE.md incident 8.13). (finding B)
+        self.rewards.ascent_rate = RewTerm(func=_RewardAscentRate, weight={params.ascent_reward})
 '''
 
     roll_term = ""
@@ -215,6 +453,55 @@ def _reward_crest_level(env, asset_cfg=SceneEntityCfg("robot")):
         # of face-planting at the crest. Gated OFF during the climb (vertical-speed gate),
         # so it never fights the climbing pitch. (finding B / dismount)
         self.rewards.crest_level = RewTerm(func=_reward_crest_level, weight={params.crest_reward})
+'''
+
+    # --- fall termination via ORIENTATION, not contact (2026-07-11 fix) -------
+    # Rendered only when the angle is non-zero (0 disables), matching the reward_fns
+    # gating convention above -- see StairPatchParams.fall_limit_angle_deg for the why.
+    fall_term = ""
+    if params.fall_limit_angle_deg > 0.0:
+        _fall_limit_angle_rad = math.radians(params.fall_limit_angle_deg)
+        fall_term = f'''
+        # --- fall termination via ORIENTATION, not contact (2026-07-11 fix) --
+        # The parent nulls the contact-based fall termination (rough_env_cfg.py:155:
+        # self.terminations.illegal_contact = None), so a fallen robot never resets --
+        # it flails for the rest of the 20 s episode, poisoning gradients and pinning
+        # the terrain curriculum at level 0 (runs 2026-07-11_01-07-28 / _01-53-35 /
+        # _02-37-51). Contact-based termination would false-positive on a LEGITIMATE
+        # stair-ascent belly-drag (baseline min body height ~0.15 m), so this uses
+        # ORIENTATION instead: a {params.fall_limit_angle_deg} deg tip
+        # ({_fall_limit_angle_rad} rad) is unrecoverable for a blind quadruped, while
+        # the legitimate ~-20 deg nose-down climb pitch and ordinary roll wobble
+        # stay legal.
+        self.terminations.fell_over = DoneTerm(
+            func=mdp.bad_orientation,
+            params={{"asset_cfg": SceneEntityCfg("robot"), "limit_angle": {_fall_limit_angle_rad}}},
+        )
+'''
+
+    # --- upright spawn via reset-pose roll/pitch, not contact (2026-07-11 fix) -------
+    # Rendered only when the cap is non-zero (0 disables, keeping stock +/-pi), matching
+    # the reward_fns/fall_term gating convention above -- see StairPatchParams.
+    # spawn_tilt_max_rad for the why.
+    spawn_term = ""
+    if params.spawn_tilt_max_rad > 0.0:
+        _spawn_tilt_deg = math.degrees(params.spawn_tilt_max_rad)
+        spawn_term = f'''
+        # --- upright spawn override (2026-07-11 fix; pairs with fell_over above) --
+        # The parent spawns at UNIFORM +/-pi roll AND pitch
+        # (self.events.randomize_reset_base.params["pose_range"], rough_env_cfg.py:61-62) --
+        # a self-righting curriculum that only coheres with the parent's DISABLED
+        # contact-based fall termination (illegal_contact = None, rough_env_cfg.py:155).
+        # With fell_over now enabled above, that spawn distribution executes ~8/9 of
+        # robots at birth (observed Episode_Termination/fell_over ~= 0.855-0.866, mean
+        # episode length 82-165, runs 2026-07-11_02-37-51 / _04-01-05 -- matching
+        # P(upright-ish spawn) ~= 1/9 almost exactly). Narrow ONLY roll/pitch to
+        # +/-{params.spawn_tilt_max_rad} rad (~{_spawn_tilt_deg:.1f} deg); x/y/z/yaw stay stock.
+        # The parent sets .params to a plain dict at rough_env_cfg.py:56 (already run via
+        # super().__post_init__() above) -- mutate the existing "pose_range" keys IN
+        # PLACE, do not replace the whole dict.
+        self.events.randomize_reset_base.params["pose_range"]["roll"] = (-{params.spawn_tilt_max_rad}, {params.spawn_tilt_max_rad})
+        self.events.randomize_reset_base.params["pose_range"]["pitch"] = (-{params.spawn_tilt_max_rad}, {params.spawn_tilt_max_rad})
 '''
 
     obs_noise_block = ""
@@ -251,12 +538,21 @@ import torch
 import isaaclab.envs.mdp as mdp
 import isaaclab.terrains as terrain_gen
 from isaaclab.managers import EventTermCfg as EventTerm
+from isaaclab.managers import ManagerTermBase
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.utils import configclass
 
 from .rough_env_cfg import UnitreeGo2RoughEnvCfg
+
+# Go2 nominal standing base height above whatever surface it is resting on (m). Source:
+# robot_lab/assets/unitree.py UNITREE_GO2_CFG's InitialStateCfg, pos z = 0.38. Used to
+# zero out the robot's own leg-stance height when comparing root_pos_w against env_origins
+# (curriculum + crest-gating below).
+_SPAWN_Z_M = 0.38
 {reward_fns}
+{curriculum_fn}
 
 @configclass
 class {STAIRS_CFG_CLASS}(UnitreeGo2RoughEnvCfg):
@@ -268,16 +564,28 @@ class {STAIRS_CFG_CLASS}(UnitreeGo2RoughEnvCfg):
         super().__post_init__()
 
         # --- ascending-stairs terrain bracketing the real stair (finding C) ---
-        # Replace the slope/box/rough/inverted mix with a small set of upward
-        # pyramid-stairs sub-terrains: the nominal 0.305 m tread (majority), a narrow
-        # and a wide tread variant (tread-depth randomisation), and a FIXED-TALL step
-        # sub-terrain that drills mounting a tall first riser (the reported wedge point).
-        # The four proportions sum to 1.0. With the terrain curriculum on, step_height
-        # interpolates easy->hard across the generator rows, and the raised 0.20 m max
-        # plus the tall sub-terrain bias training toward the hard edge.
+        # Replace the slope/box/rough/inverted mix with a small set of pyramid-stairs
+        # sub-terrains built on IsaacLab's MeshInvertedPyramidStairsTerrainCfg: the nominal
+        # 0.305 m tread (majority), a narrow and a wide tread variant (tread-depth
+        # randomisation), and a TALL step sub-terrain that drills mounting a tall first riser
+        # (the reported wedge point). The four proportions sum to 1.0. With the terrain
+        # curriculum on, step_height interpolates easy->hard across the generator rows, and
+        # the raised 0.20 m max plus the tall sub-terrain bias training toward the hard edge.
+        # The tall tile's OWN step_height_range is (tall_step_min, step_height_max) -- params
+        # default (0.2, 0.2) keeps it a FIXED hard step (stock behaviour), but a lower
+        # tall_step_min gives it a difficulty ramp of its own so it is not an unwinnable well
+        # at curriculum difficulty 0 for a policy that cannot yet climb 0.15 m.
+        #
+        # TERRAIN NOTE: despite the "Inverted" name, this is the class that trains genuine
+        # ASCENT. IsaacLab's inverted_pyramid_stairs_terrain() spawns the robot at the PIT
+        # BOTTOM (origin z = -(num_steps + 1) * step_height, mesh_terrains.py:246), so it
+        # must climb up and out. The REGULAR (non-inverted) MeshPyramidStairsTerrainCfg
+        # spawns the robot on the ELEVATED TOP PLATFORM instead (origin z =
+        # +(num_steps + 1) * step_height, mesh_terrains.py:146) and so trains DESCENT -- the
+        # wrong skill for this task; see CLAUDE.md incident 8.10.
         gen = self.scene.terrain.terrain_generator
         gen.sub_terrains = {{
-            "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
+            "pyramid_stairs": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
                 proportion={nominal_p},
                 step_height_range=({params.step_height_min}, {params.step_height_max}),
                 step_width={params.step_width_nominal},
@@ -285,7 +593,7 @@ class {STAIRS_CFG_CLASS}(UnitreeGo2RoughEnvCfg):
                 border_width=1.0,
                 holes=False,
             ),
-            "pyramid_stairs_narrow": terrain_gen.MeshPyramidStairsTerrainCfg(
+            "pyramid_stairs_narrow": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
                 proportion={narrow_p},
                 step_height_range=({params.step_height_min}, {params.step_height_max}),
                 step_width={params.step_width_min},
@@ -293,7 +601,7 @@ class {STAIRS_CFG_CLASS}(UnitreeGo2RoughEnvCfg):
                 border_width=1.0,
                 holes=False,
             ),
-            "pyramid_stairs_wide": terrain_gen.MeshPyramidStairsTerrainCfg(
+            "pyramid_stairs_wide": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
                 proportion={wide_p},
                 step_height_range=({params.step_height_min}, {params.step_height_max}),
                 step_width={params.step_width_max},
@@ -301,9 +609,9 @@ class {STAIRS_CFG_CLASS}(UnitreeGo2RoughEnvCfg):
                 border_width=1.0,
                 holes=False,
             ),
-            "pyramid_stairs_tall": terrain_gen.MeshPyramidStairsTerrainCfg(
+            "pyramid_stairs_tall": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
                 proportion={tall_p},
-                step_height_range=({params.step_height_max}, {params.step_height_max}),
+                step_height_range=({params.tall_step_min}, {params.step_height_max}),
                 step_width={params.step_width_nominal},
                 platform_width=3.0,
                 border_width=1.0,
@@ -314,8 +622,11 @@ class {STAIRS_CFG_CLASS}(UnitreeGo2RoughEnvCfg):
         # --- forward walk; no strafing, gentle yaw ----------------------------
         # Speed decoupled from stability (finding B): a modest {params.lin_vel_x_max} m/s
         # ceiling so the climb is not command-starved, with stability carried by the
-        # reward structure below rather than by crawling.
-        self.commands.base_velocity.ranges.lin_vel_x = (0.0, {params.lin_vel_x_max})
+        # reward structure below rather than by crawling. Floor raised to
+        # {params.lin_vel_x_min} m/s (was implicitly 0.0) so the command range no longer
+        # straddles zero -- "stand still" was a legal command earning ~85% of the
+        # exp-kernel track_lin_vel_xy_exp reward (run 2026-07-10_21-39-53, root cause (3)).
+        self.commands.base_velocity.ranges.lin_vel_x = ({params.lin_vel_x_min}, {params.lin_vel_x_max})
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-{params.ang_vel_z_max}, {params.ang_vel_z_max})
 
@@ -324,13 +635,32 @@ class {STAIRS_CFG_CLASS}(UnitreeGo2RoughEnvCfg):
         # CoM ({com[0]}, {com[1]}, {com[2]}) m. Numbers from sim/isaac/o2_payload/spec.py.
         # The base-mass startup event ADDS a uniform sample in this band to the trunk,
         # so every episode trains carrying at least the tank (plus robustness headroom).
+        # payload_mass_scale={params.payload_mass_scale}: BOTH the added-mass band below (full
+        # payload.added_mass_range() scaled by payload_mass_scale) AND the CoM-shift-center
+        # above (full com_shift_m scaled by the same factor, then +/-com_jitter_m re-applied
+        # around the scaled center) move together -- a staged tank is lighter AND sits at a
+        # proportionally smaller CoM-tip moment, not a lighter tank levered at the full-tank
+        # moment (2026-07-11 physics fix; see StairPatchParams.payload_mass_scale for why the
+        # original mass-only scale was wrong and what it broke empirically).
         self.events.randomize_rigid_body_mass_base.params["mass_distribution_params"] = ({lo}, {hi})
-{com_event_block}
+{com_event_block}{fall_term}{spawn_term}
         # --- anti-fall reward structure (finding B) ---------------------------
         # Ease the flat-orientation penalty from -2.5 to {params.orientation_reward} so the
         # climb PITCH is not over-suppressed (a climbing dog IS pitched up), then add a
         # roll-only anti-tip term below so sideways toppling is still punished.
         self.rewards.flat_orientation_l2.weight = {params.orientation_reward}
+
+        # --- rebalance: standing-upright vs. climbing (2026-07-10_21-39-53 collapse) ---
+        # Stock `upward` (square(1 - projected_gravity_b[:,2])) pays ~4/step for merely
+        # standing upright at level 0 -- 53% of the positive reward budget in the collapsed
+        # run, earnable without ever moving, and it out-earned the vertical-progress reward
+        # ~32:1. Trim it here so standing still stops being profitable on its own.
+        self.rewards.upward.weight = {params.upward_weight}
+
+        # Stock lin_vel_z_l2 punishes ANY vertical velocity, including the vz a genuinely
+        # climbing policy must produce; ease it so climbing is not fighting its own
+        # penalty term as hard as it fights flat-ground bounce.
+        self.rewards.lin_vel_z_l2.weight = {params.lin_vel_z_weight}
 {ascent_term}{roll_term}{crest_term}
         # --- rebalance: forward-tracking vs climbing --------------------------
         # Stock track_lin_vel_xy_exp (3.0) out-earns the ascent reward ~30:1, so the policy
@@ -344,6 +674,16 @@ class {STAIRS_CFG_CLASS}(UnitreeGo2RoughEnvCfg):
         # initial level cap: more envs spawn on the tall risers every episode, giving the
         # climb a training signal even when curriculum promotion stalls.
         self.scene.terrain.max_init_terrain_level = {params.max_init_terrain_level}
+
+        # --- ascent-aware terrain curriculum (structural fix) -----------------
+        # Swap the stock XY-distance-only terrain_levels curriculum func for the
+        # ascent/descent-aware clone defined above (_curriculum_terrain_levels_o2) so a
+        # robot that is genuinely working the stairs is not mass-demoted purely for
+        # falling short of the XY bar (run 2026-07-10_21-39-53, root cause (4): raising
+        # max_init_terrain_level dropped the resumed policy onto a harder mean level and
+        # the XY-only curriculum demoted it wholesale). Term name kept as "terrain_levels"
+        # so the tensorboard series stays comparable across runs.
+        self.curriculum.terrain_levels.func = _curriculum_terrain_levels_o2
 
         # --- match the DEPLOYED PD gains (rl_locomotion_policy kp={params.kp}, kd={params.kd}) ---
         # robot_lab ships stiffness=25.0; the sim deploys kp=20.0, so align here to keep
@@ -420,6 +760,17 @@ _CRITICAL_PATCH_TOKENS = (
     "disable_zero_weight_rewards",     # the manual prune we re-run
     "actuators",                       # the actuator group we re-gain
     '"legs"',                          # ...specifically the "legs" actuator key
+    "upward",                          # the standing-upright reward we re-weight (2026-07-10 fix)
+    "lin_vel_z_l2",                    # the vertical-velocity penalty we re-weight (2026-07-10 fix)
+    # NOTE: terminations.fell_over (2026-07-11 fix) is a NEW attribute the parent does not
+    # define, so it cannot be guarded directly -- grepping for "fell_over" would always
+    # miss. Guard instead on what the new code actually DEPENDS ON: that self.terminations
+    # is a live, attribute-settable object in this exact __post_init__, which the parent
+    # already demonstrates via `self.terminations.illegal_contact = None`
+    # (rough_env_cfg.py:155). If upstream renames/removes illegal_contact, the terminations
+    # attribute-assignment pattern we rely on may have moved too.
+    "illegal_contact",                 # proves self.terminations exists / is settable here
+    "randomize_reset_base",            # the reset-pose DR event we narrow (2026-07-11 spawn-tilt fix)
 )
 
 
