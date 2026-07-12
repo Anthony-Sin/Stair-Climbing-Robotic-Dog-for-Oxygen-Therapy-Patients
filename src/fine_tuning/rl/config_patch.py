@@ -194,6 +194,21 @@ class StairPatchParams:
     #                                       samples on birth-executions, not policy failures. 0.15 rad
     #                                       ~= 8.6 deg keeps mild spawn robustness without them.
 
+    # --- 2026-07-11 stage-4 halt fix (commanded-zero mid-stairs lean-creep) --------------
+    rel_standing_envs: float = 0.12       # NEW commands.base_velocity.rel_standing_envs -- probability an
+    #                                       env samples a TRUE zero-velocity ("standing") command each
+    #                                       resample; robot_lab/IsaacLab ship 0.02 (2%,
+    #                                       velocity_env_cfg.py:109). The stage-3 policy (run
+    #                                       2026-07-11_12-03-47 model_3200) climbs well but CANNOT truly
+    #                                       halt: at commanded vx=0 mid-stairs it lean-creeps 0.146 m/s
+    #                                       mean / 0.367 m/s p95 (measured), and a ~3 min hold near a
+    #                                       crest lip eventually toppled it (sim run
+    #                                       2026-07-11_161710_451) -- with only 2% of envs ever sampling a
+    #                                       true zero command, the policy gets almost no training signal
+    #                                       for halting. Raise to 0.12 (6x) for a stage-4 fine-tune so the
+    #                                       halt skill gets real practice without swamping the
+    #                                       forward-walk/climb skill the earlier stages already learned.
+
 
 def render_stairs_cfg_module(
     payload: PayloadNumbers, params: StairPatchParams = StairPatchParams()
@@ -629,6 +644,13 @@ class {STAIRS_CFG_CLASS}(UnitreeGo2RoughEnvCfg):
         self.commands.base_velocity.ranges.lin_vel_x = ({params.lin_vel_x_min}, {params.lin_vel_x_max})
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-{params.ang_vel_z_max}, {params.ang_vel_z_max})
+
+        # --- stage-4 halt fix: train a TRUE zero-velocity command more often ---------
+        # robot_lab/IsaacLab ship rel_standing_envs=0.02 (2% of envs ever sample a real
+        # standing command, velocity_env_cfg.py:109) -- see StairPatchParams.rel_standing_envs
+        # for the measured mid-stairs lean-creep (0.146 m/s mean / 0.367 m/s p95) and the
+        # near-crest topple (sim run 2026-07-11_161710_451) this is meant to fix.
+        self.commands.base_velocity.rel_standing_envs = {params.rel_standing_envs}
 
         # --- carry the O2 payload every episode -------------------------------
         # payload {payload.mass_kg} kg (~{payload.mass_fraction * 100:.0f}% of the {payload.trunk_mass_kg} kg trunk),

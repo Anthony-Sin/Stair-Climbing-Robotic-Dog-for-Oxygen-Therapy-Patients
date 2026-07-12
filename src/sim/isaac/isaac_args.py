@@ -323,13 +323,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--handoff-top-egress-vx", type=float, default=0.22,
                         help="Forward floor (m/s) emitted during egress -- but ONLY when the patient is at "
                              "least --handoff-top-egress-standoff away; otherwise the floor is 0 (hold).")
-    parser.add_argument("--handoff-top-egress-standoff", type=float, default=0.60,
+    parser.add_argument("--handoff-top-egress-standoff", type=float, default=0.85,
                         help="Only push forward in egress if the patient is >= this far ahead (m). Closer "
-                             "than this, the dog HOLDS in place (climb policy stands) so it never collides.")
+                             "than this, the dog HOLDS in place (climb policy stands) so it never collides. "
+                             "Default raised 0.60->0.85 (2026-07-11): 0.60 sat inside the perceived-gap "
+                             "noise band right at the 0.55 m collision floor -- run 2026-07-11_232535_222's "
+                             "gap flickered 0.58-0.63 at the crest, the push flickered on, and GT clearance "
+                             "hit 0.443. 0.85 = collision floor + noise margin; no wait-deadlock risk since "
+                             "the patient only hard-waits when the dog is >1.7 m behind (isaac_env.py "
+                             "PATIENT_HARD_WAIT_LEAD_M), so [0.85, 1.7) always lets both sides move.")
     parser.add_argument("--handoff-top-egress-goal-stop", type=float, default=0.12,
                         help="Stop the egress forward push once within this (m) of an explicit forward GOAL "
                              "(the stair-waypoint target) so the dog settles AT the waypoint and does not "
                              "walk off the top landing. No effect in the follow case (goal = patient).")
+    parser.add_argument("--landing-hold-standoff-m", type=float, default=1.0,
+                        help="Follow standoff (m) for the flat-landing creep-hold gate (isaac_env's "
+                             "top-landing hold block). Mirrors the CONTROLLER's --target-distance "
+                             "(core/args_parser.py:275, default 1.0); run_sim.ps1 forwards its "
+                             "-TargetDistance value to both processes so they cannot drift. The Isaac "
+                             "namespace has no target_distance of its own -- reading one crashed the "
+                             "render loop at first top-landing activation (run 2026-07-11_221657_487, "
+                             "main_loop_exception AttributeError).")
     # ---- Blind (proprioceptive) RL climb backend (--handoff-climb-backend blind_rl) ----
     # The rl_sar Go2 "robot_lab" policy reused as the dual-policy handoff CLIMB net: PGTT
     # walks, this blind RL net hot-swaps in to climb the stairs (no depth). These knobs ARE

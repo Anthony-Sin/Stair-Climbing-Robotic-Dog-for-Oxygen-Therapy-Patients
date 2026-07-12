@@ -49,9 +49,19 @@ def test_classify_self_test():
 
 
 def test_classify_incomplete_outcomes():
-    for o in ("unknown", "not_recorded", "", None, "docker_failed"):
+    for o in ("unknown", "not_recorded", "", None, "docker_failed",
+              "loop_ended_without_evaluation"):
         assert ut.classify_run(_row(outcome=o)) == ut.CATEGORY_INCOMPLETE, \
             f"outcome={o!r} has no usable verdict and must be archived-only"
+
+
+def test_classify_incomplete_loop_ended_without_evaluation_even_with_many_samples():
+    # A run whose render loop silently died (isaac_env.py's teardown fallback exit_reason,
+    # see CLAUDE.md incident: run_sim_20260711_211922_087) can still have logged plenty of
+    # fall_diag samples before it died -- MIN_REAL_FALL_DIAG_STEPS alone must not promote
+    # it to CATEGORY_REAL just because the trajectory was long.
+    r = _row(outcome="loop_ended_without_evaluation", fall_diag_steps=2000)
+    assert ut.classify_run(r) == ut.CATEGORY_INCOMPLETE
 
 
 def test_classify_incomplete_when_too_few_samples():

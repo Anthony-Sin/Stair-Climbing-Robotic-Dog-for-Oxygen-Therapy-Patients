@@ -447,6 +447,63 @@ def test_post_climb_reacquire():
     print("post_climb_reacquire OK  (fwd floor suppressed while off-axis; resumes on re-align or person detect)")
 
 
+def test_caller_hold_blocks_engage_and_walk_floor():
+    """Incident 8.15 extension (run_sim_20260711_155123_326): while the perception
+    controller commands a stance-hold (caller_hold=True, main.py hold_request forwarded
+    from isaac_env's F1 _motion_hold_requested capture), the FSM must not ENGAGE a new
+    climb nor emit any walk-state forward floor. That run: the depth detector read the
+    STANDING PATIENT on the top landing as an 8-step staircase (8.3's person-as-risers),
+    the commit vx_floor armed the stall detector against the commanded stop, a
+    'wedge_stall' climb engaged AT the patient (both engages during a continuous
+    fsm=STOP/hold=True/vx=0 stretch) and drove the dog up the patient's legs -- flip at
+    x=8.63, roll 180 deg. Every legitimate engage happens with the caller allowing motion
+    (hold=False), so this veto costs nothing on the designed paths."""
+    cfg = HandoffConfig(climb_attempt=True, climb_engage_standoff_m=0.65, climb_min_room_m=0.40,
+                        stair_commit_enabled=True, require_controller_stairs=False,
+                        stair_commit_max_sec=25.0, stair_commit_arm_after_secs=0.0,
+                        stall_consec_sec=0.3)
+    D = synth_staircase_depth()
+    base = dict(go2=object(), depth_hw=D, stairs_action_active=True, base_z=0.30,
+                roll=0.0, pitch=0.0, roll_rate=0.0, pitch_rate=0.0, height_above_step=0.30,
+                person_detected=False, yaw=0.0, y_lateral=0.0)
+
+    # 1. HELD + wedged (cmd 0, body 0, patient-as-stairs depth, "riser" confirmed ahead --
+    #    the run's exact landing signature): no commit floor, no stall arming, NO engage.
+    ho = HandoffController(cfg, _FakePgtt(), logger=None)
+    t = 0.0
+    for _ in range(40):  # 2.0 s >> stall_consec_sec
+        t += 0.05
+        r = ho.update(now=t, dt=0.05, cmd_vx=0.0, body_speed=0.0, body_fwd=0.0,
+                      riser_dist_ahead=0.50, caller_hold=True, **base)
+        assert r["state"] == "walk", f"caller_hold must veto engage: {r}"
+        assert r.get("vx_floor") is None, \
+            f"no walk-state forward floor against a commanded stance-hold: {r.get('vx_floor')}"
+        assert not r.get("tread_creep_active"), "no tread-creep push under caller_hold"
+
+    # 2. SAME inputs with caller_hold released -> the commit floor arms, and the approach
+    #    engage fires (riser at standoff + committing) -- the designed path still works.
+    ho2 = HandoffController(cfg, _FakePgtt(), logger=None)
+    engaged = False
+    t = 0.0
+    for _ in range(40):
+        t += 0.05
+        r = ho2.update(now=t, dt=0.05, cmd_vx=0.0, body_speed=0.0, body_fwd=0.0,
+                       riser_dist_ahead=0.50, caller_hold=False, **base)
+        if r["state"] == "climb":
+            engaged = True
+            break
+    assert engaged, "with caller_hold False the same scenario must still engage (designed path)"
+
+    # 3. caller_hold arriving MID-CLIMB must NOT abort/clamp the ongoing climb (8.9 /
+    #    blind-carry: never strand the climber on the incline because the controller
+    #    asked to stop -- the mid-climb exits stay tilt/progress/egress-owned).
+    r = ho2.update(now=t + 0.05, dt=0.05, cmd_vx=0.0, body_speed=0.0, body_fwd=0.0,
+                   riser_dist_ahead=0.50, caller_hold=True, **base)
+    assert r["state"] == "climb" and r["climb"], \
+        f"an ONGOING climb must not be aborted by caller_hold: {r}"
+    print("caller_hold OK  (hold vetoes engage + walk floors; release engages; mid-climb unaffected)")
+
+
 if __name__ == "__main__":
     test_detector()
     test_stall()
@@ -458,4 +515,5 @@ if __name__ == "__main__":
     test_no_false_crest_between_risers()
     test_climb_progress_watchdog()
     test_post_climb_reacquire()
+    test_caller_hold_blocks_engage_and_walk_floor()
     print("ALL HANDOFF TESTS PASS")

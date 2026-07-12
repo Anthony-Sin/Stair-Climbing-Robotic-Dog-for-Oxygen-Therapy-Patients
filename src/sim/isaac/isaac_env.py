@@ -7,6 +7,7 @@ import socket
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 from typing import Optional
 
@@ -2016,13 +2017,21 @@ def update_person_patrol(person, dt: float) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _run_pgtt_handoff(go2, rl_policy, vx, stairs_action_active, person_detected, dt):
+def _run_pgtt_handoff(go2, rl_policy, vx, stairs_action_active, person_detected, dt,
+                      caller_hold=False):
     """Drive the WALK<->CLIMB + stair-commit handoff one step; return its decision dict.
 
     Gathers the live base state (pose, yaw, forward velocity) the stall detector,
     climber and stair-commit heading-hold need, then calls the HandoffController. The
     caller applies the climber targets (climb), the heading override + forward floor
     (stair-commit), per the returned dict.
+
+    ``caller_hold`` is main.py's hold_request (the F1 ``_motion_hold_requested`` capture at
+    ``_step_go2_locomotion``, ~L2160), forwarded so the FSM cannot ENGAGE a new climb / push
+    a walk-state forward floor against a commanded stop -- the F1 clamp alone could not stop
+    that because the climb hot-swap branches return before it runs (incident 8.15 extension,
+    run_sim_20260711_155123_326: wedge_stall climb engaged AT the standing patient during a
+    continuous caller hold and flipped the dog at x=8.63). See HandoffController.update.
     """
     try:
         _bp, _bq = go2.get_world_pose()
@@ -2073,7 +2082,15 @@ def _run_pgtt_handoff(go2, rl_policy, vx, stairs_action_active, person_detected,
         for _i in range(2, 31):  # 0.10 .. 1.50 m ahead
             _d = _i * 0.05
             _th = get_terrain_height(base_x + _d * _cyaw, base_y + _d * _syaw)
-            if riser_dist is None and _th > 0.05:
+            # RELATIVE to the terrain under the dog, NOT absolute (same trap the
+            # stairs_ahead_gt note above already calls out): the old absolute `_th > 0.05`
+            # test read the ELEVATED top landing (z ~= 2.1 m) as "riser 0.10 m ahead"
+            # EVERYWHERE, which permanently satisfied HandoffController's _terrain_confirms
+            # person-as-stairs guard (handoff_controller.py, "TERRAIN GATE") on the landing --
+            # both spurious run_sim_20260711_155123_326 engages logged riser_dist_ahead_m=0.1
+            # while the only thing ahead was the standing PATIENT (incident 8.3 class). On
+            # the ground approach _terr_here ~= 0 so this is behavior-identical there.
+            if riser_dist is None and _th > _terr_here + 0.05:
                 riser_dist = float(_d)
             if _th > _terr_here + _min_riser:
                 stairs_ahead_gt = True
@@ -2112,6 +2129,7 @@ def _run_pgtt_handoff(go2, rl_policy, vx, stairs_action_active, person_detected,
         riser_dist_ahead=riser_dist,
         base_x=float(base_x), person_gap_m=person_gap, stairs_ahead_gt=stairs_ahead_gt,
         forward_goal_dist_m=forward_goal,
+        caller_hold=bool(caller_hold),
     )
 
 
@@ -2132,6 +2150,15 @@ def _step_go2_locomotion(
 ) -> None:
     global _HANDOFF_CLIMBING
     vx = max(0.0, float(vx))
+    # incident 8.15 / F1: the caller's stop decision (main.py's motion_allowed / hold_request,
+    # sent over UDP as this `hold` argument), captured BEFORE the PGTT stair-commit / egress
+    # logic below can override it. That logic (the wz_override / vx_floor block a few hundred
+    # lines down) unconditionally sets hold=False and pushes a positive vx to re-acquire
+    # heading / walk off the crest once the person is lost post-climb -- which is exactly the
+    # scenario main.py's hold=True was asserting in the first place. Passed as a plain function
+    # argument (8.5 -- no debug_info involved here at all), applied once, right before the
+    # walking policy actually steps, so it cannot be silently re-overridden downstream.
+    _motion_hold_requested = bool(hold)
     if rl_policy is None:
         return
     if getattr(args, "self_test_no_policy", False):
@@ -2162,7 +2189,8 @@ def _step_go2_locomotion(
         # When climbing, the climber drives the joints and PGTT does not infer.
         if _PGTT_HANDOFF is not None and _PGTT_HANDOFF.cfg.enabled:
             _ho = _run_pgtt_handoff(go2, rl_policy, vx, stairs_action_active,
-                                    person_detected, dt)
+                                    person_detected, dt,
+                                    caller_hold=_motion_hold_requested)
             _go2_locomotion_state.handoff = _ho.get("telemetry")
             _climbing_now = bool(_ho.get("climb"))
             # --- Blind-RL-backend HOT-SWAP: the proprioceptive rl_sar RL net climbs ---
@@ -2301,6 +2329,20 @@ def _step_go2_locomotion(
                 hold = False
         else:
             _go2_locomotion_state.handoff = None
+        # incident 8.15 / F1 -- POST-CREST HOLD ENFORCEMENT: the stair-commit heading-lock /
+        # egress-reacquire logic just above forces hold=False and a positive vx to walk the
+        # dog off the crest even when the caller explicitly asked to stop. This call site is
+        # PGTT flat-ground walking (this is the ONLY reachable path when NOT climbing -- every
+        # hot-swap climb branch above returns early), so there is no incline-topple risk (the
+        # 8.9 stance-lock caution is about the INCLINE, not the flat landing). Honour the
+        # caller's stop: clamp the actual command sent to the walking policy back to what
+        # main.py asked for, regardless of what the reacquire logic decided. Observed failure
+        # (run_sim_20260711_140745_054): hold_request=True / motion_allowed=False held for 18
+        # continuous seconds while commanded_speed_mps stayed ~0.30 -- the blind robot walked
+        # 3 m across the top landing and off a 2.1 m drop.
+        if _motion_hold_requested:
+            vx = 0.0
+            hold = True
         telemetry = rl_policy.step(go2, (vx, vy, wz), dt, hold=hold, height_fn=_hf)
         _go2_locomotion_state.leg_summary = rl_policy.leg_command_summary()
         _go2_locomotion_state.policy_name = rl_policy.policy_path.name
@@ -2612,10 +2654,21 @@ def _run_evaluation_and_save_images(
         if max_pyaw > math.radians(5):
             human_rotated = True
             
-        # Check if fell
+        # Check if fell. `pz` was RECORDED via _get_person_pose_z(px, py, smooth=True)
+        # (env/terrain_queries.py:106-111, the continuous nosing-line ramp -- L4263 above:
+        # "pz = float(_get_person_pose_z(px, py, smooth=True))"), but the discrete
+        # get_terrain_height() (terrain_queries.py:36-56) snaps up a FULL riser the instant x
+        # crosses a tread boundary while the smooth ramp is still mid-rise -- up to a full
+        # step_height_m (0.15 m) above it just after each boundary. Comparing pz against that
+        # discrete reference (threshold -0.1 < riser 0.15) latched "fell" on every stair climb
+        # by pure geometry, not an actual fall. Use _get_person_pose_z(..., smooth=True) again
+        # here -- the SAME function (and therefore the same optional final-scene offset
+        # treatment, terrain_queries.py / final_scene/runtime.py:76-77) that produced pz in the
+        # first place -- so this is genuinely "did the recorded z violate its own terrain
+        # contract by >0.1 m", not a smooth-vs-discrete basis artifact.
         for pt in person_trajectory:
             px, py, pz = pt["pos"]
-            terrain_z = get_terrain_height(px, py)
+            terrain_z = _get_person_pose_z(px, py, smooth=True)
             if (pz - terrain_z) < -0.1:
                 human_fell = True
                 break
@@ -4164,7 +4217,7 @@ def main() -> None:
                 # gate uses the robot's own phase + perception, never the patient's GT/waypoint.
                 _landing_hold_active = False
                 if (stair_phase_now == "top_landing" and gap_m is not None
-                        and float(gap_m) <= float(args.target_distance) * LANDING_HOLD_GAP_MULT):
+                        and float(gap_m) <= float(args.landing_hold_standoff_m) * LANDING_HOLD_GAP_MULT):
                     try:
                         _bv = go2.get_linear_velocity()
                         if _bv is not None and float(_bv[0]) > 0.0:
@@ -4492,11 +4545,20 @@ def main() -> None:
 
                 # Condition 4: climb stalled on the staircase.
                 # If the dual-policy handoff controller declares the climb STALLED, we exit.
-                # When the blind RL policy gets wedged on a stair and issues a stall heartbeat,
-                # there's no reason to retry for 90s in a sweep. Fail fast.
+                # The FSM's stall watchdog measures VERTICAL progress; at the very top the dog has
+                # already gained the full stair height (base_z above the top step) and only needs to
+                # walk FORWARD off the last tread onto the flat landing -- a horizontal egress that
+                # registers as "no vertical progress" and increments a stall-HOLD retry every
+                # climb_stall_timeout_sec. The FSM is DESIGNED to hold-and-retry there (it is the only
+                # policy that can drive the dog forward off the last tread; it never hands the incline
+                # back to PGTT). The old `> 0` fail-fast (added for throughput sweeps) aborted the run
+                # at the FIRST hold -- killing the living-room demo at ~step 13 while the dog was AT the
+                # top height but still nose-down mid-egress. Give the FSM several retries to complete the
+                # egress before the run gives up; its own climb_max_sec + tilt-abort remain the real
+                # backstops, so a genuinely wedged climb still fails (just not one step from done).
                 _handoff_stalled = False
                 if _PGTT_HANDOFF is not None and getattr(_PGTT_HANDOFF.cfg, "enabled", False):
-                    if _go2_locomotion_state.handoff and _go2_locomotion_state.handoff.get("handoff_climb_stall_retries", 0) > 0:
+                    if _go2_locomotion_state.handoff and _go2_locomotion_state.handoff.get("handoff_climb_stall_retries", 0) >= 6:
                         _handoff_stalled = True
                 
                 if _handoff_stalled:
@@ -4786,21 +4848,70 @@ def main() -> None:
             # step of sim-time, used to derive the measured RTF.
             _step_profiler.step_end(sim_dt=dt)
 
-        # After loop exits, run evaluation and capture final image
-        if evaluation_done or (_robot_positions_over_time or _person_positions_over_time):
+        # After loop exits, run evaluation and capture final image. ALWAYS run this (not
+        # just when evaluation_done or a trajectory was recorded) so a run whose render
+        # loop ends WITHOUT any of the guarded evaluation_exit break sites firing -- e.g.
+        # simulation_app.is_running() silently going False -- still gets a verdict instead
+        # of ending with no evaluation_summary.txt / stair_demo_report.json at all (see
+        # CLAUDE.md incident: run_sim_20260711_211922_087 died at handoff_crest headless
+        # with zero evaluation_exit event of any kind). _run_evaluation_and_save_images
+        # already tolerates empty trajectories (guarded by `if robot_trajectory:` /
+        # `if person_trajectory:` internally).
+        if evaluation_exit_reason == "not_recorded":
+            evaluation_exit_reason = "loop_ended_without_evaluation"
+        _run_evaluation_and_save_images(
+            world, verification_camera, go2, person,
+            _robot_positions_over_time, _person_positions_over_time,
+            args.log_dir,
+            evaluation_exit_reason=evaluation_exit_reason,
+            motion_elapsed_sim_sec=motion_elapsed_sim_sec,
+            robot_stair_phase_sim_sec=robot_stair_phase_sim_sec,
+            robot_top_landing_seen=robot_top_landing_seen,
+            rl_policy=rl_policy,
+        )
+
+    except KeyboardInterrupt:
+        log_event(LOGGER, logging.INFO, "keyboard_interrupt", "KeyboardInterrupt - shutting down")
+    except Exception as _main_loop_exc:
+        # The render loop (or the evaluation call right after it) raised without hitting
+        # any of the guarded evaluation_exit break sites. Log it WITH a traceback into the
+        # durable jsonl event log -- not just stdout -- because a headless Kit process can
+        # os._exit() from inside simulation_app.close() (fast_shutdown defaults True; see
+        # isaacsim/simulation_app/simulation_app.py) before a pending exception ever gets a
+        # chance to print, which is exactly how run_sim_20260711_211922_087 died at
+        # handoff_crest with no traceback anywhere. Then still attempt a best-effort
+        # evaluation/report write with whatever trajectory data was collected so the run
+        # does not end completely verdict-less.
+        log_event(
+            LOGGER, logging.ERROR, "main_loop_exception",
+            "Render loop raised an unhandled exception; recording it before teardown",
+            error=str(_main_loop_exc),
+            traceback=traceback.format_exc(),
+        )
+        try:
             _run_evaluation_and_save_images(
                 world, verification_camera, go2, person,
                 _robot_positions_over_time, _person_positions_over_time,
                 args.log_dir,
-                evaluation_exit_reason=evaluation_exit_reason,
+                evaluation_exit_reason="loop_ended_without_evaluation",
                 motion_elapsed_sim_sec=motion_elapsed_sim_sec,
                 robot_stair_phase_sim_sec=robot_stair_phase_sim_sec,
                 robot_top_landing_seen=robot_top_landing_seen,
                 rl_policy=rl_policy,
             )
-
-    except KeyboardInterrupt:
-        log_event(LOGGER, logging.INFO, "keyboard_interrupt", "KeyboardInterrupt - shutting down")
+        except Exception as _eval_exc:
+            log_event(
+                LOGGER, logging.ERROR, "post_exception_evaluation_failed",
+                "Best-effort evaluation after a loop exception also failed",
+                error=str(_eval_exc),
+            )
+        # Re-raise after logging + the best-effort report write: _warm_run_loop() wraps
+        # main() in its own try/except (isaac_env.py ~L5172-5178) that treats a raised
+        # exception as "episode failed -- self-reboot Kit fresh". Swallowing it here would
+        # silently downgrade that into a normal-looking episode, leaving a warm Kit process
+        # that hit an unhandled exception still running (and reused) for the next episode.
+        # The one-shot path's `finally:` below still runs identically either way.
+        raise
     finally:
         # Warm mode keeps the receiver thread + publisher + Kit alive for the next
         # episode; the one-shot path tears everything down here. The video writers

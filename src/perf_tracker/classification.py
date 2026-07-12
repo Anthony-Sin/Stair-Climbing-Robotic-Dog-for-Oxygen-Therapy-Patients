@@ -38,7 +38,17 @@ CATEGORY_INCOMPLETE = "incomplete"  # crashed/aborted/killed before a usable out
 MIN_REAL_FALL_DIAG_STEPS = 50
 
 # Outcomes that mean "no usable physics verdict was recorded".
-_INCOMPLETE_OUTCOMES = {"", "none", "unknown", "not_recorded", "docker_failed"}
+# "loop_ended_without_evaluation" is isaac_env.py's teardown-time fallback exit_reason
+# (main(), the after-loop evaluation call) for a render loop that ended WITHOUT any of
+# the guarded evaluation_exit break sites firing -- e.g. an unguarded exception or Kit's
+# is_running() silently going False (see CLAUDE.md incident: run_sim_20260711_211922_087
+# died at handoff_crest headless with zero evaluation_exit event). It carries whatever
+# trajectory happened to be recorded, which can exceed MIN_REAL_FALL_DIAG_STEPS, so
+# without this entry such a run would misclassify as CATEGORY_REAL on the leaderboard.
+_INCOMPLETE_OUTCOMES = {
+    "", "none", "unknown", "not_recorded", "docker_failed",
+    "loop_ended_without_evaluation",
+}
 
 # Substrings that mark a run as a clear success (kept in the table regardless of rank).
 _SUCCESS_MARKERS = (

@@ -36,6 +36,10 @@ param(
     # Optional per-step RISE override (m); 0 keeps the preset value. Plumbed to
     # isaac_env --stair-step-height so a run can shorten the risers without a new preset.
     [double]$StairStepHeight = 0,
+    # Follow standoff (m) forwarded from run_sim.ps1's -TargetDistance so the isaac-side
+    # landing creep-hold gate uses the SAME standoff as the controller's --target-distance;
+    # 0 keeps isaac_args.py's default (1.0, the controller default).
+    [double]$LandingHoldStandoff = 0,
     [switch]$NoParkourWalkMode,
     [switch]$NoSpeedGovernor,
     # Stand-up-from-ground is ON by default in isaac_env.py (the robot spawns folded and
@@ -152,6 +156,7 @@ $locomotionArgs += " --parkour-mask-fill $ParkourMaskFill"
 $locomotionArgs += " --stair-preset $StairPreset"
 # Optional per-step rise override (0 = keep the preset). Lets a run halve/shorten the risers.
 if ($StairStepHeight -gt 0) { $locomotionArgs += " --stair-step-height $StairStepHeight" }
+if ($LandingHoldStandoff -gt 0) { $locomotionArgs += " --landing-hold-standoff-m $LandingHoldStandoff" }
 if ($PatientCharacterUsd) { $locomotionArgs += " --patient-character-usd `"$PatientCharacterUsd`"" }
 # Walk mode and speed governor are ON by default in isaac_env.py; pass disable flags for A/B.
 if ($NoParkourWalkMode) { $locomotionArgs += " --no-parkour-walk-mode" }

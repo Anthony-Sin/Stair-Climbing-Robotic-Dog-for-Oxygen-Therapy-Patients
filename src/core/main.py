@@ -43,6 +43,15 @@ from core.control.stair_policy import (
     _stair_loss_forward_block,
     evaluate_depth_stair_gate,
     depth_stair_latch_allowed,
+    climb_gap_brake_scale,
+    lost_person_speed_taper_scale,
+    detect_landing_edge_dropoff,
+    landing_edge_guard_suppress_crest_artifact,
+    ClimbGapFilterState,
+    filtered_climb_gap_m,
+    LandingMarginState,
+    _fully_on_top_landing,
+    stair_loss_floor_eligible,
 )
 from core.control.follow_shaping import (
     _apply_follow_standoff_policy,
@@ -168,6 +177,16 @@ def main():
     # staying latched frame-to-frame; this hard latch guarantees a depth blip near the treads
     # can never re-open avoidance mid-climb (the failure that made avoidance stall the climb).
     _avoid_perma_off = False
+    # Sim ground-truth backstop for that same latch. The controller's YOLO stair detection can
+    # stay dark on the living-room approach (the staircase mesh isn't always recognised), so the
+    # stairs_detected / _climbing_latched triggers may never fire and furniture avoidance would
+    # keep reading the treads as a wall and throttle the RL climber to a stall (observed
+    # climb_stalled with --avoid-obstacles on BOTH the living-room and the plain sim; avoidance-off
+    # climbs). When the sim sidecar's GT robot x passes this line -- clear of the last in-lane prop
+    # (x<=0.08) yet still ~1.6 m short of the fixed x=2.0 staircase -- the perma-off latch trips.
+    # No-op on the real robot (no stair_demo sidecar), same as the top-landing release; the robot
+    # path keeps relying on the YOLO/depth stair triggers.
+    _avoid_stair_standoff_x_m = 0.4
 
     # Depth-based near-field stair detector (Rec 2): geometrically profiles the
     # parkour depth camera column data so stair detection stays reliable even when
@@ -489,6 +508,24 @@ def main():
     # stairs up close) is the right "on stairs" signal for the follow distance fusion's LiDAR-riser
     # gate: the LiDAR hits the riser precisely during those committed-but-undetected climb frames.
     _prev_stairs_committed = False
+    # Post-crest top-landing edge-guard latch (incident 8.15 / F4). One-way latch, mirrors
+    # _avoid_perma_off above: once the crest is genuinely reached it stays armed for the rest
+    # of the run (the transient producers below -- stair_finish_completed / a direct
+    # frame_meta top_landing read -- only fire on the crest-transition frame(s), so a plain
+    # per-frame debug_info read would go dark again the very next frame). Never re-cleared:
+    # a false-positive brake on ordinary later flat ground costs speed, not safety.
+    _post_crest_landing_latched = False
+    # Wall-clock (perf_counter, incident 8.6) timestamp of the frame _post_crest_landing_latched
+    # first armed. Captured once, alongside the latch above -- the hardware-portable fallback
+    # input to landing_edge_guard_suppress_crest_artifact's crest-artifact suppression window
+    # (see that function's docstring, core/control/stair_policy.py). Sim prefers the GT distance
+    # (landing_margin_state.landing_entry_x) instead; this is read only when GT is unavailable.
+    _post_crest_landing_latched_ts: Optional[float] = None
+    # Boot-style ONE-TIME log guard (incident 8.8): logs once, not every frame, when the edge
+    # guard cannot get a depth reading during the post-crest phase, so a real run visibly
+    # reports the feature is not actually checking anything -- while still failing the
+    # per-frame decision toward STOP (see the landing-edge-guard block below).
+    _edge_guard_inactive_logged = False
     # Method 1 carrot / virtual-target steering (opt-in via --carrot-follow). Body-frame breadcrumb
     # FIFO of the person; steering aims one standoff behind the newest sample. See _update_carrot_heading.
     carrot_trail: List[List[float]] = []
@@ -499,6 +536,13 @@ def main():
         "pace_timer": 0.0,
         "last_time": time.perf_counter(),
     }
+    # Incident 8.15 / F2 hardening: caller-owned rolling-minimum window for the mid-climb
+    # patient-gap brake (see filtered_climb_gap_m docstring). One instance for the run,
+    # mirroring standoff_state/carrot_state above -- never a module global.
+    climb_gap_filter_state = ClimbGapFilterState()
+    # Incident 8.15 / F3 third rescope: caller-owned state for the "fully on landing" gate
+    # (see _fully_on_top_landing docstring). One instance for the run.
+    landing_margin_state = LandingMarginState()
     # Timestamp of first person detection this session. Used by --follow-start-delay
     # to hold all follow commands at zero until the delay expires. Set once and not
     # reset on brief losses so the timer doesn't restart mid-follow.
@@ -1090,6 +1134,22 @@ def main():
                 stairs_action_active=_prev_stairs_action_active,
             )
 
+            # Incident 8.15 / F2 hardening -- SINGLE PRODUCER (incident 8.5) for the mid-climb
+            # patient-gap brake's filtered gap. Computed HERE, once, right after
+            # _apply_follow_standoff_policy populates debug_info["standoff_gap_ctrl_m"] above and
+            # before every consumer of it below (_apply_stair_command_policy, called immediately
+            # below, reads it from debug_info inside stair_policy.py; the persistence-latch and
+            # committed-climb call sites further down in this file read it too) -- never
+            # re-filtered per-call-site. See filtered_climb_gap_m's docstring
+            # (core/control/stair_policy.py) for the noisy-gap failure this hardens.
+            debug_info["stair_climb_gap_filtered_m"] = filtered_climb_gap_m(
+                debug_info.get("standoff_gap_ctrl_m"),
+                person_detected=bool(debug_info.get("person_detected", False)),
+                state=climb_gap_filter_state,
+                now=current_time,
+                window_sec=float(args.climb_gap_brake_filter_window_sec),
+            )
+
             trans_x_cmd, rotation_cmd = _apply_stair_command_policy(
                 args, trans_x_cmd, rotation_cmd, debug_info,
                 frame_meta=frame_meta if isinstance(frame_meta, dict) else None,
@@ -1224,7 +1284,30 @@ def main():
             # flat-ground false-latch. So near-riser only counts WITH recent clean YOLO -- i.e. the
             # extension evidence reduces to _yolo_stair_recent (the AND-term is kept for intent clarity).
             _genuine_stair_extend_evidence = _yolo_stair_recent or (_near_riser and _yolo_stair_recent)
-            if (_genuine_stairs or _depth_climb_engage
+            # Sim GT stair backstop: in the living room the close, weaving patient OCCLUDES the
+            # staircase, so the controller's YOLO stair model never fires (measured stairs_detected
+            # 0/1127 frames) -> this climb latch is never armed, the stair-commit forward floor never
+            # turns on, and the flat follower holds vx=0 because the nose-down dog perceives the
+            # patient's feet on the step ABOVE at ~0.5 m even though the true along-path lead is
+            # ~1.5 m -> the dog gets no upward push and jams mid-staircase. Arm the SAME latch from the
+            # sim GT sidecar phase -- authoritative (true ONLY on the real staircase, so it cannot
+            # flat-false-latch on the patient's legs, incident 8.3) -- and remember the true GT lead so
+            # the collision block below is not fooled by the nose-down close reading. Sim-only: the
+            # real robot has no stair_demo sidecar (_gt_on_stairs stays False) and keeps the YOLO/depth
+            # stair path unchanged. Reads frame_meta, not a downstream debug_info key (no 8.5 hazard).
+            _gt_on_stairs = False
+            _gt_lead_m = None
+            _sd_stair = frame_meta.get("stair_demo") if isinstance(frame_meta, dict) else None
+            if isinstance(_sd_stair, dict):
+                _gt_on_stairs = str(_sd_stair.get("phase")) in ("stair_approach", "staircase")
+                _rob_sd = _sd_stair.get("robot")
+                _rx_sd = _rob_sd.get("x_m") if isinstance(_rob_sd, dict) else None
+                _gtp_xyz = frame_meta.get("gt_patient")
+                _px_sd = (float(_gtp_xyz[0]) if isinstance(_gtp_xyz, (list, tuple)) and len(_gtp_xyz) >= 1
+                          else None)
+                if _rx_sd is not None and _px_sd is not None:
+                    _gt_lead_m = _px_sd - float(_rx_sd)
+            if (_genuine_stairs or _depth_climb_engage or _gt_on_stairs
                     or (current_time < _climbing_persist_until
                         and _genuine_stair_extend_evidence)):
                 _climbing_persist_until = current_time + 6.0
@@ -1243,12 +1326,45 @@ def main():
                 _climb_floor = max(0.0, min(float(args.stair_forward_floor),
                                             float(args.trans_x_max) * float(args.stair_speed_scale)))
                 _climb_cap = max(0.0, float(args.trans_x_max) * float(args.stair_speed_scale))
+                # Mid-climb patient-gap speed brake (incident 8.15 / F2). Scale the cap itself
+                # (not just clamp trans_x_cmd after) so the forward-floor push below can never
+                # exceed a braked cap. Uses the SAME filtered gap the committed-climb branch
+                # (~L2074) reads, single-producer computed once this frame right after
+                # _apply_follow_standoff_policy at ~L1129 (incident 8.5/8.15 F2 hardening --
+                # see filtered_climb_gap_m's docstring). person_detected is passed explicitly
+                # (8.5) from its upstream producer (person_follower.update rebind at ~L727, key
+                # written in follow_controller.py:434): with the person OUT OF VIEW the brake
+                # stays at full scale -- the None gap there just means "nobody visible" (designed
+                # 8.3 blind-carry), and braking on it parked the dog on the incline until it
+                # flipped at roll 179 deg mid-crest (run_sim_20260711_153245_944, x=6.19). The
+                # rolling-minimum filter (not the raw per-frame gap) additionally fixes a
+                # DIFFERENT failure at this exact call site: a single noisy "far" gap reading
+                # used to release this brake to full scale for that frame and pulse the forward
+                # command to the unbraked cap while the true gap stayed close
+                # (run_sim_20260711_195618_941: vx pulsed to 0.383 m/s, min patient gap 0.199 m).
+                _climb_gap_brake_scale = climb_gap_brake_scale(
+                    debug_info.get("stair_climb_gap_filtered_m"),
+                    brake_start_m=float(args.climb_gap_brake_start),
+                    brake_stop_m=float(args.climb_gap_brake_stop),
+                    person_detected=bool(debug_info.get("person_detected", False)),
+                )
+                _climb_cap *= _climb_gap_brake_scale
+                debug_info["stair_climb_latch_gap_brake_scale"] = round(float(_climb_gap_brake_scale), 3)
                 # Collision check on the LAST-KNOWN patient gap (not the live depth, which is the near
                 # riser once the patient leaves view). If the last trustworthy gap was unsafe, keep
                 # the drive at zero until the patient is seen again. The command still uses hold=False,
                 # so this preserves the balancing gait instead of stance-locking on the incline.
                 _coll_block = (last_person_gap_m is not None
                                and float(last_person_gap_m) < float(args.stair_climb_collision_floor))
+                # The nose-down climber mis-reads the patient's feet on the step ABOVE as a ~0.5 m
+                # gap; when the sim GT lead confirms the patient is genuinely farther than the
+                # collision floor ahead, that close reading is an artifact -- clear the false block so
+                # the climb keeps advancing (sim-only: on the robot _gt_lead_m is None so the sensor
+                # collision block stands). Still blocks when the true GT lead is genuinely short.
+                if (_coll_block and _gt_lead_m is not None
+                        and float(_gt_lead_m) > float(args.stair_climb_collision_floor)):
+                    _coll_block = False
+                    debug_info["stair_climb_gt_lead_unblock_m"] = round(float(_gt_lead_m), 3)
                 # Blind-climb safety backstop: the latch shoves the dog forward at the climb floor
                 # even with the patient out of view (so it keeps stepping up an undetected riser).
                 # But if the patient has been GONE far longer than the timeout, the climb has
@@ -1266,6 +1382,13 @@ def main():
                     trans_x_cmd = max(float(trans_x_cmd), _climb_floor)
                     if _climb_cap > 0.0:
                         trans_x_cmd = min(float(trans_x_cmd), _climb_cap)
+                # NOT the lost-person forward-speed taper here (incident 8.3: this persistence-
+                # latch forced climb IS the designed blind-carry -- it exists specifically to
+                # keep stepping up an undetected riser). Tapering it toward zero recreated
+                # incident 8.3's exact failure at the stair BASE (run 2026-07-11_150906: parked
+                # at x=1.86, robot_settled, climb never engaged). The taper is scoped to the
+                # post-crest / top-landing phase only (see lost_person_speed_taper_scale
+                # docstring); _blind_timeout above is this branch's own safety backstop.
                 debug_info["stair_climb_latch_collision_block"] = bool(_coll_block)
                 debug_info["stair_climb_latch_blind_timeout"] = bool(_blind_timeout)
                 debug_info["stair_climb_latch_det_age_sec"] = round(float(_det_age), 2)
@@ -1292,6 +1415,17 @@ def main():
                     or bool(debug_info.get("stairs_action_active", False))
                     or bool(_climbing_latched)):
                 _avoid_perma_off = True
+            # Sim GT backstop (see _avoid_stair_standoff_x_m): kill avoidance once the sidecar's
+            # GT robot x shows the dog has cleared the props and is closing on the x=2.0 stairs,
+            # even if YOLO never flagged them. Reads frame_meta (not a downstream debug_info key),
+            # so no ordering hazard. No-op on hardware (sidecar absent).
+            _sd_avoid = frame_meta.get("stair_demo") if isinstance(frame_meta, dict) else None
+            if isinstance(_sd_avoid, dict):
+                _rob_gt = _sd_avoid.get("robot")
+                _rx_gt = _rob_gt.get("x_m") if isinstance(_rob_gt, dict) else None
+                if _rx_gt is not None and float(_rx_gt) >= _avoid_stair_standoff_x_m:
+                    _avoid_perma_off = True
+                    debug_info["avoid_perma_off_reason"] = "sim_gt_near_stairs"
             _avoid_gate = (
                 _avoid_enabled
                 and not _avoid_perma_off
@@ -1548,6 +1682,114 @@ def main():
             if export_debug_info is not debug_info:
                 export_debug_info['payload_coordinates_valid'] = payload_coordinates_valid
 
+            # --- Post-crest top-landing forward drop-off (descending edge) guard (incident 8.15
+            # / F4). Latch on once the crest is genuinely reached and stays on for the rest of
+            # the run (see _post_crest_landing_latched init above). Read frame_meta directly here
+            # (populated early -- no ordering hazard) rather than debug_info["stairs_top_landing_
+            # released"], whose only producer (_apply_stair_command_policy, called above at
+            # ~L1103) requires stairs_detected to still be True and so does not reliably fire once
+            # genuinely on the flat landing; debug_info["stair_finish_completed"] (also produced
+            # there, via the hardware-portable sensor-crest path) is kept as the non-sim fallback.
+            _sd_land = frame_meta.get("stair_demo") if isinstance(frame_meta, dict) else None
+            if (isinstance(_sd_land, dict) and _sd_land.get("phase") == "top_landing") \
+                    or bool(debug_info.get("stair_finish_completed", False)):
+                if not _post_crest_landing_latched:
+                    _post_crest_landing_latched_ts = current_time
+                _post_crest_landing_latched = True
+            debug_info["post_crest_landing_active"] = bool(_post_crest_landing_latched)
+            # Incident 8.15 / F3 third rescope: "_post_crest_landing_latched turned on" is NOT
+            # the same as "fully clear of the stairs" -- it is a one-way latch that can fire
+            # while straddling the crest lip (front feet on the landing, rear feet still on the
+            # last riser -- GT phase still "staircase", pitch still nonzero) or even during the
+            # ordinary FLAT-GROUND approach BEFORE the stairs (the sim-GT fallback in
+            # _crest_reached also accepts phase=="flat_follow", which is also the pre-stairs
+            # approach phase -- run_sim_20260711_195618_941 latched at t=48.76s, x=1.27 m, ~40 s
+            # before the real crest). Computed fresh every frame from frame_meta (populated
+            # early, no 8.5 ordering hazard) + the caller-owned landing_margin_state -- NOT
+            # gated on the (possibly-false) _post_crest_landing_latched itself, so a false-early
+            # latch cannot shortcut it. Consumed below (~L2228) to gate the post-crest lost-
+            # person taper; the landing-edge guard immediately below is intentionally NOT gated
+            # on this (task requirement: pre-existing safety holds stay untouched).
+            _fully_on_landing_now = _fully_on_top_landing(
+                frame_meta if isinstance(frame_meta, dict) else None,
+                debug_info,
+                landing_margin_state,
+                now=current_time,
+                level_deg=float(args.landing_margin_level_deg),
+                margin_m=float(args.landing_margin_distance_m),
+                margin_time_sec=float(args.landing_margin_time_sec),
+            )
+            debug_info["post_crest_fully_on_landing"] = bool(_fully_on_landing_now)
+            _edge_block = False
+            if _post_crest_landing_latched and not bool(debug_info.get("stairs_action_active", False)):
+                _edge_result = detect_landing_edge_dropoff(
+                    depth_img, _depth_stair_detector.cfg,
+                    reach_m=float(args.landing_edge_guard_reach_m),
+                    drop_m=float(args.landing_edge_guard_drop_m),
+                ) if bool(args.landing_edge_guard) else False
+                if _edge_result is None:
+                    # Depth unavailable for the probe THIS FRAME -- fail toward stopping
+                    # (incident 8.8), not toward driving. Boot-log ONCE (not every frame -- a
+                    # real run with no depth on this phase would otherwise spam the log for its
+                    # entire remaining duration) that the guard cannot see.
+                    _edge_block = True
+                    if not _edge_guard_inactive_logged:
+                        _edge_guard_inactive_logged = True
+                        logger.warning(
+                            "Landing edge guard has no usable depth this frame -- failing toward "
+                            "STOP (incident 8.8); the guard cannot confirm the floor ahead is safe",
+                            extra=build_ecs_extra(
+                                component="vision.main", action="landing_edge_guard_no_depth",
+                            ),
+                        )
+                elif _edge_result:
+                    # A confirmed finding can be a stale CREST ARTIFACT: the shared depth
+                    # back-projection assumes a near-level camera (see
+                    # landing_edge_guard_suppress_crest_artifact's docstring for the reproduced
+                    # root cause) and misreads the true-flat landing while the body is still
+                    # unsettled right after cresting. Suppress ONLY a short, bounded window past
+                    # the crest while moving away from it -- a genuine far edge (run_sim_
+                    # 20260711_140745_054, 2-3 m past the crest) is well outside this window and
+                    # still blocks.
+                    _crest_relative_m = None
+                    if landing_margin_state.landing_entry_x is not None and isinstance(_sd_land, dict):
+                        _robot_now_edge = _sd_land.get("robot")
+                        if isinstance(_robot_now_edge, dict) and _robot_now_edge.get("x_m") is not None:
+                            try:
+                                _crest_relative_m = (
+                                    float(_robot_now_edge["x_m"]) - float(landing_margin_state.landing_entry_x)
+                                )
+                            except (TypeError, ValueError):
+                                _crest_relative_m = None
+                    _since_crest_latch_sec = (
+                        (current_time - _post_crest_landing_latched_ts)
+                        if _post_crest_landing_latched_ts is not None else None
+                    )
+                    _edge_suppressed = landing_edge_guard_suppress_crest_artifact(
+                        crest_relative_m=_crest_relative_m,
+                        since_crest_latch_sec=_since_crest_latch_sec,
+                        # >= 0.0, not > 0.0: on the flat landing the follow-standoff policy
+                        # commands EXACTLY 0.0 in creep mode (follow_shaping.py's "lean on the
+                        # policy's intrinsic creep" branch, ~L191) and relies on the frozen
+                        # locomotion policy's own physics-level forward creep (incident 8.9 /
+                        # 8.15) for actual motion -- a strict > 0.0 check would read that as
+                        # "toward the crest" and defeat this suppression in exactly the creep-
+                        # mode scenario the fix targets. `_apply_no_reverse_follow_policy`
+                        # (core/control/follow_shaping.py:12-29, called ~L1393, upstream of
+                        # this block) already clamps any negative command to 0.0, so >= 0.0
+                        # still excludes a genuine reverse/toward-crest command.
+                        commanded_away_from_crest=bool(trans_x_cmd >= 0.0),
+                        suppress_reach_m=float(args.landing_edge_crest_suppress_m),
+                        suppress_time_sec=float(args.landing_edge_crest_suppress_sec),
+                    )
+                    debug_info["landing_edge_crest_suppressed"] = bool(_edge_suppressed)
+                    _edge_block = not _edge_suppressed
+                else:
+                    _edge_block = False
+            debug_info["landing_edge_block"] = bool(_edge_block)
+            if _edge_block:
+                trans_x_cmd = 0.0
+
             live_motion_allowed = (
                 args.follow
                 and robot_controller is not None
@@ -1620,7 +1862,11 @@ def main():
                 and not bool(debug_info.get("standoff_warmup_active", False))
                 and _bearing_aligned
             )
-            stop_decision = (not motion_allowed) or bool(too_close)
+            # incident 8.15 / F4: fold the landing edge-drop finding into the SAME stop_decision
+            # pipeline every other hold reason uses (not a separate advisory flag -- 8.5-class
+            # dead-gate risk), so it forces hold_request through every dispatch branch below,
+            # not just the trans_x_cmd=0.0 clamp already applied above.
+            stop_decision = (not motion_allowed) or bool(too_close) or bool(_edge_block)
             hold_request = bool(stop_decision)  # provisional; finalized in the motion block
             debug_info["too_close_hold"] = bool(too_close)
             debug_info["motion_allowed"] = bool(motion_allowed)
@@ -1693,11 +1939,17 @@ def main():
                 bool(debug_info.get("lost_search_active", False))
                 or bool(debug_info.get("recovery_cmd_active", False))
             )
+            # incident 8.15 / F4: exclude a confirmed landing-edge finding. _front_near_m (a
+            # generic central-ROI "is anything close ahead" probe) reads a MISSING floor return
+            # past a drop-off as "clear" (large/no depth), which would otherwise satisfy this
+            # gate's front_near_m > 0.9 check and drive the fixed glide speed straight over the
+            # edge -- exactly the failure this guard exists to prevent.
             _flat_loss_glide = (
                 str(getattr(args, "follow_loss_mode", "stop_search")) == "pursue"
                 and not bool(debug_info.get("person_detected", False))
                 and not _stairs_now
                 and not _stair_approach_commit
+                and not _edge_block
                 and _glide_lost_age is not None
                 and float(_glide_lost_age) <= float(getattr(args, "follow_loss_glide_sec", 4.0))
                 and _front_near_m is not None and float(_front_near_m) > 0.9
@@ -1850,7 +2102,13 @@ def main():
             debug_info["stair_climb_committed"] = bool(stair_climb_committed)
 
             if (stair_climb_committed and controller is not None and controller.is_ready()
-                    and not preparation_mode):
+                    and not preparation_mode and not _edge_block):
+                # incident 8.15 / F4: stair_climb_committed (opt-in, --stair-climb-commit,
+                # default OFF) only clears on a --stair-climb-max-sec timeout, not on reaching
+                # the crest, so it could otherwise still be True for several seconds after
+                # _post_crest_landing_latched turns on. A confirmed landing-edge finding
+                # overrides it too, falling through to the ordinary stop_decision/hold_request
+                # path (already forced True by the F4 block above).
                 # Steady low-speed forward drive + climb gait, follow gates bypassed. Depth
                 # self-steering owns the stair heading so a stale person bearing cannot turn the
                 # body sideways across the risers during a visual dropout.
@@ -1872,7 +2130,46 @@ def main():
                     _gap_ctrl is not None and float(_gap_ctrl) > 1e-3
                     and float(_gap_ctrl) < float(args.stair_climb_collision_floor)
                 )
-                _climb_vx = 0.0 if _climb_block else float(args.stair_climb_speed)
+                # Mid-climb patient-gap speed brake (incident 8.15 / F2). The hard _climb_block
+                # above stays as a defense-in-depth backstop, but with the brake_stop_m default
+                # (0.85 m) above the collision floor (0.55 m) the brake is what normally arrests
+                # the fixed stair_climb_speed before contact -- unlike _climb_block, it fails
+                # toward SLOW (not full stair_climb_speed) when _gap_ctrl (already gap-then-
+                # last-known-gap here) is still None WHILE THE PERSON IS VISIBLE (incident
+                # 8.8). With the person OUT OF VIEW it stays at full scale: a None gap there
+                # just means "nobody visible" (designed 8.3 blind-carry -- the patient climbs
+                # ahead out of the FOV), and braking on it held the dog at commanded-zero on
+                # the incline until it flipped at roll 179 deg mid-crest
+                # (run_sim_20260711_153245_944, x=6.19). person_detected is passed explicitly
+                # (8.5) from its upstream producer (person_follower.update rebind at ~L727,
+                # key written in follow_controller.py:434).
+                #
+                # NOT the lost-person forward-speed taper here (incident 8.3: the committed
+                # climb IS the designed blind-carry, driving straight up while the patient
+                # climbs ahead out of view). Tapering it toward zero recreated incident 8.3's
+                # exact failure at the stair BASE (run 2026-07-11_150906: parked at x=1.86,
+                # robot_settled, climb never engaged). Patient proximity mid-climb is already
+                # covered by _committed_gap_brake_scale above; the taper is scoped to the
+                # post-crest / top-landing phase only (see lost_person_speed_taper_scale
+                # docstring).
+                #
+                # Incident 8.15 / F2 hardening: the brake reads the single-producer FILTERED
+                # gap (rolling-minimum, ~L1129), not _gap_ctrl -- the raw/last-known gap above
+                # is memoryless and a single noisy "far" reading released this brake to full
+                # scale for one frame (run_sim_20260711_195618_941). _climb_block above is
+                # UNCHANGED (still reads the raw/last-known _gap_ctrl): it is a defense-in-depth
+                # binary backstop, not this brake's smoothing concern.
+                _committed_gap_brake_scale = climb_gap_brake_scale(
+                    debug_info.get("stair_climb_gap_filtered_m"),
+                    brake_start_m=float(args.climb_gap_brake_start),
+                    brake_stop_m=float(args.climb_gap_brake_stop),
+                    person_detected=bool(debug_info.get("person_detected", False)),
+                )
+                _climb_vx = 0.0 if _climb_block else (
+                    float(args.stair_climb_speed)
+                    * _committed_gap_brake_scale
+                )
+                debug_info["stair_climb_committed_gap_brake_scale"] = round(float(_committed_gap_brake_scale), 3)
                 command_trans_x = trans_x_limiter.update(_climb_vx)
                 rotation_limiter.reset(0.0)
                 yaw_err_limiter.reset(0.0)
@@ -1914,7 +2211,17 @@ def main():
                 # policy's own on-stair handling own vx).
                 ramp_dt = max(0.0, current_time - stop_ramp_last_ts)
                 stop_ramp_last_ts = current_time
-                if _stairs_now:
+                if _edge_block:
+                    # incident 8.15 / F4: a confirmed forward drop-off overrides the momentum
+                    # ramp below -- ramping down over --follow-stop-ramp-sec while still
+                    # commanding a nonzero vx (the ramp's whole point, normally safe) would keep
+                    # walking the dog TOWARD the edge for the ramp's duration. Immediate hard
+                    # stop instead, same as the not-live_motion_allowed branch below.
+                    stop_ramp_active = False
+                    stop_ramp_vx = 0.0
+                    trans_x_cmd = 0.0
+                    hold_request = True
+                elif _stairs_now:
                     # Continuous follow on stairs (user choice): never stance-lock mid-step; the
                     # stair forward floor and the policy's on-stair handling own vx there.
                     stop_ramp_active = False
@@ -1948,6 +2255,37 @@ def main():
                 debug_info["stop_ramp_active"] = bool(stop_ramp_active)
                 debug_info["stop_ramp_vx"] = round(float(stop_ramp_vx), 4)
                 debug_info["hold_request"] = bool(hold_request)
+
+                # Lost-person forward-speed taper, POST-CREST / TOP-LANDING ONLY (incident
+                # 8.15 / F3, rescoped 2026-07-11). Gated on the SAME one-way latch that arms
+                # the landing edge guard (_post_crest_landing_latched, set ~L1655) so this can
+                # only ever fire once the crest is genuinely reached -- never mid-climb, where
+                # the person going undetected is the DESIGNED blind-carry trigger (incident 8.3)
+                # and applying the taper there recreated that regression at the stair BASE (run
+                # 2026-07-11_150906: parked at x=1.86, robot_settled, climb never engaged; see
+                # the removed mid-climb call sites above/below for the postmortem). Once on the
+                # flat landing a continued loss is a genuine "patient walked out of view" case
+                # (not the close-range base occlusion), so bleed the forward creep toward zero
+                # instead of driving blind indefinitely.
+                #
+                # Incident 8.15 / F3 third rescope: ALSO require _fully_on_landing_now (computed
+                # ~L1690, level pitch + travel/time margin past the crest -- see
+                # _fully_on_top_landing's docstring). _post_crest_landing_latched alone can be
+                # True while the dog is still straddling the crest lip or even on the ordinary
+                # flat approach before the stairs; this second condition can only make the taper
+                # apply LESS often than before, never more, so it cannot reopen the
+                # run_2026-07-11_150906 regression (that regression was the taper applying at
+                # the stair BASE / mid-climb -- a case where _post_crest_landing_latched itself
+                # was never true, so this AND-only-narrows change does not touch it).
+                if _post_crest_landing_latched and _fully_on_landing_now:
+                    _post_crest_taper_scale = lost_person_speed_taper_scale(
+                        debug_info.get("lost_age_sec"),
+                        taper_start_sec=float(args.stair_lost_taper_start_sec),
+                        taper_full_sec=float(args.stair_lost_taper_full_sec),
+                    )
+                    if _post_crest_taper_scale < 1.0:
+                        trans_x_cmd = float(trans_x_cmd) * _post_crest_taper_scale
+                    debug_info["post_crest_lost_taper_scale"] = round(float(_post_crest_taper_scale), 3)
 
                 command_trans_x = trans_x_limiter.update(trans_x_cmd * cmd_scale)
                 command_rotation = rotation_limiter.update(rotation_cmd * cmd_scale)
@@ -2095,7 +2433,32 @@ def main():
                 )
                 last_command_trans_x = float(command_trans_x)
                 last_command_rotation = float(command_rotation)
-            elif controller is not None and controller.is_ready() and _stairs_now:
+            elif (controller is not None and controller.is_ready() and not _edge_block
+                    and stair_loss_floor_eligible(
+                        stairs_now=_stairs_now,
+                        stair_climbing_latch=bool(debug_info.get("stair_climbing_latch", False)),
+                        person_detected=bool(debug_info.get("person_detected", False)),
+                        fully_on_top_landing=bool(_fully_on_landing_now),
+                    )):
+                # incident 8.15 / F4: a confirmed landing-edge finding overrides this branch too
+                # (belt-and-suspenders for the narrow crest-transition window where _stairs_now
+                # can still read True inside --stair-hold-suppress-sec of the last genuine stairs
+                # frame right as _post_crest_landing_latched turns on) -- falls through to the
+                # ordinary stop_decision/hold_request path below, which the F4 block already
+                # forced True.
+                # incident 8.15 / F5 (2026-07-11 review of run_sim_20260711_195618_941): entry
+                # is no longer _stairs_now alone. Once genuine YOLO/depth stair detection goes
+                # stale (patient straddling the crest, stairs no longer confirmed near) but the
+                # longer-lived climb persistence latch (stair_climbing_latch) is still on and
+                # the dog is not yet fully clear of the stairs (_fully_on_landing_now False),
+                # stair_loss_floor_eligible() also lets this branch fire -- see its docstring
+                # (core/control/stair_policy.py) for the trace evidence. Without this, dispatch
+                # fell through STAIR_APPROACH_COMMIT and FLAT_LOSS_GLIDE (neither matches a
+                # long-stale loss at the crest) to a plain controller.stop() -- a
+                # commanded-zero stance-lock mid-straddle that rolled the dog off the 2.1 m
+                # top-landing edge (roll 4.3 -> 148 deg). Once _fully_on_landing_now is True the
+                # latch-only arm stops firing and the post-crest hold/taper path (below, gated
+                # on _post_crest_landing_latched and _fully_on_landing_now) owns the stop.
                 # Person lock lost (motion not allowed) while on / just-off the stairs. controller.stop()
                 # would send hold=True and stance-lock the robot on the incline -> topple (the stair
                 # fall). Instead keep the gait alive (hold=False) WITH a modest stair forward floor so
@@ -2135,13 +2498,52 @@ def main():
                 _loss_det_age = ((time.perf_counter() - last_matched_visual_ts)
                                  if last_matched_visual_ts is not None else 1e9)
                 _loss_age_block = _loss_det_age > float(args.stair_blind_climb_timeout_sec)
+                # Mid-climb patient-gap speed brake (incident 8.15 / F2). Reuses _loss_gap,
+                # already computed above for the existing binary block, as the "best available"
+                # signal (no new reads). person_detected is passed explicitly (8.5) from its
+                # upstream producer (person_follower.update rebind at ~L727, key written in
+                # follow_controller.py:434); it is normally False in this loss branch, so the
+                # brake stays at full scale and the blind-carry keeps moving -- braking on the
+                # not-visible None/stale gap here held the dog at commanded-zero mid-crest for
+                # ~120 frames until it flipped at roll 179 deg (run_sim_20260711_153245_944,
+                # x=6.19; second 8.15 scope correction). _loss_block above (hard floor on the
+                # last-known patient gap) still backstops a close-person dropout.
+                #
+                # NOT the lost-person forward-speed taper here. STAIR_LOSS_FLOOR is the exact
+                # branch incident 8.3 describes -- the DESIGNED blind-carry that walks the dog
+                # up the stairs once the patient crosses out of view (a stale comment here used
+                # to call this "the primary F3 target" and was backwards: applying the taper in
+                # this branch decays the forward command to 0.0 the longer the (normal, expected)
+                # loss persists, which parked the dog at the stair BASE fighting this exact
+                # branch (run 2026-07-11_150906: x=1.86, robot_settled, climb never engaged --
+                # the patient rising out of FOV at the base is NORMAL here, not a fault). The
+                # _loss_age_block ceiling above is this branch's own safety backstop; the taper
+                # is scoped to the post-crest / top-landing phase only (see
+                # lost_person_speed_taper_scale docstring).
+                #
+                # Deliberately NOT the incident 8.15 / F2 rolling-minimum filter here (unlike the
+                # persistence-latch and committed-climb call sites above): _loss_gap is
+                # last_person_gap_m, a DIFFERENT signal from the live standoff_gap_ctrl_m the
+                # filter smooths -- it is already a single frozen "last reading while the patient
+                # was visible" value (not a per-frame-noisy live stream), used here specifically
+                # BECAUSE the live gap reads the near riser once the patient is out of view. Per
+                # the comment above, person_detected is normally False in this branch anyway, so
+                # climb_gap_brake_scale returns 1.0 regardless of the gap passed in; filtering
+                # _loss_gap would not change this branch's behavior.
+                _loss_gap_brake_scale = climb_gap_brake_scale(
+                    _loss_gap,
+                    brake_start_m=float(args.climb_gap_brake_start),
+                    brake_stop_m=float(args.climb_gap_brake_stop),
+                    person_detected=bool(debug_info.get("person_detected", False)),
+                )
                 _loss_climb_vx = (
                     0.0 if (_loss_block or _loss_near_block or _loss_age_block)
-                    else float(_committed_stair_floor)
+                    else float(_committed_stair_floor) * _loss_gap_brake_scale
                 )
                 debug_info["stairs_loss_collision_block"] = bool(_loss_block)
                 debug_info["stairs_loss_age_block"] = bool(_loss_age_block)
                 debug_info["stairs_loss_det_age_sec"] = round(float(_loss_det_age), 2)
+                debug_info["stairs_loss_gap_brake_scale"] = round(float(_loss_gap_brake_scale), 3)
                 debug_info["stairs_loss_last_person_gap_m"] = (
                     None if _loss_gap is None else round(float(_loss_gap), 3))
                 controller.move(
@@ -2167,7 +2569,10 @@ def main():
                 stop_ramp_vx = 0.0
                 stop_ramp_last_ts = current_time
             elif (controller is not None and controller.is_ready() and not preparation_mode
-                    and _stair_approach_commit):
+                    and _stair_approach_commit and not _edge_block):
+                # incident 8.15 / F4: a confirmed landing-edge finding overrides this branch too
+                # (see the _stairs_now branch above for why -- same narrow crest-transition
+                # window). Falls through to the ordinary stop_decision/hold_request path.
                 # --- Stair-approach commit (close the last 0.8 m to the staircase) ---
                 # The follow stalled with a confirmed staircase just ahead but the climb not yet
                 # engaged (patient climbed out of view at the base). Creep STRAIGHT toward the
@@ -2179,6 +2584,13 @@ def main():
                     last_person_gap_m is not None
                     and float(last_person_gap_m) < float(args.stair_climb_collision_floor)
                 )
+                # NOT the lost-person forward-speed taper here. This creep-toward-the-base
+                # branch (incident 8.3-class blind-carry) exists SPECIFICALLY because the
+                # person is not detected at the stair base -- that loss is the designed trigger,
+                # not a fault to bleed toward zero. Tapering it recreated incident 8.3's exact
+                # failure (run 2026-07-11_150906: parked at x=1.86, robot_settled, climb never
+                # engaged). The taper is scoped to the post-crest / top-landing phase only (see
+                # lost_person_speed_taper_scale docstring).
                 _ap_vx = 0.0 if _ap_block else float(_committed_stair_floor)
                 command_trans_x = trans_x_limiter.update(_ap_vx)
                 rotation_limiter.reset(0.0)

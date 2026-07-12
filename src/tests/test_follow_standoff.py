@@ -397,6 +397,9 @@ class TestFollowStandoff(unittest.TestCase):
         args.stair_yaw_deadband_deg = 5.0
         args.stair_centering_scale = 0.5
         args.stair_rot_max = 0.4
+        # Now exercised now that standoff_gap_ctrl_m below is a real (non-None) value --
+        # previously masked by short-circuit evaluation while the gap was always None.
+        args.stair_climb_collision_floor = 0.55
         
         # Mock brief loss state
         debug_info_stairs = {
@@ -406,6 +409,15 @@ class TestFollowStandoff(unittest.TestCase):
             "lost_search_timeout_sec": 2.5,
             "stairs_depth_m": 0.8,
             "stairs_depth_ever_confirmed": True,
+            # incident 8.15 / F2: the mid-climb gap-brake fails toward SLOW on an unmeasured
+            # gap (incident 8.8), so this must be populated with a real (far/safe) value here
+            # exactly as the real loop always would -- _apply_follow_standoff_policy runs
+            # BEFORE _apply_stair_command_policy every frame and unconditionally writes this
+            # key (even to None once warmed up with <3 samples). This test calls the stair
+            # policy standalone, skipping that producer, so the key must be seeded by hand or
+            # every call here would read as an unmeasured gap and brake to 0 regardless of the
+            # brief-loss forward floor under test.
+            "standoff_gap_ctrl_m": 2.0,
         }
         
         # Call stair policy

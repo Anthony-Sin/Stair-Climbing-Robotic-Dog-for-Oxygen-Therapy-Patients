@@ -61,6 +61,7 @@ def test_stairs_cfg_module_renders_valid_python():
     assert "step_width=0.305" in text                                 # real target tread
     assert "ranges.lin_vel_x = (0.0, 0.6)" in text                    # modest forward bump
     assert "ranges.lin_vel_y = (0.0, 0.0)" in text                    # no strafing
+    assert "rel_standing_envs = 0.12" in text                         # stage-4 halt fix (stock 0.02)
     assert f'mass_distribution_params"] = ({lo}, {hi})' in text       # payload event band
     assert "flat_orientation_l2.weight = -1.0" in text                # eased anti-fall
     assert 'actuators["legs"].stiffness = 20.0' in text               # deployed kp
@@ -205,6 +206,23 @@ def test_reward_terms_present():
     print("reward terms OK  (ascent/roll/crest rendered when non-zero, omitted when zero)")
 
 
+def test_rel_standing_envs_rendered():
+    payload = payload_spec.load_payload_numbers()
+    # default (0.12): stage-4 halt fix -- robot_lab/IsaacLab ship rel_standing_envs=0.02, under
+    # which the stage-3 policy never trains a true halt (lean-creeps at commanded vx=0 mid-stairs
+    # and toppled after a long near-crest hold; see StairPatchParams.rel_standing_envs).
+    on = config_patch.render_stairs_cfg_module(payload)
+    ast.parse(on)
+    assert "self.commands.base_velocity.rel_standing_envs = 0.12" in on
+    # a custom value propagates through StairPatchParams like every other tunable
+    custom = config_patch.render_stairs_cfg_module(
+        payload, config_patch.StairPatchParams(rel_standing_envs=0.3)
+    )
+    ast.parse(custom)
+    assert "self.commands.base_velocity.rel_standing_envs = 0.3" in custom
+    print("rel_standing_envs OK  (default 0.12 rendered; custom value propagates)")
+
+
 def test_verify_patch_targets():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -244,5 +262,6 @@ if __name__ == "__main__":
     test_apply_to_repo_writes_and_patches()
     test_com_event_present()
     test_reward_terms_present()
+    test_rel_standing_envs_rendered()
     test_verify_patch_targets()
     print("ALL RL-PATCH TESTS PASS")

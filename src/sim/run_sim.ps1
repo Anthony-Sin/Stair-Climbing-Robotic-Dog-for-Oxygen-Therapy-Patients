@@ -1553,13 +1553,14 @@ if ($NoIsaac) {
     $IsaacFilteredLog = Join-Path $LogsDir "isaac_console.log"
     $IsaacEventLog = Join-Path $DebugDir "isaac_env.jsonl"
 
-    # Living-room maze starts the patient further back (-4.6, vs isaac_env's -3.5 default) so the
-    # four-bend weave has room to spread, with the dog ~1 m behind it (-5.6). Only when the user
-    # has not overridden the spawns. Default sim / non-living-room runs are untouched.
+    # Living-room slalom starts the patient well back (-5.6, vs isaac_env's -3.5 default) so the
+    # three-bend weave has ~2 m per leg to spread (gentle 38-deg corners), with the dog ~1 m
+    # behind it (-6.6). Must match PATIENT_START_X_M in living_room.py (the route's first
+    # waypoint). Only when the user has not overridden the spawns; default runs are untouched.
     $PersonX = -3.5
     if ($env:SIM_LIVING_ROOM -eq '1') {
-        $PersonX = -4.6
-        if (-not $PSBoundParameters.ContainsKey('Go2X')) { $Go2X = -5.6 }
+        $PersonX = -5.6
+        if (-not $PSBoundParameters.ContainsKey('Go2X')) { $Go2X = -6.6 }
     }
     $isaacArgs = @(
         "-NoProfile",
@@ -1620,6 +1621,10 @@ if ($NoIsaac) {
     if ($StairStepHeight -gt 0) {
         $isaacArgs += "-StairStepHeight"; $isaacArgs += [string]$StairStepHeight
     }
+    # Keep the isaac-side landing creep-hold gate on the SAME follow standoff the controller
+    # gets via --target-distance (L1802) -- the two namespaces are separate processes and
+    # drifted once already (run 2026-07-11_221657_487 main_loop_exception).
+    $isaacArgs += "-LandingHoldStandoff"; $isaacArgs += [string]$TargetDistance
     if ($Headless) {
         $isaacArgs += "-Headless"
     }

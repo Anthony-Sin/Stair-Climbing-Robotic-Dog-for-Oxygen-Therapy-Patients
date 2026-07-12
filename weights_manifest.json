@@ -37,10 +37,10 @@
     },
     {
       "path": "src/sim/models/locomotion/go2_robot_lab_policy.pt",
-      "sha256": "93612080a1087b13515e54d57e9e6d505cefe5ea0d24241176e3be5de6e42693",
+      "sha256": "6d97e4afa0b0758ddb8b34e6244444a048b8349378335ae544f1939575f048d4",
       "size_bytes": 769298,
       "purpose": "Blind RL locomotion policy (climb backend)",
-      "source": "O2 stair fine-tune 2026-07-11, run 2026-07-11_12-03-47 model_3200.pt (stock-seeded 3-stage payload curriculum; exported via robot_lab play.py). Previous pretrain baseline preserved as go2_robot_lab_policy.pt.bak_pre_o2stage3_20260711 (sha256 9f14cb95e74ac9e5e30954da0fc0c33eaa41e337852ebed19fcee869279ade0b).",
+      "source": "O2 stair stage-4 halt fine-tune 2026-07-11, run 2026-07-11_16-46-41 model_4699.pt (resumed from stage-3 model_3200 with rel_standing_envs 0.02->0.12; exported via robot_lab play.py). Stop-probe vs stage-3: mid-stairs creep at commanded 0 improved 0.146->0.097 m/s mean, 0.367->0.216 p95; flat-hold 0/59 topples over 60 s. Stage-3 preserved as go2_robot_lab_policy.pt.bak_stage3_model3200_20260711 (sha256 93612080a1087b13515e54d57e9e6d505cefe5ea0d24241176e3be5de6e42693); earlier pretrain baseline as .bak_pre_o2stage3_20260711 (sha256 9f14cb95e74ac9e5e30954da0fc0c33eaa41e337852ebed19fcee869279ade0b).",
       "portable": true
     },
     {

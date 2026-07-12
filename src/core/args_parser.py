@@ -581,6 +581,108 @@ def parse_args():
                              'longer than this. Prevents a failed/dragging climb from walking the dog '
                              'straight off the top landing and toppling it (observed overshoot to x=8.4, '
                              '2 m past the x=6.27 top edge). Set very large to disable the backstop.')
+    # --- Mid-climb patient-gap speed brake (incident 8.15 / F2) -----------------------
+    # The binary --stair-climb-collision-floor cutoff (0.55 m) still applies as a hard
+    # backstop, but it does nothing UNTIL the gap is already inside it -- the smoothed gap
+    # was observed bottoming at 0.05 m (GT clearance 0.251 m) with hold_request=True /
+    # motion_allowed=False ignored by the fixed-speed climb paths (run_sim_20260711_140745).
+    # This tapers the climb forward-speed CAP smoothly ahead of that hard floor so the
+    # dog is already slowing before the gap becomes unsafe. Thresholds sized around the
+    # 2026-07-11 policy probe: commanding vx=0 mid-stairs creeps 0.146 m/s mean / 0.367 m/s
+    # p95 (0/64 topples) -- brake_stop sits comfortably above the 0.55 m collision floor to
+    # absorb that residual creep before contact.
+    parser.add_argument('--climb-gap-brake-start', type=float, default=1.2,
+                        help='Patient gap (m) at/above which the mid-climb forward-speed cap is '
+                             'unscaled (full speed). Below this the cap linearly tapers toward '
+                             '--climb-gap-brake-stop. See incident 8.15.')
+    parser.add_argument('--climb-gap-brake-stop', type=float, default=0.85,
+                        help='Patient gap (m) at/below which the mid-climb forward-speed cap is '
+                             'zero. Kept above --stair-climb-collision-floor (0.55 m default) so '
+                             'the taper -- not the hard binary cutoff -- is what normally arrests '
+                             'the approach. A None/invalid gap reading also taps this ONLY while '
+                             'the person is detected (fails toward the brake, incident 8.8); with '
+                             'the person out of view the brake is bypassed entirely -- that None '
+                             'is the normal incident-8.3 blind-carry, and braking on it flipped '
+                             'the dog mid-crest (run 2026-07-11_153245). See incident 8.15.')
+    parser.add_argument('--climb-gap-brake-filter-window-sec', type=float, default=1.2,
+                        help='Trailing wall-clock window (s) over which the mid-climb patient-gap '
+                             'brake takes the MINIMUM (not mean/median) of recent gap readings '
+                             'before tapering, instead of reacting to a single frame. The raw gap '
+                             '(patient bbox-depth) is wildly noisy mid-climb -- the patient is half '
+                             'out of the close-range FOV while climbing ahead -- and a single noisy '
+                             '"far" reading released the brake to full speed for that frame '
+                             '(run_sim_20260711_195618_941: gap logged 0.282->0.885->0.629->None '
+                             'across consecutive frames, vx pulsed to 0.383 m/s while the true gap '
+                             'was under 0.85 m, tailgating to 0.199-0.282 m). Rolling MIN fails '
+                             'toward braking on noise, never toward releasing early. See incident 8.15.')
+    # --- Lost-person forward-speed taper, stair-mode / post-crest ONLY (incident 8.15 / F3) --
+    # Scoped away from flat plain-follow and ByteTrack's frame-count coast window (incident
+    # 8.6 counter-example: that window is correctly a detection-opportunity count, not a
+    # duration). lost_age_sec is wall-clock (PersonFollower, perf_counter-based).
+    parser.add_argument('--stair-lost-taper-start-sec', type=float, default=3.0,
+                        help='Continuous person-loss age (s) at/under which stair-mode / '
+                             'post-crest forward speed is unscaled. Beyond this it linearly '
+                             'tapers toward --stair-lost-taper-full-sec. See incident 8.15.')
+    parser.add_argument('--stair-lost-taper-full-sec', type=float, default=6.0,
+                        help='Continuous person-loss age (s) at/beyond which stair-mode / '
+                             'post-crest forward speed is fully tapered to zero. See incident 8.15.')
+    # --- "Fully on landing" gate for the post-crest taper (incident 8.15 / F3 third rescope) --
+    # _post_crest_landing_latched (main.py) is a one-way latch that can fire well before the dog
+    # is actually clear of the stairs -- e.g. straddling the crest lip (front feet on the landing,
+    # rear feet still on the last riser/tread) reads GT phase "staircase" with a still-nonzero
+    # pitch, and separately the crest-reached fallback (phase in top_landing/flat_follow OR
+    # pitch<=5deg) can latch during the ordinary FLAT-GROUND approach BEFORE the stairs, since
+    # "flat_follow" also means "before the stairs" (run_sim_20260711_195618_941: latched at
+    # t=48.76s, x=1.27 m, phase=flat_follow -- 4+ m and ~40 s before the real crest). Require BOTH
+    # a level pitch AND a confirmed travel/time margin past the crest before the taper may apply.
+    parser.add_argument('--landing-margin-level-deg', type=float, default=5.0,
+                        help='Body pitch (deg, abs) at/under which the dog is considered LEVEL for '
+                             'the "fully on landing" gate. See incident 8.15.')
+    parser.add_argument('--landing-margin-distance-m', type=float, default=0.45,
+                        help='Forward travel (m) past the FIRST confirmed GT top_landing phase '
+                             'sample (sim only) required, together with a level pitch, before the '
+                             'post-crest taper may apply -- roughly a body length, so a straddle at '
+                             'the crest lip does not count as "on the landing". See incident 8.15.')
+    parser.add_argument('--landing-margin-time-sec', type=float, default=1.5,
+                        help='Hardware-portable fallback when no GT stair_demo phase is available '
+                             '(real robot, or sim before the GT phase ever reads top_landing): '
+                             'seconds of CONTINUOUS level pitch required in place of the distance '
+                             'margin above. Does not invent a new sensor -- reuses the same pitch '
+                             'reading, sustained over time instead of instantaneously. '
+                             'See incident 8.15.')
+    # --- Post-crest top-landing forward drop-off (descending edge) guard (incident 8.15 / F4) --
+    parser.add_argument('--landing-edge-guard', dest='landing_edge_guard', action='store_true',
+                        default=True,
+                        help='Enable the post-crest top-landing forward drop-off probe: once the '
+                             'crest is reached, check the depth ahead for a descending edge before '
+                             'allowing forward motion. On by default. See incident 8.15.')
+    parser.add_argument('--no-landing-edge-guard', dest='landing_edge_guard', action='store_false',
+                        help='Disable the landing edge guard (F4). The blind post-crest walk can '
+                             'then drive off an unguarded drop -- see incident 8.15.')
+    parser.add_argument('--landing-edge-guard-reach-m', type=float, default=0.8,
+                        help='Forward look-ahead (m) of the landing edge probe.')
+    parser.add_argument('--landing-edge-guard-drop-m', type=float, default=0.3,
+                        help='Height drop (m) within --landing-edge-guard-reach-m that counts as '
+                             'a confirmed descending edge.')
+    # --- Crest-artifact suppression for the landing edge guard (2026-07-11 follow-up) --
+    # See landing_edge_guard_suppress_crest_artifact's docstring (core/control/stair_policy.py)
+    # for the reproduced root cause: the guard's depth back-projection assumes a near-level
+    # camera and misreads the true-flat landing as a false descending edge while the robot's
+    # body pitch is still unsettled right after cresting (run_sim_20260711_223152_489 deadlocked
+    # 500+ frames on exactly this ~0.15 m past the crest).
+    parser.add_argument('--landing-edge-crest-suppress-m', type=float, default=0.5,
+                        help='Sim-only (GT crest position available): suppress a confirmed '
+                             'landing-edge-guard block for this many metres of travel past the '
+                             'GT top-landing entry point, while the commanded direction is away '
+                             'from the crest. A genuine edge further down the landing (well '
+                             'outside this window) still blocks. See incident 8.15 / F4 '
+                             'follow-up.')
+    parser.add_argument('--landing-edge-crest-suppress-sec', type=float, default=2.0,
+                        help='Hardware fallback (no GT crest position): suppress a confirmed '
+                             'landing-edge-guard block for this many seconds (wall-clock, '
+                             'incident 8.6) after the post-crest latch first arms, while the '
+                             'commanded direction is away from the crest. See incident 8.15 / '
+                             'F4 follow-up.')
     parser.add_argument('--raw-video-path', type=str, default='',
                         help='MP4 path for raw camera frame recording (no overlays); empty disables')
     parser.add_argument('--no-raw-video', action='store_true',

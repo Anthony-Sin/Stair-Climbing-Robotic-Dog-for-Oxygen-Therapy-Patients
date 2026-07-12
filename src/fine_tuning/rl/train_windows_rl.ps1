@@ -65,6 +65,11 @@ $TallProp = if ($env:FT_RL_TALL_START_PROP) { $env:FT_RL_TALL_START_PROP } else 
 # docstring) -- scales ONLY the added-mass DR band, not the CoM offset, so a fresh/staged policy can
 # learn to climb before facing the full ~1.6-3.5 kg tank load. 1.0 = full mass (default, no staging).
 $PayloadMassScale = if ($env:FT_RL_PAYLOAD_MASS_SCALE) { $env:FT_RL_PAYLOAD_MASS_SCALE } else { "1.0" }
+# rel_standing_envs 0.02 -> 0.12: stage-4 halt fix (see config_patch.py StairPatchParams.rel_standing_envs
+# docstring) -- stage-3 (model_3200) lean-creeps 0.146 m/s mean / 0.367 m/s p95 at commanded vx=0
+# mid-stairs and toppled after a ~3 min near-crest hold (sim run 2026-07-11_161710_451); robot_lab/
+# IsaacLab only sample a TRUE zero command on 2% of envs, so raise 6x to give halting real signal.
+$RelStandingEnvs = if ($env:FT_RL_REL_STANDING_ENVS) { $env:FT_RL_REL_STANDING_ENVS } else { "0.12" }
 # entropy_coef 0.008 -> 0.005: 0.008 stabilized noise_std around ~0.7, but sigma decay was
 # too slow for tracking precision to recover -- run 2026-07-11_01-53 held track reward flat
 # (+0.05/500 iters) with terrain level pinned at 0 while sigma~0.7 execution noise itself
@@ -89,7 +94,7 @@ Write-Host "============================================="
 Write-Host "repo=$RobotLabDir  exptid=$ExptId  load_run=$LoadRun  num_envs=$NumEnvs  +iters=$AddIters"
 Write-Host "resume_ckpt=$ResumeCkpt  orient=$Orient  ascent=$Ascent  track_linvel=$TrackLinVel  max_level=$MaxLevel  linvel_x=$LinVelXMin..$LinVelX"
 Write-Host "upward=$UpwardWeight  linvel_z=$LinVelZWeight  tall_step_min=$TallStepMin  tall_prop=$TallProp  explore=$ExploreExtra"
-Write-Host "payload_mass_scale=$PayloadMassScale"
+Write-Host "payload_mass_scale=$PayloadMassScale  rel_standing_envs=$RelStandingEnvs"
 Write-Host "============================================="
 
 # Verify setup
@@ -178,7 +183,8 @@ try {
         "--lin-vel-z-weight", $LinVelZWeight,
         "--tall-step-min", $TallStepMin,
         "--tall-start-prop", $TallProp,
-        "--payload-mass-scale", $PayloadMassScale
+        "--payload-mass-scale", $PayloadMassScale,
+        "--rel-standing-envs", $RelStandingEnvs
     )
     
     # Safely combine default runner args and user-supplied scripts arguments ($args)

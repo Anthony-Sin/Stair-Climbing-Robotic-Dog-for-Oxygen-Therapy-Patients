@@ -141,7 +141,27 @@ class HandoffController:
         person_gap_m: Optional[float] = None,
         stairs_ahead_gt: Optional[bool] = None,
         forward_goal_dist_m: Optional[float] = None,
+        caller_hold: bool = False,
     ) -> Dict[str, Any]:
+        # ``caller_hold`` (incident 8.15 / F1 extension, run_sim_20260711_155123_326): the
+        # perception controller's stance-hold decision, passed as an explicit argument (8.5)
+        # from the SAME capture the F1 clamp uses (isaac_env.py ~L2160 ``_motion_hold_requested
+        # = bool(hold)``, applied to PGTT at ~L2342). The F1 clamp closed the WALK path, but
+        # this FSM ran BEFORE it and could still ENGAGE a new climb whose hot-swap branch
+        # returns early (isaac_env.py ~L2243 / ~L2300) -- bypassing the clamp entirely. That
+        # run: with the caller asserting fsm=STOP / hold=True / vx=0 continuously, the walk-
+        # state commit vx_floor kept the stall detector armed, the depth detector read the
+        # STANDING PATIENT (x=8.42, gap ~0.8 m) as an 8-step staircase (level_heights 0.285-
+        # 0.669 m -- knee-to-hip; incident 8.3's person-as-risers signature), a "wedge_stall"
+        # climb engaged at 20:00:56 and the dog was driven up the patient's legs (pitch +85.7
+        # deg) and flipped backward at x=8.63, roll 180 deg. RULE: while the caller holds,
+        # this FSM must not START a climb nor push any walk-state forward floor; every
+        # legitimate engage (stair-base approach_room, riser wedge during follow, the
+        # STAIR_LOSS_FLOOR blind-carry) happens with the caller commanding motion
+        # (hold=False). An ONGOING climb (state=="climb") is deliberately NOT clamped: a
+        # hold arriving mid-incline must not strand the climber (incidents 8.9 / 8.15 second
+        # correction -- blind-carry momentum is itself the stability strategy there).
+        caller_hold = bool(caller_hold)
         # Advance the caller-defined accumulated clock. ALL timing below is measured against
         # THIS (self._elapsed_dt), never the wall-clock ``now`` (incident 8.6).
         self._elapsed_dt += max(0.0, float(dt))
@@ -222,10 +242,13 @@ class HandoffController:
                 -float(self.cfg.stair_commit_yaw_kp) * _commit_yaw_err
                 - float(self.cfg.stair_commit_lat_kp) * float(y_lateral),
                 -float(self.cfg.stair_commit_wz_max), float(self.cfg.stair_commit_wz_max)))
-            if self.state == "walk":
+            if self.state == "walk" and not caller_hold:
                 # Post-climb re-acquisition: while the robot is still off-axis after the climb,
                 # suppress the forward floor so it spins in place (not arcs sideways) to face
                 # forward again. Clear the flag once the heading error is small enough.
+                # caller_hold gate (see header note): this floor drove _eff_cmd>0 against a
+                # commanded stance-hold, arming the stall detector and manufacturing the
+                # run 155123 wedge_stall engage at the patient.
                 _yaw_large = abs(_commit_yaw_err) > math.radians(float(self.cfg.post_climb_yaw_threshold_deg))
                 if self._post_climb_reacquire and _yaw_large:
                     vx_floor = None  # spin in place; no forward push while pointing sideways
@@ -266,7 +289,8 @@ class HandoffController:
             _le_m = det.get("leading_edge_distance") if le is not None else None
             if (_le_m is not None and has_stairs
                     and float(_le_m) > float(self.cfg.climb_engage_standoff_m) + 0.10
-                    and self._committing):
+                    and self._committing
+                    and not caller_hold):  # no creep push against a commanded stance-hold
                 # Too far to engage yet — creep forward to the standoff zone
                 vx_floor = max(vx_floor or 0.0, float(self.cfg.stair_commit_vx_floor))
                 debug_tread_creep = True
@@ -285,7 +309,13 @@ class HandoffController:
             # FALLBACK engage: already wedged at the riser (stall) -- a backstop for when
             # the riser distance is unknown. Likely jammed, so less ideal.
             stall_engage = has_stairs and stalled and near_enough
-            trigger = bool(self.cfg.enabled) and armed and (approach_engage or stall_engage)
+            # caller_hold veto (see header note; run_sim_20260711_155123_326): no NEW climb
+            # may start while the perception controller commands a stance-hold -- both
+            # spurious landing engages (20:00:56 wedge_stall at the patient, 20:01:42
+            # post-flip) fired during a continuous caller STOP/hold=True/vx=0 stretch.
+            trigger = (bool(self.cfg.enabled) and armed
+                       and (approach_engage or stall_engage)
+                       and not caller_hold)
             if trigger:
                 reason = "approach_room" if approach_engage else "wedge_stall"
                 backend = str(self.cfg.climb_backend)

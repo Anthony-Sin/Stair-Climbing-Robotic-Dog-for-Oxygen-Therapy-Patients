@@ -103,6 +103,7 @@ def _build_patch_params(args) -> "config_patch.StairPatchParams":
         "fall_limit_angle_deg": args.fall_limit_angle_deg,
         "spawn_tilt_max_rad": args.spawn_tilt_max_rad,
         "payload_mass_scale": args.payload_mass_scale,
+        "rel_standing_envs": args.rel_standing_envs,
     }
     accepted = {f.name for f in dataclasses.fields(config_patch.StairPatchParams)}
     kwargs = {k: v for k, v in wanted.items() if k in accepted}
@@ -342,6 +343,13 @@ def main(argv: Optional[list] = None) -> int:
                          "stock-seed: fell_over 21-32%%, ascent_rate exactly 0 for 1200 iters). Train "
                          "stage 1 at a fraction (e.g. 0.3) so climbing is survivable/learnable, then "
                          "resume at 1.0 (full tank mass) once the policy can climb.")
+    ap.add_argument("--rel-standing-envs", type=float, default=envb.get_float("FT_RL_REL_STANDING_ENVS", 0.12),
+                    help="Stage-4 halt fix (config_patch.StairPatchParams.rel_standing_envs): probability an "
+                         "env samples a TRUE zero-velocity ('standing') command each resample. robot_lab/"
+                         "IsaacLab ship 0.02 (2%%), so the policy almost never trains a real halt. The "
+                         "stage-3 policy (model_3200) climbs well but lean-creeps 0.146 m/s mean / 0.367 m/s "
+                         "p95 at commanded vx=0 mid-stairs, and toppled after a ~3 min near-crest hold (sim "
+                         "run 2026-07-11_161710_451). Raise toward 0.12 (6x) so halting gets real signal.")
 
     ap.add_argument("--python", default=envb.get_str("FT_RL_PYTHON"),
                     help="Python interpreter with Isaac Sim (default: this one).")
@@ -412,14 +420,14 @@ def main(argv: Optional[list] = None) -> int:
         LOGGER.info("[patch] params: lin_vel_x=(%s,%s) step_h=(%s,%s) step_w=(%s|%s..%s) "
                     "tall_start=%s tall_step_min=%s orient=%s ascent=%s roll=%s crest=%s track_linvel=%s "
                     "max_init_level=%s com_jitter=%s upward=%s lin_vel_z=%s fall_limit_angle_deg=%s "
-                    "spawn_tilt_max_rad=%s payload_mass_scale=%s",
+                    "spawn_tilt_max_rad=%s payload_mass_scale=%s rel_standing_envs=%s",
                     args.lin_vel_x_min, args.lin_vel_x_max, args.step_height_min, args.step_height_max,
                     args.step_width_nominal, args.step_width_min, args.step_width_max,
                     args.tall_start_prop, args.tall_step_min, args.orientation_reward, args.ascent_reward,
                     args.roll_penalty, args.crest_reward, args.track_lin_vel_weight,
                     args.max_init_terrain_level, args.com_jitter_m,
                     args.upward_weight, args.lin_vel_z_weight, args.fall_limit_angle_deg,
-                    args.spawn_tilt_max_rad, args.payload_mass_scale)
+                    args.spawn_tilt_max_rad, args.payload_mass_scale, args.rel_standing_envs)
         if dry:
             LOGGER.info("[patch] would write %s.py + register %s in %s",
                         config_patch.STAIRS_CFG_MODULE, args.task, config_patch.go2_config_pkg(repo))
