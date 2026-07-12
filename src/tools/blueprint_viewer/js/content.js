@@ -24,7 +24,7 @@ export const SECTIONS = [
 	{ id: 's-sweep',     label: 'Height sweep', group: 'Progress & results',     kind: 'content' },
 	{ id: 's-challenges',label: 'Challenges',   group: 'Engineering challenges',  kind: 'content' },
 	{ id: 's-potential', label: 'Potential',    group: 'Real-world potential',   kind: 'content' },
-	{ id: 's-team',      label: 'Team',         group: 'Team',                   kind: 'content' },
+	// { id: 's-team',      label: 'Team',         group: 'Team',                   kind: 'content' },
 ];
 
 // ---------------------------------------------------------------------------
