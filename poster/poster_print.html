@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stair-Climbing Robotic Dog – SCRD Poster</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Open+Sans:ital,wght@0,400;0,600;0,700;0,800;1,400&display=swap" rel="stylesheet">
+<style>
+/*
+   PRINT-READY POSTER — 36" × 24" at 96 dpi = 3456 × 2304 px
+   White background, 3 columns, USF green/gold header
+   All content sized to fit the fixed canvas.
+*/
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  @page { size: 36in 24in; margin: 0; }
+
+  :root {
+    --green:  #006747;
+    --gold:   #CFC493;
+    --white:  #ffffff;
+    --near:   #f4f7f5;
+    --text:   #111111;
+    --muted:  #555555;
+    --rule:   #cccccc;
+  }
+
+  html, body {
+    width:  3456px;
+    height: 2304px;
+    background: #aaa;
+    font-family: 'Open Sans', Arial, sans-serif;
+    color: var(--text);
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* ── POSTER SHELL ── */
+  .poster {
+    width:  3456px;
+    height: 2304px;
+    background: var(--white);
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── HEADER ── */
+  .hdr {
+    background: var(--green);
+    display: flex;
+    align-items: center;
+    padding: 18px 44px;
+    gap: 28px;
+    height: 186px;
+    flex-shrink: 0;
+  }
+
+  .hdr-logo {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    width: 110px;
+  }
+
+  .hdr-bull {
+    width: 70px;
+    height: 70px;
+  }
+
+  .hdr-lname {
+    font-size: 11.5px;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    text-align: center;
+    line-height: 1.2;
+  }
+
+  .hdr-div {
+    width: 3px;
+    height: 130px;
+    background: var(--gold);
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  .hdr-title {
+    font-size: 56px;
+    font-weight: 800;
+    color: #fff;
+    line-height: 1.05;
+    margin-bottom: 9px;
+    letter-spacing: -0.01em;
+  }
+
+  .hdr-sub {
+    font-size: 19px;
+    font-weight: 600;
+    color: rgba(255,255,255,0.95);
+    line-height: 1.3;
+    margin-bottom: 4px;
+    max-width: 1950px;
+  }
+
+  .hdr-affil {
+    font-size: 19px;
+    color: rgba(255,255,255,0.80);
+  }
+
+  /* gold stripe */
+  .goldrule {
+    height: 6px;
+    background: var(--gold);
+    flex-shrink: 0;
+  }
+
+  /* ── 3-COL BODY ── */
+  .body {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1040px 1376px 1040px;
+    min-height: 0;
+  }
+
+  .col {
+    padding: 22px 30px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    overflow: hidden;
+  }
+  .col + .col { border-left: 1.5px solid var(--rule); }
+  .col-c { border-top: 5px solid var(--gold); }
+
+  /* ── SECTION ── */
+  .sec { display: flex; flex-direction: column; gap: 6px; }
+
+  .sh {
+    font-size: 26px;
+    font-weight: 800;
+    color: var(--green);
+    border-bottom: 2px solid var(--green);
+    padding-bottom: 3px;
+    margin-bottom: 2px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    line-height: 1;
+  }
+
+  p, li { font-size: 17px; line-height: 1.55; }
+  ul { padding-left: 20px; }
+  li { margin-bottom: 4px; }
+  b { font-weight: 700; }
+
+  /* HIGHLIGHT BOX */
+  .hl {
+    background: #eef5f0;
+    border-left: 5px solid var(--green);
+    border-radius: 4px;
+    padding: 9px 12px;
+  }
+  .hl p {
+    font-size: 18px;
+    font-weight: 600;
+    color: #003a28;
+    line-height: 1.45;
+  }
+
+  /* STAT ROW */
+  .stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 10px;
+  }
+  .stat {
+    background: var(--green);
+    border-radius: 6px;
+    padding: 9px 6px;
+    text-align: center;
+  }
+  .stat-n {
+    font-size: 36px;
+    font-weight: 800;
+    color: var(--gold);
+    line-height: 1;
+  }
+  .stat-l {
+    font-size: 14px;
+    margin-top: 4px;
+    line-height: 1.25;
+    color: rgba(255,255,255,0.90);
+  }
+
+  /* FIGURE */
+  .fig {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+  }
+  .fig img {
+    width: 100%;
+    border-radius: 5px;
+    border: 1px solid var(--rule);
+    display: block;
+    object-fit: contain;
+  }
+  .cap {
+    font-size: 13.5px;
+    font-style: italic;
+    color: var(--muted);
+    text-align: center;
+    line-height: 1.3;
+  }
+
+  /* 2-UP */
+  .row2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  /* PIPELINE */
+  .pipe { display: flex; flex-direction: column; gap: 4px; }
+  .ps { display: flex; align-items: flex-start; gap: 9px; }
+  .pn {
+    flex-shrink: 0;
+    width: 24px; height: 24px;
+    background: var(--green);
+    color: #fff;
+    border-radius: 50%;
+    font-size: 13px;
+    font-weight: 800;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 1px;
+  }
+  .pb { font-size: 15.5px; line-height: 1.43; }
+
+  /* TABLE */
+  table { border-collapse: collapse; width: 100%; }
+  th {
+    background: var(--green);
+    color: #fff;
+    padding: 5px 8px;
+    text-align: center;
+    font-weight: 700;
+    font-size: 14px;
+  }
+  td {
+    padding: 4px 8px;
+    border-bottom: 1px solid #ddd;
+    text-align: center;
+    font-size: 14px;
+  }
+  tr:nth-child(even) td { background: #f2f7f4; }
+  .ok { color: var(--green); font-weight: 700; }
+  .no { color: #c0392b; font-weight: 700; }
+
+  /* FOOTER */
+  .footer {
+    background: var(--green);
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 44px;
+    flex-shrink: 0;
+  }
+  .footer p { font-size: 14px; color: rgba(255,255,255,0.85); }
+  .footer .fg { color: var(--gold); font-weight: 600; }
+
+  .ack { font-size: 14px; color: var(--muted); line-height: 1.5; }
+  .refs { font-size: 12.5px; color: var(--muted); line-height: 1.55; }
+
+  /* hw list inline */
+  .hwlist { font-size: 15.5px; line-height: 1.55; display: flex; flex-direction: column; gap: 4px; }
+  .hwlist div { display: flex; gap: 6px; }
+  .hwlist b { min-width: 0; }
+</style>
+</head>
+<body>
+<div class="poster">
+
+  <!-- HEADER -->
+  <div class="hdr">
+    <div class="hdr-logo">
+      <svg class="hdr-bull" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+        <ellipse cx="50" cy="54" rx="32" ry="28" fill="#CFC493"/>
+        <path d="M20 36 Q8 16 18 10 Q24 18 28 28 Z" fill="#CFC493"/>
+        <path d="M80 36 Q92 16 82 10 Q76 18 72 28 Z" fill="#CFC493"/>
+        <ellipse cx="22" cy="42" rx="9" ry="7" fill="#CFC493"/>
+        <ellipse cx="78" cy="42" rx="9" ry="7" fill="#CFC493"/>
+        <ellipse cx="40" cy="58" rx="7" ry="5" fill="#006747"/>
+        <ellipse cx="60" cy="58" rx="7" ry="5" fill="#006747"/>
+        <ellipse cx="50" cy="70" rx="14" ry="9" fill="#B49A3D"/>
+        <circle cx="44" cy="70" r="3" fill="#006747"/>
+        <circle cx="56" cy="70" r="3" fill="#006747"/>
+        <circle cx="38" cy="48" r="4" fill="#111"/>
+        <circle cx="62" cy="48" r="4" fill="#111"/>
+      </svg>
+      <div class="hdr-lname">University of<br>South Florida</div>
+    </div>
+    <div class="hdr-div"></div>
+    <div>
+      <div class="hdr-title">Stair-Climbing Robotic Dog for Oxygen Therapy Patients</div>
+      <div class="hdr-sub">An autonomous quadruped that follows a patient on supplemental oxygen, detects a staircase, and climbs it carrying the tank — freeing both hands for the railing.</div>
+      <div class="hdr-affil">Computer Science &amp; Engineering &nbsp;·&nbsp; USF College of Engineering &nbsp;·&nbsp; Senior Capstone Design — Team Robodog (Project #6)</div>
+    </div>
+  </div>
+  <div class="goldrule"></div>
+
+  <!-- BODY -->
+  <div class="body">
+
+    <!-- ═══ COL LEFT ═══ -->
+    <div class="col">
+
+      <div class="sec">
+        <div class="sh">Motivation</div>
+        <div class="hl"><p>Patients on long-term oxygen therapy must haul a portable concentrator everywhere — stairs are the highest fall-risk, highest-exertion obstacle in the home.</p></div>
+        <div class="fig">
+          <img src="assets/motivation.png" alt="Elderly patient with O2 concentrator at stair base" style="max-height:560px;">
+          <div class="cap">Fig. 1 — Patient must manage both tank and railing while short of breath.</div>
+        </div>
+        <ul>
+          <li>Older stair-users show higher stride variability &amp; fall risk <b>(Startzell 2000; Hausdorff 1997)</b>.</li>
+          <li>Our robot <b>carries the ~2.2 kg concentrator</b>, follows autonomously, detects stairs, and climbs — beside the patient.</li>
+          <li>Both hands freed for the railing; robot handles the load.</li>
+        </ul>
+      </div>
+
+      <div class="sec">
+        <div class="sh">Hardware Platform</div>
+        <div class="row2" style="align-items:center;">
+          <div class="fig">
+            <img src="assets/real_go2.png" alt="Go2 with O2 cradle" style="max-height:340px;object-fit:cover;">
+            <div class="cap">Fig. 2 — Go2 with payload cradle.</div>
+          </div>
+          <div class="hwlist">
+            <div><b>Robot:</b> Unitree Go2, 6.9 kg, 12-DOF</div>
+            <div><b>Compute:</b> NVIDIA Jetson Orin</div>
+            <div><b>Vision:</b> Intel RealSense D435 RGB-D</div>
+            <div><b>LiDAR:</b> Hesai XT16</div>
+            <div><b>Payload:</b> 2.22 kg mock O₂ + cradle<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(~32 % of trunk mass)</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="sh">System Architecture</div>
+        <div class="fig">
+          <img src="assets/diagram_system_overview.png" alt="System overview diagram" style="max-height:490px;">
+          <div class="cap">Fig. 3 — One shared codebase runs in NVIDIA Isaac Sim and on the real Go2; only the sensor source is swapped. Perception + control (Jetson / Docker) emit velocity commands; a shared policy library returns 12-DOF joint targets.</div>
+        </div>
+      </div>
+
+    </div><!-- /col left -->
+
+
+    <!-- ═══ COL CENTER ═══ -->
+    <div class="col col-c">
+
+      <div class="sec">
+        <div class="sh">Methodology: Perceive → Follow → Detect → Climb</div>
+        <div class="pipe">
+          <div class="ps"><div class="pn">1</div><div class="pb"><b>Perceive</b> — RealSense D435 RGB-D + LiDAR feed two parallel vision heads: YOLOv8-Pose (person detection) and YOLO-World (open-vocab stair detection).</div></div>
+          <div class="ps"><div class="pn">2</div><div class="pb"><b>Follow</b> — ByteTrack lock with 3 s occlusion hold. 3-zone PID holds 0.45 m standoff; depth-reactive avoidance routes around furniture.</div></div>
+          <div class="ps"><div class="pn">3</div><div class="pb"><b>Detect Stairs</b> — YOLO-World counts risers; LiDAR depth corroborates (0.6 weight blend). ≥2 risers within 1.6 m triggers handoff. Dual-evidence gate eliminates false positives.</div></div>
+          <div class="ps"><div class="pn">4</div><div class="pb"><b>Hand Off</b> — 50 Hz HandoffController (WALK ⇌ CLIMB → TOP-EGRESS / ABORT) swaps PGTT walker for blind-RL climb policy on motion-stall + riser trigger.</div></div>
+          <div class="ps"><div class="pn">5</div><div class="pb"><b>Climb</b> — Proprioceptive "blind" RL policy drives legs up; at crest the robot walks clear and returns to walk policy.</div></div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="fig">
+          <img src="assets/diagram_perception.png" alt="Perception pipeline" style="max-height:470px;">
+          <div class="cap">Fig. 4 — Perception pipeline: sensor inputs feed parallel vision heads; outputs merge in the Climb FSM.</div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="sh">Results — Isaac Sim Stair-Height Sweep</div>
+        <div class="stats">
+          <div class="stat"><div class="stat-n">4/6</div><div class="stat-l">Full climbs<br>(0.12–0.15 m risers)</div></div>
+          <div class="stat"><div class="stat-n">0.15 m</div><div class="stat-l">ADA-max riser<br>successfully topped</div></div>
+          <div class="stat"><div class="stat-n">≤31°</div><div class="stat-l">Peak body tilt<br>(threshold: 60°)</div></div>
+        </div>
+
+        <div class="row2">
+          <div class="fig">
+            <img src="assets/g2_steps_vs_riser.png" alt="Steps climbed chart" style="max-height:340px;">
+            <div class="cap">Fig. 5 — Steps climbed (of 14) vs. riser height.</div>
+          </div>
+          <div class="fig">
+            <img src="assets/g3_stability_vs_riser.png" alt="Peak tilt chart" style="max-height:340px;">
+            <div class="cap">Fig. 6 — Peak body tilt stays well below 60° fall threshold.</div>
+          </div>
+        </div>
+
+        <table>
+          <thead>
+            <tr><th>Riser</th><th>Steps (/ 14)</th><th>Peak Tilt</th><th>Outcome</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>0.120 m (~5″)</td><td class="ok">14.0</td><td>28°</td><td class="ok">✔ Full climb</td></tr>
+            <tr><td>0.130 m (~5″)</td><td class="ok">13.9</td><td>24°</td><td class="ok">✔ Full climb</td></tr>
+            <tr><td>0.140 m (~6″)</td><td class="ok">13.9</td><td>27°</td><td class="ok">✔ Full climb</td></tr>
+            <tr><td>0.150 m (6″ ADA)</td><td class="ok">14.0</td><td>31°</td><td class="ok">✔ Full climb</td></tr>
+            <tr><td>0.175 m (7″ IBC)</td><td>4.4</td><td>32°</td><td class="no">✗ Partial</td></tr>
+            <tr><td>0.198 m (7.75″)</td><td>0.0</td><td>6°</td><td class="no">✗ No climb</td></tr>
+          </tbody>
+        </table>
+
+        <div class="hl"><p>Robot topped the ADA-maximum (0.15 m) staircase end-to-end in simulation, staying upright throughout (peak tilt ≤31°, well below the 60° fall threshold).</p></div>
+
+        <div class="fig" style="margin-top:4px;">
+          <img src="assets/g4_reach_vs_riser.png" alt="Forward reach vs stair geometry" style="max-height:280px;">
+          <div class="cap">Fig. 7 — Max forward reach across the staircase at each riser height; robot reaches the top edge for 0.12–0.15 m risers.</div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="sh">Why This Matters</div>
+        <p>About 1.5 million Americans rely on long-term home oxygen therapy, and stairs are consistently the task they fear most — a fall risk that can confine a patient to one floor of their own home. This project builds a sensor-guided quadruped that walks beside the patient, carries the oxygen equipment, and climbs the stairs on its own — so the patient never has to face a staircase alone.</p>
+      </div>
+
+    </div><!-- /col center -->
+
+
+    <!-- ═══ COL RIGHT ═══ -->
+    <div class="col">
+
+      <div class="sec">
+        <div class="sh">Control State Machines</div>
+        <div class="fig">
+          <img src="assets/diagram_state_machines.png" alt="State machine diagrams" style="max-height:500px;">
+          <div class="cap">Fig. 8 — HandoffController (Isaac Sim, 50 Hz) and ClimbFSM (Docker) run concurrently via UDP.</div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="sh">Simulation &amp; Training</div>
+        <div class="row2">
+          <div class="fig">
+            <img src="assets/climb_pen_cinematic.png" alt="Follow mode: patient descending toward the staircase with the robot trailing" style="max-height:290px;">
+            <div class="cap">Fig. 9 — Follow mode: robot trails the patient at a 0.45 m standoff, carrying the O₂ tank.</div>
+          </div>
+          <div class="fig">
+            <img src="assets/learning_curve_crop.png" alt="Real training learning curve: mean episode reward over 6000 PPO iterations" style="max-height:290px;">
+            <div class="cap">Fig. 10 — Real learning curve: 6,000 PPO iterations, mean reward converges to 95.7.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="sh">Blind-RL Climb Policy</div>
+        <div class="fig">
+          <img src="assets/diagram_policy_blind_rl.png" alt="Blind-RL proprioceptive climb policy" style="max-height:320px;">
+          <div class="cap">Fig. 11 — Blind-RL policy: 45-D proprioceptive input → Actor MLP → 12-DOF joint targets at 50 Hz. No camera, no depth — terrain is felt via leg load + IMU.</div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="sh">Conclusions</div>
+        <ul>
+          <li>End-to-end <b>follow → detect → hand-off → climb</b> stack validated in NVIDIA Isaac Sim on a shared sim/real codebase (<b>401 passing tests</b>).</li>
+          <li>Successfully reaches the top of the <b>0.15 m (ADA-maximum)</b> staircase end-to-end in the best demo.</li>
+          <li>Peak tilt ≤31° across all successful runs — <b>well below the 60° fall threshold</b>.</li>
+        </ul>
+      </div>
+
+      <div class="sec">
+        <div class="sh">Limitations &amp; Future Work</div>
+        <ul>
+          <li><b>Nose-down gait</b> — blind-RL climber pitches forward; a gait-posture problem, not a handoff bug.</li>
+          <li><b>High CoG</b> — O₂ carrier raises center of gravity; wider stance being explored.</li>
+          <li><b>Safety grade-gate</b> — stance locking suppressed mid-climb; min observed clearance 0.209 m vs. 0.55 m target.</li>
+          <li><b>Hardware climb unproven</b> — physical Go2 validation is the active next step.</li>
+        </ul>
+      </div>
+
+      <div class="sec">
+        <div class="sh">Acknowledgements</div>
+        <p class="ack">The authors thank <b>Dr. Kearns</b> and USF COE faculty for guidance throughout this project. Simulation via <b>NVIDIA Isaac Sim</b>. Robot: <b>Unitree Go2</b>. Policies adapted from <b>robot_lab / IsaacLab</b> and PGTT (arXiv:2510.18348).</p>
+      </div>
+
+      <div class="sec">
+        <div class="sh">References</div>
+        <p class="refs">
+          [1] Startzell et al. (2000). <em>Stair negotiation in older people.</em> J Am Geriatr Soc, 48(5).<br>
+          [2] Hausdorff et al. (1997). <em>Gait variability and fall risk.</em> Arch Phys Med Rehabil, 78(3).<br>
+          [3] Zhuang et al. (2025). <em>PGTT.</em> arXiv:2510.18348. &nbsp; [4] Wang et al. (2023). <em>YOLO-World.</em> arXiv:2401.17270.<br>
+          [5] Zhang et al. (2022). <em>ByteTrack.</em> ECCV 2022. &nbsp; [6] NVIDIA Isaac Sim · Unitree Go2 EDU · Intel RealSense D435.
+        </p>
+      </div>
+
+    </div><!-- /col right -->
+
+  </div><!-- /body -->
+
+  <!-- FOOTER -->
+  <div class="footer">
+    <p class="fg">Team Robodog — Project #6 &nbsp;·&nbsp; github.com/AnthonySinchi/SCRD</p>
+  </div>
+
+</div><!-- /poster -->
+</body>
+</html>
