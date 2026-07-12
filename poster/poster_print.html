@@ -374,37 +374,14 @@
         <div class="sh">Motivation</div>
         <div class="hl"><p>Patients on long-term oxygen therapy must haul a portable concentrator everywhere — stairs are the highest fall-risk, highest-exertion obstacle in the home.</p></div>
         <div class="fig">
-          <div class="hero-art">
-            <svg viewBox="0 0 440 340" role="img" aria-label="An elderly person with a cane and an oxygen tank at the foot of a staircase" style="width:380px;height:auto;display:block;margin:0 auto;">
-              <line x1="20" y1="302" x2="420" y2="302" stroke="currentColor" stroke-width="1.4" opacity="0.5"/>
-              <path d="M250 302 V272 H292 V242 H334 V212 H376 V182 H418 V302 Z" fill="#c07d3c" fill-opacity="0.9" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
-              <path d="M250 272 H292 M292 242 H334 M334 212 H376 M376 182 H418" fill="none" stroke="currentColor" stroke-width="1" opacity="0.5"/>
-              <line x1="256" y1="250" x2="424" y2="130" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-              <line x1="262" y1="272" x2="262" y2="256" stroke="currentColor" stroke-width="1.6"/>
-              <line x1="418" y1="182" x2="418" y2="150" stroke="currentColor" stroke-width="1.6"/>
-              <path d="M300 252 L360 208" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="4 4" opacity="0.55"/>
-              <path d="M360 208 l-11 1 4 -10" fill="none" stroke="currentColor" stroke-width="1.4" opacity="0.55"/>
-              <path d="M403 150 l9 16 -18 0 Z" fill="none" stroke="#e5484d" stroke-width="1.8" stroke-linejoin="round"/>
-              <line x1="403" y1="156" x2="403" y2="161" stroke="#e5484d" stroke-width="1.8" stroke-linecap="round"/>
-              <circle cx="403" cy="164.5" r="0.9" fill="#e5484d"/>
-              <circle cx="150" cy="188" r="14" fill="none" stroke="currentColor" stroke-width="2.4"/>
-              <path d="M143 204 Q168 210 162 250 Q160 258 150 258 Q140 258 142 246 Q145 224 138 208 Z" fill="#b0552f" fill-opacity="0.9" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
-              <path d="M148 256 L140 300 M156 254 L168 300" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
-              <path d="M158 224 L182 250" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
-              <path d="M186 246 q6 -2 6 4 L194 300" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
-              <rect x="86" y="236" width="30" height="64" rx="10" fill="#f4f2ec" stroke="currentColor" stroke-width="2"/>
-              <rect x="95" y="224" width="12" height="16" rx="3" fill="#333" stroke="currentColor" stroke-width="1.4"/>
-              <line x1="101" y1="224" x2="101" y2="216" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-              <path d="M101 236 Q120 200 146 206" fill="none" stroke="currentColor" stroke-width="1.6" opacity="0.7"/>
-              <path d="M107 230 Q130 200 144 190" fill="none" stroke="#3a7ce5" stroke-width="1.8" stroke-linecap="round"/>
-            </svg>
-          </div>
-          <div class="cap">Fig. 1 — Patient must manage both tank and railing while short of breath.</div>
+          <img src="assets/scene_follow.png" alt="Three.js scene view: robot following the patient toward a staircase" style="max-height:340px;">
+          <div class="cap">Fig. 1 — The patient still climbs unassisted today; the robot in this Isaac Sim scene is the fix we're building toward.</div>
         </div>
         <ul>
           <li>Older stair-users show higher stride variability &amp; fall risk <b>(Startzell 2000; Hausdorff 1997)</b>.</li>
           <li>Our robot <b>carries the ~2.2 kg concentrator</b>, follows autonomously, detects stairs, and climbs — beside the patient.</li>
           <li>Both hands freed for the railing; robot handles the load.</li>
+          <li>The goal isn't to replace the patient's independence — it's to remove the one obstacle (the tank) that takes it away.</li>
         </ul>
       </div>
 
@@ -423,6 +400,7 @@
             <div><b>Payload:</b> 2.22 kg mock O₂ + cradle<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(~32 % of trunk mass)</div>
           </div>
         </div>
+        <p style="margin-top:6px;">All compute stays on the robot — no cloud round-trip — which keeps the 50 Hz control loop fast enough to react to a step underfoot in real time.</p>
       </div>
 
       <div class="sec">
@@ -453,35 +431,10 @@
       <div class="sec">
         <div class="sh">From Proven Sim to the Living Room</div>
         <div class="fig">
-          <div class="dg-wrap">
-            <svg viewBox="0 0 480 300" role="img" aria-label="Deployment roadmap from proven simulation to a home pilot" style="width:520px;height:auto;display:block;margin:0 auto;">
-              <line x1="60" y1="96" x2="180" y2="96" stroke="currentColor" stroke-width="2" opacity="0.75"/>
-              <line x1="180" y1="96" x2="300" y2="96" stroke="currentColor" stroke-width="2" opacity="0.75"/>
-              <line x1="300" y1="96" x2="420" y2="96" stroke="currentColor" stroke-width="2" stroke-dasharray="5 4" opacity="0.55"/>
-              <circle cx="60"  cy="96" r="11" fill="#0e9b8e" stroke="#fff" stroke-width="2"/>
-              <circle cx="180" cy="96" r="11" fill="#0e9b8e" stroke="#fff" stroke-width="2"/>
-              <circle cx="300" cy="96" r="11" fill="none" stroke="currentColor" stroke-width="2.4"/>
-              <circle cx="420" cy="96" r="11" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="4 3"/>
-              <g text-anchor="middle">
-                <text class="ch-val" x="60"  y="70">Isaac Sim</text><text class="ch-note" x="60"  y="122">full climb ✓</text>
-                <text class="ch-val" x="180" y="70">One stack</text><text class="ch-note" x="180" y="122">sim ⇄ robot</text>
-                <text class="ch-val" x="300" y="70">Jetson Orin</text><text class="ch-note" x="300" y="122">on the Go2</text>
-                <text class="ch-val" x="420" y="70">Home pilot</text><text class="ch-note" x="420" y="122">supervised</text>
-              </g>
-              <text class="ch-axlbl" x="60" y="188">who benefits</text>
-              <g>
-                <rect x="60"  y="200" width="108" height="34" rx="8" fill="none" stroke="currentColor" stroke-width="1.3" opacity="0.6"/>
-                <text class="ch-note" x="114" y="221" text-anchor="middle" font-size="11">patients</text>
-                <rect x="186" y="200" width="108" height="34" rx="8" fill="none" stroke="currentColor" stroke-width="1.3" opacity="0.6"/>
-                <text class="ch-note" x="240" y="221" text-anchor="middle" font-size="11">caregivers</text>
-                <rect x="312" y="200" width="120" height="34" rx="8" fill="none" stroke="currentColor" stroke-width="1.3" opacity="0.6"/>
-                <text class="ch-note" x="372" y="221" text-anchor="middle" font-size="11">clinics &amp; rehab</text>
-              </g>
-            </svg>
-          </div>
-          <div class="cap">Fig. 4 — The same Docker control stack proven in Isaac Sim ports to the Jetson Orin on the real Go2; only the sensor source changes.</div>
+          <img src="assets/scene_follow.png" alt="Three.js scene view: robot following the patient toward a staircase" style="max-height:280px;">
+          <div class="cap">Fig. 4 — This Isaac Sim scene is the proof point: the same Docker container that runs it is the one that ships to the Jetson Orin on the real Go2.</div>
         </div>
-        <p>That is the deployment bet: a policy proven in simulation is expected to hold on hardware because it runs the identical container. Next up: hardware bring-up, gait polish, and a supervised home pilot.</p>
+        <p>That is the deployment bet: a policy proven in simulation is expected to hold on hardware because it runs the identical container — only the sensor source changes, from simulated cameras to the real RealSense and LiDAR. Four groups stand to benefit once it's out of the lab: <b>patients</b> get a floor of the house back, <b>caregivers</b> get a hand, and <b>clinics &amp; rehab facilities</b> get an assistant that never tires. Next up: hardware bring-up, gait polish, and a supervised home pilot.</p>
       </div>
 
     </div><!-- /col left -->
@@ -507,6 +460,7 @@
           <img src="assets/diagram_perception.png" alt="Perception pipeline" style="max-height:470px;">
           <div class="cap">Fig. 5 — Perception pipeline: sensor inputs feed parallel vision heads; outputs merge in the Climb FSM.</div>
         </div>
+        <p>The two vision heads run independently and never block each other — losing the person for a moment doesn't stall stair detection, and vice versa.</p>
       </div>
 
       <div class="sec">
@@ -584,6 +538,7 @@
         </table>
 
         <div class="hl"><p>Robot topped the ADA-maximum (0.15 m) staircase end-to-end in simulation, staying upright throughout (peak tilt ≤31°, well below the 60° fall threshold).</p></div>
+        <p>Past code-legal risers the gait rears up against the step instead of driving through it — the same conservative "climb by feel" behavior that keeps it upright at 0.15 m becomes overly cautious once the geometry outruns what the policy was trained on.</p>
       </div>
 
       <div class="sec">
@@ -603,6 +558,7 @@
           <img src="assets/diagram_state_machines.png" alt="State machine diagrams" style="max-height:500px;">
           <div class="cap">Fig. 8 — HandoffController (Isaac Sim, 50 Hz) and ClimbFSM (Docker) run concurrently via UDP.</div>
         </div>
+        <p>Two state machines, one on each side of the UDP link, so a dropped packet or a stalled ClimbFSM can't leave the walker holding a stale climb command.</p>
       </div>
 
       <div class="sec">
@@ -641,6 +597,7 @@
           </div>
           <div class="cap">Fig. 11 — Blind-RL policy: no camera, no depth on the stairs — terrain is felt via proprioception + foot contact alone.</div>
         </div>
+        <p>Going blind on the stairs was a deliberate choice, not a limitation of the cameras — vision is unreliable right at the robot's feet, where its own body occludes the D435's view of the next riser.</p>
       </div>
 
       <div class="sec">
