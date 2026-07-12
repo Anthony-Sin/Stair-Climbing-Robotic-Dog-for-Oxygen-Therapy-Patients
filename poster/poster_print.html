@@ -374,7 +374,7 @@
         <div class="sh">Motivation</div>
         <div class="hl"><p>Patients on long-term oxygen therapy must haul a portable concentrator everywhere — stairs are the highest fall-risk, highest-exertion obstacle in the home.</p></div>
         <div class="fig">
-          <img src="assets/scene_follow.png" alt="Three.js scene view: robot following the patient toward a staircase" style="max-height:340px;">
+          <img src="assets/motivation_scene.png" alt="Three.js cinematic render: robot beside the patient at the foot of the staircase" style="max-height:340px;">
           <div class="cap">Fig. 1 — The patient still climbs unassisted today; the robot in this Isaac Sim scene is the fix we're building toward.</div>
         </div>
         <ul>
@@ -400,7 +400,6 @@
             <div><b>Payload:</b> 2.22 kg mock O₂ + cradle<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(~32 % of trunk mass)</div>
           </div>
         </div>
-        <p style="margin-top:6px;">All compute stays on the robot — no cloud round-trip — which keeps the 50 Hz control loop fast enough to react to a step underfoot in real time.</p>
       </div>
 
       <div class="sec">
@@ -438,7 +437,7 @@
         </div>
         <div class="row2">
           <div class="fig">
-            <div class="hero-chart"><p class="hero-chart-title">Learning curve · mean episode reward</p>
+            <div class="hero-chart" style="max-width:380px;margin:0 auto;"><p class="hero-chart-title">Learning curve · mean episode reward</p>
             <svg viewBox="0 0 480 300" role="img" aria-label="Reward rises to 95.7 over 6000 iterations">
               <rect class="ch-frame" x="46" y="30" width="418" height="236"/>
               <line class="ch-base" x1="46" y1="246.3" x2="464" y2="246.3"/>
@@ -466,7 +465,7 @@
             <div class="cap">Fig. 4 — Mean episode reward climbs to 95.7 and holds over 6,000 training iterations.</div>
           </div>
           <div class="fig">
-            <div class="hero-chart"><p class="hero-chart-title">Curriculum · stair riser height reached</p>
+            <div class="hero-chart" style="max-width:380px;margin:0 auto;"><p class="hero-chart-title">Curriculum · stair riser height reached</p>
             <svg viewBox="0 0 480 300" role="img" aria-label="Curriculum riser height settles at 138 mm">
               <rect class="ch-frame" x="46" y="30" width="418" height="236"/>
               <line class="ch-target" x1="46" y1="113.3" x2="464" y2="113.3"/>
@@ -495,7 +494,7 @@
             <div class="cap">Fig. 5 — Difficulty curriculum settles at a 138 mm riser — right at the real 0.15 m target stair.</div>
           </div>
         </div>
-        <p>Along the way the policy learned to stop falling — topples collapsed from 92% of episodes to about 3% — and to survive longer, carrying the payload the full climb instead of tipping in the first couple of seconds.</p>
+        <p>Across 6,000 training iterations the mean episode reward climbed to 95.7 and held. A difficulty curriculum pushed the stairs steeper over time, settling at a 138 mm riser — right at the real-world target height. Along the way the policy learned to stop falling — topples collapsed from 92% of episodes to about 3% — and to survive longer, carrying the payload the full climb instead of tipping in the first couple of seconds. The gait it found is cautious, not graceful — it noses down and leans into each riser rather than stepping cleanly — but inside that trained envelope it ends upright almost every time, keeping the payload level.</p>
       </div>
 
     </div><!-- /col left -->
