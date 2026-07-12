@@ -1750,21 +1750,50 @@ def test_main_zeroes_rotation_cmd_alongside_trans_x_cmd_on_edge_block():
     assert "rotation_cmd = 0.0" in block, block
 
 
-def test_main_zeroes_rotation_cmd_on_landing_lost_hold():
+def test_main_zeroes_trans_x_on_landing_final_hold_engaged():
+    """Task (2026-07-12, run 27 review): _landing_final_hold_engaged (the DURABLE one-way
+    latch derived from landing_face_patient_align's result, replacing the raw, still-toggling
+    _landing_lost_hold as the dispatch-veto gate) must zero trans_x_cmd -- translation NEVER
+    releases (hard constraint 1). rotation_cmd is deliberately NOT hardcoded to 0.0 here
+    anymore: it carries the bounded face-the-patient yaw_rate_cmd while actively aligning (or
+    0.0 once not yet engaged / already done), set just above this block by the
+    landing_face_patient_align() call -- see test_main_landing_final_hold_preserves_rotation_cmd."""
     with open(_MAIN_PY, encoding="utf-8") as f:
         src = f.read()
-    m = re.search(r"if _landing_lost_hold:\s*\n(.*?)\n\s*\n", src, re.DOTALL)
-    assert m is not None, "could not locate the `if _landing_lost_hold:` clamp block in main.py"
+    m = re.search(r"if _landing_final_hold_engaged:\s*\n(.*?)\n\s*\n", src, re.DOTALL)
+    assert m is not None, (
+        "could not locate the `if _landing_final_hold_engaged:` clamp block in main.py"
+    )
     block = m.group(1)
     assert "trans_x_cmd = 0.0" in block, block
-    assert "rotation_cmd = 0.0" in block, block
 
 
-def test_main_dispatch_branches_with_independent_vx_all_exclude_landing_lost_hold():
+def test_main_landing_final_hold_preserves_rotation_cmd():
+    """rotation_cmd must NOT be hardcoded to 0.0 inside the _landing_final_hold_engaged
+    trans_x-zeroing block -- it is set from landing_face_patient_align()'s result (the
+    bounded face-the-patient yaw command) immediately above, and this block must leave it
+    alone so the align command actually reaches controller.move()."""
+    with open(_MAIN_PY, encoding="utf-8") as f:
+        src = f.read()
+    m = re.search(r"if _landing_final_hold_engaged:\s*\n(.*?)\n\s*\n", src, re.DOTALL)
+    assert m is not None
+    block = m.group(1)
+    assert "rotation_cmd = 0.0" not in block, block
+    assert "rotation_cmd = float(_align_result.yaw_rate_cmd)" in block, block
+    # And the call that actually produces that result must run before this block.
+    call_idx = src.find("landing_face_patient_align(")
+    block_idx = src.find("if _landing_final_hold_engaged:")
+    assert call_idx != -1 and block_idx != -1 and call_idx < block_idx
+
+
+def test_main_dispatch_branches_with_independent_vx_all_exclude_landing_final_hold():
     """The committed-climb / STAIR_LOSS_FLOOR / STAIR_APPROACH_COMMIT branches each compute
     their own forward speed independent of trans_x_cmd -- F1's zeroing would be silently
-    bypassed if any of them could still fire while _landing_lost_hold is True. Each entry
-    condition must explicitly exclude it (mirrors how they already exclude _edge_block)."""
+    bypassed if any of them could still fire while the terminal landing hold is engaged.
+    Each entry condition must explicitly exclude _landing_final_hold_engaged (mirrors how
+    they already exclude _edge_block) -- NOT the raw, still-toggling _landing_lost_hold,
+    which would let translation resume the instant the person is re-detected mid-alignment
+    (hard constraint 1)."""
     with open(_MAIN_PY, encoding="utf-8") as f:
         src = f.read()
     for marker in ("stair_climb_committed and controller is not None",
@@ -1775,8 +1804,13 @@ def test_main_dispatch_branches_with_independent_vx_all_exclude_landing_lost_hol
         # The exclusion must appear on the SAME guarding if/elif -- search a tight window
         # around the marker (covers the guard spanning one or two wrapped lines).
         window = src[max(0, idx - 200): idx + 200]
-        assert "not _landing_lost_hold" in window, (
-            f"dispatch branch near {marker!r} does not exclude _landing_lost_hold"
+        assert "not _landing_final_hold_engaged" in window, (
+            f"dispatch branch near {marker!r} does not exclude _landing_final_hold_engaged"
+        )
+        assert "not _landing_lost_hold" not in window, (
+            f"dispatch branch near {marker!r} still excludes the raw, toggling "
+            "_landing_lost_hold instead of the durable _landing_final_hold_engaged latch "
+            "(hard constraint 1: must not release once engaged)"
         )
 
 
@@ -2163,8 +2197,9 @@ if __name__ == "__main__":
     test_main_dispatch_calls_landing_lost_person_hold_active()
     test_main_dispatch_calls_landing_edge_block_latched()
     test_main_zeroes_rotation_cmd_alongside_trans_x_cmd_on_edge_block()
-    test_main_zeroes_rotation_cmd_on_landing_lost_hold()
-    test_main_dispatch_branches_with_independent_vx_all_exclude_landing_lost_hold()
+    test_main_zeroes_trans_x_on_landing_final_hold_engaged()
+    test_main_landing_final_hold_preserves_rotation_cmd()
+    test_main_dispatch_branches_with_independent_vx_all_exclude_landing_final_hold()
     test_ghost_release_requires_post_crest_latch()
     test_ghost_release_blocked_by_genuine_evidence()
     test_ghost_release_blocked_at_straddle_pitch()

@@ -64,6 +64,8 @@ from core.control.stair_policy import (
     StairLatchGhostReleaseState,
     stair_climbing_latch_release_eligible,
     too_close_riser_gap_suppressed,
+    LandingFaceAlignState,
+    landing_face_patient_align,
 )
 from core.control.follow_shaping import (
     _apply_follow_standoff_policy,
@@ -545,6 +547,13 @@ def main():
     # Incident 8.15/8.16 / F1: one-shot boot log guard for the post-crest lost-person hold
     # (incident 8.8 -- a suppressed behavior must announce itself once, not every frame).
     _landing_lost_hold_logged = False
+    # Task (2026-07-12, run 27 review): caller-owned state for the terminal "face the
+    # patient" yaw alignment (see landing_face_patient_align's docstring). One instance for
+    # the run, mirroring landing_edge_latch_state above -- never a module global. Its own
+    # ``engaged`` field IS the one-way terminal latch other dispatch branches gate on (no
+    # separate main.py-level latch variable needed -- state.engaged never resets).
+    landing_face_align_state = LandingFaceAlignState()
+    _landing_face_align_done_logged = False
     # D2 / run-12 review (2026-07-12): caller-owned hysteresis state for the
     # stair_climbing_latch ghost-release (see stair_climbing_latch_release_eligible
     # docstring) + its own one-shot boot log guard (incident 8.8).
@@ -1925,17 +1934,67 @@ def main():
                 person_detected=bool(debug_info.get("person_detected", False)),
             )
             debug_info["landing_lost_person_hold"] = bool(_landing_lost_hold)
-            if _landing_lost_hold:
+            # Task (2026-07-12, run 27 review, run_sim_20260712_125440_963): bounded, slow,
+            # YAW-ONLY rotation to face the patient during this hold, before settling forever
+            # -- see landing_face_patient_align's docstring (core/control/stair_policy.py) for
+            # the full one-way terminal state machine + sign-convention citation. Bearing
+            # source (task brief): live rotation_error_deg while person_detected, else the
+            # frozen last_seen_bearing_deg -- both producers are upstream this same frame
+            # (incident 8.5: follow_controller.py ~L923 / ~L647, written inside
+            # person_follower.update() called at ~L784, well before this point).
+            _align_person_detected = bool(debug_info.get("person_detected", False))
+            _align_bearing_deg = (
+                debug_info.get("rotation_error_deg") if _align_person_detected
+                else debug_info.get("last_seen_bearing_deg")
+            )
+            _align_result = landing_face_patient_align(
+                trigger=bool(_landing_lost_hold),
+                bearing_deg=_align_bearing_deg,
+                edge_block=bool(_edge_block),
+                state=landing_face_align_state,
+                now_wall=current_time,
+                sim_t=frame_meta.get("sim_t") if isinstance(frame_meta, dict) else None,
+                deadband_deg=float(args.landing_face_patient_deadband_deg),
+                timeout_sec=float(args.landing_face_patient_align_sec),
+                max_rotation_deg=float(args.landing_face_patient_max_rotation_deg),
+                yaw_rate=float(args.landing_face_patient_yaw_rate),
+            )
+            # _align_result.engaged is the DURABLE one-way terminal latch (never resets, unlike
+            # the raw _landing_lost_hold above, which toggles instantly with person_detected
+            # per landing_lost_person_hold_active's own docstring) -- every OTHER dispatch
+            # branch below that used to gate on _landing_lost_hold now gates on this instead
+            # (task hard constraint 1: translation must never release once this state is
+            # entered, even if rotating re-acquires the person).
+            _landing_final_hold_engaged = bool(_align_result.engaged)
+            debug_info["landing_face_align_engaged"] = _landing_final_hold_engaged
+            debug_info["landing_face_align_active"] = bool(_align_result.active)
+            debug_info["landing_face_align_done"] = bool(_align_result.done)
+            debug_info["landing_face_align_yaw_cmd"] = round(float(_align_result.yaw_rate_cmd), 4)
+            debug_info["landing_face_align_bearing_deg"] = (
+                None if _align_bearing_deg is None else round(float(_align_bearing_deg), 3)
+            )
+            if _landing_final_hold_engaged:
                 trans_x_cmd = 0.0
-                rotation_cmd = 0.0
+                rotation_cmd = float(_align_result.yaw_rate_cmd)
                 if not _landing_lost_hold_logged:
                     _landing_lost_hold_logged = True
                     logger.info(
                         "Post-crest top-landing lost-person hold engaged: standing still "
-                        "instead of running the flat-ground spin-search near the platform "
-                        "edge (incident 8.15/8.16 F1)",
+                        "(translation) and rotating to face the patient, bounded, instead of "
+                        "running the flat-ground spin-search near the platform edge "
+                        "(incident 8.15/8.16 F1; face-the-patient alignment, run 27 review)",
                         extra=build_ecs_extra(
                             component="vision.main", action="landing_lost_person_hold_engaged",
+                        ),
+                    )
+                if bool(_align_result.done) and not _landing_face_align_done_logged:
+                    _landing_face_align_done_logged = True
+                    logger.info(
+                        "Post-crest face-the-patient alignment finished (aligned / timed out / "
+                        "rotation-bound) -- standing fully still (vx=wz=0) for the rest of the "
+                        "run",
+                        extra=build_ecs_extra(
+                            component="vision.main", action="landing_face_align_done",
                         ),
                     )
 
@@ -1980,9 +2039,28 @@ def main():
                 and not preparation_mode
                 and bool(debug_info.get("follow_pursuit_active", False))
             )
+            # Task (2026-07-12, run 27 review): once the terminal post-crest face-the-patient
+            # sequence has ever engaged (_landing_final_hold_engaged, a one-way latch), force
+            # dispatch through the SAME "elif motion_allowed" pipeline every remaining frame --
+            # whether actively yaw-aligning or already finished -- instead of letting
+            # motion_allowed go False on some frame (e.g. recovery_cmd_active happening to read
+            # False) and falling through to a DIFFERENT elif branch or the terminal
+            # controller.stop(). recovery_motion_allowed alone is NOT a reliable substitute: it
+            # depends on PersonFollower's own lost-search recovery_cmd_active, which this
+            # function's caller does not control frame-to-frame. This keeps the terminal hold's
+            # trans_x=0 / hold=True enforcement (below, gated on _landing_final_hold_engaged) as
+            # the SOLE, single dispatch-path authority for the rest of the run.
+            landing_align_motion_allowed = (
+                args.follow
+                and robot_controller is not None
+                and robot_controller.is_ready()
+                and not preparation_mode
+                and bool(_landing_final_hold_engaged)
+            )
             motion_allowed = (
                 live_motion_allowed or recovery_motion_allowed
                 or stair_floor_motion_allowed or pursuit_motion_allowed
+                or landing_align_motion_allowed
             )
             # Hold (stance-lock) gating -- LEAN-ON-CREEP. The frozen policy floor-creeps forward
             # (~0.5 m/s) even at vx=0, and we USE that creep to follow the patient, so a stance-lock
@@ -2037,7 +2115,7 @@ def main():
             # the post-crest lost-person hold gets the same treatment (see its block above).
             stop_decision = (
                 (not motion_allowed) or bool(too_close) or bool(_edge_block)
-                or bool(_landing_lost_hold)
+                or bool(_landing_final_hold_engaged)
             )
             hold_request = bool(stop_decision)  # provisional; finalized in the motion block
             debug_info["too_close_hold"] = bool(too_close)
@@ -2125,8 +2203,11 @@ def main():
                 # incident 8.15/8.16 / F1: exclude the post-crest lost-person hold -- a glide
                 # commands its own fixed forward speed independent of trans_x_cmd, which would
                 # silently bypass the stand-still this guard requires (see
-                # landing_lost_person_hold_active's docstring).
-                and not _landing_lost_hold
+                # landing_lost_person_hold_active's docstring). Task (run 27 review): gated on
+                # the durable one-way _landing_final_hold_engaged (not the raw, still-toggling
+                # _landing_lost_hold) so this stays excluded even if rotating during the
+                # face-the-patient alignment happens to re-detect the person mid-turn.
+                and not _landing_final_hold_engaged
                 and _glide_lost_age is not None
                 and float(_glide_lost_age) <= float(getattr(args, "follow_loss_glide_sec", 4.0))
                 and _front_near_m is not None and float(_front_near_m) > 0.9
@@ -2326,7 +2407,8 @@ def main():
             debug_info["stair_climb_committed"] = bool(stair_climb_committed)
 
             if (stair_climb_committed and controller is not None and controller.is_ready()
-                    and not preparation_mode and not _edge_block and not _landing_lost_hold):
+                    and not preparation_mode and not _edge_block
+                    and not _landing_final_hold_engaged):
                 # incident 8.15 / F4: stair_climb_committed (opt-in, --stair-climb-commit,
                 # default OFF) only clears on a --stair-climb-max-sec timeout, not on reaching
                 # the crest, so it could otherwise still be True for several seconds after
@@ -2474,13 +2556,17 @@ def main():
                     stop_ramp_vx = 0.0
                     trans_x_cmd = 0.0
                     hold_request = True
-                elif _landing_lost_hold:
+                elif _landing_final_hold_engaged:
                     # incident 8.15/8.16 / F1: same immediate-stop treatment as the edge guard
-                    # above -- stand still now (vx=wz=0, hold) rather than ramping down over
-                    # --follow-stop-ramp-sec, which would let the spin-search (already
-                    # suppressed above -- rotation_cmd is 0 here) resume the instant the ramp
-                    # bled below --follow-stop-ramp-eps if this fell into the ordinary
-                    # stop_decision ramp branch below instead.
+                    # above for TRANSLATION (vx=0, hold_request=True) rather than ramping down
+                    # over --follow-stop-ramp-sec, which would let the spin-search resume the
+                    # instant the ramp bled below --follow-stop-ramp-eps if this fell into the
+                    # ordinary stop_decision ramp branch below instead. rotation_cmd is left
+                    # UNTOUCHED here -- task (run 27 review): it was already set, above, to
+                    # either the bounded face-the-patient yaw_rate_cmd (while
+                    # landing_face_align_state is actively aligning) or 0.0 (not yet engaged /
+                    # already done) by the landing_face_patient_align() call; this branch must
+                    # not re-zero it, only lock translation.
                     stop_ramp_active = False
                     stop_ramp_vx = 0.0
                     trans_x_cmd = 0.0
@@ -2711,6 +2797,17 @@ def main():
                 # left alone -- that is a distinct "no brake info" state, not a folded 0.0.
                 if not _dispatch_person_detected and _dispatch_gap_brake_scale is not None:
                     _dispatch_gap_brake_scale = 1.0
+                # Task (2026-07-12, run 27 review): cross the UDP boundary as an explicit
+                # payload field, mirroring gap_brake_scale's precedent (incident E1) -- the
+                # F1 hold clamp in isaac_env._step_go2_locomotion zeroes wz along with vx
+                # whenever hold=True (PgttLocomotionPolicy.step: "if hold: cmd=(0,0,0)"), so
+                # the bounded face-the-patient yaw rate needs its own carve-out flag rather
+                # than riding the ordinary wz/command_rotation channel. ONLY non-None while
+                # the terminal hold is engaged (_landing_final_hold_engaged) -- this is the
+                # ONLY controller.move() call site reachable during that state (every other
+                # branch is vetoed on it above), but gating explicitly here still prevents an
+                # ordinary follow-steering command_rotation from ever being misread as an
+                # alignment carve-out by isaac_env if that ever changed.
                 controller.move(
                     command_trans_x, 0.0, command_rotation,
                     stairs_detected=bool(debug_info.get("stairs_policy_prepare_active", False)),
@@ -2725,11 +2822,14 @@ def main():
                         None if _dispatch_gap_brake_scale is None
                         else float(_dispatch_gap_brake_scale)
                     ),
+                    yaw_align_rate=(
+                        float(command_rotation) if _landing_final_hold_engaged else None
+                    ),
                 )
                 last_command_trans_x = float(command_trans_x)
                 last_command_rotation = float(command_rotation)
             elif (controller is not None and controller.is_ready() and not _edge_block
-                    and not _landing_lost_hold
+                    and not _landing_final_hold_engaged
                     and stair_loss_floor_eligible(
                         stairs_now=_stairs_now,
                         stair_climbing_latch=bool(debug_info.get("stair_climbing_latch", False)),
@@ -2942,7 +3042,8 @@ def main():
                 stop_ramp_vx = 0.0
                 stop_ramp_last_ts = current_time
             elif (controller is not None and controller.is_ready() and not preparation_mode
-                    and _stair_approach_commit and not _edge_block and not _landing_lost_hold):
+                    and _stair_approach_commit and not _edge_block
+                    and not _landing_final_hold_engaged):
                 # incident 8.15 / F4: a confirmed landing-edge finding overrides this branch too
                 # (see the _stairs_now branch above for why -- same narrow crest-transition
                 # window). Falls through to the ordinary stop_decision/hold_request path.

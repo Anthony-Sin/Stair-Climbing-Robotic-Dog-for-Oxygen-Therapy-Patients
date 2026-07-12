@@ -847,6 +847,172 @@ def landing_lost_person_hold_active(
     )
 
 
+@dataclass
+class LandingFaceAlignResult:
+    """One frame's decision from ``landing_face_patient_align`` (see its docstring)."""
+    engaged: bool         # one-way: True from the first frame ``trigger`` was ever True
+    active: bool          # True only THIS frame is actively commanding a nonzero yaw_rate_cmd
+    done: bool            # one-way: True once the alignment sequence has finished (terminal)
+    yaw_rate_cmd: float   # rad/s to command this frame; 0.0 whenever not active
+
+
+@dataclass
+class LandingFaceAlignState:
+    """Caller-owned state for ``landing_face_patient_align`` (task: rotate in place, bounded,
+    to face the patient during the FINAL post-crest hold, before settling forever). One
+    instance owned by the main loop, mirroring ``LandingEdgeLatchState`` /
+    ``StairLatchGhostReleaseState`` -- never a module global.
+
+    ``age_anchor`` reuses ``DetectionAgeState`` as a generic dual-clock (wall/sim,
+    incident 8.6) "seconds since an anchored instant" primitive -- despite the name, nothing
+    here is about detections; it is the exact mechanism ``detection_age_sec`` already provides
+    for ``--stair-blind-climb-timeout-sec`` (see that function's docstring for the full
+    present/absent/vanishing/backward-goes-wall contract), reused via composition rather than
+    duplicated (CLAUDE.md 8.1: minimal, surgical -- do not hand-roll a second copy of an
+    already-reviewed dual-clock elapsed-time computation).
+    """
+    engaged: bool = False
+    done: bool = False
+    rotated_rad: float = 0.0           # cumulative |yaw_rate_cmd * dt| commanded this sequence
+    age_anchor: DetectionAgeState = field(default_factory=DetectionAgeState)
+    last_elapsed_sec: float = 0.0      # elapsed value as of the previous call (for dt integration)
+
+
+def landing_face_patient_align(
+    *,
+    trigger: bool,
+    bearing_deg: Optional[float],
+    edge_block: bool,
+    state: LandingFaceAlignState,
+    now_wall: float,
+    sim_t: Optional[float],
+    deadband_deg: float,
+    timeout_sec: float,
+    max_rotation_deg: float,
+    yaw_rate: float,
+) -> LandingFaceAlignResult:
+    """Bounded, slow, YAW-ONLY rotation in place to face the patient during the FINAL
+    post-crest lost-person hold (task brief, 2026-07-12 -- run 27, run_sim_20260712_125440_963:
+    the dog parked ~33 deg off the patient's last-known bearing because
+    ``landing_lost_person_hold_active`` (this module) froze BOTH vx and wz the instant it
+    engaged).
+
+    ONE-WAY TERMINAL STATE MACHINE (task hard constraint 1): ``trigger`` is the caller's
+    same-frame ``landing_lost_person_hold_active(...)`` result -- itself gated on
+    ``post_crest_landing_latched AND fully_on_top_landing AND not person_detected`` and
+    designed to toggle INSTANTANEOUSLY back off the moment the person is re-ranged (see that
+    function's own docstring: "release back to normal follow the moment the person is
+    re-ranged"). That instantaneous release is correct for the ordinary stand-still it drives,
+    but is exactly what the task's hard constraint forbids for this rotate-to-face sequence: a
+    live re-acquire mid-turn must NOT let the follow/pursuit path re-approach the patient (a
+    landing re-approach could drive the graded run's min patient gap below the 0.65 m floor
+    run 27 just cleared at 0.672 m -- CLAUDE.md 8.9). So ``state.engaged`` latches PERMANENTLY
+    True the first frame ``trigger`` is ever True and never re-reads ``trigger`` again --
+    the caller uses ``result.engaged`` (not the raw, still-toggling ``trigger``/
+    ``landing_lost_person_hold_active`` value) as the durable "stay in the terminal
+    stand-still" gate for every other motion-dispatch branch it must veto (translation stays
+    zero and every other dispatch path stays vetoed for the rest of the run -- see the
+    call site in ``core/main.py`` for the full list of branches this replaces
+    ``_landing_lost_hold`` on). ``result.done`` is its OWN one-way latch, layered on top: once
+    the rotation finishes (aligned / timed out / rotation-bound), it never rotates again either
+    -- "full stop/hold forever" (task brief), even if a later frame's bearing would otherwise
+    justify moving again.
+
+    BEARING SOURCE (task brief): the caller passes ``bearing_deg`` already resolved to "live
+    ``rotation_error_deg`` while ``person_detected``, else ``last_seen_bearing_deg``" -- both
+    producers share the identical rotation-error sign convention (+ = person on the RIGHT; see
+    ``follow_controller.py``'s ``rotation_error_from_center`` docstring and
+    ``debug_info['rotation_error_deg']`` at ~L923 / ``debug_info['last_seen_bearing_deg']`` at
+    ~L647, both upstream of this function's only caller per incident 8.5). This function does
+    NOT re-derive it or read ``debug_info`` itself -- explicit argument only.
+
+    SIGN CONVENTION (task brief -- do not guess, CLAUDE.md 8.7): mirrors the ONLY other place
+    this codebase turns toward a stored bearing, ``core/main.py``'s forward-pursuit arc-yaw
+    (~L1630-1632): ``rotation_cmd = -math.copysign(_arc, float(_b))`` with the comment
+    "+bearing == patient on the RIGHT -> negative yaw (turn right)". Same formula here:
+    ``rate = -copysign(yaw_rate, bearing_deg)``. For run 27's frozen -32.854 deg (patient on
+    the LEFT), this yields ``+yaw_rate`` (turn left/CCW), matching the follower's
+    ``+left/CCW`` rotation_cmd convention (``core/main.py`` ~L1542's own comment: "rotation_cmd
+    (wz) and yaw_target share the +left/CCW sign convention").
+
+    STOP CONDITIONS, first true wins (task brief): (1) ``abs(bearing_deg) <= deadband_deg``
+    (aligned), (2) sim-aware elapsed alignment time (incident 8.6, via ``DetectionAgeState`` /
+    ``detection_age_sec`` -- see ``LandingFaceAlignState``'s docstring) ``>= timeout_sec``, (3)
+    cumulative bounded rotation ``>= max_rotation_deg``. Any of the three latches ``state.done``
+    permanently.
+
+    EDGE-GUARD PRECEDENCE (task hard constraint 3): ``edge_block`` (the caller's already-
+    latched ``landing_edge_block_latched(...)`` result) does NOT translate anything by itself
+    (this function never touches vx), but while it is True this function withholds the ROTATION
+    too for that frame (``active=False, yaw_rate_cmd=0.0``) rather than advancing the turn --
+    "hold wins over rotation". It does not finish/abandon the sequence -- elapsed time keeps
+    accruing against ``timeout_sec`` regardless (that alone still bounds a persistently
+    edge-blocked stretch), and edge_block is re-evaluated fresh every frame by the caller
+    (incident 8.16 F2 hysteresis lives in ``landing_edge_block_latched``, not here).
+
+    EXPLICIT DISABLE PATH (task brief -- "0 = off", CLAUDE.md 8.1 zero-as-disabled-sentinel
+    lesson): tested on the RAW ``yaw_rate`` argument (the CLI value, ``args.
+    landing_face_patient_yaw_rate``) the instant this function would otherwise start
+    evaluating whether to rotate -- NEVER on a derived/computed quantity that can
+    independently be exactly 0.0 for an unrelated, legitimate reason (``state.rotated_rad``
+    starts at 0.0; ``yaw_rate_cmd`` is legitimately 0.0 on every "not active" frame; the
+    ``mid_climb_floor_capped_command`` incident above is the exact shape of bug this avoids --
+    it tested an already-braked value instead of the raw enable/disable sentinel). ``yaw_rate
+    <= 0.0`` finishes the sequence immediately with no rotation ever commanded, but --
+    critically -- ``state.engaged`` still latches from ``trigger`` alone beforehand, so the
+    terminal translation-hold (the actual safety fix) stays on even with the cosmetic rotation
+    disabled.
+
+    NEVER-RECORDED BEARING (task hard constraint 4): ``bearing_deg is None`` finishes the
+    sequence immediately with no rotation ever commanded -- fails toward stillness (CLAUDE.md
+    8.8), same as the disable path above.
+
+    Returns a fresh ``LandingFaceAlignResult`` every call; never returns ``None`` (the caller
+    always has a definite yaw_rate_cmd, including exactly 0.0 while inactive/done/not yet
+    engaged).
+    """
+    if bool(trigger) and not state.engaged:
+        state.engaged = True
+        state.rotated_rad = 0.0
+        state.last_elapsed_sec = 0.0
+        note_detection_match(state.age_anchor, now_wall=now_wall, sim_t=sim_t)
+
+    if not state.engaged:
+        return LandingFaceAlignResult(engaged=False, active=False, done=False, yaw_rate_cmd=0.0)
+
+    if state.done:
+        return LandingFaceAlignResult(engaged=True, active=False, done=True, yaw_rate_cmd=0.0)
+
+    if float(yaw_rate) <= 0.0:
+        # Explicit disable path -- see docstring. Tested on the raw argument, not a derived
+        # quantity, before any other completion/rotation logic runs.
+        state.done = True
+        return LandingFaceAlignResult(engaged=True, active=False, done=True, yaw_rate_cmd=0.0)
+
+    if bearing_deg is None:
+        # Nothing has ever been recorded -- fail toward stillness (task hard constraint 4).
+        state.done = True
+        return LandingFaceAlignResult(engaged=True, active=False, done=True, yaw_rate_cmd=0.0)
+
+    elapsed = detection_age_sec(state.age_anchor, now_wall=now_wall, sim_t=sim_t)
+    dt = max(0.0, float(elapsed) - float(state.last_elapsed_sec))
+    state.last_elapsed_sec = float(elapsed)
+
+    aligned = abs(float(bearing_deg)) <= max(0.0, float(deadband_deg))
+    timed_out = float(elapsed) >= max(0.0, float(timeout_sec))
+    bound_hit = float(state.rotated_rad) >= math.radians(max(0.0, float(max_rotation_deg)))
+    if aligned or timed_out or bound_hit:
+        state.done = True
+        return LandingFaceAlignResult(engaged=True, active=False, done=True, yaw_rate_cmd=0.0)
+
+    if bool(edge_block):
+        return LandingFaceAlignResult(engaged=True, active=False, done=False, yaw_rate_cmd=0.0)
+
+    rate = -math.copysign(float(yaw_rate), float(bearing_deg))
+    state.rotated_rad = float(state.rotated_rad) + abs(rate) * dt
+    return LandingFaceAlignResult(engaged=True, active=True, done=False, yaw_rate_cmd=float(rate))
+
+
 def _depth_from_bbox(depth_img: np.ndarray, bbox: Optional[List[float]]) -> Optional[float]:
     if bbox is None:
         return None

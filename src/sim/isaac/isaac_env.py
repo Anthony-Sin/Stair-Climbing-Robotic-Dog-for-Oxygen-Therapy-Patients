@@ -409,6 +409,11 @@ _cmd_vel    = {
     # docstring-comment for the full wire contract). 1.0 = no brake (backward-compatible
     # default for a stale/older sender that never sets this key).
     "gap_brake_scale": 1.0,
+    # Task (2026-07-12, run 27 review): the caller's bounded post-crest face-the-patient
+    # yaw-rate command (rad/s, signed), sent ONLY while the terminal landing hold is engaged
+    # (see sim_robot_controller._send's docstring-comment). 0.0 = not aligning
+    # (backward-compatible default for a stale/older sender that never sets this key).
+    "yaw_align_rate": 0.0,
 }
 _running    = True
 _front_camera_smoothed_position = None
@@ -509,6 +514,18 @@ def _cmd_receiver_thread(port: int) -> None:
             except (TypeError, ValueError):
                 gap_brake_scale = 1.0
             gap_brake_scale = max(0.0, min(1.0, gap_brake_scale))
+            # Task (2026-07-12, run 27 review): caller's bounded post-crest face-the-patient
+            # yaw-rate command (rad/s, signed). Absent (older/stale sender) or malformed ->
+            # 0.0 (not aligning, backward compatible). Clamped defensively to a generous
+            # ceiling well above the controller's own --landing-face-patient-yaw-rate default
+            # (0.35 rad/s) -- this is a carve-out that lets wz through isaac_env's F1 hold
+            # clamp (see _step_go2_locomotion), so an out-of-range payload value must not be
+            # able to command an unbounded spin.
+            try:
+                yaw_align_rate = float(payload.get("yaw_align_rate", 0.0))
+            except (TypeError, ValueError):
+                yaw_align_rate = 0.0
+            yaw_align_rate = max(-2.0, min(2.0, yaw_align_rate))
             # Followed person's bbox in RGB-frame normalized [0,1] coords (or None
             # if no detection this frame). Forwarded so the parkour depth policy can
             # mask the person out of its depth input. List of 4 floats or None.
@@ -543,6 +560,7 @@ def _cmd_receiver_thread(port: int) -> None:
                 _cmd_vel["person_detected"] = person_detected
                 _cmd_vel["gap_m"] = gap_m
                 _cmd_vel["gap_brake_scale"] = gap_brake_scale
+                _cmd_vel["yaw_align_rate"] = yaw_align_rate
                 _cmd_vel["ts"] = time.monotonic()
                 _cmd_vel["count"] = int(_cmd_vel.get("count", 0)) + 1
                 cmd_count = int(_cmd_vel["count"])
@@ -2208,9 +2226,19 @@ def _step_go2_locomotion(
     hold: bool = False,
     person_detected: bool = True,
     climb_vx_brake_scale: float = 1.0,
+    yaw_align_rate: float = 0.0,
 ) -> None:
     global _HANDOFF_CLIMBING, _PGTT_HOLD_PARK_FROM_ACT
     vx = max(0.0, float(vx))
+    # Task (2026-07-12, run 27 review): the caller's bounded post-crest face-the-patient
+    # yaw-rate command, forwarded over UDP as the `yaw_align_rate` payload field (see
+    # sim_robot_controller._send's docstring-comment). Clamped again here (defense in depth;
+    # the UDP receiver already clamps to +-2.0 rad/s) to a ceiling well above the
+    # controller's own --landing-face-patient-yaw-rate default (0.35 rad/s). Nonzero here is
+    # the caller's explicit "let this wz through even though translation stays locked" flag
+    # -- see the walk-only F1 clamp below for where it is actually applied.
+    _yaw_align_rate = max(-2.0, min(2.0, float(yaw_align_rate)))
+    _yaw_aligning = abs(_yaw_align_rate) > 1e-6
     # Incident E1 (2026-07-12 review of run_sim_20260712_013638_835): the caller's already-
     # computed [0..1] mid-climb patient-gap brake, forwarded over UDP as the `gap_brake_scale`
     # payload field (see sim_robot_controller._send's docstring-comment) -- scales ONLY the
@@ -2287,9 +2315,22 @@ def _step_go2_locomotion(
                 and str(getattr(_PGTT_HANDOFF, "state", "walk")) == "climb")
             _roll_hp, _pitch_hp, _, _ = _body_rp_rates(go2)
             _tilt_hp = max(abs(_roll_hp), abs(_pitch_hp))
+            # Task (2026-07-12, run 27 review): also gated off while _yaw_aligning -- an
+            # ACTIVE bounded face-the-patient rotation must not be swallowed by the PARK's
+            # slew-to-stand-pose (which stops stepping rl_policy.step() entirely, per
+            # HoldParkController.update, and returns before the walk-only F1 clamp below is
+            # ever reached). This resets the PARK's hold_elapsed accumulator to 0 every frame
+            # the rotation is active (HoldParkController.update's instant-release branch), so
+            # PARK cannot engage mid-turn; the caller sends yaw_align_rate=0.0 the instant the
+            # alignment finishes (landing_face_patient_align's one-way ``done`` latch), so
+            # hold_requested reverts to the ordinary (_motion_hold_requested and not
+            # _climb_fsm_active) the very next frame and PARK still engages normally after
+            # --pgtt-hold-park-sec of continued hold -- giving the terminal "full stop/hold
+            # forever" behavior for free via the existing D1 mechanism.
             _hp_decision = _PGTT_HOLD_PARK.update(
                 dt,
-                hold_requested=(_motion_hold_requested and not _climb_fsm_active),
+                hold_requested=(_motion_hold_requested and not _climb_fsm_active
+                                 and not _yaw_aligning),
                 tilt_rad=_tilt_hp)
             if _hp_decision.engaged_this_frame:
                 # Seed the slew-from pose BEFORE swapping gains (current_act_positions reads
@@ -2535,9 +2576,24 @@ def _step_go2_locomotion(
         # (run_sim_20260711_140745_054): hold_request=True / motion_allowed=False held for 18
         # continuous seconds while commanded_speed_mps stayed ~0.30 -- the blind robot walked
         # 3 m across the top landing and off a 2.1 m drop.
+        #
+        # Task (2026-07-12, run 27 review): carve-out for the bounded post-crest
+        # face-the-patient rotation, mirroring gap_brake_scale's payload-field pattern
+        # (incident E1). vx (and vy, already 0 from every caller on this path) stay pinned to
+        # 0.0 regardless -- translation NEVER releases (task hard constraint 1) -- but when
+        # the caller explicitly flags an active alignment (_yaw_aligning, a nonzero
+        # yaw_align_rate), let THAT specific wz through and set hold=False so
+        # PgttLocomotionPolicy.step does not zero it (``if hold: cmd = (0.0, 0.0, 0.0)``,
+        # pgtt_locomotion_policy.py ~L378-379). Without _yaw_aligning this is byte-identical
+        # to the pre-existing hold=True/vx=0 clamp.
         if _motion_hold_requested:
             vx = 0.0
-            hold = True
+            vy = 0.0
+            if _yaw_aligning:
+                wz = _yaw_align_rate
+                hold = False
+            else:
+                hold = True
         telemetry = rl_policy.step(go2, (vx, vy, wz), dt, hold=hold, height_fn=_hf)
         _go2_locomotion_state.leg_summary = rl_policy.leg_command_summary()
         _go2_locomotion_state.policy_name = rl_policy.policy_path.name
@@ -3875,6 +3931,10 @@ def main() -> None:
                     # so this only affects the mid-climb floor's magnitude on a stale link, not
                     # whether the dog moves at all.
                     gap_brake_scale = 1.0
+                    # Task (2026-07-12, run 27 review): stale link -> no fresh alignment intent
+                    # available either. Fail toward NOT aligning (CLAUDE.md 8.8) -- a dead UDP
+                    # link must never let a stale rotation carve-out survive hold=True.
+                    yaw_align_rate = 0.0
                 else:
                     vx = _cmd_vel["vx"]
                     vy = _cmd_vel["vy"]
@@ -3888,6 +3948,7 @@ def main() -> None:
                     person_detected = _cmd_vel.get("person_detected", False)
                     gap_m = _cmd_vel.get("gap_m")
                     gap_brake_scale = _cmd_vel.get("gap_brake_scale", 1.0)
+                    yaw_align_rate = _cmd_vel.get("yaw_align_rate", 0.0)
             # Self-test: bypass the Docker/vision controller entirely and drive a
             # constant forward command straight into the locomotion policy. Lets us
             # verify flat-ground walking and balance in isolation (headless, no UDP).
@@ -3900,6 +3961,9 @@ def main() -> None:
                 # info at all -- full (unbraked) mid-climb floor, matching this mode's existing
                 # intent to test full-speed climbs in isolation.
                 gap_brake_scale = 1.0
+                # Task (2026-07-12, run 27 review): open-loop self-test never runs the
+                # post-crest face-the-patient sequence.
+                yaw_align_rate = 0.0
                 person_bbox = None
                 command_fresh = True
                 person_detected = False
@@ -4163,7 +4227,8 @@ def main() -> None:
                                      stairs_action_active=stairs_action_active,
                                      person_bbox=person_bbox, hold=hold,
                                      person_detected=person_detected,
-                                     climb_vx_brake_scale=gap_brake_scale)
+                                     climb_vx_brake_scale=gap_brake_scale,
+                                     yaw_align_rate=yaw_align_rate)
             else:
                 # Demo running, momentarily no fresh command: hold a balanced stand
                 # with the policy (the robot has already started walking, so do not
@@ -4738,9 +4803,23 @@ def main() -> None:
                     and bool((getattr(_PGTT_HANDOFF, "_det", None) or {}).get("stair_detected", False))
                     and _patient_state is not None
                     and not bool(getattr(_patient_state, "at_destination", False)))
+                # Task (2026-07-12, run 27 review): do NOT settle-exit mid-ROTATION either. The
+                # post-crest face-the-patient sequence turns IN PLACE (vx=vy=0 the whole time,
+                # per the F1 clamp carve-out in _step_go2_locomotion), so (rx, ry) barely
+                # changes and the position-based idle clock above keeps accumulating straight
+                # through an active turn -- without this gate a rotation started with the idle
+                # window already near ROBOT_SETTLE_EXIT_SEC (15.0 s) could cut the run off
+                # mid-turn, before the dog ever finishes facing the patient.
+                # landing_face_patient_align's bounded timeout (--landing-face-patient-align-sec,
+                # 6.0 s default) guarantees the alignment always finishes on its own, so gating
+                # settle-exit on it cannot starve this exit condition forever -- it only ever
+                # delays it until the SAME frame yaw_align_rate reverts to 0.0 (aligned / timed
+                # out / rotation-bound / disabled), at which point idle time (already accrued
+                # from before the rotation, if any) can immediately satisfy the window.
+                _yaw_aligning_now = abs(float(yaw_align_rate)) > 1e-6
                 if (_robot_has_moved and _robot_idle_sim_sec >= ROBOT_SETTLE_EXIT_SEC
                         and not _on_staircase and not _handoff_climb_engaged
-                        and not _stair_entry_pending):
+                        and not _stair_entry_pending and not _yaw_aligning_now):
                     evaluation_done = True
                     evaluation_exit_reason = "robot_settled"
                     log_event(

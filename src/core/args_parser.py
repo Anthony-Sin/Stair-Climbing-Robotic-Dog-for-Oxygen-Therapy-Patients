@@ -717,6 +717,28 @@ def parse_args():
                              'incident 8.6) after the post-crest latch first arms, while the '
                              'commanded direction is away from the crest. See incident 8.15 / '
                              'F4 follow-up.')
+    # --- Post-crest "face the patient" yaw alignment (task, 2026-07-12, run 27 review) --
+    # See landing_face_patient_align's docstring (core/control/stair_policy.py) for the full
+    # one-way terminal state machine: once the post-crest lost-person hold engages, the dog
+    # rotates in place (bounded) to face the patient's last-known bearing, then settles fully
+    # still forever -- translation stays zero the entire time.
+    parser.add_argument('--landing-face-patient-align-sec', type=float, default=6.0,
+                        help='Sim-time-aware (incident 8.6) seconds of alignment time-budget '
+                             'before the post-crest face-the-patient rotation gives up and '
+                             'settles, even if not yet within the deadband. See '
+                             'landing_face_patient_align (core/control/stair_policy.py).')
+    parser.add_argument('--landing-face-patient-deadband-deg', type=float, default=8.0,
+                        help='Bearing error (deg, abs) at/under which the post-crest '
+                             'face-the-patient rotation is considered aligned and stops.')
+    parser.add_argument('--landing-face-patient-yaw-rate', type=float, default=0.35,
+                        help='Yaw-rate cap (rad/s) for the post-crest face-the-patient '
+                             'rotation. 0 EXPLICITLY disables the rotation (the terminal '
+                             'translation-hold still engages) -- see landing_face_patient_align '
+                             'for why this is tested on the raw value, never a derived one.')
+    parser.add_argument('--landing-face-patient-max-rotation-deg', type=float, default=120.0,
+                        help='Total bounded rotation (deg) the post-crest face-the-patient '
+                             'sequence may command before giving up and settling, independent '
+                             'of the time budget above.')
     parser.add_argument('--raw-video-path', type=str, default='',
                         help='MP4 path for raw camera frame recording (no overlays); empty disables')
     parser.add_argument('--no-raw-video', action='store_true',

@@ -52,15 +52,17 @@ class SimRobotController:
              yaw_err: float = 0.0, person_bbox=None,
              stairs_action_active: bool = False, hold: bool = False,
              person_detected: bool = False, gap_m: Optional[float] = None,
-             depth_img=None, gap_brake_scale: Optional[float] = None) -> None:
+             depth_img=None, gap_brake_scale: Optional[float] = None,
+             yaw_align_rate: Optional[float] = None) -> None:
         # depth_img is accepted for caller compatibility but NOT sent: this controller transmits the
         # velocity command over a fixed-size UDP datagram (a depth frame would not fit); the sim's
         # depth lives on the Isaac side. Ignored here so callers may pass it uniformly.
         self._send(vx, vy, wz, stairs_detected, yaw_err, person_bbox,
-                   stairs_action_active, hold, person_detected, gap_m, gap_brake_scale)
+                   stairs_action_active, hold, person_detected, gap_m, gap_brake_scale,
+                   yaw_align_rate)
 
     def stop(self) -> None:
-        self._send(0.0, 0.0, 0.0, False, 0.0, None, False, True, False, None, None)
+        self._send(0.0, 0.0, 0.0, False, 0.0, None, False, True, False, None, None, None)
 
     def shutdown(self) -> None:
         self.stop()
@@ -81,7 +83,8 @@ class SimRobotController:
               yaw_err: float = 0.0, person_bbox=None,
               stairs_action_active: bool = False, hold: bool = False,
               person_detected: bool = False, gap_m: Optional[float] = None,
-              gap_brake_scale: Optional[float] = None) -> None:
+              gap_brake_scale: Optional[float] = None,
+              yaw_align_rate: Optional[float] = None) -> None:
         if not self._sock:
             return
         vx_raw = float(vx)
@@ -119,6 +122,12 @@ class SimRobotController:
         # policy_cmd [0.22, 0, 0] with person_detected=true, gap_m=0.303 -- the caller's own vx was
         # already 0.0 that whole window). None (not sent / older caller) decodes to 1.0 (no brake,
         # backward compatible) on the isaac_env receiving end -- see _cmd_receiver_thread there.
+        #
+        # yaw_align_rate (task, 2026-07-12, run 27 review): mirrors gap_brake_scale's own
+        # precedent above -- a second explicit payload-field carve-out, this time for
+        # isaac_env's F1 hold clamp (core/main.py's "Task (2026-07-12, run 27 review): cross
+        # the UDP boundary..." comment has the full rationale). None (not sent / older caller)
+        # decodes to 0.0 (not aligning, backward compatible) on the isaac_env receiving end.
         seq = self._cmd_seq
         self._cmd_seq += 1
         payload = json.dumps({"seq": int(seq),
@@ -131,6 +140,9 @@ class SimRobotController:
                               "gap_m": float(gap_m) if gap_m is not None else None,
                               "gap_brake_scale": (
                                   float(gap_brake_scale) if gap_brake_scale is not None else 1.0
+                              ),
+                              "yaw_align_rate": (
+                                  float(yaw_align_rate) if yaw_align_rate is not None else 0.0
                               )}).encode()
         try:
             self._sock.sendto(payload, (self._host, self._port))
