@@ -359,7 +359,7 @@
     <div>
       <div class="hdr-title">Stair-Climbing Robotic Dog for Oxygen Therapy Patients</div>
       <div class="hdr-sub">An autonomous quadruped that follows a patient on supplemental oxygen, detects a staircase, and climbs it carrying the tank — freeing both hands for the railing.</div>
-      <div class="hdr-affil">Computer Science &amp; Engineering &nbsp;·&nbsp; USF College of Engineering &nbsp;·&nbsp; Senior Capstone Design — Team Robodog (Project #6)</div>
+      <div class="hdr-affil">Computer Science &amp; Engineering &nbsp;·&nbsp; USF College of Engineering &nbsp;·&nbsp; Team Robodog (Project #6)</div>
     </div>
   </div>
   <div class="goldrule"></div>
@@ -429,12 +429,73 @@
       </div>
 
       <div class="sec">
-        <div class="sh">From Proven Sim to the Living Room</div>
-        <div class="fig">
-          <img src="assets/scene_follow.png" alt="Three.js scene view: robot following the patient toward a staircase" style="max-height:280px;">
-          <div class="cap">Fig. 4 — This Isaac Sim scene is the proof point: the same Docker container that runs it is the one that ships to the Jetson Orin on the real Go2.</div>
+        <div class="sh">We Trained It to Climb — 6,000 Iterations</div>
+        <p>A blind reinforcement-learning policy learned to drive the payload upstairs on feel alone.</p>
+        <div class="stats">
+          <div class="stat"><div class="stat-n">95.7</div><div class="stat-l">Mean reward<br>at plateau</div></div>
+          <div class="stat"><div class="stat-n">138 mm</div><div class="stat-l">Riser the curriculum<br>settled at</div></div>
+          <div class="stat"><div class="stat-n">≈100%</div><div class="stat-l">Episodes end upright,<br>not a fall</div></div>
         </div>
-        <p>That is the deployment bet: a policy proven in simulation is expected to hold on hardware because it runs the identical container — only the sensor source changes, from simulated cameras to the real RealSense and LiDAR. Four groups stand to benefit once it's out of the lab: <b>patients</b> get a floor of the house back, <b>caregivers</b> get a hand, and <b>clinics &amp; rehab facilities</b> get an assistant that never tires. Next up: hardware bring-up, gait polish, and a supervised home pilot.</p>
+        <div class="row2">
+          <div class="fig">
+            <div class="hero-chart"><p class="hero-chart-title">Learning curve · mean episode reward</p>
+            <svg viewBox="0 0 480 300" role="img" aria-label="Reward rises to 95.7 over 6000 iterations">
+              <rect class="ch-frame" x="46" y="30" width="418" height="236"/>
+              <line class="ch-base" x1="46" y1="246.3" x2="464" y2="246.3"/>
+              <path class="ch-area" fill="#0e9b8e" d="M46,197.2 L73.9,256.2 L115.7,216.8 L150.5,167.7 L185.3,124.4 L220.2,89 L255,69.3 L289.8,61.5 L359.5,58.9 L464,58.1 L464,266 L46,266 Z"/>
+              <polyline class="ch-line" stroke="#0e9b8e" points="46,197.2 73.9,256.2 115.7,216.8 150.5,167.7 185.3,124.4 220.2,89 255,69.3 289.8,61.5 359.5,58.9 464,58.1"/>
+              <circle class="ch-dot" fill="#0e9b8e" cx="464" cy="58.1" r="4"/>
+              <text class="ch-val" x="458" y="52" text-anchor="end">95.7</text>
+              <line class="ch-grid" x1="46" y1="51" x2="464" y2="51"/>
+              <line class="ch-grid" x1="46" y1="100.75" x2="464" y2="100.75"/>
+              <line class="ch-grid" x1="46" y1="150.5" x2="464" y2="150.5"/>
+              <line class="ch-grid" x1="46" y1="200.25" x2="464" y2="200.25"/>
+              <line class="ch-grid" x1="46" y1="250" x2="464" y2="250"/>
+              <text class="ch-tick" x="42" y="54.2" text-anchor="end">100</text>
+              <text class="ch-tick" x="42" y="103.95" text-anchor="end">75</text>
+              <text class="ch-tick" x="42" y="153.7" text-anchor="end">50</text>
+              <text class="ch-tick" x="42" y="203.45" text-anchor="end">25</text>
+              <text class="ch-tick" x="42" y="253.2" text-anchor="end">0</text>
+              <text class="ch-tick" x="46" y="282" text-anchor="middle">0</text>
+              <text class="ch-tick" x="150.5" y="282" text-anchor="middle">1.5k</text>
+              <text class="ch-tick" x="255" y="282" text-anchor="middle">3k</text>
+              <text class="ch-tick" x="359.5" y="282" text-anchor="middle">4.5k</text>
+              <text class="ch-tick" x="464" y="282" text-anchor="middle">6k</text>
+              <text class="ch-axlbl" x="255" y="296" text-anchor="middle">training iterations</text>
+            </svg></div>
+            <div class="cap">Fig. 4 — Mean episode reward climbs to 95.7 and holds over 6,000 training iterations.</div>
+          </div>
+          <div class="fig">
+            <div class="hero-chart"><p class="hero-chart-title">Curriculum · stair riser height reached</p>
+            <svg viewBox="0 0 480 300" role="img" aria-label="Curriculum riser height settles at 138 mm">
+              <rect class="ch-frame" x="46" y="30" width="418" height="236"/>
+              <line class="ch-target" x1="46" y1="113.3" x2="464" y2="113.3"/>
+              <text class="ch-note" x="50" y="108">0.15 m · real target</text>
+              <path class="ch-area" fill="#c07d3c" d="M46,182.7 L87.8,235.4 L115.7,224.3 L185.3,193.8 L255,168.8 L324.7,149.4 L394.3,135.5 L464,130 L464,266 L46,266 Z"/>
+              <polyline class="ch-line" stroke="#c07d3c" points="46,182.7 87.8,235.4 115.7,224.3 185.3,193.8 255,168.8 324.7,149.4 394.3,135.5 464,130"/>
+              <circle class="ch-dot" fill="#c07d3c" cx="464" cy="130" r="4"/>
+              <text class="ch-val" x="458" y="124" text-anchor="end">138 mm</text>
+              <line class="ch-grid" x1="46" y1="47" x2="464" y2="47"/>
+              <line class="ch-grid" x1="46" y1="95.75" x2="464" y2="95.75"/>
+              <line class="ch-grid" x1="46" y1="144.5" x2="464" y2="144.5"/>
+              <line class="ch-grid" x1="46" y1="193.25" x2="464" y2="193.25"/>
+              <line class="ch-grid" x1="46" y1="242" x2="464" y2="242"/>
+              <text class="ch-tick" x="42" y="50.2" text-anchor="end">200</text>
+              <text class="ch-tick" x="42" y="98.95" text-anchor="end">165</text>
+              <text class="ch-tick" x="42" y="147.7" text-anchor="end">130</text>
+              <text class="ch-tick" x="42" y="196.45" text-anchor="end">95</text>
+              <text class="ch-tick" x="42" y="245.2" text-anchor="end">60</text>
+              <text class="ch-tick" x="46" y="282" text-anchor="middle">0</text>
+              <text class="ch-tick" x="150.5" y="282" text-anchor="middle">1.5k</text>
+              <text class="ch-tick" x="255" y="282" text-anchor="middle">3k</text>
+              <text class="ch-tick" x="359.5" y="282" text-anchor="middle">4.5k</text>
+              <text class="ch-tick" x="464" y="282" text-anchor="middle">6k</text>
+              <text class="ch-axlbl" x="255" y="296" text-anchor="middle">training iterations · riser mm</text>
+            </svg></div>
+            <div class="cap">Fig. 5 — Difficulty curriculum settles at a 138 mm riser — right at the real 0.15 m target stair.</div>
+          </div>
+        </div>
+        <p>Along the way the policy learned to stop falling — topples collapsed from 92% of episodes to about 3% — and to survive longer, carrying the payload the full climb instead of tipping in the first couple of seconds.</p>
       </div>
 
     </div><!-- /col left -->
@@ -458,7 +519,7 @@
       <div class="sec">
         <div class="fig">
           <img src="assets/diagram_perception.png" alt="Perception pipeline" style="max-height:470px;">
-          <div class="cap">Fig. 5 — Perception pipeline: sensor inputs feed parallel vision heads; outputs merge in the Climb FSM.</div>
+          <div class="cap">Fig. 6 — Perception pipeline: sensor inputs feed parallel vision heads; outputs merge in the Climb FSM.</div>
         </div>
         <p>The two vision heads run independently and never block each other — losing the person for a moment doesn't stall stair detection, and vice versa.</p>
       </div>
@@ -499,7 +560,7 @@
               <text class="ch-tick" x="358" y="262" text-anchor="middle">0.175</text><text class="ch-tick" x="358" y="274" text-anchor="middle">7″</text>
               <text class="ch-tick" x="428.67" y="262" text-anchor="middle">0.198</text><text class="ch-tick" x="428.67" y="274" text-anchor="middle">7.75″</text>
             </svg></div>
-            <div class="cap">Fig. 6 — Peak body tilt at each riser height, well below the 60° fall line.</div>
+            <div class="cap">Fig. 7 — Peak body tilt at each riser height, well below the 60° fall line.</div>
           </div>
           <div class="fig">
             <div class="hero-chart"><p class="hero-chart-title">Higher stairs, slower climb · time to the top (s)</p>
@@ -519,7 +580,7 @@
               <text class="ch-tick" x="290" y="266" text-anchor="middle">0.14</text><text class="ch-tick" x="290" y="278" text-anchor="middle">5.5″</text>
               <text class="ch-tick" x="390" y="266" text-anchor="middle">0.15</text><text class="ch-tick" x="390" y="278" text-anchor="middle">6″ ADA</text>
             </svg></div>
-            <div class="cap">Fig. 7 — Climb time rises from 35.5 s to 51.2 s as the riser grows.</div>
+            <div class="cap">Fig. 8 — Climb time rises from 35.5 s to 51.2 s as the riser grows.</div>
           </div>
         </div>
 
@@ -546,6 +607,17 @@
         <p>About 1.5 million Americans rely on long-term home oxygen therapy, and stairs are consistently the task they fear most — a fall risk that can confine a patient to one floor of their own home. This project builds a sensor-guided quadruped that walks beside the patient, carries the oxygen equipment, and climbs the stairs on its own — so the patient never has to face a staircase alone.</p>
       </div>
 
+      <div class="sec">
+        <div class="sh">From Proven Sim to the Living Room</div>
+        <div class="row2" style="align-items:center;">
+          <div class="fig">
+            <img src="assets/scene_follow.png" alt="Three.js scene view: robot following the patient toward a staircase" style="max-height:110px;object-fit:cover;">
+            <div class="cap">Fig. 9 — Same container, sim or real.</div>
+          </div>
+          <p style="margin:0;font-size:15px;line-height:1.4;">The deployment bet: a policy proven in sim is expected to hold on hardware because it runs the <b>identical Docker container</b> — only the sensor source changes. <b>Patients</b>, <b>caregivers</b>, and <b>clinics</b> all stand to benefit once it's out of the lab.</p>
+        </div>
+      </div>
+
     </div><!-- /col center -->
 
 
@@ -556,7 +628,7 @@
         <div class="sh">Control State Machines</div>
         <div class="fig">
           <img src="assets/diagram_state_machines.png" alt="State machine diagrams" style="max-height:500px;">
-          <div class="cap">Fig. 8 — HandoffController (Isaac Sim, 50 Hz) and ClimbFSM (Docker) run concurrently via UDP.</div>
+          <div class="cap">Fig. 10 — HandoffController (Isaac Sim, 50 Hz) and ClimbFSM (Docker) run concurrently via UDP.</div>
         </div>
         <p>Two state machines, one on each side of the UDP link, so a dropped packet or a stalled ClimbFSM can't leave the walker holding a stale climb command.</p>
       </div>
@@ -566,11 +638,11 @@
         <div class="row2">
           <div class="fig">
             <img src="assets/scene_follow.png" alt="Three.js scene view: robot following the patient toward a staircase" style="max-height:290px;">
-            <div class="cap">Fig. 9 — Scene view (Isaac Sim rollout): robot trails the patient toward the stairs, carrying the O₂ tank.</div>
+            <div class="cap">Fig. 11 — Scene view (Isaac Sim rollout): robot trails the patient toward the stairs, carrying the O₂ tank.</div>
           </div>
           <div class="fig">
             <img src="assets/opencv_hud.png" alt="OpenCV / YOLO-World perception HUD locked onto the patient" style="max-height:290px;">
-            <div class="cap">Fig. 10 — Live perception HUD: YOLO-World person lock, D435 depth, and LiDAR range panels.</div>
+            <div class="cap">Fig. 12 — Live perception HUD: YOLO-World person lock, D435 depth, and LiDAR range panels.</div>
           </div>
         </div>
       </div>
@@ -595,7 +667,7 @@
               <text class="dg-c" x="164" y="164" text-anchor="middle">closed proprioceptive loop · climbs by feel</text>
             </svg>
           </div>
-          <div class="cap">Fig. 11 — Blind-RL policy: no camera, no depth on the stairs — terrain is felt via proprioception + foot contact alone.</div>
+          <div class="cap">Fig. 13 — Blind-RL policy: no camera, no depth on the stairs — terrain is felt via proprioception + foot contact alone.</div>
         </div>
         <p>Going blind on the stairs was a deliberate choice, not a limitation of the cameras — vision is unreliable right at the robot's feet, where its own body occludes the D435's view of the next riser.</p>
       </div>
