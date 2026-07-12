@@ -373,6 +373,42 @@ def test_stair_entry_gate_never_clamps_an_ongoing_climb():
         f"an ONGOING climb must not be held/aborted by the S1 entry gate: {r}"
 
 
+def test_climb_elapsed_sec_resets_at_engage_and_dt_accumulates():
+    """climb_elapsed_sec (task, 2026-07-12, run 32 review) is exposed in update()'s returned
+    dict as the SIM-TIME (dt-accumulated, incident 8.6) source the blind-mount step-down
+    (go2_locomotion.locomotion_arbiter.blind_mount_climb_vx_floor) reads. It reuses the
+    EXISTING vertical-progress-watchdog accumulator (self._climb_elapsed): reset to 0.0 the
+    frame ENGAGE fires, then += dt every frame while state=="climb" -- including the ENGAGE
+    frame itself, since the "walk" block's state flip is not an elif away from the "climb"
+    block below it in the same update() call."""
+    cfg = HandoffConfig(climb_attempt=True, climb_engage_standoff_m=0.65, climb_min_room_m=0.40,
+                        stair_commit_enabled=True, require_controller_stairs=False,
+                        stair_commit_arm_after_secs=0.0, climb_backend="blind_rl",
+                        climb_max_sec=999.0, climb_stall_timeout_sec=999.0,
+                        stair_entry_min_lead_m=0.0)
+    ho = HandoffController(cfg, _FakePgtt(), logger=None)
+    Dstairs = synth_staircase_depth()
+    base = dict(go2=object(), depth_hw=Dstairs, stairs_action_active=True, body_speed=0.2,
+                roll=0.0, pitch=0.0, roll_rate=0.0, pitch_rate=0.0, height_above_step=0.30,
+                person_detected=False, yaw=0.0, y_lateral=0.0, body_fwd=0.2, cmd_vx=0.22,
+                riser_dist_ahead=0.50, stairs_ahead_gt=True, base_x=0.0)
+    # Not climbing yet: the key is still present (default 0.0), never a KeyError.
+    r0 = ho.update(now=0.9, dt=0.05, base_z=0.30, patient_lead_m=5.0,
+                   **{**base, "riser_dist_ahead": 2.0})  # too far ahead to engage this frame
+    assert r0["state"] == "walk"
+    assert abs(r0["climb_elapsed_sec"] - 0.0) < 1e-9, r0["climb_elapsed_sec"]
+    # ENGAGE this frame -- climb_elapsed_sec is dt-accumulated from 0.0 on the SAME frame
+    # (the climb block runs immediately after the walk block sets state="climb").
+    r1 = ho.update(now=1.0, dt=0.05, base_z=0.30, patient_lead_m=5.0, **base)
+    assert r1["state"] == "climb" and r1["climb"]
+    assert abs(r1["climb_elapsed_sec"] - 0.05) < 1e-9, r1["climb_elapsed_sec"]
+    # Next frame: accumulates by another dt.
+    r2 = ho.update(now=1.05, dt=0.05, base_z=0.32, patient_lead_m=5.0, **base)
+    assert abs(r2["climb_elapsed_sec"] - 0.10) < 1e-9, r2["climb_elapsed_sec"]
+    r3 = ho.update(now=1.10, dt=0.07, base_z=0.34, patient_lead_m=5.0, **base)
+    assert abs(r3["climb_elapsed_sec"] - 0.17) < 1e-9, r3["climb_elapsed_sec"]
+
+
 def test_stair_entry_gate_interval_is_non_empty_against_isaac_env_hard_wait():
     """Static source-scan (same approach as test_taper_has_exactly_one_call_site_in_main_
     gated_on_post_crest_latch -- isaac_env.py imports isaacsim and cannot be imported on a

@@ -618,6 +618,16 @@ def parse_args():
                         help='Patient gap (m) at/above which the mid-climb forward-speed cap is '
                              'unscaled (full speed). Below this the cap linearly tapers toward '
                              '--climb-gap-brake-stop. See incident 8.15.')
+    # KNOB HISTORY (2026-07-12): briefly 0.95 to buy stair-base approach-squeeze margin
+    # (run 29 bottomed at 0.628 < the 0.65 grader floor) -- REVERTED to 0.85 after run 32
+    # (run_sim_20260712_160115_082) exposed a MUTUAL-WAIT DEADLOCK it creates mid-climb:
+    # the patient hard-waits a couple of steps above the dog, which reads her at a steady
+    # ~0.95-1.0 m; with full-brake at 0.95 the dog parks INSIDE her waiting distance and
+    # neither ever moves again (60 sim-s frozen at x=4.86, climb_stalled). At 0.85 the same
+    # reading leaves ~30% speed -- slow closure, she advances, the cycle progresses. The
+    # 0.95 setting also did NOT fix the squeeze (0.66/0.621 -- the dip is post-commanded-
+    # zero D1 physical creep, not late braking). Squeeze fix = the caller-requested
+    # immediate park (park_request), not this band.
     parser.add_argument('--climb-gap-brake-stop', type=float, default=0.85,
                         help='Patient gap (m) at/below which the mid-climb forward-speed cap is '
                              'zero. Kept above --stair-climb-collision-floor (0.55 m default) so '
@@ -638,6 +648,42 @@ def parse_args():
                              'across consecutive frames, vx pulsed to 0.383 m/s while the true gap '
                              'was under 0.85 m, tailgating to 0.199-0.282 m). Rolling MIN fails '
                              'toward braking on noise, never toward releasing early. See incident 8.15.')
+    # --- Mid-climb ghost-person gap-brake suppression (2026-07-12, runs 32/33 review) --------
+    # Person-as-risers ghost (CLAUDE.md 8.3 class), MID-CLIMB variant: the depth-only "person"
+    # reading pins to the STAIRCASE's own leading edge instead of the real (moving) patient, and
+    # the mid-climb gap brake above (climb_gap_brake_scale) reads that frozen near reading as
+    # "the patient is right here" for as long as the freeze persists. Run 33
+    # (run_sim_20260712_164349_306) measured depth_distance_m/standoff_gap_ctrl_m pinned at
+    # 0.958-0.970 m (+/-1 cm) for 60+ s while the GT patient walked x=7.3->8.0 m away, tapering
+    # commanded vx to ~0.09-0.13 m/s and permanently wedging the climb (climb_stalled at
+    # x~4.85, riser 9-10) -- an identical consecutive failure to run 32
+    # (run_sim_20260712_160115_082). See climb_gap_ghost_declared's docstring
+    # (core/control/stair_policy.py) for the full mechanism and the run-33 trace-replay
+    # validation numbers.
+    parser.add_argument('--climb-ghost-riser-agree-window-m', type=float, default=0.5,
+                        help='Max |person_gap - depth_stair_leading_edge_m| (m) for the mid-climb '
+                             'gap-brake ghost check to treat the "person" reading as possibly the '
+                             'staircase itself rather than the patient. Mirrors '
+                             'HandoffConfig.ghost_engage_gap_window_m (go2_locomotion/'
+                             'handoff_config.py), the identical constant already used by the '
+                             'ENGAGE path\'s own ghost veto (stair_engage_person_ghost_veto). 0 '
+                             'disables the ghost check entirely (never declares).')
+    parser.add_argument('--climb-ghost-freeze-eps-m', type=float, default=0.05,
+                        help='Max (max-min) spread (m) of the raw person gap over the trailing '
+                             '--climb-ghost-freeze-sec window for it to count as FROZEN -- a real '
+                             'followed patient\'s range changes as she walks or the dog advances; '
+                             'a depth-only staircase-as-person ghost does not. 0 disables the '
+                             'ghost check entirely (never declares).')
+    parser.add_argument('--climb-ghost-freeze-sec', type=float, default=4.0,
+                        help='Trailing SIM-AWARE (incident 8.6) window (s) of continuous '
+                             'person-gap history required before the frozen-range ghost check '
+                             'may fire. 0 disables the ghost check entirely (never declares).')
+    parser.add_argument('--climb-ghost-cooloff-sec', type=float, default=6.0,
+                        help='SIM-AWARE (incident 8.6) seconds a ghost declaration stays latched '
+                             'once fired before re-evaluating from scratch -- NOT a permanent '
+                             'latch (a later genuinely-close real approach must still be '
+                             'brakeable). See climb_gap_ghost_declared\'s docstring '
+                             '(core/control/stair_policy.py).')
     # --- Lost-person forward-speed taper, stair-mode / post-crest ONLY (incident 8.15 / F3) --
     # Scoped away from flat plain-follow and ByteTrack's frame-count coast window (incident
     # 8.6 counter-example: that window is correctly a detection-opportunity count, not a
@@ -722,7 +768,16 @@ def parse_args():
     # one-way terminal state machine: once the post-crest lost-person hold engages, the dog
     # rotates in place (bounded) to face the patient's last-known bearing, then settles fully
     # still forever -- translation stays zero the entire time.
-    parser.add_argument('--landing-face-patient-align-sec', type=float, default=6.0,
+    # Retune 2026-07-12 (run 30 = run_sim_20260712_152421_806): the PGTT walker's PHYSICAL
+    # turn-in-place response to the carve-out wz is ~3-5% of the commanded rate (a 16 deg
+    # closure took ~13 sim-s at commanded 0.35 rad/s; whole-run yaw span stayed 17 deg), so
+    # the original 0.35/6s/120deg set -- sized as if commanded ~= achieved -- left the
+    # LOST-case sequence unable to finish a run-27-sized (~33 deg) turn inside its own
+    # bounds. Rate 0.35->0.70 (wire clamp is +/-2.0; the sim-side drift watchdog still
+    # bounds physical risk at --yaw-align-drift-max-m), time budget 6->20 s, and the
+    # command-integral caps scaled to match below. These caps bound COMMANDED integral, not
+    # achieved rotation -- at ~3-5% effectiveness the physical turn stays tens of degrees.
+    parser.add_argument('--landing-face-patient-align-sec', type=float, default=20.0,
                         help='Sim-time-aware (incident 8.6) seconds of alignment time-budget '
                              'before the post-crest face-the-patient rotation gives up and '
                              'settles, even if not yet within the deadband. See '
@@ -730,15 +785,39 @@ def parse_args():
     parser.add_argument('--landing-face-patient-deadband-deg', type=float, default=8.0,
                         help='Bearing error (deg, abs) at/under which the post-crest '
                              'face-the-patient rotation is considered aligned and stops.')
-    parser.add_argument('--landing-face-patient-yaw-rate', type=float, default=0.35,
+    parser.add_argument('--landing-face-patient-yaw-rate', type=float, default=0.70,
                         help='Yaw-rate cap (rad/s) for the post-crest face-the-patient '
                              'rotation. 0 EXPLICITLY disables the rotation (the terminal '
                              'translation-hold still engages) -- see landing_face_patient_align '
                              'for why this is tested on the raw value, never a derived one.')
-    parser.add_argument('--landing-face-patient-max-rotation-deg', type=float, default=120.0,
+    parser.add_argument('--landing-face-patient-max-rotation-deg', type=float, default=300.0,
                         help='Total bounded rotation (deg) the post-crest face-the-patient '
                              'sequence may command before giving up and settling, independent '
-                             'of the time budget above.')
+                             'of the time budget above. Also reused as the PER-ENGAGEMENT bound '
+                             'for the visible-person centering mode below (landing_visible_'
+                             'person_centering) -- see its docstring for why the two modes '
+                             'share this bound but NOT the cumulative one.')
+    # --- Post-crest "visible person" landing centering (task, 2026-07-12, run 28 review) --
+    # See landing_visible_person_centering's docstring (core/control/stair_policy.py) for the
+    # run-28 gap this covers: the patient stayed VISIBLE (person_detected=True) the whole
+    # endgame, so the lost-case machine above never engaged and the dog held ~24 deg off the
+    # patient. Re-armable (not a one-way latch) -- see the docstring for the hysteresis design.
+    parser.add_argument('--landing-face-patient-track-engage-deg', type=float, default=15.0,
+                        help='Bearing error (deg, abs) ABOVE which the post-crest VISIBLE-'
+                             'person centering mode starts rotating during a hold (Schmitt-'
+                             'trigger HIGH threshold; the existing --landing-face-patient-'
+                             'deadband-deg is the LOW threshold it rotates back down to). 0 '
+                             'EXPLICITLY disables the visible-tracking mode ONLY -- the lost-'
+                             'case face-the-patient sequence above is unaffected -- see '
+                             'landing_visible_person_centering for why this is tested on the '
+                             'raw value.')
+    parser.add_argument('--landing-face-patient-total-rotation-deg', type=float, default=600.0,
+                        help='Cumulative rotation (deg) the visible-person centering mode may '
+                             'command across the WHOLE run (summed over every re-arm), as a '
+                             'hard backstop against pathological oscillation. Separate from '
+                             '--landing-face-patient-max-rotation-deg, which bounds a single '
+                             'engagement; see landing_visible_person_centering for why the two '
+                             'budgets are kept independent.')
     parser.add_argument('--raw-video-path', type=str, default='',
                         help='MP4 path for raw camera frame recording (no overlays); empty disables')
     parser.add_argument('--no-raw-video', action='store_true',

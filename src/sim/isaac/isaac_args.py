@@ -215,6 +215,14 @@ def build_parser() -> argparse.ArgumentParser:
     # creep from a running policy; see go2_locomotion/hold_park.py's module docstring for the
     # full root cause and the fix (stop stepping PGTT and hold the stand pose kinematically,
     # under the same stiff gains that already hold the robot rock-solid at boot).
+    # KNOB HISTORY (2026-07-12): briefly 1.0 to arrest the stair-base approach-squeeze creep
+    # (run 31 = run_sim_20260712_154446_275: commanded zero at gap 0.91 m, then ~0.29 m of
+    # D1 creep bottomed the GT gap at 0.621 < the 0.65 grader floor) -- REVERTED to 2.5
+    # after run 32 (run_sim_20260712_160115_082) climb_stalled at x=4.86: a 1.0 s park also
+    # catches the SHORT pacing holds in the walk-state interludes around the climb (which
+    # 2.5 s deliberately outlasts) and breaks the mount/re-engage rhythm. The approach-
+    # squeeze creep needs a context-scoped fast park (pre-stairs approach only), not a
+    # shorter global latency.
     parser.add_argument("--pgtt-hold-park-sec", type=float, default=2.5,
                         help="Sim-seconds of CONTINUOUS caller hold (the F1 "
                              "_motion_hold_requested capture) before the PGTT walker stops "
@@ -232,6 +240,28 @@ def build_parser() -> argparse.ArgumentParser:
                              "never engage mid-incline (CLAUDE.md 8.9/8.15 -- this park is a "
                              "flat-ground-only walk-path mechanism; see the isaac_env.py wiring "
                              "comment for why the call site can never be mid-climb).")
+    # --- Yaw-align drift watchdog (run-28 review follow-up, 2026-07-12) ----------------
+    # core/control/stair_policy.py's landing_face_patient_align / landing_visible_person_
+    # centering used to veto their post-crest face-the-patient rotation outright whenever the
+    # controller's landing-edge guard was latched -- but that latch is CHRONIC at the dog's
+    # actual terminal post-crest pose (run 28, run_sim_20260712_141230_357: 446/446 consecutive
+    # frames), so the veto made the feature unable to ever fire in exactly the endgame it
+    # exists for. The edge veto is removed; this sim-side watchdog is the replacement safety
+    # net -- measured PHYSICAL planar drift during an in-place yaw-align turn, permanently
+    # revoking the carve-out (see go2_locomotion/yaw_align_drift.py) if it ever exceeds a small
+    # bound, since a genuine in-place turn should not translate the body at all.
+    parser.add_argument("--yaw-align-drift-max-m", type=float, default=0.15,
+                        help="Planar displacement (m) a post-crest face-the-patient rotation "
+                             "may accrue from its anchor position (captured at the start of "
+                             "each rotation burst) before the watchdog trips and PERMANENTLY "
+                             "stops honoring the yaw_align_rate carve-out for the rest of the "
+                             "run (fails toward wz=0.0/hold=True, CLAUDE.md 8.8). Re-anchored "
+                             "fresh on each separate rotation burst -- not cumulative across "
+                             "ordinary walking between engagements. <= 0 is a deliberate "
+                             "HARD-OFF -- the carve-out can never be honored -- tested on this "
+                             "raw value, mirroring --landing-face-patient-yaw-rate's own "
+                             "zero-as-disabled-sentinel discipline. See "
+                             "go2_locomotion/yaw_align_drift.py.")
     # --- Dual-policy stair handoff (PGTT walker <-> closed-loop stair climber) -------
     # When the PGTT walker STALLS in front of >=2 stairs the legs are handed to the
     # deterministic ClosedLoopStairClimber for one riser, then handed back. All knobs
@@ -336,6 +366,32 @@ def build_parser() -> argparse.ArgumentParser:
                              "also used 0.4. Scaled by the caller's gap_brake_scale (wave-3), so it "
                              "still tapers to 0 near the visible patient; the old 'EVEN when the person "
                              "is visible' unconditional wording predates that brake wiring.")
+    parser.add_argument("--handoff-climb-burst-sec", type=float, default=2.0,
+                        help="SIM-TIME (s, incident 8.6) window right after ENGAGE during which the "
+                             "blind_rl climb branch keeps the FULL --handoff-climb-vx floor even with "
+                             "the patient out of view -- the momentum burst that mounts the first riser "
+                             "(run-21 evidence: a dead-stand press at the old unbraked 0.22 floor stalls; "
+                             "mounts succeed at 0.40-0.50). After this window, WHILE the person is still "
+                             "not detected, the floor steps down to --handoff-climb-blind-vx (see that "
+                             "flag). Task (2026-07-12, run 32 review): pairs with "
+                             "HandoffConfig.stair_entry_min_lead_m 2.2 -> 1.9 to shorten the stair-base "
+                             "wait without growing the blind-mount closure on the patient -- see "
+                             "go2_locomotion.locomotion_arbiter.blind_mount_climb_vx_floor's docstring "
+                             "for the full composition-with-the-gap-brake contract. <= 0 disables the "
+                             "BURST WINDOW specifically (CLAUDE.md 8.1 zero-as-disabled-sentinel): the "
+                             "floor steps straight down to --handoff-climb-blind-vx the instant ENGAGE "
+                             "fires with nobody in view, still protected by the gap brake.")
+    parser.add_argument("--handoff-climb-blind-vx", type=float, default=0.30,
+                        help="Forward command (m/s) floor during the blind_rl climb ONCE the "
+                             "--handoff-climb-burst-sec momentum burst has elapsed AND the person is "
+                             "still not detected (the post-ENGAGE blind-mount window). Matches the "
+                             "proven controller-side --stair-loss-forward-floor blind-carry speed (0.30) "
+                             "so the sim-side floor stops outrunning it. The moment the person is "
+                             "re-acquired, or the climb ends, the floor reverts to the full "
+                             "--handoff-climb-vx (still subject to the mid-climb gap brake, which then "
+                             "owns closure). Composed with the gap brake via min() -- can only ever "
+                             "LOWER the already-braked floor, never raise it. See "
+                             "go2_locomotion.locomotion_arbiter.blind_mount_climb_vx_floor.")
     # ---- Top-of-stairs egress -> PGTT handback (replaces the arbitrary climb timeout) ----
     # When the dog crests the staircase (no more risers ahead, debounced), STAY in the climb
     # policy and walk a short distance forward to pull the rear feet off the last riser, THEN
@@ -375,6 +431,19 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Stop the egress forward push once within this (m) of an explicit forward GOAL "
                              "(the stair-waypoint target) so the dog settles AT the waypoint and does not "
                              "walk off the top landing. No effect in the follow case (goal = patient).")
+    parser.add_argument("--crest-egress-min-vx", type=float, default=0.25,
+                        help="Straddle-safe forward-velocity FLOOR (m/s) during the top-of-stairs egress "
+                             "push, applied AFTER composing --handoff-top-egress-vx with the caller's "
+                             "mid-climb patient-gap brake (task, 2026-07-12, CLAUDE.md 8.16). The egress "
+                             "floor previously bypassed that brake entirely (its own person_gap_m>=--"
+                             "handoff-top-egress-standoff gate composed with nothing else); this closes "
+                             "that gap while guaranteeing the dog is never held at commanded-zero while "
+                             "still straddling the crest (front feet on the landing, rear feet still on "
+                             "the risers is itself a topple risk, CLAUDE.md 8.9/8.15) -- see "
+                             "go2_locomotion.locomotion_arbiter.crest_egress_vx_floor's docstring for the "
+                             "full contract. Default (0.25) sits slightly ABOVE --handoff-top-egress-vx's "
+                             "own default (0.22) by design: this floor is the safety backstop, not a "
+                             "repeat of the FSM's own person-gated push.")
     parser.add_argument("--landing-hold-standoff-m", type=float, default=1.0,
                         help="Follow standoff (m) for the flat-landing creep-hold gate (isaac_env's "
                              "top-landing hold block). Mirrors the CONTROLLER's --target-distance "

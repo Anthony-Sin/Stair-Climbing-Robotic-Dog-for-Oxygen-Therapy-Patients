@@ -68,7 +68,11 @@ if ( demo ) {
 		tile.addEventListener( 'click', () => {
 
 			const pot = document.getElementById( 's-potential' );
-			if ( pot ) pot.scrollIntoView( { behavior: 'smooth', block: 'start' } );
+			if ( pot ) {
+				setTimeout(() => {
+					pot.scrollIntoView( { behavior: 'smooth', block: 'start' } );
+				}, 5000);
+			}
 			const v = window.__viewer;
 			if ( v && typeof v.setPhase === 'function' ) v.setPhase( tile.dataset.phase === 'follow' ? 'follow' : 'climb' );
 

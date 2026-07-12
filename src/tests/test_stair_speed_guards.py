@@ -59,6 +59,7 @@ sys.path.insert(0, REPO)
 from core.control.stair_policy import (  # noqa: E402
     climb_gap_brake_scale,
     effective_climb_gap_brake_scale,
+    base_approach_park_request,
     mid_climb_floor_capped_command,
     lost_person_speed_taper_scale,
     detect_landing_edge_dropoff,
@@ -1815,6 +1816,63 @@ def test_main_dispatch_branches_with_independent_vx_all_exclude_landing_final_ho
 
 
 # --------------------------------------------------------------------------------------
+# Run-28 review (2026-07-12): landing_visible_person_centering wiring. The function itself
+# (core/control/stair_policy.py) is unit-tested off-robot in test_landing_visible_person_
+# centering.py; these three tests verify the main.py CALL SITE actually threads the right
+# explicit arguments (incident 8.5) and reaches the sim UDP boundary correctly (incident E1
+# payload-field pattern) -- source-scan style, mirroring the three landing-face-patient tests
+# just above.
+# --------------------------------------------------------------------------------------
+
+def test_main_visible_center_trigger_excludes_landing_final_hold_engaged():
+    """Lost-case priority (task hard constraint): the visible-person centering trigger must
+    exclude _landing_final_hold_engaged so the lost-case terminal machine, once it has ever
+    engaged, permanently suppresses the visible mode -- and must thread stop_decision (the
+    active-hold condition) and _fully_on_landing_now (post_crest_fully_on_landing) explicitly
+    rather than re-reading them from debug_info (incident 8.5)."""
+    with open(_MAIN_PY, encoding="utf-8") as f:
+        src = f.read()
+    m = re.search(r"_visible_center_trigger = \(\n(.*?)\n\s*\)\n", src, re.DOTALL)
+    assert m is not None, "could not locate the _visible_center_trigger construction in main.py"
+    block = m.group(1)
+    assert "not _landing_final_hold_engaged" in block, block
+    assert "stop_decision" in block, block
+    assert "_fully_on_landing_now" in block, block
+    assert "_align_person_detected" in block, block
+
+
+def test_main_visible_center_yaw_align_rate_includes_visible_active():
+    """The controller.move() yaw_align_rate carve-out (the F1 hold-clamp bypass in
+    isaac_env._step_go2_locomotion) must let the visible-centering mode's yaw through too --
+    not just the lost-case _landing_final_hold_engaged -- or run 28's endgame stays broken even
+    with the new mode computed (hold=True would still zero wz on the sim side)."""
+    with open(_MAIN_PY, encoding="utf-8") as f:
+        src = f.read()
+    m = re.search(r"yaw_align_rate=\((.*?)\),\n\s*\)", src, re.DOTALL)
+    assert m is not None, "could not locate the controller.move() yaw_align_rate= argument"
+    block = m.group(1)
+    assert "_landing_final_hold_engaged" in block, block
+    assert "_visible_center_result.active" in block, block
+
+
+def test_main_visible_center_active_block_only_sets_rotation_cmd():
+    """Task hard constraint 1: the ONLY new effect while landing_visible_person_centering is
+    actively rotating is rotation_cmd -- no trans_x_cmd write, no stop_decision/hold_request/
+    motion_allowed fold, inside the `if _visible_center_result.active:` block."""
+    with open(_MAIN_PY, encoding="utf-8") as f:
+        src = f.read()
+    m = re.search(r"if _visible_center_result\.active:\s*\n(.*?)\n\s*\n", src, re.DOTALL)
+    assert m is not None, "could not locate the `if _visible_center_result.active:` block"
+    block = m.group(1)
+    assert "rotation_cmd = float(_visible_center_result.yaw_rate_cmd)" in block, block
+    for forbidden in ("trans_x_cmd =", "stop_decision =", "hold_request =", "motion_allowed ="):
+        assert forbidden not in block, (
+            f"visible-centering active block must not touch {forbidden!r} (hard constraint 1): "
+            f"{block}"
+        )
+
+
+# --------------------------------------------------------------------------------------
 # D2 (run-12 review, 2026-07-12): stair_climbing_latch_release_eligible -- the "ghost
 # release". A depth-only person-as-risers ghost (incident 8.3 class) can keep
 # stair_climbing_latch alive after the crest is genuinely reached but before the sim-GT
@@ -2112,6 +2170,139 @@ def test_run17_class_timeline_with_a_close_frozen_gap_respects_immediate_guard()
         assert drives_at(sim_t) is True, f"sim_t={sim_t}: past the guard, under the ceiling"
     for sim_t in (10.0 + 8.5, 10.0 + 20.0):
         assert drives_at(sim_t) is False, f"sim_t={sim_t}: past the staleness ceiling"
+
+
+# --------------------------------------------------------------------------------------
+# Task (2026-07-12, runs 31/32 review): base_approach_park_request -- the stair-base
+# approach-squeeze patient-gap dip fix (CLAUDE.md incident 8.15 continuation). Pure-function
+# tests for the caller-side trigger (memoryless: every input is an explicit keyword
+# argument, 8.5), followed by source-scan tests verifying core/main.py's call site actually
+# wires it with the right explicit arguments and forwards the result to controller.move()
+# as the `park_request` UDP payload field (mirrors the effective_gap_brake_scale /
+# landing_visible_person_centering call-site test sections above).
+# --------------------------------------------------------------------------------------
+
+def _park_kwargs(**overrides):
+    """All-conditions-satisfied baseline for base_approach_park_request -- flip exactly one
+    kwarg per test to prove that single condition suppresses the request."""
+    kw = dict(
+        person_detected=True,
+        gap_m=0.62,
+        effective_gap_brake_scale=0.0,
+        hold_request=True,
+        stop_decision=True,
+        stair_climbing_latch=False,
+        stairs_action_active=False,
+    )
+    kw.update(overrides)
+    return kw
+
+
+def test_park_request_asserts_under_exactly_all_conditions():
+    assert base_approach_park_request(**_park_kwargs()) is True
+
+
+def test_park_request_suppressed_when_person_not_detected():
+    assert base_approach_park_request(**_park_kwargs(person_detected=False)) is False
+
+
+def test_park_request_suppressed_on_none_gap_even_if_brake_reads_zero():
+    """A detected-but-unmeasured gap already fails climb_gap_brake_scale/
+    effective_climb_gap_brake_scale TOWARD the brake (0.0, incident 8.8) -- this function
+    must still require ITS OWN live gap_m reading, not just trust a brake scale of 0.0 could
+    only ever mean a genuine close reading."""
+    assert base_approach_park_request(**_park_kwargs(gap_m=None)) is False
+
+
+def test_park_request_suppressed_on_gap_at_no_reading_sentinel():
+    assert base_approach_park_request(**_park_kwargs(gap_m=1e-4)) is False
+
+
+def test_park_request_suppressed_on_invalid_gap_type():
+    assert base_approach_park_request(**_park_kwargs(gap_m="not_a_number")) is False
+
+
+def test_park_request_suppressed_when_brake_scale_is_none_disabled_sentinel():
+    """ZERO-VS-DISABLED DISTINCTION: None means no brake producer fired this frame (a
+    feature-off sentinel, e.g. nowhere near the stairs at all) -- must NOT be read as a
+    trigger, only a genuine numeric 0.0 counts."""
+    assert base_approach_park_request(**_park_kwargs(effective_gap_brake_scale=None)) is False
+
+
+def test_park_request_suppressed_when_brake_scale_nonzero():
+    for scale in (0.01, 0.3, 0.85, 1.0):
+        assert base_approach_park_request(**_park_kwargs(effective_gap_brake_scale=scale)) is False, (
+            f"scale={scale} must not trigger a park request"
+        )
+
+
+def test_park_request_suppressed_when_hold_request_false():
+    assert base_approach_park_request(**_park_kwargs(hold_request=False)) is False
+
+
+def test_park_request_suppressed_when_stop_decision_false():
+    assert base_approach_park_request(**_park_kwargs(stop_decision=False)) is False
+
+
+def test_park_request_suppressed_by_stair_climbing_latch():
+    """Run 32's mid-climb mutual-wait deadlock signature (run_sim_20260712_160115_082):
+    stair_climbing_latch True with the person read at a steady ~0.95-1.0 m must NEVER assert
+    a park request, even if every other condition (including a brake scale that happens to
+    read 0.0) is satisfied."""
+    assert base_approach_park_request(**_park_kwargs(stair_climbing_latch=True)) is False
+
+
+def test_park_request_suppressed_by_stairs_action_active():
+    assert base_approach_park_request(**_park_kwargs(stairs_action_active=True)) is False
+
+
+def test_park_request_is_memoryless_no_latching_across_calls():
+    """No caller-side latch: calling with all-conditions-satisfied, then with one condition
+    dropped, then restored, must track the CURRENT frame's inputs exactly -- release the
+    instant any condition drops, re-assert the instant they are all true again (task: 'no
+    latching on the caller side')."""
+    assert base_approach_park_request(**_park_kwargs()) is True
+    assert base_approach_park_request(**_park_kwargs(person_detected=False)) is False
+    assert base_approach_park_request(**_park_kwargs()) is True
+    assert base_approach_park_request(**_park_kwargs(stair_climbing_latch=True)) is False
+    assert base_approach_park_request(**_park_kwargs()) is True
+
+
+def test_main_calls_base_approach_park_request_with_explicit_kwargs_after_stop_decision():
+    """Incident 8.5: the call must thread every input as an explicit keyword argument (never
+    re-read same-frame debug_info downstream of its producer), and must appear textually
+    AFTER stop_decision/hold_request are finalized."""
+    with open(_MAIN_PY, encoding="utf-8") as f:
+        src = f.read()
+    call_idx = src.find("base_approach_park_request(")
+    assert call_idx != -1, "could not locate the base_approach_park_request() call in main.py"
+    stop_decision_idx = src.find("stop_decision = (")
+    assert stop_decision_idx != -1 and stop_decision_idx < call_idx, (
+        "base_approach_park_request() must be called AFTER stop_decision is finalized"
+    )
+    window = src[call_idx: call_idx + 700]
+    for kw in (
+        "person_detected=", "gap_m=", "effective_gap_brake_scale=", "hold_request=",
+        "stop_decision=", "stair_climbing_latch=", "stairs_action_active=",
+    ):
+        assert kw in window, f"missing expected keyword argument {kw!r} at the call site"
+
+
+def test_main_forwards_park_request_to_controller_move():
+    """The computed park_request must actually reach controller.move() as the `park_request`
+    UDP payload field (mirrors the gap_brake_scale/yaw_align_rate precedent)."""
+    with open(_MAIN_PY, encoding="utf-8") as f:
+        src = f.read()
+    call_idx = src.find("base_approach_park_request(")
+    assert call_idx != -1
+    move_idx = src.find("controller.move(", call_idx)
+    assert move_idx != -1, "no controller.move() call found after base_approach_park_request()"
+    move_end_idx = src.find("last_command_trans_x = float(command_trans_x)", move_idx)
+    assert move_end_idx != -1
+    window = src[call_idx: move_end_idx]
+    assert "park_request=bool(_park_request)" in window, (
+        "controller.move() must forward park_request=bool(_park_request)"
+    )
 
 
 if __name__ == "__main__":

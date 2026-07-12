@@ -45,6 +45,7 @@ from core.control.stair_policy import (
     depth_stair_latch_allowed,
     climb_gap_brake_scale,
     effective_climb_gap_brake_scale,
+    base_approach_park_request,
     mid_climb_floor_capped_command,
     lost_person_speed_taper_scale,
     detect_landing_edge_dropoff,
@@ -66,6 +67,10 @@ from core.control.stair_policy import (
     too_close_riser_gap_suppressed,
     LandingFaceAlignState,
     landing_face_patient_align,
+    LandingVisibleCenterState,
+    landing_visible_person_centering,
+    ClimbGhostGapState,
+    climb_gap_ghost_declared,
 )
 from core.control.follow_shaping import (
     _apply_follow_standoff_policy,
@@ -516,6 +521,22 @@ def main():
     # value (compute-then-pass, incident 8.5) -- stair state persists across frames, so the one-frame
     # lag is harmless, and this fixes the never-firing on-stairs go/hold bypass.
     _prev_stairs_action_active = False
+    # Runs 32/33 ghost hardening (2026-07-12): previous frame's climb_gap_ghost_declared result.
+    # This frame's own value is a single producer computed AFTER stair_climbing_latch (~L1371),
+    # but two consumers run BEFORE that point this same frame (the ClimbGapFilterState feed at
+    # ~L1201 and _apply_stair_command_policy's own brake at ~L1209) -- same same-frame ordering
+    # hazard as _prev_stairs_action_active above, same compute-then-pass fix (incident 8.5): a
+    # one-frame-stale ghost flag is harmless given the mechanism's own >=4 s freeze-span
+    # requirement and >=6 s cooloff. See climb_gap_ghost_declared's docstring
+    # (core/control/stair_policy.py).
+    _prev_stair_climb_ghost_declared = False
+    # THIS frame's value (defensive pre-init, mirrors the None-safety of every other
+    # cross-hundred-line local in this loop): computed once in the "Stair-climb persistence
+    # latch" section below and read by the committed-climb / STAIR_LOSS_FLOOR call sites and
+    # the follow-dispatch funnel much further down the SAME per-frame block. Pre-initialized so
+    # a hypothetical future control-flow change that skips the producer line does not crash a
+    # distant reader with a bare NameError -- it would instead (safely) see last frame's value.
+    _stair_climb_ghost_declared = False
     # Previous frame's COMMITTED (latched) stairs_action_active -- i.e. AFTER the climb-persistence
     # latch (~L1022) and the close-range dropout (~L1475) force it True through a mid-climb detection
     # dropout. This (NOT the genuine per-frame value above, which drops when the person occludes the
@@ -554,6 +575,12 @@ def main():
     # separate main.py-level latch variable needed -- state.engaged never resets).
     landing_face_align_state = LandingFaceAlignState()
     _landing_face_align_done_logged = False
+    # Task (2026-07-12, run 28 review): caller-owned state for the RE-ARMABLE "visible person"
+    # landing-centering mode (see landing_visible_person_centering's docstring). Separate
+    # instance from landing_face_align_state above -- the two modes are mutually exclusive by
+    # trigger construction (this one is vetoed the instant the lost-case machine ever engages)
+    # but keep independent state/rotation budgets (never share one dataclass instance).
+    landing_visible_center_state = LandingVisibleCenterState()
     # D2 / run-12 review (2026-07-12): caller-owned hysteresis state for the
     # stair_climbing_latch ghost-release (see stair_climbing_latch_release_eligible
     # docstring) + its own one-shot boot log guard (incident 8.8).
@@ -573,6 +600,12 @@ def main():
     # patient-gap brake (see filtered_climb_gap_m docstring). One instance for the run,
     # mirroring standoff_state/carrot_state above -- never a module global.
     climb_gap_filter_state = ClimbGapFilterState()
+    # Runs 32/33 ghost hardening (2026-07-12): caller-owned state for the mid-climb
+    # person-as-risers ghost check (see climb_gap_ghost_declared docstring). One instance for
+    # the run, mirroring climb_gap_filter_state above -- never a module global. Its own
+    # one-shot boot log guard (incident 8.8), mirroring _stair_latch_ghost_release_logged.
+    climb_ghost_state = ClimbGhostGapState()
+    _climb_ghost_declared_logged = False
     # Incident 8.6 fix (runs 15+16 stair-base deadlock): caller-owned sim-time-aware anchor
     # for the blind-climb detection-age ceiling (see detection_age_sec's docstring). One
     # instance for the run, independent of last_matched_visual_ts below (that variable also
@@ -1189,17 +1222,35 @@ def main():
             # committed-climb call sites further down in this file read it too) -- never
             # re-filtered per-call-site. See filtered_climb_gap_m's docstring
             # (core/control/stair_policy.py) for the noisy-gap failure this hardens.
+            #
+            # Runs 32/33 ghost hardening (2026-07-12): person_detected is gated by the PREVIOUS
+            # frame's climb_gap_ghost_declared (_prev_stair_climb_ghost_declared) -- this call
+            # runs before stair_climbing_latch (and therefore this frame's own declaration) is
+            # known (incident 8.5 ordering, same as _apply_stair_command_policy just below). A
+            # declared ghost must not keep feeding its frozen reading into the rolling-MINIMUM
+            # window either, or a stale contaminated minimum could outlive the declaration
+            # itself. See climb_gap_ghost_declared's docstring (core/control/stair_policy.py).
+            # Incident 8.6 fix (2026-07-12, run 34 review): pass sim_t explicitly so the rolling
+            # window ages against SIM time, not wall time -- see filtered_climb_gap_m's docstring
+            # (core/control/stair_policy.py) for the run-34 numbers (loop_ms_median ~240ms vs a
+            # 35ms physics dt let a genuine multi-frame noise burst age the true close reading
+            # out of a "1.2 second" WALL-CLOCK window in only ~0.17 sim-seconds).
             debug_info["stair_climb_gap_filtered_m"] = filtered_climb_gap_m(
                 debug_info.get("standoff_gap_ctrl_m"),
-                person_detected=bool(debug_info.get("person_detected", False)),
+                person_detected=(
+                    bool(debug_info.get("person_detected", False))
+                    and not _prev_stair_climb_ghost_declared
+                ),
                 state=climb_gap_filter_state,
                 now=current_time,
                 window_sec=float(args.climb_gap_brake_filter_window_sec),
+                sim_t=frame_meta.get("sim_t") if isinstance(frame_meta, dict) else None,
             )
 
             trans_x_cmd, rotation_cmd = _apply_stair_command_policy(
                 args, trans_x_cmd, rotation_cmd, debug_info,
                 frame_meta=frame_meta if isinstance(frame_meta, dict) else None,
+                ghost_declared_prev=_prev_stair_climb_ghost_declared,
             )
 
             # --- P1-3: crest creep carve-out (finish the last treads) ------------------------
@@ -1360,6 +1411,52 @@ def main():
                 _climbing_persist_until = current_time + 6.0
             _climbing_latched = current_time < _climbing_persist_until
             debug_info["stair_climbing_latch"] = bool(_climbing_latched)
+            # Runs 32/33 ghost hardening (2026-07-12, run_sim_20260712_164349_306 review):
+            # person-as-risers ghost, MID-CLIMB variant (CLAUDE.md 8.3 class) -- see
+            # climb_gap_ghost_declared's docstring (core/control/stair_policy.py) for the full
+            # run-33 trace (depth_distance_m pinned 0.958-0.970 m for 60+ s, |gap-leading_edge|
+            # ~0.33 m, while the GT patient walked x=7.3->8.0 away -- the mid-climb gap brake
+            # read that frozen reading as "the patient is right here" and collapsed cmd_vx to
+            # ~0.09-0.13 m/s, permanently wedging the climb). SINGLE PRODUCER (incident 8.5):
+            # computed HERE, once, right after stair_climbing_latch (the predicate's own
+            # condition 1) is known this frame -- consumed below by the persistence-latch and
+            # committed-climb brake call sites, STAIR_LOSS_FLOOR, and the follow-dispatch
+            # funnel's belt-and-braces fold. _apply_stair_command_policy's OWN brake and the
+            # ClimbGapFilterState feed (both already called above, at ~L1209/~L1218, BEFORE
+            # stair_climbing_latch is known this frame) instead read the PREVIOUS frame's
+            # result (_prev_stair_climb_ghost_declared) -- see that variable's own docstring.
+            debug_info["stair_climb_ghost_declared"] = climb_gap_ghost_declared(
+                debug_info.get("standoff_gap_ctrl_m"),
+                person_detected=bool(debug_info.get("person_detected", False)),
+                stair_climbing_latch=bool(_climbing_latched),
+                depth_stair_leading_edge_m=debug_info.get("depth_stair_leading_edge_m"),
+                state=climb_ghost_state,
+                now_wall=current_time,
+                sim_t=frame_meta.get("sim_t") if isinstance(frame_meta, dict) else None,
+                riser_agree_window_m=float(args.climb_ghost_riser_agree_window_m),
+                freeze_eps_m=float(args.climb_ghost_freeze_eps_m),
+                freeze_sec=float(args.climb_ghost_freeze_sec),
+                cooloff_sec=float(args.climb_ghost_cooloff_sec),
+            )
+            _stair_climb_ghost_declared = bool(debug_info["stair_climb_ghost_declared"])
+            if _stair_climb_ghost_declared and not _climb_ghost_declared_logged:
+                _climb_ghost_declared_logged = True
+                logger.info(
+                    "Mid-climb patient-gap brake ghost-suppressed: person-as-risers ghost "
+                    "(gap=%.3fm, leading_edge=%.3fm) frozen for >=%.1fs while stair_climbing_"
+                    "latch is True -- treating the brake's person reading as NOT DETECTED "
+                    "(incident 8.3 class, runs 32/33 review; CLAUDE.md 8.15/8.16)",
+                    float(debug_info.get("standoff_gap_ctrl_m") or -1.0),
+                    float(debug_info.get("depth_stair_leading_edge_m") or -1.0),
+                    float(args.climb_ghost_freeze_sec),
+                    extra=build_ecs_extra(
+                        component="vision.main",
+                        action="stair_climb_ghost_declared",
+                    ),
+                )
+            # Carry to NEXT frame's early (pre-stair_climbing_latch) consumers -- see
+            # _prev_stair_climb_ghost_declared's own docstring (compute-then-pass, incident 8.5).
+            _prev_stair_climb_ghost_declared = _stair_climb_ghost_declared
             debug_info["front_near_m"] = None if _front_near_m is None else round(float(_front_near_m), 3)
             if _climbing_latched and not _genuine_stairs:
                 # Detection dropped mid-climb: force climb mode (gait + obstacle-gate bypass below)
@@ -1392,7 +1489,18 @@ def main():
                 # used to release this brake to full scale for that frame and pulse the forward
                 # command to the unbraked cap while the true gap stayed close
                 # (run_sim_20260711_195618_941: vx pulsed to 0.383 m/s, min patient gap 0.199 m).
-                _latch_person_detected = bool(debug_info.get("person_detected", False))
+                #
+                # Runs 32/33 ghost hardening (2026-07-12): gated by THIS frame's
+                # stair_climb_ghost_declared (_stair_climb_ghost_declared, already computed
+                # above at ~L1400, same-frame safe -- this whole branch only runs when
+                # _climbing_latched is True, which is condition 1 of the ghost predicate).
+                # _latch_person_detected has no OTHER reader at this call site (only the two
+                # brake calls immediately below use it), so gating it directly is safe -- see
+                # climb_gap_ghost_declared's docstring for the run-33 trace this guards against.
+                _latch_person_detected = (
+                    bool(debug_info.get("person_detected", False))
+                    and not _stair_climb_ghost_declared
+                )
                 _climb_gap_brake_scale = climb_gap_brake_scale(
                     debug_info.get("stair_climb_gap_filtered_m"),
                     brake_start_m=float(args.climb_gap_brake_start),
@@ -1426,9 +1534,11 @@ def main():
                 # Incident 8.6 fix (runs 15+16 deadlock): sim-time-aware age, not raw wall-clock
                 # -- the sim runs several times slower than wall clock (measured ~5.7x in run
                 # 16), so a wall-only age tripped this 8.0 s-default ceiling after only ~1 SIM-
-                # second of loss, long before the patient could walk out to the 2.4 m
-                # stair-entry head-start lead (HandoffConfig.stair_entry_min_lead_m,
-                # sim/isaac/isaac_env.py). See detection_age_sec's docstring (core/control/
+                # second of loss, long before the patient could walk out to the stair-entry
+                # head-start lead (HandoffConfig.stair_entry_min_lead_m -- 2.4 m at the time
+                # this comment was written, since re-tuned; see that field's docstring in
+                # go2_locomotion/handoff_config.py for the current value + full history). See
+                # detection_age_sec's docstring (core/control/
                 # stair_policy.py) for the run-16 numbers and the present/absent/vanishing
                 # clock semantics.
                 _det_age = detection_age_sec(
@@ -1942,6 +2052,14 @@ def main():
             # frozen last_seen_bearing_deg -- both producers are upstream this same frame
             # (incident 8.5: follow_controller.py ~L923 / ~L647, written inside
             # person_follower.update() called at ~L784, well before this point).
+            # CORRECTED (run-28 review, run_sim_20260712_141230_357): this call no longer
+            # threads _edge_block -- the function used to withhold rotation whenever the
+            # landing edge guard was latched, but the edge latch is CHRONIC at the dog's
+            # terminal post-crest pose (446/446 consecutive frames), so that veto made the
+            # function unable to ever rotate in exactly the endgame it exists for. See
+            # landing_face_patient_align's EDGE-GUARD PRECEDENCE docstring paragraph for the
+            # full rationale; the replacement safety net is the sim-side
+            # go2_locomotion.yaw_align_drift.YawAlignDriftWatchdog (isaac_env.py).
             _align_person_detected = bool(debug_info.get("person_detected", False))
             _align_bearing_deg = (
                 debug_info.get("rotation_error_deg") if _align_person_detected
@@ -1950,7 +2068,6 @@ def main():
             _align_result = landing_face_patient_align(
                 trigger=bool(_landing_lost_hold),
                 bearing_deg=_align_bearing_deg,
-                edge_block=bool(_edge_block),
                 state=landing_face_align_state,
                 now_wall=current_time,
                 sim_t=frame_meta.get("sim_t") if isinstance(frame_meta, dict) else None,
@@ -2125,6 +2242,75 @@ def main():
             debug_info["live_motion_allowed"] = bool(live_motion_allowed)
             debug_info["recovery_motion_allowed"] = bool(recovery_motion_allowed)
             debug_info["stair_floor_motion_allowed"] = bool(stair_floor_motion_allowed)
+
+            # Task (2026-07-12, run 28 review): VISIBLE-person landing centering. Run 27's gap
+            # (fixed above by landing_face_patient_align) was a LOST-person endgame; run 28
+            # (run_sim_20260712_141230_357) hit the mirror-image case -- the patient stayed
+            # person_detected=True the whole endgame (rotation_error_deg steady at approx -24
+            # deg, sim_t 73.6-86.9, 415 consecutive trace frames), so
+            # landing_lost_person_hold_active fired on ZERO frames and landing_face_patient_align
+            # never engaged. The dog sat in an ordinary standoff hold (stop_decision/
+            # hold_request True, fsm FLAT_FOLLOW, post_crest_fully_on_landing True for 471
+            # frames) staring past the patient -- hold=True zeroes wz on the sim side
+            # (PgttLocomotionPolicy.step: "if hold: cmd = (0,0,0)") regardless of what ordinary
+            # follow steering would have computed. landing_visible_person_centering (core/
+            # control/stair_policy.py) is a second, RE-ARMABLE mode (not a one-way latch like the
+            # lost-case machine above) that closes the loop on the LIVE bearing during any hold
+            # once fully clear of the stairs. Trigger = AND of: fully on the top landing
+            # (_fully_on_landing_now, the same flag already threaded into the lost-case call
+            # above), an ACTIVE hold (stop_decision -- an explicit argument per incident 8.5, not
+            # a same-frame debug_info re-read), a visible person with a live bearing
+            # (_align_person_detected + a fresh rotation_error_deg read -- rotation_error_deg has
+            # no literal writer in main.py, so this is a safe upstream-produced read, not a
+            # downstream one), and NOT already inside the lost-case's one-way terminal sequence
+            # (_landing_final_hold_engaged -- the lost case always takes priority once it has
+            # ever engaged). CORRECTED (same run-28 review): edge_block is no longer threaded
+            # into this call at all -- the function used to withhold rotation whenever the
+            # landing edge guard was latched, but that latch is CHRONIC at the dog's terminal
+            # post-crest pose (446/446 consecutive frames, the exact evidence this comment
+            # block cites above), so the veto made this mode unable to ever center in exactly
+            # this endgame. See landing_visible_person_centering's EDGE-GUARD PRECEDENCE
+            # docstring paragraph; the replacement safety net is the sim-side
+            # go2_locomotion.yaw_align_drift.YawAlignDriftWatchdog (isaac_env.py), shared with
+            # landing_face_patient_align.
+            _visible_center_bearing_deg = (
+                debug_info.get("rotation_error_deg") if _align_person_detected else None
+            )
+            _visible_center_trigger = (
+                bool(_fully_on_landing_now)
+                and bool(stop_decision)
+                and bool(_align_person_detected)
+                and _visible_center_bearing_deg is not None
+                and not _landing_final_hold_engaged
+            )
+            _visible_center_result = landing_visible_person_centering(
+                trigger=bool(_visible_center_trigger),
+                bearing_deg=_visible_center_bearing_deg,
+                state=landing_visible_center_state,
+                now_wall=current_time,
+                sim_t=frame_meta.get("sim_t") if isinstance(frame_meta, dict) else None,
+                engage_deg=float(args.landing_face_patient_track_engage_deg),
+                deadband_deg=float(args.landing_face_patient_deadband_deg),
+                max_rotation_deg=float(args.landing_face_patient_max_rotation_deg),
+                total_rotation_budget_deg=float(args.landing_face_patient_total_rotation_deg),
+                yaw_rate=float(args.landing_face_patient_yaw_rate),
+            )
+            debug_info["landing_visible_center_active"] = bool(_visible_center_result.active)
+            debug_info["landing_visible_center_yaw_cmd"] = round(
+                float(_visible_center_result.yaw_rate_cmd), 4)
+            debug_info["landing_visible_center_budget_exhausted"] = bool(
+                _visible_center_result.budget_exhausted)
+            if _visible_center_result.active:
+                # ONLY new effect while actively rotating (task hard constraint 1): rotation_cmd
+                # carries the centering rate. Translation is intentionally untouched here -- no
+                # trans_x_cmd write, no stop_decision/hold_request fold, no motion_allowed
+                # force -- it stays governed entirely by whichever hold reason is already
+                # asserting it above/below. If the patient starts walking again the hold
+                # releases on its own and normal follow resumes, independent of this block. The
+                # yaw_align_rate UDP carve-out that lets this ride through the sim-side F1 hold
+                # clamp is populated later at the controller.move() call site (mirrors
+                # _landing_final_hold_engaged's own path, incident E1 payload-field pattern).
+                rotation_cmd = float(_visible_center_result.yaw_rate_cmd)
 
             # On-stairs latch (computed for BOTH the motion block and the stop path). A person-lock
             # loss mid-climb sets motion_allowed False AND drops stairs_detected, so the code would
@@ -2467,12 +2653,22 @@ def main():
                 # scale for one frame (run_sim_20260711_195618_941). _climb_block above is
                 # UNCHANGED (still reads the raw/last-known _gap_ctrl): it is a defense-in-depth
                 # binary backstop, not this brake's smoothing concern.
+                #
+                # Runs 32/33 ghost hardening (2026-07-12): _committed_person_detected itself
+                # MUST stay RAW -- it is also sent as the UDP person_detected payload below
+                # (controller.move, ~L2680), which isaac_env's blind_mount_climb_vx_floor reads
+                # and must not be gated (task constraint: only the mid-climb BRAKE is scoped).
+                # A SEPARATE local carries the gated value into just the two brake calls below.
+                # See climb_gap_ghost_declared's docstring (core/control/stair_policy.py).
                 _committed_person_detected = bool(debug_info.get("person_detected", False))
+                _committed_gate_person_detected = (
+                    _committed_person_detected and not _stair_climb_ghost_declared
+                )
                 _committed_gap_brake_scale = climb_gap_brake_scale(
                     debug_info.get("stair_climb_gap_filtered_m"),
                     brake_start_m=float(args.climb_gap_brake_start),
                     brake_stop_m=float(args.climb_gap_brake_stop),
-                    person_detected=_committed_person_detected,
+                    person_detected=_committed_gate_person_detected,
                 )
                 _climb_vx = 0.0 if _climb_block else (
                     float(args.stair_climb_speed)
@@ -2494,7 +2690,7 @@ def main():
                 debug_info["stair_climb_committed_gap_brake_scale"] = round(
                     effective_climb_gap_brake_scale(
                         _committed_gap_brake_scale,
-                        person_detected=_committed_person_detected,
+                        person_detected=_committed_gate_person_detected,
                         hard_block=bool(_climb_block),
                     ), 3)
                 command_trans_x = trans_x_limiter.update(_climb_vx)
@@ -2797,17 +2993,68 @@ def main():
                 # left alone -- that is a distinct "no brake info" state, not a folded 0.0.
                 if not _dispatch_person_detected and _dispatch_gap_brake_scale is not None:
                     _dispatch_gap_brake_scale = 1.0
+                # Runs 32/33 ghost hardening (2026-07-12): SAME belt-and-braces shape as the
+                # person_detected fold immediately above, for the mid-climb person-as-risers
+                # ghost (CLAUDE.md 8.3 class) instead of an ordinary person loss -- whichever
+                # upstream brake producer fired, a DECLARED ghost this frame
+                # (debug_info["stair_climb_ghost_declared"], the single producer computed above
+                # at ~L1400, safe to read here per incident 8.5) must still forward 1.0 (no
+                # brake) through this funnel, so a not-yet-hardened upstream fold cannot
+                # reintroduce the run-33 stall through this call site either. Deliberately reads
+                # the debug_info key (not a bare local) since _apply_stair_command_policy's own
+                # producer runs inside stair_policy.py, outside this function's locals; this
+                # funnel itself never runs before ~L1400 (it is well downstream in the same
+                # dispatch branch), so the read is same-frame safe. See climb_gap_ghost_declared's
+                # docstring (core/control/stair_policy.py) for the run-33 trace this guards.
+                if (bool(debug_info.get("stair_climb_ghost_declared", False))
+                        and _dispatch_gap_brake_scale is not None):
+                    _dispatch_gap_brake_scale = 1.0
+                # Task (2026-07-12, runs 31/32 review): caller-requested IMMEDIATE sustained-
+                # hold PARK for the stair-BASE approach-squeeze patient-gap dip (CLAUDE.md
+                # 8.15 continuation) -- see base_approach_park_request's own docstring (core/
+                # control/stair_policy.py) for the full mechanism/trace. Computed HERE, after
+                # stop_decision/hold_request are finalized (stop_decision at ~L2131, this
+                # branch's own hold_request finalized by ~L2691, both strictly upstream of this
+                # line -- incident 8.5: explicit arguments, never re-read from debug_info) and
+                # after _dispatch_gap_brake_scale/_dispatch_person_detected just above. Fires
+                # ONLY in THIS dispatch branch (the ordinary follow/base-approach
+                # controller.move() call) -- structurally unreachable from the committed-climb
+                # branch (~L2493) or the STAIR_LOSS_FLOOR branch (below), which are mutually
+                # exclusive elif arms, so a park request can never assert mid-climb by
+                # construction; the explicit stair_climbing_latch/stairs_action_active checks
+                # inside the helper are additional defense-in-depth, not the only guard (run
+                # 32's mid-climb mutual-wait deadlock, run_sim_20260712_160115_082, must never
+                # recur -- see the helper's docstring).
+                _park_request = base_approach_park_request(
+                    person_detected=_dispatch_person_detected,
+                    gap_m=debug_info.get("depth_distance_m"),
+                    effective_gap_brake_scale=(
+                        None if _dispatch_gap_brake_scale is None
+                        else float(_dispatch_gap_brake_scale)
+                    ),
+                    hold_request=bool(hold_request),
+                    stop_decision=bool(stop_decision),
+                    stair_climbing_latch=bool(debug_info.get("stair_climbing_latch", False)),
+                    stairs_action_active=_stairs_active,
+                )
+                debug_info["stair_base_approach_park_request"] = bool(_park_request)
                 # Task (2026-07-12, run 27 review): cross the UDP boundary as an explicit
                 # payload field, mirroring gap_brake_scale's precedent (incident E1) -- the
                 # F1 hold clamp in isaac_env._step_go2_locomotion zeroes wz along with vx
                 # whenever hold=True (PgttLocomotionPolicy.step: "if hold: cmd=(0,0,0)"), so
                 # the bounded face-the-patient yaw rate needs its own carve-out flag rather
-                # than riding the ordinary wz/command_rotation channel. ONLY non-None while
-                # the terminal hold is engaged (_landing_final_hold_engaged) -- this is the
-                # ONLY controller.move() call site reachable during that state (every other
-                # branch is vetoed on it above), but gating explicitly here still prevents an
-                # ordinary follow-steering command_rotation from ever being misread as an
-                # alignment carve-out by isaac_env if that ever changed.
+                # than riding the ordinary wz/command_rotation channel. Non-None while EITHER
+                # the lost-case terminal hold is engaged (_landing_final_hold_engaged) -- this
+                # is the ONLY controller.move() call site reachable during that state, every
+                # other branch is vetoed on it above -- OR the run-28-review visible-person
+                # centering mode is actively rotating this frame
+                # (_visible_center_result.active); that mode does NOT veto any other dispatch
+                # branch (task hard constraint 1 -- it is a pure yaw-assist during whichever
+                # hold is already asserting translation), so it is reached alongside the
+                # ordinary follow dispatch rather than owning a branch of its own. Gating
+                # explicitly on these two flags (rather than "command_rotation != 0") still
+                # prevents an ordinary follow-steering command_rotation from ever being
+                # misread as an alignment carve-out by isaac_env.
                 controller.move(
                     command_trans_x, 0.0, command_rotation,
                     stairs_detected=bool(debug_info.get("stairs_policy_prepare_active", False)),
@@ -2823,8 +3070,11 @@ def main():
                         else float(_dispatch_gap_brake_scale)
                     ),
                     yaw_align_rate=(
-                        float(command_rotation) if _landing_final_hold_engaged else None
+                        float(command_rotation)
+                        if (_landing_final_hold_engaged or bool(_visible_center_result.active))
+                        else None
                     ),
+                    park_request=bool(_park_request),
                 )
                 last_command_trans_x = float(command_trans_x)
                 last_command_rotation = float(command_rotation)
@@ -2976,7 +3226,19 @@ def main():
                 # the comment above, person_detected is normally False in this branch anyway, so
                 # climb_gap_brake_scale returns 1.0 regardless of the gap passed in; filtering
                 # _loss_gap would not change this branch's behavior.
-                _loss_person_detected = bool(debug_info.get("person_detected", False))
+                #
+                # Runs 32/33 ghost hardening (2026-07-12): gated by THIS frame's
+                # stair_climb_ghost_declared (already computed above at ~L1400, same-frame
+                # safe -- this branch requires stair_climbing_latch True per
+                # stair_loss_floor_eligible's latch-only arm, condition 1 of the ghost
+                # predicate). _loss_person_detected has no OTHER reader at this call site (only
+                # the two brake calls immediately below use it; the controller.move() call
+                # further down passes a literal person_detected=False, untouched) -- see
+                # climb_gap_ghost_declared's docstring for the run-33 trace this guards against.
+                _loss_person_detected = (
+                    bool(debug_info.get("person_detected", False))
+                    and not _stair_climb_ghost_declared
+                )
                 _loss_gap_brake_scale = climb_gap_brake_scale(
                     _loss_gap,
                     brake_start_m=float(args.climb_gap_brake_start),

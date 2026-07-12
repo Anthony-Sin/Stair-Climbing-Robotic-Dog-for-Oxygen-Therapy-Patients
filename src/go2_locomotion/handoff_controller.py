@@ -732,6 +732,15 @@ class HandoffController:
             "tread_creep_active": bool(debug_tread_creep) if self.state == "walk" else False,
             "detect": det,
             "telemetry": self.telemetry(),
+            # Task (2026-07-12, run 32 review): SIM-TIME elapsed (dt-accumulated, incident 8.6)
+            # since this climb's ENGAGE -- reuses the EXISTING ``self._climb_elapsed`` watchdog
+            # accumulator (reset to 0.0 at ENGAGE, += dt every frame in the "climb" state,
+            # including this one) rather than a new caller-side timer, so there is exactly one
+            # sim-clock for "how long into this climb are we". Consumed by
+            # ``go2_locomotion.locomotion_arbiter.blind_mount_climb_vx_floor`` to gate the
+            # post-ENGAGE blind-mount speed step-down. 0.0 while state != "climb" (never read
+            # there by that caller).
+            "climb_elapsed_sec": float(self._climb_elapsed),
         }
 
     def telemetry(self) -> Dict[str, Any]:

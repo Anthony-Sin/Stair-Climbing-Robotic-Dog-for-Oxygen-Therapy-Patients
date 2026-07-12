@@ -95,6 +95,17 @@ class HoldParkDecision:
 
     ``hold_elapsed_sec``: the accumulated caller-dt of CONTINUOUS hold this stretch (0.0 once
     released) -- telemetry / log field only, not itself a decision input.
+
+    ``engaged_immediate`` (task, 2026-07-12, runs 31/32 review -- the stair-base approach-
+    squeeze fix): True only on the frame ``engaged_this_frame`` is also True AND that engage
+    would NOT yet have happened on the timer alone this frame (i.e. ``park_requested`` is what
+    actually caused it). False on every other frame, including an engage where the timer
+    happened to cross ``park_after_sec`` the SAME frame a request was also asserted -- that
+    tie is reported as an ordinary timed engage (the timer would have fired regardless of the
+    request), keeping this flag a precise "did the request actually bypass the timer"
+    diagnostic rather than "was a request merely present". The caller uses this to pick a
+    distinct log event name (``pgtt_hold_park_engaged_immediate`` vs.
+    ``pgtt_hold_park_engaged``) so a run is diagnosable (CLAUDE.md 8.8).
     """
 
     state: str
@@ -103,6 +114,7 @@ class HoldParkDecision:
     engaged_this_frame: bool
     released_this_frame: bool
     hold_elapsed_sec: float
+    engaged_immediate: bool
 
 
 class HoldParkController:
@@ -126,10 +138,24 @@ class HoldParkController:
         self._hold_elapsed = 0.0
         self._slew_elapsed = 0.0
 
-    def update(self, dt: float, *, hold_requested: bool, tilt_rad: float) -> HoldParkDecision:
+    def update(self, dt: float, *, hold_requested: bool, tilt_rad: float,
+               park_requested: bool = False) -> HoldParkDecision:
         """Advance one control step. ``dt`` is the CALLER's sim-seconds this step (incident
         8.6 -- never wall-clock here; see module docstring). ``tilt_rad`` is
         ``max(|roll|, |pitch|)`` of the current body attitude.
+
+        ``park_requested`` (task, 2026-07-12, runs 31/32 review -- the stair-base approach-
+        squeeze fix, CLAUDE.md 8.15 continuation): the caller's request to engage IMMEDIATELY
+        from the "walk" state, bypassing ``park_after_sec``, when the caller already knows
+        (from its own FSM context -- see ``core/control/stair_policy.base_approach_park_
+        request``) that this specific hold is the squeeze the timed park is too slow to catch.
+        Defaults False so every existing caller/test is unaffected. The immediate path is a
+        STRICT SUBSET of the timed path except for the timer: it is checked in the exact same
+        ``self.state == "walk"`` branch, gated by the exact same ``tilt_rad < tilt_max_rad``
+        entry gate, and produces an otherwise-identical engage (same slew, same gain swap on
+        the caller side, same ``engaged_this_frame``). It has NO effect once already
+        "slewing"/"parked" (nothing to bypass -- already engaged) and no effect on release
+        (release stays governed entirely by ``hold_requested`` going False, unchanged).
         """
         dt = max(0.0, float(dt))
         if not bool(hold_requested):
@@ -143,13 +169,15 @@ class HoldParkController:
             return HoldParkDecision(
                 state="walk", run_policy=True, slew_alpha=None,
                 engaged_this_frame=False, released_this_frame=was_parked,
-                hold_elapsed_sec=0.0,
+                hold_elapsed_sec=0.0, engaged_immediate=False,
             )
 
         self._hold_elapsed += dt
 
         if self.state == "walk":
-            if (self._hold_elapsed >= float(self.cfg.park_after_sec)
+            _timer_satisfied = self._hold_elapsed >= float(self.cfg.park_after_sec)
+            _requested = bool(park_requested)
+            if ((_timer_satisfied or _requested)
                     and abs(float(tilt_rad)) < float(self.cfg.tilt_max_rad)):
                 # Engage this frame. Start the slew clock now (this frame already counts as
                 # the first slew tick) so a caller polling every frame sees smooth progress
@@ -162,11 +190,15 @@ class HoldParkController:
                     slew_alpha=1.0 if self.state == "parked" else alpha,
                     engaged_this_frame=True, released_this_frame=False,
                     hold_elapsed_sec=self._hold_elapsed,
+                    # Only "immediate" if the timer had NOT also already been satisfied this
+                    # frame -- a coincident timer+request tie is reported as an ordinary timed
+                    # engage (see HoldParkDecision.engaged_immediate's docstring).
+                    engaged_immediate=(_requested and not _timer_satisfied),
                 )
             return HoldParkDecision(
                 state="walk", run_policy=True, slew_alpha=None,
                 engaged_this_frame=False, released_this_frame=False,
-                hold_elapsed_sec=self._hold_elapsed,
+                hold_elapsed_sec=self._hold_elapsed, engaged_immediate=False,
             )
 
         if self.state == "slewing":
@@ -178,12 +210,12 @@ class HoldParkController:
                 state=self.state, run_policy=False,
                 slew_alpha=1.0 if self.state == "parked" else alpha,
                 engaged_this_frame=False, released_this_frame=False,
-                hold_elapsed_sec=self._hold_elapsed,
+                hold_elapsed_sec=self._hold_elapsed, engaged_immediate=False,
             )
 
         # state == "parked"
         return HoldParkDecision(
             state="parked", run_policy=False, slew_alpha=1.0,
             engaged_this_frame=False, released_this_frame=False,
-            hold_elapsed_sec=self._hold_elapsed,
+            hold_elapsed_sec=self._hold_elapsed, engaged_immediate=False,
         )

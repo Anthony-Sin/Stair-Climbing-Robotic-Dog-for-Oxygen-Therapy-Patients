@@ -90,16 +90,23 @@ export const DIAGRAMS = {
 		<text class="dg-c" x="160" y="165" text-anchor="middle">only the sensor source is swapped</text>
 	</svg>`,
 	walking: `<svg viewBox="0 0 320 178" role="img" aria-label="Walking control loop diagram">
-		<rect class="dg-box" x="12" y="26" width="80" height="40" rx="6"/><text class="dg-t" x="52" y="51" text-anchor="middle">state est.</text>
-		<rect class="dg-box" x="120" y="26" width="80" height="40" rx="6"/><text class="dg-t" x="160" y="44" text-anchor="middle">policy π</text><text class="dg-c" x="160" y="58" text-anchor="middle">MLP</text>
-		<rect class="dg-box" x="228" y="26" width="80" height="40" rx="6"/><text class="dg-t" x="268" y="44" text-anchor="middle">PD joint</text><text class="dg-t" x="268" y="57" text-anchor="middle">targets</text>
-		<path class="dg-ln" d="M92 46 H116"/><path class="dg-ah" d="M110 42l6 4-6 4"/>
-		<path class="dg-ln" d="M200 46 H224"/><path class="dg-ah" d="M218 42l6 4-6 4"/>
-		<rect class="dg-box" x="120" y="112" width="80" height="38" rx="6"/><text class="dg-t" x="160" y="128" text-anchor="middle">Go2 · 12 DoF</text><text class="dg-c" x="160" y="141" text-anchor="middle">rigid-body plant</text>
-		<path class="dg-ln" d="M268 66 V131 H202"/><path class="dg-ah" d="M208 127l-6 4 6 4"/>
-		<path class="dg-ln" d="M118 131 H52 V66"/><path class="dg-ah" d="M48 72l4-6 4 6"/>
-		<text class="dg-c" x="252" y="104" text-anchor="middle">torque</text>
-		<text class="dg-c" x="68" y="104" text-anchor="middle">imu · contacts</text>
+		<rect class="dg-box" x="24" y="12" width="56" height="28" rx="5"/><text class="dg-t" x="52" y="30" text-anchor="middle">camera</text>
+		<rect class="dg-box" x="108" y="12" width="84" height="28" rx="5"/><text class="dg-t" x="150" y="30" text-anchor="middle">YOLO-World</text>
+		<rect class="dg-box" x="108" y="58" width="84" height="28" rx="5"/><text class="dg-t" x="150" y="76" text-anchor="middle">state est.</text>
+		<rect class="dg-box" x="232" y="26" width="64" height="42" rx="6"/><text class="dg-t" x="264" y="45" text-anchor="middle">policy π</text><text class="dg-c" x="264" y="59" text-anchor="middle">MLP</text>
+		<rect class="dg-box" x="232" y="94" width="64" height="28" rx="5"/><text class="dg-t" x="264" y="112" text-anchor="middle">PD control</text>
+		<rect class="dg-box" x="90" y="140" width="112" height="28" rx="6"/><text class="dg-t" x="146" y="156" text-anchor="middle">Go2 · 12 DoF</text><text class="dg-c" x="146" y="167" text-anchor="middle">rigid-body plant</text>
+		<path class="dg-ln" d="M80 26 H108"/><path class="dg-ah" d="M102 22 l6 4 -6 4"/>
+		<text class="dg-c" x="94" y="22" text-anchor="middle">RGB</text>
+		<path class="dg-ln" d="M192 26 H212 V38 H232"/><path class="dg-ah" d="M226 34 l6 4 -6 4"/>
+		<text class="dg-c" x="212" y="22" text-anchor="middle">target</text>
+		<path class="dg-ln" d="M192 72 H212 V54 H232"/><path class="dg-ah" d="M226 50 l6 4 -6 4"/>
+		<path class="dg-ln" d="M264 68 V94"/><path class="dg-ah" d="M260 88 l4 6 4 -6"/>
+		<path class="dg-ln" d="M264 122 V154 H202"/><path class="dg-ah" d="M208 150 l-6 4 6 4"/>
+		<text class="dg-c" x="240" y="148" text-anchor="middle">torque</text>
+		<path class="dg-ln" d="M90 154 H12 V26 H24"/><path class="dg-ah" d="M18 22 l6 4 -6 4"/>
+		<path class="dg-ln" d="M12 72 H108"/><path class="dg-ah" d="M102 68 l6 4 -6 4"/>
+		<text class="dg-c" x="60" y="68" text-anchor="middle">IMU · joints</text>
 	</svg>`,
 	'blind-rl': `<svg viewBox="0 0 320 178" role="img" aria-label="Blind RL closed-loop policy diagram">
 		<rect class="dg-box" x="16" y="14" width="108" height="22" rx="5"/><text class="dg-t" x="70" y="30" text-anchor="middle">proprioception ×N</text>

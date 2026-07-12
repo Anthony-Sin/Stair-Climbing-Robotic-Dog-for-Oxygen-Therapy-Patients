@@ -53,16 +53,17 @@ class SimRobotController:
              stairs_action_active: bool = False, hold: bool = False,
              person_detected: bool = False, gap_m: Optional[float] = None,
              depth_img=None, gap_brake_scale: Optional[float] = None,
-             yaw_align_rate: Optional[float] = None) -> None:
+             yaw_align_rate: Optional[float] = None,
+             park_request: bool = False) -> None:
         # depth_img is accepted for caller compatibility but NOT sent: this controller transmits the
         # velocity command over a fixed-size UDP datagram (a depth frame would not fit); the sim's
         # depth lives on the Isaac side. Ignored here so callers may pass it uniformly.
         self._send(vx, vy, wz, stairs_detected, yaw_err, person_bbox,
                    stairs_action_active, hold, person_detected, gap_m, gap_brake_scale,
-                   yaw_align_rate)
+                   yaw_align_rate, park_request)
 
     def stop(self) -> None:
-        self._send(0.0, 0.0, 0.0, False, 0.0, None, False, True, False, None, None, None)
+        self._send(0.0, 0.0, 0.0, False, 0.0, None, False, True, False, None, None, None, False)
 
     def shutdown(self) -> None:
         self.stop()
@@ -84,7 +85,8 @@ class SimRobotController:
               stairs_action_active: bool = False, hold: bool = False,
               person_detected: bool = False, gap_m: Optional[float] = None,
               gap_brake_scale: Optional[float] = None,
-              yaw_align_rate: Optional[float] = None) -> None:
+              yaw_align_rate: Optional[float] = None,
+              park_request: bool = False) -> None:
         if not self._sock:
             return
         vx_raw = float(vx)
@@ -128,6 +130,18 @@ class SimRobotController:
         # isaac_env's F1 hold clamp (core/main.py's "Task (2026-07-12, run 27 review): cross
         # the UDP boundary..." comment has the full rationale). None (not sent / older caller)
         # decodes to 0.0 (not aligning, backward compatible) on the isaac_env receiving end.
+        #
+        # park_request (task, 2026-07-12, runs 31/32 review): a THIRD explicit payload-field
+        # carve-out -- the caller's (core/main.py's base_approach_park_request, core/control/
+        # stair_policy.py) request that isaac_env's PGTT sustained-hold PARK
+        # (go2_locomotion/hold_park.HoldParkController) engage IMMEDIATELY this frame instead
+        # of waiting out its own --pgtt-hold-park-sec timer -- the stair-BASE approach-squeeze
+        # fix (the timed park alone is slower than the squeeze window; see
+        # base_approach_park_request's docstring for the full mechanism). Unlike
+        # gap_brake_scale/yaw_align_rate this is a plain bool with no "unsent vs. explicit
+        # off" distinction to encode (both mean "no request"), so it needs no None sentinel:
+        # a missing/older-sender field decodes to False (no request, backward compatible) on
+        # the isaac_env receiving end via a plain dict .get(..., False).
         seq = self._cmd_seq
         self._cmd_seq += 1
         payload = json.dumps({"seq": int(seq),
@@ -143,7 +157,8 @@ class SimRobotController:
                               ),
                               "yaw_align_rate": (
                                   float(yaw_align_rate) if yaw_align_rate is not None else 0.0
-                              )}).encode()
+                              ),
+                              "park_request": bool(park_request)}).encode()
         try:
             self._sock.sendto(payload, (self._host, self._port))
             self._total_sent += 1

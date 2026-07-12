@@ -145,7 +145,30 @@ class HandoffConfig:
     # the 0.65 grader floor during the blind-carry climb toward her crest hard-wait; +0.2 m
     # of entry lead carries through the climb. Run 19's closure-rate trail showed 2.215
     # reached with ~12 s to spare, and post-unwedge runs reach the gate far faster.
-    stair_entry_min_lead_m: float = 2.2
+    #
+    # 2.2 -> 1.9 (2026-07-12, run 32 review, run_sim_20260712_160115_082): the 2.2 m head
+    # start over-corrected -- the dog reached the stair base (x~=1.5, base 2.0) at sim_t=19.9,
+    # BEFORE the patient even started climbing (she crosses x=2.0 at t=24.1 at her slow
+    # ~0.097 m/s stair pace), then sat at the base for 8.6 sim-s (t 19.7->28.3) waiting out
+    # 4x handoff_engage_vetoed_lead events while the lead built 1.29->1.38->1.81->2.12 m
+    # against the 2.2 m requirement -- a plainly-visible "starts too late" symptom for a
+    # blind-mount risk that a shorter lead + a bounded speed-limited mount window (see
+    # ``HandoffConfig``'s sibling module ``go2_locomotion.locomotion_arbiter.
+    # blind_mount_climb_vx_floor``) now covers directly instead of via entry-lead margin
+    # alone. Closure-rate math at 1.9 m (mirrors the ENGAGE-time blind closure this gate
+    # exists to protect, run 32's own numbers): engage at lead ~1.9 -> burst window
+    # (``--handoff-climb-burst-sec``, 2.0 s) closes at ~(0.40 handoff_climb_vx - 0.22
+    # patient stair pace) = 0.18 m/s -> 0.36 m over the burst, then the post-burst blind
+    # window (~5 s to the patient's ~7 s re-acquire budget) closes at ~(0.30
+    # handoff_climb_blind_vx - 0.22) = 0.08 m/s -> 0.40 m -> total blind closure ~0.76 m,
+    # cushion ~1.9 - 0.76 = 1.14 m -- ABOVE the 2.2 m gate's own ~0.95-1.0 m cushion (the old
+    # gate closed the SAME blind window unbraked at the full 0.40 m/s floor: (0.40 - 0.22) *
+    # ~7 s ~= 1.26 m closure, cushion ~2.2 - 1.26 = 0.94 m) despite the shorter head start,
+    # because the burst/blind step-down (not just a longer wait) is what now bounds the
+    # blind-mount closure rate. Net effect: base wait shortened by ~3-4 s (the run-32
+    # symptom) while the re-acquire cushion that protects the 0.65 m grader floor actually
+    # WIDENS relative to the old ungated 0.40 m/s blind carry.
+    stair_entry_min_lead_m: float = 1.9
 
     # --- 2c: handoff / climb-one-stair ---------------------------------------
     # leading edge must be within this to switch. The near-horizontal parkour cam's

@@ -201,6 +201,100 @@ def test_reset_clears_all_state():
 # CALLS but the same SIMULATED seconds to engage; the threshold is a duration, not a count.
 # --------------------------------------------------------------------------------------
 
+# --------------------------------------------------------------------------------------
+# Task (2026-07-12, runs 31/32 review): caller-requested IMMEDIATE engage (the stair-base
+# approach-squeeze fix, CLAUDE.md 8.15 continuation). ``park_requested`` lets a caller with
+# its own FSM context (core/control/stair_policy.base_approach_park_request) bypass
+# park_after_sec, but the immediate path must be a STRICT SUBSET of the timed path except
+# for the timer -- same tilt gate, no effect once already engaged, no effect on release.
+# --------------------------------------------------------------------------------------
+
+def test_park_requested_engages_immediately_well_below_timer_threshold():
+    """A single frame with park_requested=True engages on the SPOT (no accrued hold needed
+    at all), well before park_after_sec would ever be satisfied."""
+    ctl = HoldParkController(_cfg(park_after_sec=2.5, slew_sec=0.7))
+    d = ctl.update(0.05, hold_requested=True, tilt_rad=0.0, park_requested=True)
+    assert d.state in ("slewing", "parked")
+    assert d.engaged_this_frame is True
+    assert d.engaged_immediate is True
+    assert d.run_policy is False
+
+
+def test_park_requested_false_does_not_engage_before_timer():
+    """Default (park_requested omitted / False) behaves exactly as before -- no immediate
+    engage, ordinary timer-gated behavior."""
+    ctl = HoldParkController(_cfg(park_after_sec=2.5, slew_sec=0.7))
+    d = ctl.update(0.05, hold_requested=True, tilt_rad=0.0)
+    assert d.state == "walk"
+    assert d.engaged_this_frame is False
+    assert d.engaged_immediate is False
+
+
+def test_park_requested_still_respects_tilt_gate():
+    """The immediate path is a STRICT SUBSET of the timed path except for the timer -- the
+    SAME tilt_max_rad entry gate still applies. A straddle-class tilt must never engage even
+    when explicitly requested (mirrors test_tilt_above_max_blocks_engagement_at_threshold)."""
+    ctl = HoldParkController(_cfg(park_after_sec=2.5, tilt_max_rad=0.14))
+    for _ in range(10):
+        d = ctl.update(0.1, hold_requested=True, tilt_rad=0.148, park_requested=True)
+        assert d.state == "walk", "must never park while tilted like a crest straddle"
+        assert d.engaged_this_frame is False
+        assert d.engaged_immediate is False
+
+
+def test_park_requested_has_no_effect_once_hold_requested_is_false():
+    """park_requested=True with hold_requested=False must NOT engage -- hold_requested is
+    checked first (the instant-release branch), matching the task's "AND _motion_hold_
+    requested" requirement: the immediate path can never outrun the caller's own hold
+    decision."""
+    ctl = HoldParkController(_cfg(park_after_sec=2.5))
+    d = ctl.update(0.1, hold_requested=False, tilt_rad=0.0, park_requested=True)
+    assert d.state == "walk"
+    assert d.engaged_this_frame is False
+    assert d.engaged_immediate is False
+    assert d.run_policy is True
+
+
+def test_park_requested_has_no_further_effect_once_already_parked():
+    """Once already engaged (whether via timer or request), further park_requested=True
+    frames are ordinary "already parked" frames -- no re-engage, no engaged_immediate."""
+    ctl = HoldParkController(_cfg(park_after_sec=2.5, slew_sec=0.1))
+    d0 = ctl.update(0.05, hold_requested=True, tilt_rad=0.0, park_requested=True)
+    assert d0.engaged_this_frame is True
+    d1 = ctl.update(0.2, hold_requested=True, tilt_rad=0.0, park_requested=True)
+    assert d1.state == "parked"
+    assert d1.engaged_this_frame is False
+    assert d1.engaged_immediate is False
+
+
+def test_timer_and_request_coincident_reports_as_ordinary_timed_engage():
+    """If the timer independently crosses park_after_sec the SAME frame a request is also
+    asserted, the engage is reported as an ORDINARY timed engage (engaged_immediate False) --
+    the request did not actually bypass anything that frame (see HoldParkDecision.
+    engaged_immediate's docstring for the precise "did the request cause it" semantics).
+    Uses dt=0.5 (exactly binary-representable) so the accumulator lands on exactly 1.0
+    rather than a float-summation artifact just under it."""
+    ctl = HoldParkController(_cfg(park_after_sec=1.0, slew_sec=0.7))
+    d0 = ctl.update(0.5, hold_requested=True, tilt_rad=0.0)  # 0.5s, still walking
+    assert d0.state == "walk"
+    d = ctl.update(0.5, hold_requested=True, tilt_rad=0.0, park_requested=True)  # crosses 1.0s exactly
+    assert d.engaged_this_frame is True
+    assert d.engaged_immediate is False
+
+
+def test_park_requested_release_semantics_unchanged():
+    """Release stays instant and governed solely by hold_requested going False -- a request
+    flag has no bearing on release (mirrors test_release_is_instant_from_parked)."""
+    ctl = HoldParkController(_cfg(park_after_sec=2.5, slew_sec=0.2))
+    ctl.update(0.05, hold_requested=True, tilt_rad=0.0, park_requested=True)  # immediate engage
+    ctl.update(0.5, hold_requested=True, tilt_rad=0.0)  # parked
+    d = ctl.update(0.1, hold_requested=False, tilt_rad=0.0)
+    assert d.state == "walk"
+    assert d.run_policy is True
+    assert d.released_this_frame is True
+    assert d.hold_elapsed_sec == 0.0
+
+
 def test_threshold_is_a_duration_not_a_frame_count():
     """Different dt/step-count combinations that sum to the same simulated seconds must
     engage at (approximately) the same simulated time -- proving this gates on accumulated

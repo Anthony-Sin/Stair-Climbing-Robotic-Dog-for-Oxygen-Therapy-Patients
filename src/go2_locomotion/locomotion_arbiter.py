@@ -46,10 +46,17 @@ DEFAULT_ROT_MAX: float = 0.6         # == stair_rot_max (rad/s clamp on the clim
 # Forward-velocity floor during the climb so the controller's collision-floor / standoff does
 # not park the dog mid-climb; the climb policy self-paces above this floor.
 DEFAULT_CLIMB_VX: float = 0.22       # == handoff_climb_vx
+# Blind-mount step-down defaults (task, 2026-07-12, run 32 review) -- see
+# ``blind_mount_climb_vx_floor`` below for the full contract.
+DEFAULT_CLIMB_BURST_SEC: float = 2.0     # == handoff_climb_burst_sec
+DEFAULT_CLIMB_BLIND_VX: float = 0.30     # == handoff_climb_blind_vx
 # Isaac's legacy per-call bearing-hold decay factor. Frame-count based: at the sim's ~4 FPS
 # it is a different physical decay than on the robot (incident 8.6), so callers that want a
 # rate-independent decay should pass their own factor (see ``rate_independent_decay``).
 DEFAULT_WZ_HOLD_DECAY: float = 0.92
+# Straddle-safe floor for the post-crest egress push (task, 2026-07-12, Bypass B / CLAUDE.md
+# 8.16) -- see ``crest_egress_vx_floor`` below for the full contract. == --crest-egress-min-vx.
+DEFAULT_CREST_EGRESS_MIN_VX: float = 0.25
 
 
 def clamp(v: float, lo: float, hi: float) -> float:
@@ -180,3 +187,134 @@ def arbitrate_climb_vx(
     if top_egress and egress_vx_floor is not None:
         return max(float(cmd_vx), float(egress_vx_floor))
     return max(float(cmd_vx), float(climb_vx))
+
+
+def blind_mount_climb_vx_floor(
+    *,
+    climb_elapsed_sec: float,
+    burst_sec: float = DEFAULT_CLIMB_BURST_SEC,
+    person_detected: bool,
+    base_vx: float = DEFAULT_CLIMB_VX,
+    blind_vx: float = DEFAULT_CLIMB_BLIND_VX,
+    brake_scale: float = 1.0,
+) -> float:
+    """Post-ENGAGE blind-mount climb-floor step-down (task, 2026-07-12, run 32 review).
+
+    Trades a shorter S1 stair-entry head start (``HandoffConfig.stair_entry_min_lead_m``,
+    2.2 -> 1.9) for a BOUNDED blind-mount speed step-down, so the base wait shortens without
+    growing the blind-carry closure on the patient. This is the ``climb_vx`` FLOOR argument
+    callers pass into ``arbitrate_climb_vx`` -- it never touches ``cmd_vx``, HOLD, or the
+    person-gated top-egress path (all untouched, same contract as ``arbitrate_climb_vx``
+    itself).
+
+    Cascade (mirrors ``arbitrate_climb_wz``'s cascade-with-comments style):
+      1. Person VISIBLE this frame -> full ``base_vx`` authority (the mid-climb gap brake,
+         ``brake_scale``, then owns closure -- see the compose step below). Re-acquiring the
+         person immediately restores full authority regardless of burst/elapsed state.
+      2. Person lost, still within the burst window (``climb_elapsed_sec < burst_sec``) ->
+         full ``base_vx`` too -- this is the deliberate momentum burst that MOUNTS the first
+         riser (run-21 evidence, ``HandoffConfig.stair_entry_min_lead_m``'s sibling doc: a
+         dead-stand press at the unbraked mid-climb floor 0.22 stalls; mounts succeed at
+         0.40-0.50).
+      3. Person lost, past the burst window -> step the floor DOWN to ``blind_vx`` -- the
+         proven ``--stair-loss-forward-floor`` blind-carry speed the controller side already
+         drives in the equivalent situation, so the sim-side floor stops OUTRUNNING it during
+         the blind-mount window.
+
+    COMPOSITION WITH THE MID-CLIMB GAP BRAKE (incident E1 / this task): the caller's
+    ``climb_vx_brake_scale`` * GT-gap taper (isaac_env's ``_climb_vx_brake_scale *
+    _gt_gap_scale``) already scales ``base_vx`` down as the patient gets close, clamped
+    [0, 1] by the caller before it ever reaches here. This function composes with that via
+    ``min(step_down_cap, base_vx * brake_scale)`` -- the step-down cap can only ever LOWER
+    the already-braked floor, NEVER raise it back up. During case 1/2 above the cap equals
+    ``base_vx``, so ``min(base_vx, base_vx*brake_scale) == base_vx*brake_scale`` -- i.e.
+    numerically IDENTICAL to the pre-this-task behavior (no brake-scale regression). During
+    case 3 the cap is the smaller ``blind_vx``, so a far/undetected patient (brake_scale~=1)
+    gets floored at ``blind_vx`` while a brake-scale already below ``blind_vx`` (patient
+    close) still wins the min -- the burst/blind step-down never fights the brake.
+
+    ``burst_sec`` ZERO-SENTINEL (CLAUDE.md 8.1 zero-as-disabled-sentinel convention):
+    ``burst_sec <= 0`` disables the BURST WINDOW specifically (falls out of the raw
+    ``climb_elapsed_sec < burst_sec`` comparison with no special-casing needed, since
+    ``climb_elapsed_sec`` is always >= 0) -- NOT the whole step-down feature. With
+    ``burst_sec<=0`` the dog gets NO momentum-burst mounting speed and steps straight down
+    to ``blind_vx`` the instant ENGAGE fires with the person already out of view; it is still
+    fully protected by the ``climb_vx_brake_scale`` compose above. Disabling the ENTIRE
+    step-down feature (always full ``base_vx`` authority, the pre-this-task behavior) is a
+    separate choice -- callers get that by passing a ``burst_sec`` large enough that no climb
+    ever exceeds it (e.g. >= ``HandoffConfig.climb_max_sec``), not by this zero sentinel.
+
+    ``climb_elapsed_sec`` MUST be SIM-TIME (incident 8.6), never wall-clock or a frame count:
+    pass ``HandoffController.update(...)``'s returned ``"climb_elapsed_sec"`` (the existing
+    dt-accumulated climb watchdog timer, reset to 0.0 at ENGAGE), not ``time.perf_counter()``
+    or a frame index -- the sim runs at a different rate than the robot (~4 FPS headless sim
+    vs 15-30 FPS hardware), so a frame-count burst window would mean a different physical
+    duration on each platform.
+    """
+    elapsed = max(0.0, float(climb_elapsed_sec))
+    burst = float(burst_sec)
+    in_burst = elapsed < burst   # burst<=0 -> never True (0 disables the burst, not the feature)
+    step_down_cap = float(base_vx) if (bool(person_detected) or in_burst) else float(blind_vx)
+    scale = max(0.0, min(1.0, float(brake_scale)))
+    braked_base = float(base_vx) * scale
+    return min(step_down_cap, braked_base)
+
+
+def crest_egress_vx_floor(
+    egress_vx_floor: float,
+    *,
+    brake_scale: float = 1.0,
+    min_vx: float = DEFAULT_CREST_EGRESS_MIN_VX,
+) -> float:
+    """Straddle-safe compose of the FSM's person-gated top-egress floor with the caller's
+    mid-climb patient-gap brake (task, 2026-07-12, "Bypass B" -- run 34 review,
+    run_sim_20260712_173301_387; CLAUDE.md 8.16).
+
+    ``arbitrate_climb_vx``'s ``top_egress`` branch (``max(cmd_vx, egress_vx_floor)``) sources
+    ``egress_vx_floor`` from ``HandoffController``'s OWN binary "clear of person" gate
+    (``person_gap_m >= top_egress_standoff_m``, ``go2_locomotion/handoff_controller.py``) and
+    composes it with NOTHING else -- unlike the sibling non-egress ``climb_vx`` floor (see
+    ``blind_mount_climb_vx_floor`` above), which the caller pre-scales by its own smoothed
+    mid-climb gap brake (``climb_vx_brake_scale`` * the GT-gap taper) before it ever reaches
+    ``arbitrate_climb_vx``. This is the exact same "brake never reaches this floor" shape as
+    the other dead-gate-class incidents (8.5, 8.15): a caller-owned, more-conservative brake
+    signal exists and is wired into every OTHER speed floor on this path, but not this one.
+
+    Call this to pre-compose the floor BEFORE passing it to ``arbitrate_climb_vx`` as
+    ``egress_vx_floor=`` -- ``arbitrate_climb_vx`` itself is intentionally left untouched (its
+    existing ``max(cmd_vx, egress_vx_floor)`` contract and tests are unaffected; this function
+    owns the new composition instead).
+
+    Two rules, in tension by design:
+
+      1. The brake COMPOSITION step never raises the floor: ``egress_vx_floor * clamp(brake_
+         scale, 0, 1) <= egress_vx_floor`` always (a brake can only pull the raw FSM floor down,
+         mirroring every other brake-composition site in this module).
+      2. The STRADDLE-SAFE MINIMUM then guarantees the composed result never drops below
+         ``min_vx`` (default ``DEFAULT_CREST_EGRESS_MIN_VX`` / ``--crest-egress-min-vx``), even
+         if that means raising a heavily-braked (or FSM-zeroed, "patient not clear" -> floor
+         0.0) value back up. This is intentional and can push the result ABOVE the raw
+         (unbraked) ``egress_vx_floor`` itself when ``egress_vx_floor < min_vx`` (e.g. the
+         production default ``--handoff-top-egress-vx`` 0.22 < the production default
+         ``--crest-egress-min-vx`` 0.25) -- CLAUDE.md 8.16 established that a crest STRADDLE
+         (front feet on the landing, rear feet still on the risers) must never receive a
+         zero/near-zero forward command regardless of how close the patient reads, because a
+         sustained stop mid-straddle is itself a topple risk (8.9/8.15: velocity-brake, never a
+         stance-lock, on any incline-adjacent path) -- rule 2 is that guarantee's numeric form,
+         and is the LOAD-BEARING half of this function; rule 1 only bounds the brake step, not
+         the final floor.
+
+    Callers are only meant to invoke this while genuinely mid-egress (``top_egress=True`` in
+    ``arbitrate_climb_vx`` terms, i.e. still walking off the last riser) -- that flag already
+    means "not yet fully clear of the stairs" by construction (it is set only inside
+    ``HandoffController``'s egress sub-phase and clears the instant egress completes), so no
+    separate "is this a straddle" argument is needed here. Once egress completes
+    (``top_egress`` False, handoff state -> "walk"), callers fall through to
+    ``arbitrate_climb_vx``'s OTHER (untouched) branch -- ``max(cmd_vx, climb_vx)``, already
+    brake-composed with no floor -- so the brake may take the command all the way to 0 there,
+    exactly as today.
+    """
+    floor = max(0.0, float(egress_vx_floor))
+    scale = max(0.0, min(1.0, float(brake_scale)))
+    braked = floor * scale                       # rule 1: never raises the raw FSM floor
+    return max(braked, max(0.0, float(min_vx)))   # rule 2: straddle-safe minimum, unconditional

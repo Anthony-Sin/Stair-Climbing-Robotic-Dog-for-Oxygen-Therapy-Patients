@@ -268,9 +268,11 @@ log_event(
 )
 from go2_locomotion.go2_locomotion_utils import PARKOUR_DEFAULT_POSE, PGTT_DEFAULT_POSE, GO2_FOLDED_POSE, classify_dof, get_dof_names, quat_to_matrix, safe_joint_vector
 from go2_locomotion.locomotion_arbiter import (
-    ClimbWzInputs, arbitrate_climb_wz, arbitrate_climb_vx,
+    ClimbWzInputs, arbitrate_climb_wz, arbitrate_climb_vx, blind_mount_climb_vx_floor,
+    crest_egress_vx_floor, DEFAULT_CREST_EGRESS_MIN_VX,
 )
 from go2_locomotion.hold_park import HoldParkController, HoldParkConfig
+from go2_locomotion.yaw_align_drift import YawAlignDriftWatchdog, YawAlignDriftConfig
 from world.sim_person_actor import spawn_sim_person
 from perception.sim_lidar_xt16 import Xt16Config, cast_scan, render_preview, profile_from_scan
 
@@ -365,6 +367,12 @@ _HANDOFF_CLIMBING = False  # tracks the walk<->climb transition so the drive gai
 # captured ONCE at the engage transition -- the slew-from pose for the stand-pose blend.
 _PGTT_HOLD_PARK = None
 _PGTT_HOLD_PARK_FROM_ACT = None
+# Yaw-align drift watchdog (run-28 review follow-up, 2026-07-12): the real safety net for the
+# post-crest face-the-patient yaw_align_rate carve-out, replacing the removed edge_block veto
+# in core/control/stair_policy.py (see go2_locomotion/yaw_align_drift.py's module docstring).
+# Always instantiated (never None) so the walk-only F1 clamp below needs no is-None branch;
+# --yaw-align-drift-max-m<=0 is its own internal hard-off, not a None sentinel here.
+_YAW_ALIGN_DRIFT_WATCHDOG = None
 
 # Graceful-stop flag: set by a SIGINT/SIGTERM/SIGBREAK handler or by the launcher's stop
 # sentinel so the render loop breaks cleanly and the finally block FINALIZES the video
@@ -526,6 +534,12 @@ def _cmd_receiver_thread(port: int) -> None:
             except (TypeError, ValueError):
                 yaw_align_rate = 0.0
             yaw_align_rate = max(-2.0, min(2.0, yaw_align_rate))
+            # Task (2026-07-12, runs 31/32 review): caller's IMMEDIATE PGTT sustained-hold PARK
+            # request (the stair-base approach-squeeze fix -- see core/control/stair_policy.
+            # base_approach_park_request's docstring and this module's _step_go2_locomotion PARK
+            # block). Plain bool, no None-sentinel distinction needed (missing/older-sender ->
+            # False, "no request", the same value an explicit False would send).
+            park_request = bool(payload.get("park_request", False))
             # Followed person's bbox in RGB-frame normalized [0,1] coords (or None
             # if no detection this frame). Forwarded so the parkour depth policy can
             # mask the person out of its depth input. List of 4 floats or None.
@@ -561,6 +575,7 @@ def _cmd_receiver_thread(port: int) -> None:
                 _cmd_vel["gap_m"] = gap_m
                 _cmd_vel["gap_brake_scale"] = gap_brake_scale
                 _cmd_vel["yaw_align_rate"] = yaw_align_rate
+                _cmd_vel["park_request"] = park_request
                 _cmd_vel["ts"] = time.monotonic()
                 _cmd_vel["count"] = int(_cmd_vel.get("count", 0)) + 1
                 cmd_count = int(_cmd_vel["count"])
@@ -1727,14 +1742,17 @@ PATIENT_PACE_SLOW_FLOOR = 0.12     # min speed scale when the dog is far behind 
 #
 # RAISED 1.7 -> 3.2 (2026-07-12, S1 stair-entry head-start gate review, CLAUDE.md 8.7): this
 # constant is the SAME "lead" measure (state.x - _rob_x, see the local ``lead`` a few lines
-# below) that HandoffConfig.stair_entry_min_lead_m (default 2.4 m) gates a NEW climb ENGAGE
-# on. DEADLOCK CHECK: the interval [stair_entry_min_lead_m, PATIENT_HARD_WAIT_LEAD_M) =
-# [2.4, 3.2) must stay non-empty, or the dog would hold waiting for a lead the patient's own
-# hard-wait would never let her reach. It does: while the dog holds below 2.4 m (ENGAGE
-# vetoed by stair_entry_lead_ok; any near-riser forward push is separately braked toward 0 by
+# below) that HandoffConfig.stair_entry_min_lead_m gates a NEW climb ENGAGE on (2.4 m at the
+# time this constant was raised; since re-tuned 2.4 -> 2.0 -> 2.2 -> 1.9 -- see that field's
+# docstring for the full history; CLAUDE.md 8.7: re-verified below against the CURRENT 1.9 m
+# value, not just cited from memory). DEADLOCK CHECK: the interval [stair_entry_min_lead_m,
+# PATIENT_HARD_WAIT_LEAD_M) = [1.9, 3.2) must stay non-empty, or the dog would hold waiting
+# for a lead the patient's own hard-wait would never let her reach. It does: while the dog
+# holds below 1.9 m (ENGAGE vetoed by stair_entry_lead_ok; any near-riser forward push is
+# separately braked toward 0 by
 # core.control.stair_policy.climb_gap_brake_scale/mid_climb_floor_capped_command once she is
 # close), she is BELOW 3.2 m and keeps walking -- the two conditions can never hold
-# simultaneously, so the lead always keeps growing until the gate releases at 2.4, strictly
+# simultaneously, so the lead always keeps growing until the gate releases at 1.9, strictly
 # before she would ever freeze at 3.2. PATIENT_PACE_GAP_MAX_M (2.7) sits INSIDE this interval,
 # so the transition is a smooth pace-down (full speed -> eases through [1.6, 2.7] -> her slow-
 # walk floor from 2.7 to 3.2), not an abrupt stop on either side. At the old 1.7 the interval
@@ -2227,6 +2245,7 @@ def _step_go2_locomotion(
     person_detected: bool = True,
     climb_vx_brake_scale: float = 1.0,
     yaw_align_rate: float = 0.0,
+    park_request: bool = False,
 ) -> None:
     global _HANDOFF_CLIMBING, _PGTT_HOLD_PARK_FROM_ACT
     vx = max(0.0, float(vx))
@@ -2327,23 +2346,57 @@ def _step_go2_locomotion(
             # _climb_fsm_active) the very next frame and PARK still engages normally after
             # --pgtt-hold-park-sec of continued hold -- giving the terminal "full stop/hold
             # forever" behavior for free via the existing D1 mechanism.
+            # Task (2026-07-12, runs 31/32 review): caller's IMMEDIATE park request (the
+            # stair-base approach-squeeze fix -- see core/control/stair_policy.
+            # base_approach_park_request's docstring for the full mechanism, and
+            # sim_robot_controller._send's docstring-comment for the payload-field
+            # precedent). The immediate-engage path MUST be a STRICT SUBSET of the timed
+            # path except for bypassing park_after_sec: gated here on the SAME
+            # not-climbing / not-yaw-aligning / caller-hold conditions already computed for
+            # hold_requested just below (re-ANDed explicitly, not just relying on
+            # HoldParkController.update's own hold_requested-first short-circuit, so the
+            # requirement is self-evident at this call site too) -- the tilt gate itself is
+            # enforced identically for both paths inside HoldParkController.update. This is
+            # what makes run 32's mid-climb mutual-wait deadlock
+            # (run_sim_20260712_160115_082: stair_climbing_latch True, person read ~0.95 m)
+            # impossible to recreate here even if a caller bug ever asserted park_request
+            # mid-climb: _climb_fsm_active alone still vetoes it (the caller's own
+            # base_approach_park_request also independently requires NOT stair_climbing_latch
+            # -- this is defense-in-depth on the sim side, not the only guard).
+            _park_requested = (
+                bool(park_request) and not _climb_fsm_active and not _yaw_aligning
+                and _motion_hold_requested
+            )
             _hp_decision = _PGTT_HOLD_PARK.update(
                 dt,
                 hold_requested=(_motion_hold_requested and not _climb_fsm_active
                                  and not _yaw_aligning),
-                tilt_rad=_tilt_hp)
+                tilt_rad=_tilt_hp,
+                park_requested=_park_requested)
             if _hp_decision.engaged_this_frame:
                 # Seed the slew-from pose BEFORE swapping gains (current_act_positions reads
                 # the LIVE measured joint positions, same call the climb handoff slew uses).
                 _PGTT_HOLD_PARK_FROM_ACT = rl_policy.current_act_positions(go2)
                 _set_go2_drive_gains(go2, 800.0, 40.0, 1000.0,
                                      reason="pgtt_hold_park_engaged")
+                # Distinct event name for an immediate (requested) engage vs. the ordinary
+                # timed one -- so a run is diagnosable at a glance (CLAUDE.md 8.8): did the
+                # base-approach-squeeze fix actually fire, or did the timer engage as usual?
+                _park_event = (
+                    "pgtt_hold_park_engaged_immediate" if _hp_decision.engaged_immediate
+                    else "pgtt_hold_park_engaged"
+                )
                 log_event(
-                    LOGGER, logging.INFO, "pgtt_hold_park_engaged",
-                    "PGTT sustained-hold PARK engaged: stopped stepping the walk policy and "
-                    "slewing to the stand pose under stiff position-hold gains",
+                    LOGGER, logging.INFO, _park_event,
+                    ("PGTT sustained-hold PARK engaged IMMEDIATELY (caller park_request "
+                     "bypassed --pgtt-hold-park-sec): stopped stepping the walk policy and "
+                     "slewing to the stand pose under stiff position-hold gains"
+                     if _hp_decision.engaged_immediate else
+                     "PGTT sustained-hold PARK engaged: stopped stepping the walk policy and "
+                     "slewing to the stand pose under stiff position-hold gains"),
                     hold_elapsed_sec=round(float(_hp_decision.hold_elapsed_sec), 2),
                     tilt_deg=round(math.degrees(_tilt_hp), 2),
+                    requested=bool(_hp_decision.engaged_immediate),
                 )
             if _hp_decision.released_this_frame:
                 # Mirrors the climb-exit gain restore (~L2369 below) -- same kp/kd/1000.
@@ -2443,12 +2496,48 @@ def _step_go2_locomotion(
                         _gt_gap_scale = max(0.0, min(1.0, (_gt_lead - 1.0) / (1.4 - 1.0)))
                     except Exception:
                         _gt_gap_scale = 1.0
+                # Task (2026-07-12, run 32 review): post-ENGAGE blind-mount speed step-down.
+                # Pairs with HandoffConfig.stair_entry_min_lead_m 2.2 -> 1.9 (shorter stair-
+                # base wait) so the blind-carry closure on the patient does not grow to match.
+                # ``climb_elapsed_sec`` is the FSM's own sim-time watchdog accumulator
+                # (HandoffController._climb_elapsed, reset to 0.0 at ENGAGE), NEVER a
+                # wall-clock or frame count (incident 8.6). Composes with the EXISTING brake
+                # product (_climb_vx_brake_scale * _gt_gap_scale) via min() inside the helper
+                # -- see blind_mount_climb_vx_floor's docstring: the step-down can only ever
+                # LOWER this floor, never raise a brake-lowered command back up.
+                _climb_floor_vx = blind_mount_climb_vx_floor(
+                    climb_elapsed_sec=float(_ho.get("climb_elapsed_sec", 0.0)),
+                    burst_sec=float(getattr(args, "handoff_climb_burst_sec", 2.0)),
+                    person_detected=bool(person_detected),
+                    base_vx=float(getattr(args, "handoff_climb_vx", 0.40)),
+                    blind_vx=float(getattr(args, "handoff_climb_blind_vx", 0.30)),
+                    brake_scale=(_climb_vx_brake_scale * _gt_gap_scale),
+                )
+                # Bypass B fix (task, 2026-07-12, run 34 review): the FSM's person-gated egress
+                # floor (_ho["climb_vx_floor"], HandoffController's own person_gap_m>=--handoff-
+                # top-egress-standoff binary gate) previously reached arbitrate_climb_vx RAW --
+                # composed with NOTHING, unlike the non-egress climb_vx floor just above (already
+                # pre-scaled by the same _climb_vx_brake_scale*_gt_gap_scale product). Pre-compose
+                # it here with that SAME brake product, clamped to the straddle-safe
+                # --crest-egress-min-vx floor so a heavily-braked (or FSM-zeroed) egress command
+                # can never fully stop the dog while it is still walking off the last riser
+                # (CLAUDE.md 8.16: a crest straddle must never receive commanded-zero). See
+                # crest_egress_vx_floor's docstring (go2_locomotion/locomotion_arbiter.py) for the
+                # full contract; arbitrate_climb_vx itself is intentionally untouched.
+                _egress_vx_floor_raw = _ho.get("climb_vx_floor")
+                if bool(_ho.get("top_egress")) and _egress_vx_floor_raw is not None:
+                    _egress_vx_floor_composed = crest_egress_vx_floor(
+                        float(_egress_vx_floor_raw),
+                        brake_scale=(_climb_vx_brake_scale * _gt_gap_scale),
+                        min_vx=float(getattr(args, "crest_egress_min_vx", DEFAULT_CREST_EGRESS_MIN_VX)),
+                    )
+                else:
+                    _egress_vx_floor_composed = _egress_vx_floor_raw
                 _cvx = arbitrate_climb_vx(
                     vx,
-                    climb_vx=(float(getattr(args, "handoff_climb_vx", 0.22))
-                              * _climb_vx_brake_scale * _gt_gap_scale),
+                    climb_vx=_climb_floor_vx,
                     top_egress=bool(_ho.get("top_egress")),
-                    egress_vx_floor=_ho.get("climb_vx_floor"),
+                    egress_vx_floor=_egress_vx_floor_composed,
                 )
                 _wz_res = arbitrate_climb_wz(ClimbWzInputs(
                     incoming_wz=float(wz),
@@ -2521,8 +2610,19 @@ def _step_go2_locomotion(
                 # correct (the floor itself is unconditional), but it is no longer UNSCALED when
                 # the person is close -- see this function's docstring-comment for the full
                 # contract (never boosts vx, never touches the egress path).
-                if bool(_ho.get("top_egress")) and _ho.get("climb_vx_floor") is not None:
-                    _cvx = max(float(vx), float(_ho.get("climb_vx_floor")))
+                # Bypass B fix (task, 2026-07-12, run 34 review): same gap this branch shared
+                # with the blind_rl branch above -- the person-gated egress floor reached this
+                # max() raw, composed with nothing. Mirror the blind_rl fix (crest_egress_vx_floor,
+                # go2_locomotion/locomotion_arbiter.py), composed with _climb_vx_brake_scale alone
+                # (this branch has no _gt_gap_scale term of its own, matching its existing
+                # non-egress line just below).
+                _pk_egress_vx_floor_raw = _ho.get("climb_vx_floor")
+                if bool(_ho.get("top_egress")) and _pk_egress_vx_floor_raw is not None:
+                    _cvx = max(float(vx), crest_egress_vx_floor(
+                        float(_pk_egress_vx_floor_raw),
+                        brake_scale=_climb_vx_brake_scale,
+                        min_vx=float(getattr(args, "crest_egress_min_vx", DEFAULT_CREST_EGRESS_MIN_VX)),
+                    ))
                 else:
                     _cvx = max(float(vx),
                                float(getattr(args, "handoff_climb_vx", 0.22)) * _climb_vx_brake_scale)
@@ -2586,14 +2686,68 @@ def _step_go2_locomotion(
         # PgttLocomotionPolicy.step does not zero it (``if hold: cmd = (0.0, 0.0, 0.0)``,
         # pgtt_locomotion_policy.py ~L378-379). Without _yaw_aligning this is byte-identical
         # to the pre-existing hold=True/vx=0 clamp.
+        #
+        # Run-28 review follow-up (2026-07-12): the controller-side edge_block veto that used
+        # to gate this carve-out (core/control/stair_policy.py's landing_face_patient_align /
+        # landing_visible_person_centering) is REMOVED -- see those functions' EDGE-GUARD
+        # PRECEDENCE docstring paragraphs for why (the edge latch is chronic at the dog's
+        # terminal pose, so the veto made the feature unable to ever fire). The replacement
+        # safety net lives HERE, on the sim side, where true body position is available: the
+        # module-level _YAW_ALIGN_DRIFT_WATCHDOG (go2_locomotion/yaw_align_drift.py) anchors
+        # the robot's (x, y) at the start of each rotation burst and permanently revokes the
+        # carve-out (deny -> wz=0.0/hold=True, failing toward stillness per CLAUDE.md 8.8) if
+        # measured planar drift ever exceeds --yaw-align-drift-max-m -- a genuine in-place turn
+        # should not translate the body at all. Called ONLY here, inside this same walk-only
+        # F1 clamp region, so it can never be consulted on a mid-climb / non-PGTT path where
+        # the carve-out does not apply (CLAUDE.md 8.15 F1 placement principle: clamp at the
+        # actuation source the caller cannot see past).
         if _motion_hold_requested:
             vx = 0.0
             vy = 0.0
+            _yaw_align_allowed = False
+            _drift_decision = None
             if _yaw_aligning:
+                try:
+                    _align_bp, _ = go2.get_world_pose()
+                    _drift_decision = _YAW_ALIGN_DRIFT_WATCHDOG.update(
+                        aligning=True, x=float(_align_bp[0]), y=float(_align_bp[1]),
+                    )
+                except Exception:
+                    # Position read failed this frame -- fail toward stillness (CLAUDE.md 8.8):
+                    # deny the carve-out THIS frame without mutating the watchdog's own
+                    # anchor/trip state (a transient telemetry glitch must not itself trip the
+                    # permanent latch, nor silently drop the in-progress anchor).
+                    _drift_decision = None
+                _yaw_align_allowed = _drift_decision is not None and bool(_drift_decision.allow_align)
+            else:
+                # Not aligning this frame -- still tick the watchdog so an in-progress anchor
+                # resets (the NEXT False->True transition, whether from this mode or a later
+                # re-arm, starts a fresh anchor rather than reusing a stale one).
+                _YAW_ALIGN_DRIFT_WATCHDOG.update(aligning=False, x=0.0, y=0.0)
+            if _drift_decision is not None and _drift_decision.tripped_this_frame:
+                log_event(
+                    LOGGER, logging.WARNING, "yaw_align_drift_watchdog_tripped",
+                    "Yaw-align drift watchdog tripped: measured planar drift during a "
+                    "post-crest face-the-patient rotation exceeded --yaw-align-drift-max-m -- "
+                    "face-the-patient alignment is now PERMANENTLY OFF for the rest of this "
+                    "run (failing toward stillness, CLAUDE.md 8.8)",
+                    drift_m=round(float(_drift_decision.drift_m), 4),
+                    drift_max_m=float(getattr(args, "yaw_align_drift_max_m", 0.15)),
+                )
+            if _yaw_align_allowed:
                 wz = _yaw_align_rate
                 hold = False
             else:
+                wz = 0.0
                 hold = True
+        else:
+            # No hold requested this frame (ordinary walking) -- still tick the watchdog so an
+            # anchor from a finished burst is dropped. Without this, a burst that ends because
+            # the HOLD ITSELF releases (patient resumes walking -> stop_decision clears) leaves
+            # a stale anchor: the next burst, potentially metres of ordinary follow later,
+            # would measure "drift" against it and trip the permanent latch spuriously
+            # (the aligning=False tick inside the hold branch above only runs on hold frames).
+            _YAW_ALIGN_DRIFT_WATCHDOG.update(aligning=False, x=0.0, y=0.0)
         telemetry = rl_policy.step(go2, (vx, vy, wz), dt, hold=hold, height_fn=_hf)
         _go2_locomotion_state.leg_summary = rl_policy.leg_command_summary()
         _go2_locomotion_state.policy_name = rl_policy.policy_path.name
@@ -3421,7 +3575,7 @@ def main() -> None:
     # stair counter that hand the legs to the closed-loop climber for one riser, then
     # back. None on the parkour path / when --no-pgtt-stair-handoff.
     global _PGTT_HANDOFF, _LATEST_PARKOUR_DEPTH, _PGTT_CLIMB_POLICY, _HANDOFF_CLIMBING
-    global _PGTT_HOLD_PARK, _PGTT_HOLD_PARK_FROM_ACT
+    global _PGTT_HOLD_PARK, _PGTT_HOLD_PARK_FROM_ACT, _YAW_ALIGN_DRIFT_WATCHDOG
     _LATEST_PARKOUR_DEPTH = None
     _PGTT_CLIMB_POLICY = None
     _HANDOFF_CLIMBING = False
@@ -3440,6 +3594,13 @@ def main() -> None:
                   tilt_max_rad=float(getattr(args, "pgtt_hold_park_tilt_max_rad", 0.14)))
     else:
         _PGTT_HOLD_PARK = None
+    # Run-28 review follow-up: fresh watchdog every run/reset, mirroring _PGTT_HOLD_PARK's own
+    # per-setup construction. Always created (unconditional of locomotion_policy) -- the F1
+    # clamp that consumes it only ever runs on the PGTT path, but constructing it unconditionally
+    # keeps the frame-loop wiring free of an is-None branch (see the global's own comment).
+    _YAW_ALIGN_DRIFT_WATCHDOG = YawAlignDriftWatchdog(YawAlignDriftConfig(
+        drift_max_m=float(getattr(args, "yaw_align_drift_max_m", 0.15)),
+    ))
     _PGTT_HANDOFF = _build_pgtt_handoff(rl_policy)
     if _PGTT_HANDOFF is not None:
         _PGTT_HANDOFF.reset()
@@ -3935,6 +4096,13 @@ def main() -> None:
                     # available either. Fail toward NOT aligning (CLAUDE.md 8.8) -- a dead UDP
                     # link must never let a stale rotation carve-out survive hold=True.
                     yaw_align_rate = 0.0
+                    # Task (2026-07-12, runs 31/32 review): stale link -> no fresh park intent
+                    # either. Fail toward NOT requesting the immediate path (CLAUDE.md 8.8) --
+                    # hold=True above already forces a stop, and the TIMED park still engages
+                    # normally after --pgtt-hold-park-sec of continued (forced) hold, so this
+                    # only affects how FAST the park engages on a dead link, never whether the
+                    # robot stops.
+                    park_request = False
                 else:
                     vx = _cmd_vel["vx"]
                     vy = _cmd_vel["vy"]
@@ -3949,6 +4117,7 @@ def main() -> None:
                     gap_m = _cmd_vel.get("gap_m")
                     gap_brake_scale = _cmd_vel.get("gap_brake_scale", 1.0)
                     yaw_align_rate = _cmd_vel.get("yaw_align_rate", 0.0)
+                    park_request = bool(_cmd_vel.get("park_request", False))
             # Self-test: bypass the Docker/vision controller entirely and drive a
             # constant forward command straight into the locomotion policy. Lets us
             # verify flat-ground walking and balance in isolation (headless, no UDP).
@@ -3964,6 +4133,9 @@ def main() -> None:
                 # Task (2026-07-12, run 27 review): open-loop self-test never runs the
                 # post-crest face-the-patient sequence.
                 yaw_align_rate = 0.0
+                # Task (2026-07-12, runs 31/32 review): open-loop self-test has no UDP
+                # controller and thus no caller park intent either.
+                park_request = False
                 person_bbox = None
                 command_fresh = True
                 person_detected = False
@@ -4228,7 +4400,8 @@ def main() -> None:
                                      person_bbox=person_bbox, hold=hold,
                                      person_detected=person_detected,
                                      climb_vx_brake_scale=gap_brake_scale,
-                                     yaw_align_rate=yaw_align_rate)
+                                     yaw_align_rate=yaw_align_rate,
+                                     park_request=park_request)
             else:
                 # Demo running, momentarily no fresh command: hold a balanced stand
                 # with the policy (the robot has already started walking, so do not
@@ -4237,9 +4410,14 @@ def main() -> None:
                 # gap_brake_scale forwarded too (incident E1) -- an ONGOING climb is never
                 # held (8.9/8.15), so a stale-but-not-yet-timed-out link must not silently
                 # revert to an unbraked floor just because this frame had no fresh command.
+                # park_request forwarded too (runs 31/32 review): THIS is the branch the
+                # stair-base approach-squeeze actually reaches (hold=True with an
+                # effectively-zero commanded vx/wz routes here, not the nonzero-command
+                # branch above), so a caller park request must not be dropped here.
                 _step_go2_locomotion(go2, rl_policy, 0.0, 0.0, 0.0, dt, stairs_detected=False,
                                      hold=True, person_detected=person_detected,
-                                     climb_vx_brake_scale=gap_brake_scale)
+                                     climb_vx_brake_scale=gap_brake_scale,
+                                     park_request=park_request)
 
             # Domain-randomization push disturbances: periodically shove the base
             # with a random horizontal velocity impulse to test the policy's

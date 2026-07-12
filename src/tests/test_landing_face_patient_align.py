@@ -25,13 +25,12 @@ _DEFAULTS = dict(
 )
 
 
-def _align(state, *, trigger, bearing_deg, edge_block=False, now_wall, sim_t=None, **overrides):
+def _align(state, *, trigger, bearing_deg, now_wall, sim_t=None, **overrides):
     kwargs = dict(_DEFAULTS)
     kwargs.update(overrides)
     return landing_face_patient_align(
         trigger=trigger,
         bearing_deg=bearing_deg,
-        edge_block=edge_block,
         state=state,
         now_wall=now_wall,
         sim_t=sim_t,
@@ -156,21 +155,30 @@ def test_rotation_bound_stops_before_timeout():
     assert math.degrees(state.rotated_rad) <= 5.0 + max_overshoot_deg + 1e-6
 
 
-def test_edge_block_vetoes_rotation_but_does_not_finish():
-    # Hard constraint 3: the landing edge guard is authoritative -- hold wins over rotation.
-    # Rotation is withheld THIS frame, but the sequence is not abandoned (it can resume once
-    # edge_block clears), and it remains bounded by the timeout regardless.
+def test_rotation_proceeds_uninterrupted_no_edge_block_veto():
+    # CORRECTED 2026-07-12 (run-28 review, run_sim_20260712_141230_357): this function used to
+    # accept an edge_block argument (the caller's landing_edge_block_latched(...) result) and
+    # withhold rotation ("active=False, yaw_rate_cmd=0.0") for any frame it was True -- "hold
+    # wins over rotation". Trace evidence showed the edge latch is CHRONIC at the dog's actual
+    # terminal post-crest pose (446/446 consecutive frames), so that veto made this function
+    # unable to EVER rotate in exactly the endgame it exists for. The edge_block parameter is
+    # REMOVED (see landing_face_patient_align's EDGE-GUARD PRECEDENCE docstring paragraph for
+    # the full rationale): rotation now proceeds every frame the OTHER stop conditions
+    # (deadband/timeout/rotation-bound, all still covered by the tests above) allow, with
+    # nothing else able to pause it mid-turn. The replacement safety net --
+    # go2_locomotion.yaw_align_drift.YawAlignDriftWatchdog, a measured PHYSICAL planar-drift
+    # trip on the sim side -- is unit-tested in test_yaw_align_drift_watchdog.py, not here
+    # (this module has no position/drift concept at all).
     state = LandingFaceAlignState()
     r1 = _align(state, trigger=True, bearing_deg=-90.0, now_wall=0.0)
     assert r1.active is True
-    r2 = _align(state, trigger=True, bearing_deg=-90.0, now_wall=0.1, edge_block=True)
+    assert r1.yaw_rate_cmd == 0.35
+    r2 = _align(state, trigger=True, bearing_deg=-90.0, now_wall=0.1)
     assert r2.engaged is True
-    assert r2.active is False
+    assert r2.active is True
     assert r2.done is False
-    assert r2.yaw_rate_cmd == 0.0
-    # Clears -> resumes rotating (bearing on the LEFT / negative -> +yaw_rate, per the
-    # established sign convention -- see test_engages_and_rotates_toward_negative_bearing).
-    r3 = _align(state, trigger=True, bearing_deg=-90.0, now_wall=0.2, edge_block=False)
+    assert r2.yaw_rate_cmd == 0.35
+    r3 = _align(state, trigger=True, bearing_deg=-90.0, now_wall=0.2)
     assert r3.active is True
     assert r3.yaw_rate_cmd == 0.35
 
@@ -271,7 +279,7 @@ if __name__ == "__main__":
     test_timeout_stops_rotation_wall_clock()
     test_timeout_is_sim_time_aware_not_wall_clock()
     test_rotation_bound_stops_before_timeout()
-    test_edge_block_vetoes_rotation_but_does_not_finish()
+    test_rotation_proceeds_uninterrupted_no_edge_block_veto()
     test_none_bearing_never_recorded_does_nothing()
     test_explicit_disable_via_zero_yaw_rate_still_engages_hold()
     test_disabled_yaw_rate_is_distinct_from_a_legitimate_zero_bearing()

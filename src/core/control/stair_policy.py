@@ -263,6 +263,103 @@ def effective_climb_gap_brake_scale(
     return 0.0 if bool(hard_block) else float(gap_brake_scale)
 
 
+def base_approach_park_request(
+    *,
+    person_detected: bool,
+    gap_m: Optional[float],
+    effective_gap_brake_scale: Optional[float],
+    hold_request: bool,
+    stop_decision: bool,
+    stair_climbing_latch: bool,
+    stairs_action_active: bool,
+) -> bool:
+    """Caller-side ``park_request`` trigger for the STAIR-BASE APPROACH-SQUEEZE patient-gap
+    dip (task, 2026-07-12, runs 31/32 review; CLAUDE.md incident 8.15 continuation).
+
+    PROBLEM: the graded stair demo's minimum whole-run patient gap consistently happens at the
+    stair-BASE approach squeeze (~sim_t 22, NOT mid-climb): the patient pauses on the lowest
+    steps while the dog approaches. Commanded speed already goes to zero (``hold_request``
+    latches), but PGTT's ``hold`` is ``cmd=(0,0,0)`` + CONTINUED gait inference (see
+    ``go2_locomotion/hold_park.py``'s module docstring) -- the frozen policy trots in place and
+    physically creeps ~0.29 m over the ~2 s before the patient climbs clear, bottoming the GT
+    gap at 0.62-0.67 m against the 0.65 m grader floor. The existing countermeasure
+    (``HoldParkController``, ``--pgtt-hold-park-sec`` default 2.5 s) only stops that creep
+    AFTER 2.5 s of continuous hold -- longer than the squeeze itself. This function is the
+    caller-side trigger for a PARK REQUEST that lets the sim-side PARK bypass its own timer
+    immediately, under the SAME safety gates the timed path already has (see
+    ``go2_locomotion.hold_park.HoldParkController.update``'s ``park_requested`` argument and
+    ``sim/isaac/isaac_env.py``'s ``_step_go2_locomotion`` PARK block for the receiving end).
+
+    MEMORYLESS -- no latching here (unlike e.g. ``LandingFaceAlignState``): every input is a
+    plain explicit argument (incident 8.5 -- the caller passes its OWN same-frame values,
+    never re-derived from a downstream ``debug_info`` read) and the result is recomputed from
+    scratch every call. ``park_request`` must RELEASE the instant any condition drops (the
+    brake lifts, the person is lost, the latch turns on, ...) -- the sim-side
+    ``HoldParkController`` already owns its own engage/release lifecycle (including the release
+    hysteresis-free instant-release semantics); duplicating a latch here would fight it.
+
+    Requires ALL of:
+      * ``person_detected`` True AND ``gap_m`` a LIVE reading (not ``None``, not the ``<=1e-3``
+        "no reading" sentinel) -- a genuine, currently-visible patient at a currently-measured
+        range. This is checked SEPARATELY from the brake-scale test below because
+        ``climb_gap_brake_scale``/``effective_climb_gap_brake_scale`` themselves fail toward
+        0.0 (the brake) on a detected-but-unmeasured gap (CLAUDE.md 8.8) -- without this
+        explicit liveness check, a sensor dropout would misread as "patient right here,
+        park now" instead of "no reading available".
+      * ``effective_gap_brake_scale`` is exactly ``0.0`` -- the caller's ALREADY-COMPUTED
+        effective (post-``hard_block``-fold) mid-climb/near-field gap brake (see
+        ``effective_climb_gap_brake_scale``'s own docstring above) has fully floored this
+        frame's forward command. ZERO-VS-DISABLED DISTINCTION: ``None`` means "no brake
+        producer ran this frame" (e.g. nowhere near the stairs at all -- a feature-OFF
+        sentinel) and must NOT be treated as a trigger; only a GENUINE ``0.0`` fold counts.
+      * ``hold_request`` AND ``stop_decision`` both asserted -- the squeeze always has both
+        (the caller's own stop pipeline, ``core/main.py``'s ``stop_decision``/``hold_request``
+        finalization, already decided to stop this frame); requiring both (not just one) means
+        a request can never outrun the caller's own terminal stop decision.
+      * ``stair_climbing_latch`` is False AND ``stairs_action_active`` is False -- FSM context
+        is the base approach (FLAT_FOLLOW / STAIR_APPROACH_COMMIT), never an actual committed
+        climb or a latched mid-climb pacing hold. This is the deadlock guard: run 32
+        (run_sim_20260712_160115_082) showed a MUTUAL-WAIT deadlock when an earlier (reverted)
+        knob change let a mid-climb brake reach full strength while ``stair_climbing_latch``
+        was True and the patient sat a steady ~0.95-1.0 m up the stairs -- fast-parking there
+        would have permanently frozen the pair. A park request must never fire mid-climb;
+        these two flags are the caller's own FSM signals for "not climbing", checked
+        explicitly (never re-derived) so this function stays correct even if the mid-climb
+        dispatch branches' OWN gap-brake producers happen to read 0.0 on some frame -- they
+        are structurally unreachable from this function's only call site (the ordinary
+        follow/base-approach ``controller.move()`` dispatch branch in ``core/main.py``, which
+        is mutually exclusive with the committed-climb and STAIR_LOSS_FLOOR branches), but the
+        explicit checks make that guarantee self-evident here too, not just structural.
+
+    Fails toward NOT requesting (CLAUDE.md 8.8) on every ambiguous input -- ``None``/invalid
+    ``gap_m``, ``None`` brake scale, any missing liveness -- so this can only ever ask for a
+    park on a fully-confirmed, currently-live, fully-braked, non-climbing stop.
+    """
+    if not bool(person_detected):
+        return False
+    if gap_m is None:
+        return False
+    try:
+        _gap = float(gap_m)
+    except (TypeError, ValueError):
+        return False
+    if _gap <= 1e-3:
+        return False
+    if effective_gap_brake_scale is None:
+        return False
+    if abs(float(effective_gap_brake_scale)) > 1e-9:
+        return False
+    if not bool(hold_request):
+        return False
+    if not bool(stop_decision):
+        return False
+    if bool(stair_climbing_latch):
+        return False
+    if bool(stairs_action_active):
+        return False
+    return True
+
+
 def mid_climb_floor_capped_command(
     trans_x_cmd: float,
     *,
@@ -320,6 +417,7 @@ def filtered_climb_gap_m(
     state: ClimbGapFilterState,
     now: float,
     window_sec: float,
+    sim_t: Optional[float] = None,
 ) -> Optional[float]:
     """Conservative (rolling-MINIMUM) mid-climb patient gap over the trailing ``window_sec``.
 
@@ -342,9 +440,37 @@ def filtered_climb_gap_m(
     in the window keeps the brake engaged even when surrounded by noisy "far" readings; it can
     only ever look MORE cautious than the raw live gap, never less.
 
-    ``window_sec`` is a WALL-CLOCK duration and ``now`` MUST be ``time.perf_counter()`` (incident
-    8.6) -- matching every other stair-timing signal in this module
-    (``lost_person_speed_taper_scale``, ``HandoffController``).
+    Incident 8.6 fix (2026-07-12, run 34 review, run_sim_20260712_173301_387): the window was
+    originally a WALL-CLOCK duration (``now`` required to be ``time.perf_counter()``), matching
+    every other stair-timing signal in this module at the time it was written. But this
+    particular signal's whole job is to survive a multi-FRAME (not multi-wall-second) noise
+    burst in the RAW gap reading, and the control loop's wall-clock cost per frame is not fixed
+    -- run 34 measured ``loop_ms_median`` ~240 ms/frame against a physics ``dt`` of only 35 ms
+    (sim ~6.9x slower than real time there), so the "1.2 s" wall-clock window held only ~5
+    frames (~0.17 SIM-seconds) of history. A genuine ~6-8 frame (~0.2-0.3 sim-second) burst of
+    ``standoff_gap_ctrl_m`` misreads (patient half out of the close-range FOV, exactly the
+    scenario this function was built to absorb) fully aged the true ~0.88 m minimum out of the
+    window before the burst ended, so the filtered gap jumped to 1.23-1.40 m, the brake released
+    (``stair_climb_latch_gap_brake_scale`` 0.11 -> 1.0), and the forward command pulsed
+    0.03 -> 0.38 m/s -- closing the TRUE gap (patient not actually moving away) down to the
+    run's graded minimum, 0.568 m, ~1.3 sim-seconds later. Same failure class as
+    ``detection_age_sec``'s incident-8.6 fix in this module (a wall-tuned duration is a
+    different SIM duration depending on how slow the frame is to compute), just applied to a
+    multi-sample rolling window instead of a single last-match age. Fix: prefer ``sim_t`` (from
+    ``frame_meta["sim_t"]``, incident 8.5 -- passed as an explicit argument, never re-derived)
+    for BOTH the stored sample timestamps and the current instant whenever the caller provides
+    it, falling back to the wall-clock ``now`` exactly as before when ``sim_t`` is ``None``
+    (real hardware, where wall IS the world -- unchanged). Age-pruning additionally requires the
+    delta to be NON-NEGATIVE (``0 <= now - t <= window_sec``, not just ``<= window_sec``): a
+    negative delta means the sample's timestamp and the current instant are not on the same
+    clock family (e.g. a stale wall-clock sample compared against a freshly-available sim_t, or
+    sim_t resetting backward across an episode boundary) -- such a sample must be treated as
+    expired, never retained indefinitely, since ``time.perf_counter()`` and ``sim_t`` are on
+    unrelated scales and a naive comparison could otherwise pin a stale minimum forever (the
+    exact backward-clock hazard ``detection_age_sec``'s own non-monotonic-sim_t test guards).
+    Within one run ``sim_t`` availability is constant (always present in sim, always absent on
+    real hardware -- CLAUDE.md 8.4/8.6), so this clock-family guard is a defensive backstop, not
+    the normal path.
 
     State ownership (incident 8.15 / F2 review): ``state`` is an explicit
     ``ClimbGapFilterState`` the CALLER owns for the whole run, never a module global.
@@ -352,7 +478,7 @@ def filtered_climb_gap_m(
     NONE-GAP / not-detected semantics (unchanged, 8.15 second correction preserved EXACTLY):
     samples are appended ONLY while ``person_detected`` is True and ``gap_m`` is a valid
     reading; a call with ``person_detected=False`` never adds a sample. Every call (detected or
-    not) age-prunes the window against ``now`` first, so a detection gap LONGER than
+    not) age-prunes the window against the current instant first, so a detection gap LONGER than
     ``window_sec`` empties the window purely by aging out before the next valid sample can
     arrive -- a fresh detection after a long loss starts from an empty window and never
     inherits a stale pre-loss minimum. This function does NOT itself apply the
@@ -365,9 +491,9 @@ def filtered_climb_gap_m(
     existing ``person_detected``-gated None contract already does the right thing (not-detected
     -> no brake regardless; detected + None -> brake, incident 8.8).
     """
-    now_f = float(now)
+    now_f = float(sim_t) if sim_t is not None else float(now)
     win = max(1e-3, float(window_sec))
-    state.samples[:] = [(t, g) for (t, g) in state.samples if (now_f - t) <= win]
+    state.samples[:] = [(t, g) for (t, g) in state.samples if 0.0 <= (now_f - t) <= win]
     if person_detected and gap_m is not None:
         try:
             g = float(gap_m)
@@ -477,6 +603,210 @@ def detection_age_sec(state: DetectionAgeState, *, now_wall: float, sim_t: Optio
             and float(sim_t) >= state.last_sim_t):
         return float(sim_t) - state.last_sim_t
     return float(now_wall) - state.last_wall_ts
+
+
+@dataclass
+class ClimbGhostGapState:
+    """Caller-owned state for ``climb_gap_ghost_declared`` (2026-07-12, runs 32/33 review --
+    person-as-risers ghost, MID-CLIMB variant). One instance owned by the main loop, mirroring
+    ``ClimbGapFilterState`` -- never a module global.
+
+    ``age_anchor`` reuses ``DetectionAgeState`` as a generic dual-clock (wall/sim, incident 8.6)
+    "seconds since the last call" primitive by RE-ANCHORING EVERY CALL, exactly the composition
+    trick ``LandingVisibleCenterState``/``landing_visible_person_centering`` already uses (see
+    that function's own "Per-frame dual-clock delta" comment) -- CLAUDE.md 8.1: reuse the
+    existing dual-clock primitive rather than hand-rolling a second copy of it. The derived
+    per-call ``dt`` accumulates into ``elapsed_t``, a monotonic SIM-AWARE clock private to this
+    state -- ``samples``/``first_seen_ts``/``ghost_until`` are all timestamped against
+    ``elapsed_t``, never the raw wall ``now_wall`` -- so a trailing-window test built on this
+    state means the same physical duration in the ~4 FPS headless sim and on the robot,
+    matching every other stair-timing signal in this module.
+    """
+    samples: List[Tuple[float, float]] = field(default_factory=list)  # (elapsed_t, gap_m)
+    elapsed_t: float = 0.0
+    first_seen_ts: Optional[float] = None   # elapsed_t when the current sample streak started
+    ghost_until: Optional[float] = None     # elapsed_t deadline a declaration is latched through
+    age_anchor: DetectionAgeState = field(default_factory=DetectionAgeState)
+
+
+def climb_gap_ghost_declared(
+    gap_m: Optional[float],
+    *,
+    person_detected: bool,
+    stair_climbing_latch: bool,
+    depth_stair_leading_edge_m: Optional[float],
+    state: ClimbGhostGapState,
+    now_wall: float,
+    sim_t: Optional[float],
+    riser_agree_window_m: float,
+    freeze_eps_m: float,
+    freeze_sec: float,
+    cooloff_sec: float,
+) -> bool:
+    """True => the mid-climb gap brake's "person" reading is a GHOST -- the depth-only
+    person-as-risers artifact (incident 8.3 class) reading the STAIRCASE's own leading edge as
+    the followed patient -- and every caller must treat ``person_detected`` as False for the
+    purposes of ``climb_gap_brake_scale``/``effective_climb_gap_brake_scale`` this frame (per
+    those functions' own 8.15-correction-2 None-split: "not detected" there already means
+    "no brake, this is the normal incident-8.3 blind-carry" -- exactly the right treatment for
+    a ghost, since the real patient genuinely is NOT where this reading claims).
+
+    RUN 33 EVIDENCE (2026-07-12, run_sim_20260712_164349_306 -- consecutive terminal
+    ``climb_stalled`` at x~=4.85, riser 9-10, following an identical run 32
+    (run_sim_20260712_160115_082) failure): from sim_t=41.6 the mid-climb gap brake collapsed
+    ``cmd_vx`` to ~0.09-0.13 m/s (far below the ~0.4 m/s riser-mount threshold) and held it
+    there for 60+ s while the dog sat wedged nose-down (pitch ~-17 deg) at a frozen x=4.81. The
+    smoking gun, replayed off ``debug/debug_trace/vision_main_trace.jsonl`` (``frame_timing``
+    events, ``data.frame_meta.sim_t`` -- see CLAUDE.md 8.16's replay technique):
+    ``debug_info.person_detected`` stayed True with ``depth_distance_m``/``standoff_gap_ctrl_m``
+    PINNED at 0.958-0.970 m (a ~1.2 cm band) for the entire sim_t 47.6-95.1 window while
+    ``depth_stair_leading_edge_m`` sat equally still at ~0.625-0.628 m
+    (``|0.96-0.627|~=0.33 m`` -- inside the SAME 0.5 m leading-edge-agreement window the ENGAGE
+    path's own ghost veto uses, ``stair_engage_person_ghost_veto`` /
+    ``HandoffConfig.ghost_engage_gap_window_m``, ``go2_locomotion/handoff_controller.py`` --
+    cited here as ``riser_agree_window_m``'s default) and ``debug_info.stair_climbing_latch``
+    True throughout -- while ``frame_meta.gt_patient`` (sim GT) showed the REAL patient
+    continuously walking from x=7.3 to x=8.0+ m, 2.5-3.2 m away and MOVING the whole time. The
+    "person" the brake was reading was the staircase, not her. By contrast, the PRE-stall
+    window (sim_t 28-46, real chase: the raw gap swung 1.3-2.1 m frame to frame as the dog
+    closed on the genuinely-visible patient) never satisfies the frozen-range test below --
+    see this function's trace-replay validation (scratch, not committed) for the exact
+    frame-by-frame numbers.
+
+    ALL THREE must hold (each an explicit argument, incident 8.5 -- never re-derived from a
+    same-frame ``debug_info`` read the caller has not yet produced):
+
+      1. ``stair_climbing_latch`` True -- committed-climb context only (mirrors every other
+         mid-climb-scoped function in this module, e.g. ``lost_person_speed_taper_scale``'s own
+         scope restriction). Outside a climb this predicate is a permanent no-op and ALL
+         bookkeeping resets (see RESET below) -- a flat-ground false reading must never seed a
+         declaration that then fires the instant the next staircase is reached.
+      2. Riser agreement: ``abs(gap_m - depth_stair_leading_edge_m) <= riser_agree_window_m``
+         (default 0.5 m, the SAME constant as ``HandoffConfig.ghost_engage_gap_window_m`` --
+         see that field's docstring for the full run_sim_20260712_013638_835 derivation this
+         reuses rather than re-deriving a second threshold for the identical physical
+         question, "is the depth reading actually the staircase's own leading edge").
+      3. Frozen range: the trailing ``freeze_sec`` (sim-aware) window of ``gap_m`` samples
+         (recorded only while ``person_detected`` -- mirrors ``ClimbGapFilterState``'s own
+         append contract) has ``max - min < freeze_eps_m``. REQUIRES the sample streak to have
+         SPANNED at least ``freeze_sec`` (``state.first_seen_ts``, reset whenever the streak
+         breaks) -- a single fresh sample has zero variance trivially and must not read as
+         "frozen" the instant a person is (re)detected; see the CAVEAT below.
+
+    A REAL followed patient's range changes: she keeps walking (the gap grows), or the dog's
+    own advance closes it (the gap shrinks) -- 60+ s at +/-1 cm (run 33) is not a plausible
+    reading of a moving person at ~0.5 m/s per CLAUDE.md 8.15. The RAW (unfiltered) gap is used
+    for this test, deliberately NOT ``stair_climb_gap_filtered_m`` (the existing rolling-MINIMUM
+    filter, incident 8.15/F2): that filter's own minimum can plateau for a full
+    ``climb_gap_brake_filter_window_sec`` while a REAL gap is genuinely GROWING (patient walking
+    away) -- purely a filter-mechanics artifact, not evidence of a frozen ghost -- which would
+    false-positive this test on exactly the "her walking away" case it must never fire on.
+    Callers pass the SAME raw signal ``filtered_climb_gap_m`` itself consumes
+    (``debug_info.get("standoff_gap_ctrl_m")``), not the filtered output.
+
+    RESET (task: "do NOT make the latch permanent -- a later REAL approach must be brakeable"):
+    every call with ``stair_climbing_latch`` False, or with ``freeze_sec``/``riser_agree_window_m``
+    at/below the zero-disable sentinel (see ZERO-DISABLE below), clears ``state`` completely --
+    samples, the streak anchor, and any active cooloff -- so a later staircase (or a resumed
+    climb after a genuine ghost-free release) starts with no memory of a prior declaration.
+
+    LATCH / COOLOFF (task: declare, then hold for ``cooloff_sec``, then re-evaluate fresh --
+    NOT a re-arming dwell like ``landing_edge_block_latched``, which extends its deadline on
+    every fresh True): the FIRST frame all three conditions hold sets
+    ``state.ghost_until = now + cooloff_sec`` and returns True; every subsequent call returns
+    True unconditionally (regardless of what the window looks like) until ``now >=
+    state.ghost_until``, at which point the latch clears and this function re-evaluates the raw
+    predicate fresh that SAME call. Rationale: if the reading really is her, the dog's own
+    resumed advance (brake released -> forward command restored -> body moves) changes the
+    measured range within a second or two of the cooloff ending, so the frozen-range test
+    stops holding and braking resumes -- with the hard ``--stair-climb-collision-floor`` cutoff
+    and the sim-side GT taper (``isaac_env._gt_gap_scale``, untouched by this function) as
+    backstops the whole time regardless. If it really is the staircase, the range stays frozen
+    and the next evaluation immediately re-declares.
+
+    ZERO-DISABLE (CLAUDE.md 8.1 zero-sentinel discipline): ``freeze_sec <= 0.0``,
+    ``riser_agree_window_m <= 0.0``, or ``freeze_eps_m <= 0.0`` each independently and fully
+    disable this function (always returns False, resets ``state``) -- tested on the RAW CLI
+    values before any other logic, exactly like ``landing_face_patient_align``'s own "0 = off"
+    contract. A degenerate zero tolerance/window is not a meaningful configuration to attempt
+    (as opposed to, say, ``cooloff_sec = 0``, which is a valid non-disabling "re-evaluate every
+    frame" configuration -- clamped to >=0.0 via ``max()``, not a sentinel).
+
+    CAVEAT (CLAUDE.md 8.7 -- do not over-claim): like ``detection_age_sec``, this does not
+    special-case a genuinely FROZEN (paused) sim clock -- a paused ``sim_t`` reporting the same
+    value every frame would silently stall the ``elapsed_t`` clock along with it, preventing a
+    declaration from ever reaching its ``freeze_sec`` span requirement. No evidence of a
+    paused-sim-clock failure mode exists in any reviewed run; out of scope here.
+
+    Returns a plain ``bool`` (not a result dataclass, matching the majority of this module's
+    single-decision predicates, e.g. ``too_close_riser_gap_suppressed`` /
+    ``stair_climbing_latch_release_eligible``) -- the CALLER is responsible for any one-shot
+    boot log on the True-transition (incident 8.8), mirroring
+    ``_stair_latch_ghost_release_logged`` in ``core/main.py``, since a pure function in this
+    module never performs logging side effects itself.
+    """
+    if state.age_anchor.last_wall_ts is None:
+        dt = 0.0  # first-ever call: no prior anchor, nothing to integrate yet.
+    else:
+        dt = max(0.0, detection_age_sec(state.age_anchor, now_wall=now_wall, sim_t=sim_t))
+    note_detection_match(state.age_anchor, now_wall=now_wall, sim_t=sim_t)
+    state.elapsed_t = float(state.elapsed_t) + dt
+    now_f = state.elapsed_t
+
+    def _reset() -> None:
+        state.samples = []
+        state.first_seen_ts = None
+        state.ghost_until = None
+
+    if float(freeze_sec) <= 0.0 or float(riser_agree_window_m) <= 0.0 or float(freeze_eps_m) <= 0.0:
+        _reset()
+        return False
+
+    if not bool(stair_climbing_latch):
+        _reset()
+        return False
+
+    win = max(1e-3, float(freeze_sec))
+    state.samples[:] = [(t, g) for (t, g) in state.samples if (now_f - t) <= win]
+    was_empty = not state.samples
+    if person_detected and gap_m is not None:
+        try:
+            g_sample = float(gap_m)
+        except (TypeError, ValueError):
+            g_sample = None
+        if g_sample is not None and g_sample > 1e-3:
+            if was_empty:
+                state.first_seen_ts = now_f
+            state.samples.append((now_f, g_sample))
+    if not state.samples:
+        state.first_seen_ts = None
+
+    if state.ghost_until is not None:
+        if now_f < state.ghost_until:
+            return True
+        state.ghost_until = None
+
+    if not bool(person_detected):
+        return False
+    if gap_m is None or depth_stair_leading_edge_m is None:
+        return False
+    try:
+        g = float(gap_m)
+        edge = float(depth_stair_leading_edge_m)
+    except (TypeError, ValueError):
+        return False
+    if abs(g - edge) > float(riser_agree_window_m):
+        return False
+    if state.first_seen_ts is None or (now_f - state.first_seen_ts) < win:
+        return False
+    if len(state.samples) < 2:
+        return False
+    gaps = [gg for _, gg in state.samples]
+    if (max(gaps) - min(gaps)) >= float(freeze_eps_m):
+        return False
+
+    state.ghost_until = now_f + max(0.0, float(cooloff_sec))
+    return True
 
 
 def stair_loss_gap_block(
@@ -882,7 +1212,6 @@ def landing_face_patient_align(
     *,
     trigger: bool,
     bearing_deg: Optional[float],
-    edge_block: bool,
     state: LandingFaceAlignState,
     now_wall: float,
     sim_t: Optional[float],
@@ -941,14 +1270,34 @@ def landing_face_patient_align(
     cumulative bounded rotation ``>= max_rotation_deg``. Any of the three latches ``state.done``
     permanently.
 
-    EDGE-GUARD PRECEDENCE (task hard constraint 3): ``edge_block`` (the caller's already-
-    latched ``landing_edge_block_latched(...)`` result) does NOT translate anything by itself
-    (this function never touches vx), but while it is True this function withholds the ROTATION
-    too for that frame (``active=False, yaw_rate_cmd=0.0``) rather than advancing the turn --
-    "hold wins over rotation". It does not finish/abandon the sequence -- elapsed time keeps
-    accruing against ``timeout_sec`` regardless (that alone still bounds a persistently
-    edge-blocked stretch), and edge_block is re-evaluated fresh every frame by the caller
-    (incident 8.16 F2 hysteresis lives in ``landing_edge_block_latched``, not here).
+    EDGE-GUARD PRECEDENCE -- CORRECTED 2026-07-12 (run-28 review, run_sim_20260712_141230_357;
+    supersedes the original "hold wins over rotation" design): this function used to accept an
+    ``edge_block`` argument and withhold rotation outright for any frame the caller's
+    ``landing_edge_block_latched(...)`` result was True. Trace evidence showed the edge latch
+    is CHRONIC at the dog's actual terminal post-crest pose -- ``landing_edge_block`` and its
+    raw probe were True on 446/446 consecutive frames from sim_t 72.0 to run end (the
+    staircase drop-off the dog just climbed stays inside the depth probe's forward view at its
+    final heading) -- so the veto made this function unable to EVER rotate in exactly the
+    endgame scenario it exists for. The ``edge_block`` parameter is REMOVED; this function has
+    no opinion on the landing edge guard at all anymore. That is safe because the edge guard's
+    actual contract is FORWARD TRANSLATION toward a drop-off (see the isaac_env.py F4 comment
+    at the walk-only hold clamp: a momentum ramp "would keep walking the dog TOWARD the edge")
+    -- this function never touches vx (see TRANSLATION note above / the caller's own
+    ``trans_x_cmd`` zeroing, hard constraint 1) and commands only a rate-capped,
+    rotation-bounded, in-place turn. When the dog is actually FACING the crest drop, turning
+    toward the patient rotates AWAY from the edge, so the old veto was backwards. The real
+    safety net for "is this in-place turn staying genuinely in place" now lives on the SIM
+    side, where true body position is available: ``go2_locomotion/yaw_align_drift.py``'s
+    ``YawAlignDriftWatchdog``, wired into ``isaac_env.py``'s ``_step_go2_locomotion`` F1
+    hold-clamp region (the "Run-28 review follow-up" comment ~L2597-2610 and the
+    ``if _motion_hold_requested:`` block ~L2611-2649 that consumes it) -- it anchors the
+    robot's (x, y) at the start of each rotation burst and
+    PERMANENTLY stops honoring the ``yaw_align_rate`` carve-out (``wz=0.0, hold=True``) if
+    measured planar drift ever exceeds ``--yaw-align-drift-max-m``. The bounds this function
+    already enforces (``deadband_deg``, ``timeout_sec``, ``max_rotation_deg``) remain the
+    primary, platform-independent guards; the sim watchdog is additional sim-only
+    defense-in-depth (the real hardware path has no ground-truth position source to anchor
+    against).
 
     EXPLICIT DISABLE PATH (task brief -- "0 = off", CLAUDE.md 8.1 zero-as-disabled-sentinel
     lesson): tested on the RAW ``yaw_rate`` argument (the CLI value, ``args.
@@ -1005,12 +1354,230 @@ def landing_face_patient_align(
         state.done = True
         return LandingFaceAlignResult(engaged=True, active=False, done=True, yaw_rate_cmd=0.0)
 
-    if bool(edge_block):
-        return LandingFaceAlignResult(engaged=True, active=False, done=False, yaw_rate_cmd=0.0)
-
     rate = -math.copysign(float(yaw_rate), float(bearing_deg))
     state.rotated_rad = float(state.rotated_rad) + abs(rate) * dt
     return LandingFaceAlignResult(engaged=True, active=True, done=False, yaw_rate_cmd=float(rate))
+
+
+@dataclass
+class LandingVisibleCenterResult:
+    """One frame's decision from ``landing_visible_person_centering`` (see its docstring)."""
+    active: bool            # True only THIS frame is actively commanding a nonzero yaw_rate_cmd
+    yaw_rate_cmd: float      # rad/s to command this frame; 0.0 whenever not active
+    budget_exhausted: bool   # True once the cumulative whole-run rotation budget has been spent
+
+
+@dataclass
+class LandingVisibleCenterState:
+    """Caller-owned state for ``landing_visible_person_centering`` (task: run 28 review,
+    2026-07-12, run_sim_20260712_141230_357). One instance owned by the main loop, mirroring
+    ``LandingFaceAlignState`` above -- never a module global. Unlike ``LandingFaceAlignState``
+    this is NOT a one-way latch: ``centering`` is a re-armable Schmitt-trigger flag, so
+    ``age_anchor`` is re-anchored on EVERY call (a generic "time since the last call" dt
+    primitive) rather than once at engage -- the single-anchor-plus-running-elapsed shape
+    ``LandingFaceAlignState`` uses only fits a state that engages exactly once.
+    """
+    centering: bool = False            # Schmitt-trigger state: mid-correction toward the deadband
+    engagement_rotated_rad: float = 0.0  # |yaw_rate_cmd * dt| accumulated THIS engagement only
+    total_rotated_rad: float = 0.0       # cumulative across the WHOLE run, never resets
+    budget_exhausted: bool = False       # one-way: True once total_rotated_rad hits the budget
+    age_anchor: DetectionAgeState = field(default_factory=DetectionAgeState)
+
+
+def landing_visible_person_centering(
+    *,
+    trigger: bool,
+    bearing_deg: Optional[float],
+    state: LandingVisibleCenterState,
+    now_wall: float,
+    sim_t: Optional[float],
+    engage_deg: float,
+    deadband_deg: float,
+    max_rotation_deg: float,
+    total_rotation_budget_deg: float,
+    yaw_rate: float,
+) -> LandingVisibleCenterResult:
+    """Bounded, slow, YAW-ONLY closed-loop centering on a VISIBLE patient during a post-crest
+    top-landing hold -- the mirror-image gap ``landing_face_patient_align`` (above) leaves open.
+
+    RUN 28 GAP (task brief, 2026-07-12, run_sim_20260712_141230_357): that run's endgame took
+    the OTHER path from run 27's -- the patient stayed ``person_detected=True`` the whole
+    endgame (live ``rotation_error_deg`` steady at approx -24 deg for the final ~13 s, sim_t
+    73.6-86.9, 415 consecutive trace frames), so ``landing_lost_person_hold_active`` fired on 0
+    frames and ``landing_face_patient_align`` never engaged. The dog sat in an ORDINARY
+    standoff hold (``stop_decision``/``hold_request`` True, fsm ``FLAT_FOLLOW``,
+    ``post_crest_fully_on_landing`` True for 471 frames) staring past the patient, because
+    ``hold=True`` zeroes wz on the sim side (``PgttLocomotionPolicy.step``: ``if hold: cmd =
+    (0,0,0)``) regardless of what the ordinary follow steering computed. This function is the
+    fix: while fully clear of the stairs and holding with a VISIBLE, bearing-known patient,
+    close the loop on the live bearing instead of leaving the dog wherever it happened to be
+    facing when the hold engaged.
+
+    RE-ARMABLE, NOT A ONE-WAY LATCH (the key structural difference from
+    ``landing_face_patient_align``): the caller's ``trigger`` is expected to toggle on every
+    frame with the live AND-condition (``post_crest_fully_on_landing AND an active hold AND
+    person_detected-with-a-live-bearing AND NOT already in the lost-case terminal sequence`` --
+    see the call site in ``core/main.py``), and this function tracks a Schmitt-trigger
+    ``state.centering`` flag rather than a permanent ``engaged`` latch. If the patient starts
+    walking again mid-landing the caller's hold releases on its own (this function has no
+    opinion on that -- see TRANSLATION below), and if the bearing later drifts back outside the
+    engage threshold this function may center again, bounded by the cumulative budget below.
+
+    HYSTERESIS (task brief -- "aligns once and holds rather than chattering"): a Schmitt
+    trigger with a HIGH threshold (``engage_deg``, default 15 deg via
+    ``--landing-face-patient-track-engage-deg``) and a LOW threshold (the existing
+    ``deadband_deg``, default 8 deg, shared with ``landing_face_patient_align`` via
+    ``--landing-face-patient-deadband-deg``): rotation starts only once
+    ``abs(bearing) > engage_deg`` while ``not state.centering``, and once started continues
+    past the engage threshold (a bearing sitting between the two thresholds does NOT stop it)
+    until ``abs(bearing) <= deadband_deg``. This is exactly why the two thresholds must differ
+    -- a single shared threshold would chatter at its own boundary under normal bearing noise.
+
+    RATE / SIGN (task brief -- "same sign convention"): bang-bang at a fixed magnitude, never
+    proportional, mirroring ``landing_face_patient_align``'s own control law and citation
+    (``core/main.py``'s forward-pursuit arc-yaw ~L1630-1632: ``rotation_cmd =
+    -copysign(_arc, bearing)``, "+bearing == patient on the RIGHT -> negative yaw (turn
+    right)"): ``rate = -copysign(yaw_rate, bearing_deg)``, capped at the same
+    ``--landing-face-patient-yaw-rate`` the lost-case machine uses.
+
+    TWO SEPARATE ROTATION BACKSTOPS (task brief -- "as the hard backstop against any
+    pathological oscillation"), kept as TWO DISTINCT counters/args rather than one shared
+    budget with ``LandingFaceAlignState`` (CLAUDE.md 8.1: do not couple two independently-
+    reasoned safety bounds just because they are numerically similar -- the lost case's
+    ``rotated_rad`` is a ONE-SHOT terminal budget spent once ever; this mode's budget must
+    survive across many small re-arm engagements over the whole run):
+      * PER-ENGAGEMENT (``state.engagement_rotated_rad``, reuses the existing
+        ``--landing-face-patient-max-rotation-deg``, same 120 deg default as the lost case):
+        caps any ONE continuous centering sequence. Resets to 0.0 whenever a NEW engagement
+        starts (the Schmitt trigger's low->high transition). Tripping this only ends the
+        current engagement (``state.centering = False``) -- it does not exhaust the budget or
+        block a future re-arm.
+      * CUMULATIVE (``state.total_rotated_rad``, new ``--landing-face-patient-total-rotation-
+        deg``, default 240 deg): never resets, sums every engagement's rotation for the whole
+        run. Tripping this sets ``state.budget_exhausted = True`` PERMANENTLY (one-way, like
+        the lost case's own terminal latches) -- the mode never rotates again this run,
+        regardless of how the bearing subsequently behaves.
+
+    TRANSLATION (task hard constraint 1 -- the core semantic difference from the lost case):
+    this function has ZERO opinion on vx/vy/hold/stop_decision and never will -- it returns
+    ONLY a yaw rate (see ``test_visible_center_never_emits_translation``). The caller must NOT
+    set any terminal translation latch from this mode's result, must NOT fold it into
+    ``stop_decision``, and must NOT force ``motion_allowed`` -- translation stays governed
+    entirely by whichever hold reason (standoff/too_close/etc.) is already asserting it. The
+    ONLY effect while ``result.active`` is True: the caller sets ``rotation_cmd`` to
+    ``result.yaw_rate_cmd`` and populates the ``yaw_align_rate`` UDP payload field so the
+    sim-side F1 hold clamp (``isaac_env._step_go2_locomotion``, the SAME carve-out
+    ``landing_face_patient_align`` uses) lets that specific wz through while vx/vy stay pinned
+    at 0 by the hold this function never touches.
+
+    YIELD ON PERSON LOSS (task hard constraint 3 -- "no handoff logic needed beyond
+    yielding"): the caller's own ``trigger`` construction drops False the instant
+    ``person_detected`` goes False (it is one of the AND-conditions), so this function simply
+    sees ``trigger=False`` that frame -- resets ``state.centering`` to False (no attempt to
+    "remember" and silently resume a stale engagement across an arbitrary person-loss gap) and
+    returns an inactive result. ``landing_lost_person_hold_active`` /
+    ``landing_face_patient_align`` engage on their OWN trigger from that same person-loss, with
+    no coupling to this function's state at all.
+
+    EDGE-GUARD PRECEDENCE -- CORRECTED 2026-07-12 (run-28 review, run_sim_20260712_141230_357):
+    this function used to mirror ``landing_face_patient_align`` exactly -- an ``edge_block``
+    argument withheld rotation for the frame it was True (without resetting
+    ``state.centering``). Removed for the identical reason documented in
+    ``landing_face_patient_align``'s own EDGE-GUARD PRECEDENCE paragraph (see that docstring
+    for the full run-28 trace citation): the edge latch is chronic at the dog's terminal
+    post-crest pose, so the veto made this function unable to ever rotate in exactly the
+    endgame it exists for, and vetoing an in-place turn was never what the edge guard's
+    forward-translation contract called for anyway. This function has no opinion on the
+    landing edge guard at all anymore; the real safety net is the same sim-side
+    ``go2_locomotion.yaw_align_drift.YawAlignDriftWatchdog`` that now guards BOTH modes'
+    ``yaw_align_rate`` carve-out in ``isaac_env.py``'s ``_step_go2_locomotion`` (see its
+    docstring for the wiring citation).
+
+    TWO INDEPENDENT EXPLICIT DISABLE PATHS (mirrors ``landing_face_patient_align``'s own "0 =
+    off" contract, CLAUDE.md 8.1 zero-as-disabled-sentinel lesson), both tested on their RAW
+    argument before any other logic, never on a derived quantity that can independently read
+    0.0 for an unrelated legitimate reason:
+      * ``yaw_rate <= 0.0`` -- SHARED with the lost case (``--landing-face-patient-yaw-rate 0``
+        disables BOTH modes' rotation; this function has no independent yaw-rate knob).
+      * ``engage_deg <= 0.0`` -- VISIBLE-MODE-ONLY (``--landing-face-patient-track-engage-deg
+        0``). Disables just this function; the lost-case ``landing_face_patient_align`` is
+        untouched (it has no ``engage_deg`` parameter at all). Checked separately from, and
+        before, the Schmitt-trigger comparison below -- an engage threshold of exactly 0.0 must
+        NOT be read as "trigger on any nonzero bearing" (the opposite of disabled).
+
+    NEVER-RECORDED BEARING: ``bearing_deg is None`` is folded into the same "not triggered"
+    path -- fails toward stillness (CLAUDE.md 8.8), matching ``landing_face_patient_align``.
+
+    Returns a fresh ``LandingVisibleCenterResult`` every call; never returns ``None``.
+    """
+    # Per-frame dual-clock delta (incident 8.6): note_detection_match/detection_age_sec reused
+    # as a generic "time since the last call" primitive by RE-ANCHORING EVERY CALL (unlike
+    # LandingFaceAlignState, which anchors ONCE at engage and diffs a running elapsed total --
+    # that shape only fits a one-way latch; this mode re-arms, so a fixed single anchor would
+    # not give a correct per-frame dt across multiple engagements). CLAUDE.md 8.1: reuse the
+    # existing dual-clock primitive rather than hand-rolling a second copy of it.
+    if state.age_anchor.last_wall_ts is None:
+        dt = 0.0  # first-ever call: no prior anchor, nothing to integrate yet.
+    else:
+        dt = max(0.0, detection_age_sec(state.age_anchor, now_wall=now_wall, sim_t=sim_t))
+    note_detection_match(state.age_anchor, now_wall=now_wall, sim_t=sim_t)
+
+    if state.budget_exhausted:
+        state.centering = False
+        return LandingVisibleCenterResult(active=False, yaw_rate_cmd=0.0, budget_exhausted=True)
+
+    if float(yaw_rate) <= 0.0:
+        # Explicit disable path, SHARED with the lost case -- see docstring. Tested on the raw
+        # argument first.
+        state.centering = False
+        return LandingVisibleCenterResult(active=False, yaw_rate_cmd=0.0, budget_exhausted=False)
+
+    if float(engage_deg) <= 0.0:
+        # Explicit disable path, VISIBLE-MODE-ONLY -- see docstring. Tested on the raw argument
+        # BEFORE it is ever used as a Schmitt-trigger comparison threshold (an engage_deg of
+        # exactly 0.0 must not be read as "trigger on any nonzero bearing").
+        state.centering = False
+        return LandingVisibleCenterResult(active=False, yaw_rate_cmd=0.0, budget_exhausted=False)
+
+    if (not bool(trigger)) or bearing_deg is None:
+        # Not triggered (includes a person loss mid-centering) -- yield with no persistent
+        # memory of the interrupted engagement (task hard constraint 3).
+        state.centering = False
+        return LandingVisibleCenterResult(active=False, yaw_rate_cmd=0.0, budget_exhausted=False)
+
+    bearing = float(bearing_deg)
+    if not state.centering:
+        # Schmitt-trigger HIGH threshold: only START correcting once the bearing exceeds the
+        # engage threshold -- a bearing sitting between deadband_deg and engage_deg must NOT
+        # (re)start a fresh engagement (hysteresis).
+        if abs(bearing) <= max(0.0, float(engage_deg)):
+            return LandingVisibleCenterResult(active=False, yaw_rate_cmd=0.0, budget_exhausted=False)
+        state.centering = True
+        state.engagement_rotated_rad = 0.0
+
+    # Schmitt-trigger LOW threshold: stop once inside the (shared) deadband -- re-armable, see
+    # docstring: a later frame crossing back out past engage_deg may start a new engagement.
+    if abs(bearing) <= max(0.0, float(deadband_deg)):
+        state.centering = False
+        return LandingVisibleCenterResult(active=False, yaw_rate_cmd=0.0, budget_exhausted=False)
+
+    if state.engagement_rotated_rad >= math.radians(max(0.0, float(max_rotation_deg))):
+        # Per-engagement backstop: give up THIS engagement only -- does not exhaust the
+        # cumulative budget or block a future re-arm.
+        state.centering = False
+        return LandingVisibleCenterResult(active=False, yaw_rate_cmd=0.0, budget_exhausted=False)
+
+    if state.total_rotated_rad >= math.radians(max(0.0, float(total_rotation_budget_deg))):
+        # Cumulative whole-run backstop: PERMANENT -- never rotates again this run.
+        state.centering = False
+        state.budget_exhausted = True
+        return LandingVisibleCenterResult(active=False, yaw_rate_cmd=0.0, budget_exhausted=True)
+
+    rate = -math.copysign(float(yaw_rate), bearing)
+    delta = abs(rate) * dt
+    state.engagement_rotated_rad = float(state.engagement_rotated_rad) + delta
+    state.total_rotated_rad = float(state.total_rotated_rad) + delta
+    return LandingVisibleCenterResult(active=True, yaw_rate_cmd=float(rate), budget_exhausted=False)
 
 
 def _depth_from_bbox(depth_img: np.ndarray, bbox: Optional[List[float]]) -> Optional[float]:
@@ -1549,6 +2116,7 @@ def _apply_stair_command_policy(
     rotation_cmd: float,
     debug_info: Dict[str, Any],
     frame_meta: Optional[Dict[str, Any]] = None,
+    ghost_declared_prev: bool = False,
 ) -> Tuple[float, float]:
     if not bool(debug_info.get("stairs_detected", False)):
         debug_info["stairs_action_active"] = False
@@ -1689,11 +2257,25 @@ def _apply_stair_command_policy(
     # core/main.py (single producer, incident 8.5 -- see filtered_climb_gap_m's docstring)
     # right after _apply_follow_standoff_policy populates standoff_gap_ctrl_m, ahead of this
     # function's call at core/main.py:1145, so it is always fresh by the time this reads it.
+    #
+    # Runs 32/33 ghost hardening (2026-07-12): person_detected is gated by
+    # ghost_declared_prev -- this function is called at core/main.py:1145, BEFORE this frame's
+    # own stair_climbing_latch (and therefore this frame's climb_gap_ghost_declared) is known
+    # (incident 8.5 ordering), so the caller passes the PREVIOUS frame's declaration, mirroring
+    # _prev_stairs_action_active's identical compute-then-pass solution to the identical
+    # same-frame hazard. See climb_gap_ghost_declared's docstring for the run-33 trace this
+    # guards against (a person-as-risers ghost pinning the gap to the staircase's own leading
+    # edge for 60+ s and braking the climb to a permanent stall). Scoped to ONLY this brake
+    # call -- the person-not-detected gate above (~L2119) and every other read of
+    # debug_info["person_detected"] in this function are UNCHANGED (raw).
+    _gate_person_detected = (
+        bool(debug_info.get("person_detected", False)) and not bool(ghost_declared_prev)
+    )
     _gap_brake_scale = climb_gap_brake_scale(
         debug_info.get("stair_climb_gap_filtered_m"),
         brake_start_m=float(getattr(args, "climb_gap_brake_start", 1.2)),
         brake_stop_m=float(getattr(args, "climb_gap_brake_stop", 0.85)),
-        person_detected=bool(debug_info.get("person_detected", False)),
+        person_detected=_gate_person_detected,
     )
     _gap_capped = float(max_forward) * _gap_brake_scale
     if trans_x_cmd > _gap_capped:
