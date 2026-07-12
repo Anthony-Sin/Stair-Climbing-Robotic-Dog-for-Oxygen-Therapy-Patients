@@ -606,17 +606,6 @@
         <p>About 1.5 million Americans rely on long-term home oxygen therapy, and stairs are consistently the task they fear most — a fall risk that can confine a patient to one floor of their own home. This project builds a sensor-guided quadruped that walks beside the patient, carries the oxygen equipment, and climbs the stairs on its own — so the patient never has to face a staircase alone.</p>
       </div>
 
-      <div class="sec">
-        <div class="sh">From Proven Sim to the Living Room</div>
-        <div class="row2" style="align-items:center;">
-          <div class="fig">
-            <img src="assets/scene_follow.png" alt="Three.js scene view: robot following the patient toward a staircase" style="max-height:110px;object-fit:cover;">
-            <div class="cap">Fig. 9 — Same container, sim or real.</div>
-          </div>
-          <p style="margin:0;font-size:15px;line-height:1.4;">The deployment bet: a policy proven in sim is expected to hold on hardware because it runs the <b>identical Docker container</b> — only the sensor source changes. <b>Patients</b>, <b>caregivers</b>, and <b>clinics</b> all stand to benefit once it's out of the lab.</p>
-        </div>
-      </div>
-
     </div><!-- /col center -->
 
 
@@ -627,7 +616,7 @@
         <div class="sh">Control State Machines</div>
         <div class="fig">
           <img src="assets/diagram_state_machines.png" alt="State machine diagrams" style="max-height:500px;">
-          <div class="cap">Fig. 10 — HandoffController (Isaac Sim, 50 Hz) and ClimbFSM (Docker) run concurrently via UDP.</div>
+          <div class="cap">Fig. 9 — HandoffController (Isaac Sim, 50 Hz) and ClimbFSM (Docker) run concurrently via UDP.</div>
         </div>
         <p>Two state machines, one on each side of the UDP link, so a dropped packet or a stalled ClimbFSM can't leave the walker holding a stale climb command.</p>
       </div>
@@ -637,11 +626,11 @@
         <div class="row2">
           <div class="fig">
             <img src="assets/scene_follow.png" alt="Three.js scene view: robot following the patient toward a staircase" style="max-height:290px;">
-            <div class="cap">Fig. 11 — Scene view (Isaac Sim rollout): robot trails the patient toward the stairs, carrying the O₂ tank.</div>
+            <div class="cap">Fig. 10 — Scene view (Isaac Sim rollout): robot trails the patient toward the stairs, carrying the O₂ tank.</div>
           </div>
           <div class="fig">
             <img src="assets/opencv_hud.png" alt="OpenCV / YOLO-World perception HUD locked onto the patient" style="max-height:290px;">
-            <div class="cap">Fig. 12 — Live perception HUD: YOLO-World person lock, D435 depth, and LiDAR range panels.</div>
+            <div class="cap">Fig. 11 — Live perception HUD: YOLO-World person lock, D435 depth, and LiDAR range panels.</div>
           </div>
         </div>
       </div>
@@ -666,7 +655,7 @@
               <text class="dg-c" x="164" y="164" text-anchor="middle">closed proprioceptive loop · climbs by feel</text>
             </svg>
           </div>
-          <div class="cap">Fig. 13 — Blind-RL policy: no camera, no depth on the stairs — terrain is felt via proprioception + foot contact alone.</div>
+          <div class="cap">Fig. 12 — Blind-RL policy: no camera, no depth on the stairs — terrain is felt via proprioception + foot contact alone.</div>
         </div>
         <p>Going blind on the stairs was a deliberate choice, not a limitation of the cameras — vision is unreliable right at the robot's feet, where its own body occludes the D435's view of the next riser.</p>
       </div>
