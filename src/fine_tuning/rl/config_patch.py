@@ -209,6 +209,49 @@ class StairPatchParams:
     #                                       halt skill gets real practice without swamping the
     #                                       forward-walk/climb skill the earlier stages already learned.
 
+    # --- 2026-07-12 stage-5 mount-softening fix (nose-first riser strikes) --------------
+    # The DEPLOYED stage-4 policy climbs but strikes each riser nose-first: trace-measured
+    # press-stall-push mounts dip to pitch magnitudes of ~22-34 deg (deployed-sim telemetry
+    # sign, src/sim/isaac/isaac_env.py's own Euler convention) vs a normal climb lean of
+    # ~8-12 deg. Both new terms are SHAPING only -- neither adds a termination (CLAUDE.md
+    # 8.11: belly-drag climbs on risers are legitimate and must stay survivable).
+    pitch_dip_hinge_rad: float = 0.26     # NEW pitch_dip_hinge trigger angle (rad, ~15 deg);
+    #                                       0 disables the term (gated in render_stairs_cfg_module
+    #                                       like ascent/roll/crest above). SIGN CONVENTION:
+    #                                       this hinge is compared against THIS training env's
+    #                                       OWN pitch (asin(projected_gravity_b[:, 0]), positive
+    #                                       == nose-down -- VERIFIED, not assumed; see the
+    #                                       _reward_pitch_dip_hinge docstring in
+    #                                       render_stairs_cfg_module for the full derivation and
+    #                                       why it is the OPPOSITE sign of the informal "-20 deg
+    #                                       nose-down" language used elsewhere in this repo for
+    #                                       the deployed sim's own telemetry). 0.26 rad sits just
+    #                                       past the normal ~8-12 deg (~0.14-0.21 rad) climb lean
+    #                                       so that lean costs ZERO; only a genuine deep
+    #                                       press-stall-push mount (observed ~22-34 deg magnitude)
+    #                                       pushes past the hinge and gets penalised.
+    pitch_dip_weight: float = -1.0        # NEW pitch_dip_hinge reward weight; 0 disables. The
+    #                                       hinge+square shape is self-limiting: even at weight
+    #                                       -1.0 the per-step cost is (excess_rad)^2 -- a few
+    #                                       hundredths to low tenths for the observed dips,
+    #                                       nowhere near the ~53%-of-budget scale that caused the
+    #                                       2026-07-10_21-39-53 collapse (see upward_weight above
+    #                                       / memory o2stair-collapse-2026-07-10-fixed-profile) --
+    #                                       so it stays a small share of the reward budget.
+    trunk_thigh_contact_weight: float = -0.25  # NEW trunk_thigh_contact reward weight; 0
+    #                                       disables. REUSES robot_lab's own undesired_contacts
+    #                                       function -- already bound onto the parent's
+    #                                       self.rewards.undesired_contacts (unitree_go2/
+    #                                       rough_env_cfg.py: weight=-1.0, sensor "contact_forces",
+    #                                       body_names=ALL non-foot bodies) -- as a SEPARATE,
+    #                                       narrower term scoped to just trunk ("base") + thigh
+    #                                       bodies (what strikes the riser edge on a nose-first
+    #                                       mount), at a smaller weight than the existing broad
+    #                                       term so it nudges rather than dominates and stays a
+    #                                       small share of the reward budget (same 53%-collapse
+    #                                       concern as above). Does NOT touch the existing
+    #                                       undesired_contacts term at all.
+
 
 def render_stairs_cfg_module(
     payload: PayloadNumbers, params: StairPatchParams = StairPatchParams()
@@ -356,6 +399,45 @@ def _reward_crest_level(env, asset_cfg=SceneEntityCfg("robot")):
     elevated = (height_gain > 0.5).float()
     return flat * on_flat * elevated
 '''
+    if params.pitch_dip_weight != 0.0:
+        reward_fns += '''
+
+def _reward_pitch_dip_hinge(env, hinge_rad: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """Squared-hinge penalty on excess NOSE-DOWN pitch past ``hinge_rad`` (stage-5 mount-softening
+    fix for nose-first riser strikes).
+
+    SIGN CONVENTION (VERIFIED against this env's own math -- CLAUDE.md 8.7: do not trust an
+    unverified comment claiming a sign/ordering property). ``root_link_quat_w`` is the
+    body->world orientation quaternion; ``projected_gravity_b = quat_apply_inverse(
+    root_link_quat_w, GRAVITY_VEC_W)`` where ``GRAVITY_VEC_W`` is the normalised (0, 0, -1)
+    world gravity direction and ``FORWARD_VEC_B = (1, 0, 0)``
+    (isaaclab/assets/rigid_object/rigid_object_data.py:59-66,343-345) -- i.e. body +x is
+    forward. isaaclab/utils/math.py's ``euler_xyz_from_quat`` computes
+    ``pitch = asin(2*(qw*qy - qz*qx))``, which is ALGEBRAICALLY identical to
+    ``asin(projected_gravity_b[:, 0])`` for the same quaternion (both reduce to sin(pitch)) --
+    so this avoids importing ``math_utils`` while reproducing that exact value. A pure +theta
+    rotation about the body y-axis (q = (cos(theta/2), 0, sin(theta/2), 0)) numerically confirms
+    the sign: euler pitch reads back exactly +theta, while the forward (+x) axis rotates to a
+    NEGATIVE world-z component -- i.e. the nose tips DOWN. So in THIS env, POSITIVE pitch IS
+    nose-down.
+
+    This is the OPPOSITE of the informal "-20 deg nose-down" / "-8..-12 deg climb lean"
+    language used elsewhere in this repo (this file's fall_term comment above; CLAUDE.md's
+    climb-nose-down-jam memory) -- that language describes a DIFFERENT measurement pipeline
+    (this project's DEPLOYED Isaac Sim telemetry, src/sim/isaac/isaac_env.py's own Euler/rpy
+    extraction), not this training env's projected_gravity_b convention. Do not conflate the
+    two signs.
+
+    Zero cost for a normal climb lean inside the hinge (the legitimate ~8-12 deg lean, ~0.14-
+    0.21 rad in THIS sign convention, stays under the 0.26 rad default); grows as the SQUARE of
+    the excess once a mount dips past the hinge -- gentle right at the boundary, steep for the
+    observed ~22-34 deg deep nose-first press-stall-push mounts.
+    """
+    asset = env.scene[asset_cfg.name]
+    pitch = torch.asin(torch.clamp(asset.data.projected_gravity_b[:, 0], -1.0, 1.0))
+    dip = torch.clamp(pitch - hinge_rad, min=0.0)
+    return dip * dip
+'''
 
     # --- ascent-aware terrain-level curriculum (structural fix; always rendered) ---
     # Clone of IsaacLab's terrain_levels_vel (isaaclab_tasks/.../mdp/curriculums.py:27-56)
@@ -468,6 +550,41 @@ def _curriculum_terrain_levels_o2(env, env_ids, asset_cfg=SceneEntityCfg("robot"
         # of face-planting at the crest. Gated OFF during the climb (vertical-speed gate),
         # so it never fights the climbing pitch. (finding B / dismount)
         self.rewards.crest_level = RewTerm(func=_reward_crest_level, weight={params.crest_reward})
+'''
+
+    pitch_dip_term = ""
+    if params.pitch_dip_weight != 0.0:
+        pitch_dip_term = f'''
+        # nose-down mount-softening (stage-5, 2026-07-12): squared-hinge penalty past
+        # {params.pitch_dip_hinge_rad} rad (~{math.degrees(params.pitch_dip_hinge_rad):.1f} deg) of
+        # POSITIVE (nose-down, VERIFIED -- see _reward_pitch_dip_hinge's SIGN CONVENTION note
+        # above) pitch; zero inside the hinge so a normal climb lean stays free.
+        self.rewards.pitch_dip_hinge = RewTerm(
+            func=_reward_pitch_dip_hinge,
+            weight={params.pitch_dip_weight},
+            params={{"hinge_rad": {params.pitch_dip_hinge_rad}}},
+        )
+'''
+
+    trunk_thigh_contact_term = ""
+    if params.trunk_thigh_contact_weight != 0.0:
+        trunk_thigh_contact_term = f'''
+        # trunk+thigh contact shaping (stage-5, 2026-07-12): REUSES robot_lab's own
+        # undesired_contacts function -- already bound onto the parent's
+        # self.rewards.undesired_contacts.func (unitree_go2/rough_env_cfg.py, weight -1.0, ALL
+        # non-foot bodies) -- as a SEPARATE, narrower term restricted to trunk ("base") + thigh
+        # bodies (what strikes the riser edge on a nose-first mount), at its own smaller
+        # weight. Leaves the existing broad undesired_contacts term completely untouched.
+        # SHAPING only: no termination is added (CLAUDE.md 8.11 -- belly-drag climbs are
+        # legitimate).
+        self.rewards.trunk_thigh_contact = RewTerm(
+            func=self.rewards.undesired_contacts.func,
+            weight={params.trunk_thigh_contact_weight},
+            params={{
+                "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[self.base_link_name, ".*_thigh"]),
+                "threshold": 1.0,
+            }},
+        )
 '''
 
     # --- fall termination via ORIENTATION, not contact (2026-07-11 fix) -------
@@ -683,7 +800,7 @@ class {STAIRS_CFG_CLASS}(UnitreeGo2RoughEnvCfg):
         # climbing policy must produce; ease it so climbing is not fighting its own
         # penalty term as hard as it fights flat-ground bounce.
         self.rewards.lin_vel_z_l2.weight = {params.lin_vel_z_weight}
-{ascent_term}{roll_term}{crest_term}
+{ascent_term}{roll_term}{crest_term}{pitch_dip_term}{trunk_thigh_contact_term}
         # --- rebalance: forward-tracking vs climbing --------------------------
         # Stock track_lin_vel_xy_exp (3.0) out-earns the ascent reward ~30:1, so the policy
         # banks flat-ground velocity tracking and never commits to the climb. Trim it here so
@@ -793,6 +910,8 @@ _CRITICAL_PATCH_TOKENS = (
     # attribute-assignment pattern we rely on may have moved too.
     "illegal_contact",                 # proves self.terminations exists / is settable here
     "randomize_reset_base",            # the reset-pose DR event we narrow (2026-07-11 spawn-tilt fix)
+    "undesired_contacts",              # trunk_thigh_contact reuses .func off this existing term (2026-07-12)
+    "base_link_name",                  # trunk_thigh_contact's body_names reads self.base_link_name (2026-07-12)
 )
 
 

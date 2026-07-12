@@ -318,6 +318,8 @@ def _create_pgtt_policy(go2):
             f"tools/convert_pgtt_checkpoint.py (offline, in a JAX env), or pass "
             f"--locomotion-policy parkour to use the legacy depth controller."
         )
+    # Incident 8.15/8.16 F3: --pgtt-heightscan-drop-cap-m <= 0 disables the clamp (None).
+    _drop_cap_arg = float(getattr(env_state.args, "pgtt_heightscan_drop_cap_m", 0.6))
     config = PgttPolicyConfig(
         policy_path=str(npz_path),
         control_hz=CONTROL_HZ,
@@ -326,6 +328,7 @@ def _create_pgtt_policy(go2):
         kd=float(env_state.args.pgtt_kd),
         gait_freq=float(env_state.args.pgtt_gait_freq),
         heightscan_scale=float(env_state.args.pgtt_heightscan_scale),
+        heightscan_drop_cap_m=(_drop_cap_arg if _drop_cap_arg > 0.0 else None),
         drive_mode=str(env_state.args.pgtt_drive_mode),
         # Sim2real realism passthroughs (torque drive mode only; off by default).
         joint_limit_clamp=bool(env_state.args.joint_limit_clamp),
@@ -347,6 +350,8 @@ def _create_pgtt_policy(go2):
         action_scale=float(config.action_scale), gait_freq=float(config.gait_freq),
         drive_mode=str(config.drive_mode), height_backend=str(env_state.args.pgtt_height_backend),
         heightscan_scale=float(config.heightscan_scale), dof_count=len(dof_names),
+        heightscan_drop_cap_m=float(config.heightscan_drop_cap_m)
+        if config.heightscan_drop_cap_m is not None else None,
     )
     return policy
 

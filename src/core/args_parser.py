@@ -443,10 +443,19 @@ def parse_args():
                              'Default 0 keeps the learned high-lift gait balance-active (hold=False) '
                              'without a blind shove; the recorded top-landing run climbed with near-zero '
                              'mean forward command. Increase only for explicit A/B testing.')
-    parser.add_argument('--stair-loss-forward-floor', type=float, default=0.16,
+    parser.add_argument('--stair-loss-forward-floor', type=float, default=0.30,
                         help='Minimum forward command (m/s) only while the stair latch is active and '
                              'the person is temporarily not detected. Sent with hold=False so the '
-                             'robot keeps climbing/balancing instead of stance-locking mid-step.')
+                             'robot keeps climbing/balancing instead of stance-locking mid-step. '
+                             '0.16 -> 0.30 (2026-07-12, runs 21-22 vs waypoint self-test '
+                             'run_sim_20260712_114751_716): the stage-5 climber mounts riser 1 '
+                             'cleanly from a MOVING entry (self-test entered the base at speed and '
+                             'climbed to x=4.09) but climb_stalled from the 0.16-creep/dead-press '
+                             'entries the head-start-gate wait produces; run 13\'s successful '
+                             'follow-mode engage also entered at ~follow speed. This floor is the '
+                             'pre-engage approach speed once the entry gate opens, so it sets the '
+                             'mount momentum. Still braked to 0 near the patient by '
+                             'climb_gap_brake_scale when she is visible.')
     parser.add_argument('--stair-seen-persist-sec', type=float, default=8.0,
                         help='How long (s) after YOLO-World last detected the staircase to keep the '
                              '"stairs ahead" context alive. YOLO sees stairs well FAR but blanks UP '
@@ -581,6 +590,20 @@ def parse_args():
                              'longer than this. Prevents a failed/dragging climb from walking the dog '
                              'straight off the top landing and toppling it (observed overshoot to x=8.4, '
                              '2 m past the x=6.27 top edge). Set very large to disable the backstop.')
+    parser.add_argument('--stair-loss-block-immediate-guard-sec', type=float, default=2.0,
+                        help='Incident 8.15-corr / run-17 fix (runs 15, 16, AND 17 all settled '
+                             'identically at x~=1.77, dog stationary, climb never engaged -- '
+                             'isaac_env.jsonl logged ZERO handoff_engage events because the engage path '
+                             'needs a commanded vx>0 to even attempt one). The STAIR_LOSS_FLOOR / '
+                             'STAIR_APPROACH_COMMIT collision block on the FROZEN last-known patient gap '
+                             '(--stair-climb-collision-floor) is only trusted as "current" for this many '
+                             'sim-aware seconds (core.control.stair_policy.detection_age_sec, incident '
+                             '8.6) since the patient was last actually detected; past this horizon the '
+                             'patient has unquestionably moved on (climbing away at ~0.5 m/s) and the '
+                             'loss floor resumes driving (still gap-braked/near-field/staleness-guarded) '
+                             'so the stall/approach engage machinery gets a nonzero commanded vx to '
+                             'attempt on. See stair_loss_gap_block\'s docstring '
+                             '(core/control/stair_policy.py) for the full trace citation.')
     # --- Mid-climb patient-gap speed brake (incident 8.15 / F2) -----------------------
     # The binary --stair-climb-collision-floor cutoff (0.55 m) still applies as a hard
     # backstop, but it does nothing UNTIL the gap is already inside it -- the smoothed gap
@@ -664,6 +687,17 @@ def parse_args():
     parser.add_argument('--landing-edge-guard-drop-m', type=float, default=0.3,
                         help='Height drop (m) within --landing-edge-guard-reach-m that counts as '
                              'a confirmed descending edge.')
+    parser.add_argument('--landing-edge-block-latch-sec', type=float, default=3.0,
+                        help='Incident 8.15/8.16 F2 hardening: once a genuine (post-suppression) '
+                             'landing-edge block fires, keep it asserted for this many seconds '
+                             '(wall-clock, incident 8.6) after the LAST True reading, re-arming on '
+                             'every re-detection. Without this the raw per-frame probe only sees '
+                             'the drop-off while it is inside the forward depth FOV, so a rotating '
+                             'dog (e.g. the lost-person spin-search) produced alternating '
+                             'hold/spin frames right at the platform edge (run 11: '
+                             'landing_edge_block flickered False at sim_t=72.14/79.14/79.48 with '
+                             'a live +/-0.6283 rad rotation_cmd). See '
+                             'landing_edge_block_latched (core/control/stair_policy.py).')
     # --- Crest-artifact suppression for the landing edge guard (2026-07-11 follow-up) --
     # See landing_edge_guard_suppress_crest_artifact's docstring (core/control/stair_policy.py)
     # for the reproduced root cause: the guard's depth back-projection assumes a near-level

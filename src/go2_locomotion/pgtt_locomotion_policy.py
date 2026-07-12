@@ -80,6 +80,11 @@ class PgttPolicyConfig:
     gait_freq: float = 2.0
     command_clip: Tuple[float, float, float] = (1.5, 0.8, 1.2)  # u_max [vx, vy, yaw]
     heightscan_scale: float = 1.0  # sim=1.0; 1.5 was real-robot only
+    # Incident 8.15/8.16 F3: clamp each heightscan cell's raw z from below to
+    # (center_z - heightscan_drop_cap_m) before the min-normalization -- bounds how far a
+    # single over-the-edge cell (e.g. the 2.1 m top-landing drop) can shift the whole grid
+    # out of the training distribution. See build_heightscan's docstring. None disables it.
+    heightscan_drop_cap_m: Optional[float] = 0.6
     dist_x: float = PGTT_DIST_X
     dist_y: float = PGTT_DIST_Y
     n_rows: int = PGTT_N_ROWS
@@ -142,6 +147,9 @@ class PgttLocomotionPolicy:
         self._inference_count = 0
         self._first_phase_done = False
         self._last_heightscan_stats = (0.0, 0.0, 0.0, 0.0, 0.0)
+        self._last_heightscan_clamp_engaged = False
+        self._last_heightscan_clamp_cells = 0
+        self._heightscan_clamp_logged = False  # incident 8.8: log the FIRST engagement only
 
         self.height_fn = height_fn if height_fn is not None else (lambda x, y: 0.0)
         self.command_clip = np.asarray(config.command_clip, dtype=np.float32)
@@ -158,6 +166,8 @@ class PgttLocomotionPolicy:
             action_scale=float(config.action_scale), gait_freq=float(config.gait_freq),
             drive_mode=str(config.drive_mode), dof_count=self.n,
             heightscan_scale=float(config.heightscan_scale),
+            heightscan_drop_cap_m=float(config.heightscan_drop_cap_m)
+            if config.heightscan_drop_cap_m is not None else None,
         )
 
     # -- joint mapping -----------------------------------------------------
@@ -236,11 +246,14 @@ class PgttLocomotionPolicy:
 
         yaw = math.atan2(float(rot[1, 0]), float(rot[0, 0]))
         base_xy = self._base_xy(articulation)
+        _hs_stats: Dict[str, Any] = {}
         heightscan = build_heightscan(
             base_xy, yaw, self.height_fn,
             dist_x=self.config.dist_x, dist_y=self.config.dist_y,
             n_rows=self.config.n_rows, n_cols=self.config.n_cols,
             scale=self.config.heightscan_scale,
+            drop_cap=self.config.heightscan_drop_cap_m,
+            out_stats=_hs_stats,
         )
         # Stash for the runtime heightscan diagnostic (proves the policy is fed the
         # stair geometry, not flat ground). Front-center = the cell ~0.5 m ahead.
@@ -250,6 +263,21 @@ class PgttLocomotionPolicy:
                   self.config.n_cols // 2]),
             float(base_xy[0]), float(base_xy[1]),
         )
+        self._last_heightscan_clamp_engaged = bool(_hs_stats.get("clamp_engaged", False))
+        self._last_heightscan_clamp_cells = int(_hs_stats.get("clamp_cells", 0))
+        if self._last_heightscan_clamp_engaged and not self._heightscan_clamp_logged:
+            self._heightscan_clamp_logged = True
+            log_event(
+                self.logger, logging.WARNING, "pgtt_heightscan_drop_cap_engaged",
+                "PGTT heightscan drop-off clamp engaged (incident 8.15/8.16 F3): a scan cell "
+                "read more than heightscan_drop_cap_m below the robot base and was floored "
+                "before normalization -- an unclamped out-of-distribution grid shift (e.g. an "
+                "over-the-edge cell) would otherwise reach the policy",
+                drop_cap_m=float(self.config.heightscan_drop_cap_m)
+                if self.config.heightscan_drop_cap_m is not None else None,
+                clamp_cells=int(self._last_heightscan_clamp_cells),
+                base_x=round(float(base_xy[0]), 3), base_y=round(float(base_xy[1]), 3),
+            )
 
         gait_freq = np.array([float(self.config.gait_freq)], dtype=np.float32)
         command = np.clip(
@@ -369,6 +397,8 @@ class PgttLocomotionPolicy:
                     hs_front_center=round(hfront, 3),
                     base_x=round(bx, 3), base_y=round(by, 3),
                     action_norm=round(float(np.linalg.norm(self.prev_action)), 3),
+                    hs_drop_cap_engaged=bool(self._last_heightscan_clamp_engaged),
+                    hs_drop_cap_cells=int(self._last_heightscan_clamp_cells),
                 )
         self._apply_drive(articulation)
         return {

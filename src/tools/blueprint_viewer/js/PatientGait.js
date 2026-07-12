@@ -51,8 +51,32 @@ export const DEFAULT_GAIT_PARAMS = {
 	idleSpeedThreshold: 0.02, // m/s -- SAME value the browser diagnostic (main.js patientDiag) uses to define "idle" for idleFootMotionMax; a swing may only START at a sample where root translational speed OR yaw rate clears its own idle floor (see buildSchedule) -- deliberately shared so "does a step trigger" and "does the diagnostic call this idle" can never disagree
 	idleYawRateThreshold: 0.05, // rad/s -- companion to idleSpeedThreshold: an in-place turn (near-zero translational speed, real yaw rate) must still be able to trigger an adjustment step, so idleness requires BOTH speed and yaw-rate to be below their floors, not just speed alone
 	idleSustainSamples: 3, // count -- the idle gate requires this many CONSECUTIVE trailing samples to all clear the idle floor (not just the trigger sample itself), so a trigger can't fire on the single leading-edge sample of a resume-from-stop, whose swing would otherwise still span mostly-idle samples just before it
+	idleDeepStopWindowSec: 0.2, // s -- companion to idleSustainSamples for STUTTER-stops (F13-STAIRS, diag_idle 2026-07-10): defer a trigger whose recent window (this many seconds back) contains a genuinely DEEP stop (root speed AND yaw-rate both < HALF the idle floors), so a swing can't lift off within this window of a dead stop and overlap its tail. Unlike widening idleSustainSamples (which delays every near-idle-adjacent trigger, including the ordinary 0.01-0.05 m/s slow creep, and tipped M5 over 0.5), the half-floor DEEP test trips only on the near-zero samples a real stop actually emits -- so it costs no planted time on the creep. In SECONDS: operates on the fixed-fps baked/synthetic sample array, never the variable-rate live loop, so this is a fixed duration here (NOT an incident-8.6 frame-count-as-duration trap)
 	heelMargin: 0.05, // m -- keep the foot's heel/back edge this far from a tread's near (riser) edge
 	nosingMargin: 0.05, // m -- keep the foot's toe this far from a tread's far (nosing) edge. F1 (integration_2.json diag, 2026-07-10): widened 0.03->0.05 -- the NOMINAL (flat-footed) toeForwardLen reach this margin is measured against assumes pitch=0, but a toe-off roll's REAL rendered toe (PatientHuman's roll model, pivoting the ANKLE about a toe contact point while the Foot->ToeBase offset itself also rotates through `pitch`) reaches further forward than that flat assumption by an amount that grows with roll angle -- measured empirically (climb clip, tread idx 2->3 boundary, t=3.25s) at ~0.0365 m beyond the flat-nominal toe position, i.e. the OLD 0.03 m margin was already fully consumed with 0.0065 m to spare in the wrong direction. This margin is shared by BOTH the pre-existing onStairs tread-to-tread clamp and F1's own startX base clamp, so widening it fixes both boundary classes with one tune. Does not touch heelForwardLen/heelMargin (0.05 m already had headroom; no matching heel-side violation was observed).
+	// F10-STAIRS toe-aware swing clamp (M8 diag, 2026-07-10): the swing-height clamp
+	// (_buildSwingProfile) samples terrain under the ANKLE path, but the rendered TOE
+	// bone leads that sole reference horizontally by ~toeForwardLen -- so a foot swinging
+	// from a lower tread toward a higher one has its ankle still over the LOW tread
+	// (ankle-only clamp reads "fine") while the toe already overhangs the HIGHER tread
+	// and punches ~6 cm through its riser (original worst M8 soleClearance -0.059 m,
+	// climb t=1.4s, rightToe, swingU~0.11). Fix: sample terrain toeForwardLen ahead of
+	// the ankle path too (see _buildSwingProfile), so the clamp floor rises as the toe
+	// crosses onto the higher tread.
+	//
+	// swingToeClearMarginM is an OPTIONAL extra probe reach ADDED to toeForwardLen. It
+	// is deliberately 0: a positive margin pushes the clamp's tread-crossing to the
+	// FIRST swing sample (the plant's own stair-snap keeps the toe within nosingMargin
+	// of the riser, so any extra reach crosses almost immediately after liftoff), where
+	// the clamp floor must jump a full riser (0.145 m) in one sample while the foot is
+	// still at from.z -- a 14.5 cm LIFTOFF POP (measured maxToeStep 0.146 m at 0.04).
+	// At 0 the crossing lands ~u>=0.22 into the swing, where the swing ARC has already
+	// risen to the higher tread, so the clamp jump coincides with the arc (no pop). The
+	// early-swing clearance BEFORE that crossing is provided smoothly by the arc itself
+	// (swingPeakUClimb, lowered for exactly this) -- the clamp is only a non-penetration
+	// backstop, never the primary early lift. MUST stay < nosingMargin (0.05) if ever
+	// raised, so to.x + toeForwardLen + this <= treadEnd keeps landings pop-free.
+	swingToeClearMarginM: 0.0, // m -- extra forward terrain-probe reach beyond toeForwardLen for the toe-aware swing clamp; 0 avoids the liftoff pop (see comment), keep < nosingMargin if ever raised
 	bobAmplitude: 0.015, // m -- vertical anchor bob amplitude, phase-locked to gaitPhase (freezes when steps stop)
 	footLateral: 0.09 * 0.75, // m -- half-stance-width (nominal foot lateral offset from the root). This default matches the OLD (now-retired) Python pipeline's anim_bake._PATIENT_LEG_HIP_OFFSET magnitude, kept only so this module stays usable standalone (Node tests, this file's own header) -- PatientHuman.buildGait() ALWAYS overrides this with the REAL measured hip-pivot lateral offset from Xbot's own bind pose (~0.082 m, close but not identical to this default) before building a schedule for the live app, exactly like toeForwardLen below
 	toeForwardLen: 0.107, // m -- horizontal Foot->ToeBase reach, measured from Xbot's own bind pose (see PatientHuman.js's load-time measurement) -- default here is that measured value, duplicated so this module stays load-order-independent (PatientHuman passes the REAL measured value in at buildGait() time; this default only matters for standalone/Node testing)
@@ -196,7 +220,7 @@ export const DEFAULT_GAIT_PARAMS = {
 	// at u=0.5 -- the textbook "marching" signature; humans peak early, ~30-40% of
 	// swing, then ease down into touchdown). See _swingEnvelope.
 	swingPeakUFlat: 0.35, // u-fraction (0=liftoff, 1=touchdown) where the flat-ground swing envelope peaks
-	swingPeakUClimb: 0.30, // earlier still on stairs -- the endpoint blend (ankle rising from a lower tread to a higher one) keeps ADDING height on the descent side, so the arc's OWN contribution must peak earlier for the COMBINED (blend+arc) curve to read as early-peaking overall; see _swingEnvelope's call site comment in _footPoseAt
+	swingPeakUClimb: 0.18, // earlier still on stairs -- the endpoint blend (ankle rising from a lower tread to a higher one) keeps ADDING height on the descent side, so the arc's OWN contribution must peak earlier for the COMBINED (blend+arc) curve to read as early-peaking overall; see _swingEnvelope's call site comment in _footPoseAt. F10-STAIRS (M8 diag, 2026-07-10): lowered 0.30->0.18 -- the SWING is the only pop-free lever for the early-swing toe-through-riser penetration (the toe-aware clamp can only lift the foot at liftoff via a full-riser POP, since the foot must be at from.z there -- see swingToeClearMarginM). An earlier arc peak raises the envelope at small u (env(0.114) 0.56->0.84), lifting the foot ~4-6 cm sooner so the toe clears the riser it crosses at u~0.11, dropping that swing's worst penetration from -0.059 m to ~the -0.023 m planted-foot floor smoothly. Only the arc's OWN peak time moves; the peak HEIGHT barely changes (~1.6 cm above the tread either way -- the endpoint-blend lag keeps it modest, NOT high-marching), so W4's anti-marching intent holds. Flat swingPeakUFlat (0.35) is untouched: flat ground has no riser to clear early
 };
 
 // ===========================================================================
@@ -534,27 +558,39 @@ function _swingEnvelope( u, peakU ) {
  * non-penetration floor (no redundant margin) closes that small remaining gap
  * without reintroducing a large jump.
  */
-function _buildSwingProfile( from, to, terrain, clearance ) {
+function _buildSwingProfile( from, to, terrain, clearance, footLeadX = 0 ) {
 
 	const pathLen = _hyp2( to.x - from.x, to.y - from.y );
 	const profileSteps = Math.max( 1, Math.ceil( pathLen / 0.02 ) );
 	const clampProfile = new Float64Array( profileSteps + 1 ); // raw terrain height, running max
-	// Seed with ONLY from.x's terrain -- NOT to.x's, even though apexZ (below)
-	// needs the true overall max INCLUDING the endpoints: the loop's own LAST
-	// iteration (k=profileSteps, u=1) already reaches xx=to.x exactly, so
-	// pre-seeding with terrain.heightAt(to.x) here would leak the touchdown's
-	// (possibly much higher, e.g. one tread up) terrain height into EARLY profile
-	// entries before the geometric path has actually reached that x -- confirmed
-	// as a real bug when first written: on a real tread0->tread1 climb event it
-	// put tread1's height at clampProfile[1] even though the true crossing doesn't
-	// happen until roughly HALFWAY through the path.
-	let maxTerrainAlongPath = terrain.heightAt( from.x );
+	// Toe-aware terrain sampling (M8 diag 2026-07-10, DEFAULT_GAIT_PARAMS.
+	// swingToeClearMarginM's own comment): at every path point sample terrain BOTH
+	// under the ankle path (xx) AND `footLeadX` ahead of it (the rendered toe bone's
+	// own forward reach along the swing facing -- x-only, since the terrain is a 1-D
+	// function of x), folding the max of the two into the running max. This lifts the
+	// clamp floor as soon as the TOE crosses onto a higher tread, so the whole foot
+	// rises to clear the riser instead of the toe punching through it (the ankle-only
+	// clamp read the low tread under the trailing ankle and never lifted). footLeadX
+	// defaults 0 -> bit-identical to the pre-toe-aware behavior (cane tip = a point;
+	// flat walk-on = terrain flat so the extra sample is a no-op).
+	//
+	// Seed (and every sample) with `from.x`, NOT `to.x`: the loop's own LAST iteration
+	// (k=profileSteps, u=1) already reaches xx=to.x exactly, so pre-seeding with
+	// terrain.heightAt(to.x) would leak the touchdown's (possibly one-tread-higher)
+	// height into EARLY profile entries before the path has actually reached it
+	// (confirmed a real bug when first written: it put tread1's height at
+	// clampProfile[1] on a tread0->tread1 climb, though the crossing is ~halfway). The
+	// toe-lead sample `from.x + footLeadX` does NOT reintroduce that leak: a planted
+	// foot's stair-snap / F1 base-clamp keep from.x + toeForwardLen + nosingMargin
+	// within from's own tread, and footLeadX's margin is < nosingMargin (see
+	// swingToeClearMarginM), so from.x + footLeadX stays on from's tread (== from.z).
+	let maxTerrainAlongPath = Math.max( terrain.heightAt( from.x ), terrain.heightAt( from.x + footLeadX ) );
 	clampProfile[ 0 ] = maxTerrainAlongPath;
 	for ( let k = 1; k <= profileSteps; k ++ ) {
 
 		const u = k / profileSteps;
 		const xx = from.x + ( to.x - from.x ) * u;
-		const hh = terrain.heightAt( xx );
+		const hh = Math.max( terrain.heightAt( xx ), terrain.heightAt( xx + footLeadX ) );
 		maxTerrainAlongPath = Math.max( maxTerrainAlongPath, hh );
 		clampProfile[ k ] = maxTerrainAlongPath; // running max -> monotone non-decreasing
 
@@ -713,6 +749,26 @@ export function buildSchedule( samples, terrain, params = DEFAULT_GAIT_PARAMS ) 
 
 		}
 		if ( rootIsIdle ) continue;
+
+			// F13-STAIRS deep-stop look-back (diag_idle, 2026-07-10 -- the M10/M7/M9-idle
+			// regression the F12 same-tread deferral's re-phasing exposed on the flat TOP
+			// LANDING). A REAL recorded stop can STUTTER: the climb clip's top-landing pause
+			// (t~=31.5-32.2 s) parks the root (x moves ~3 mm total) yet emits sub-mm sample
+			// twitches the central-difference reads as 0.025-0.037 m/s -- JUST above the
+			// 0.02 idle floor -- for ~3 consecutive samples. The sustain gate above
+			// (idleSustainSamples=3, at the 1x floor) fits ENTIRELY inside that twitch and
+			// so allows a trigger; the swing then lifts off (t=32.13) and its first ~2
+			// frames overlap the last deep-idle instant of the stop (idleFootMotion 0.022 m
+			// vs the 0.002 m bar; the paired cane inherits it too -> M9 canePlantedWhileIdle).
+			// Widening idleSustainSamples itself (tried) delays EVERY near-idle-adjacent
+			// trigger across the whole clip -- including the ordinary slow top-landing creep,
+			// whose samples legitimately sit at 0.01-0.05 m/s -- and tipped M5 double-support
+			// over its 0.5 bar. Instead scan a slightly WIDER recent window for a genuinely
+			// DEEP stop (speed AND yaw-rate both under HALF the floors): the stutter-stop's
+			// core samples read ~0 and trip this; the ordinary creep never does, so it adds
+			// no planted time there. A step that would lift off within idleDeepStopWindowSec
+			// of a dead stop is deferred until the root has genuinely resumed.
+			if ( _deepStopWithin( samples, i, p ) ) continue;
 
 		// Evaluate trigger candidates: only feet that are NOT swinging and have cleared
 		// minEventGap since their own last event may be considered this sample. "need"
@@ -1046,6 +1102,34 @@ export function buildSchedule( samples, terrain, params = DEFAULT_GAIT_PARAMS ) 
 
 		}
 
+		// F12-STAIRS "no same-tread shuffle" (diag_stairs, 2026-07-10 -- the
+		// user-reported "foot moves one up then moves it back down on the SAME stair"
+		// glitch): on the staircase a step whose resolved touchdown lands on the SAME
+		// tread it lifted from is never a useful advance. A tread's own valid plant
+		// window is only stepD - heelMargin - toeForwardLen - nosingMargin (~0.098 m for
+		// this 0.305 m staircase), so such a step can only shuffle the foot a few cm
+		// WITHIN one tread -- yet it still lifts a FULL swingClearanceClimb (0.14 m)
+		// riser-clearing arc (from.z==to.z==tread top, so apexZ = tread + 0.14) and sets
+		// back down on the same step, reading as a pointless high hop. Measured on the
+		// real climb clip: 9 such steps (every ~3rd footfall), plus 1 at the flat->stairs
+		// base entry on the follow clip -- exactly the two reported glitches. They fire
+		// because stepTriggerClimb (0.12 m of accumulated drift) is SMALLER than the
+		// distance the nominal must travel before it crosses into the next tread (a foot
+		// planted at the front of tread N needs the nominal to advance ~stepD - validWindow
+		// ~= 0.157 m to reach tread N+1), so the FIRST trigger after any plant on the stairs
+		// always resolves same-tread. DEFER it: no state was mutated after bestFoot was
+		// chosen (mirrors the threshold re-check / won't-go-anywhere `continue`s above), so
+		// this simply re-evaluates next sample; the still-growing need eventually resolves
+		// to a real tread-N -> tread-(N+1) advance -- a cautious elderly "step-to" climb
+		// (bring the foot up to the NEXT step, never hop in place), which is exactly the
+		// right gait for this patient. Gated on BOTH treads being ON the staircase
+		// (fromTread in [0, stepCount)) so it can never suppress a flat-ground correction
+		// step, a flat->T0 base entry (fromTread < 0), or a T13->top-landing exit
+		// (toTread == stepCount, which is != fromTread).
+		const fromTreadIdx = terrain.treadIndexAt( state[ bestFoot ].plantedPos.x );
+		const toTreadIdx = terrain.treadIndexAt( toX );
+		if ( fromTreadIdx >= 0 && fromTreadIdx < terrain.stepCount && toTreadIdx === fromTreadIdx ) continue;
+
 		const from = { x: state[ bestFoot ].plantedPos.x, y: state[ bestFoot ].plantedPos.y, z: state[ bestFoot ].plantedPos.z };
 		const to = { x: toX, y: toY, z: toZ };
 		const fromYaw = state[ bestFoot ].plantYaw;
@@ -1057,7 +1141,14 @@ export function buildSchedule( samples, terrain, params = DEFAULT_GAIT_PARAMS ) 
 		// producer in this file -- this march, _buildWalkOn, _buildCaneEvents -- so
 		// there is exactly one copy of that reasoning, not several).
 		const clearance = onStairs ? p.swingClearanceClimb : p.swingClearance;
-		const { apexZ, clampProfile } = _buildSwingProfile( from, to, terrain, clearance );
+		// Toe-aware clamp lead (see _buildSwingProfile / swingToeClearMarginM): sample
+		// terrain the toe's own forward reach ahead of the ankle path, along the landing
+		// facing (x-component only -- the terrain is 1-D in x). Bites only where terrain
+		// rises (stairs); a no-op on flat ground where the extra sample equals the ankle
+		// sample. cos(toYaw) so a foot planted slightly turned probes correspondingly
+		// less far forward-in-x (its toe genuinely reaches less far up-stairs).
+		const footLeadX = ( p.toeForwardLen + p.swingToeClearMarginM ) * Math.cos( toYaw );
+		const { apexZ, clampProfile } = _buildSwingProfile( from, to, terrain, clearance, footLeadX );
 
 		const event = {
 			foot: bestFoot,
@@ -1340,7 +1431,28 @@ function _buildCaneEvents( samples, events, terrain, p ) {
 		// the previous cane event has had a moment to finish (previous tLand + 0.05,
 		// the same minEventGap-flavoured spacing the feet use) or before the clip's
 		// own first sample.
-		const tLift = Math.max( leftEv.tLift - caneLeadEff, lastLandT + 0.05, samples[ 0 ].t );
+		let tLift = Math.max( leftEv.tLift - caneLeadEff, lastLandT + 0.05, samples[ 0 ].t );
+		// F13-STAIRS deep-stop clamp (diag_idle, 2026-07-10): the paired left foot is
+		// already deep-stop-gated at TRIGGER time (see the foot loop's _deepStopWithin
+		// call), but caneLeadEff pulls the cane's OWN liftoff ~caneLeadSec EARLIER, which
+		// can reach back into a stop the foot itself was deferred past -- measured on the
+		// climb top-landing pause: the foot correctly fired at t=32.27 but the cane lifted
+		// at 32.18, into the stop's tail, moving the tip ~3 mm during an idle frame (M10 /
+		// M9 canePlantedWhileIdle). Apply the SAME deep-stop rule to the cane liftoff:
+		// advance tLift to the first sample at/after it that is clear of a deep stop. If
+		// that collapses the [tLift, tLand] window below the degenerate floor below, the
+		// cane event is simply skipped (tip stays planted through the stop -- the desired
+		// outcome). Uses the shared _deepStopWithin so the cane and foot can never disagree
+		// on "is this liftoff starting into a stop".
+		{
+			let cIdx = _findSampleAtOrAfter( samples, 0, tLift );
+			if ( _deepStopWithin( samples, cIdx, p ) ) {
+
+				while ( cIdx < samples.length - 1 && _deepStopWithin( samples, cIdx, p ) ) cIdx ++;
+				tLift = Math.max( tLift, samples[ cIdx ].t );
+
+			}
+		}
 		// Finish planting no later than the paired foot (leftEv.tLand - 0.02), and
 		// never longer than the cane's own (shorter) swing duration.
 		const tLand = Math.min( leftEv.tLand - 0.02, tLift + p.caneSwingDur );
@@ -1369,6 +1481,30 @@ function _buildCaneEvents( samples, events, terrain, p ) {
 	}
 
 	return caneEvents;
+
+}
+
+/**
+ * F13-STAIRS deep-stop test (diag_idle, 2026-07-10): TRUE if any sample within
+ * `idleDeepStopWindowSec` BEFORE index `idx` is a genuinely DEEP stop -- root speed
+ * AND yaw-rate both under HALF the idle floors (via _rootNearIdleAtIndex). A swing
+ * (foot or cane) that would lift off while this is true is starting into (or right at
+ * the tail of) a real recorded stop and would render motion during the diagnostic's
+ * idle window -- see the foot-trigger and _buildCaneEvents call sites for the full
+ * rationale. Half-floor keeps this from tripping on the ordinary 0.01-0.05 m/s slow
+ * creep (only near-zero "dead stop" samples trip it), so deferring on it costs no
+ * double-support on that creep. ONE implementation, shared by the foot trigger and the
+ * cane liftoff, so "is this liftoff starting into a stop" can never diverge between them.
+ */
+function _deepStopWithin( samples, idx, p ) {
+
+	const tRef = samples[ idx ].t;
+	for ( let jb = idx; jb >= 0 && samples[ jb ].t >= tRef - p.idleDeepStopWindowSec; jb -- ) {
+
+		if ( _rootNearIdleAtIndex( samples, jb, 0.5 * p.idleSpeedThreshold, 0.5 * p.idleYawRateThreshold ) ) return true;
+
+	}
+	return false;
 
 }
 

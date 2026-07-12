@@ -15,6 +15,7 @@ Run: python tests/test_pgtt_stair_handoff.py
 
 import math
 import os
+import re
 import sys
 
 import numpy as np
@@ -25,6 +26,7 @@ sys.path.insert(0, REPO)  # go2_locomotion package lives at the repo root
 
 from go2_locomotion.pgtt_stair_handoff import (  # noqa: E402
     StallDetector, DepthStairDetector, HandoffController, HandoffConfig, GO2_LEG_CLEARANCE_M,
+    stair_engage_person_ghost_veto, stair_entry_lead_ok,
 )
 
 
@@ -222,6 +224,174 @@ def test_approach_engage():
     assert r["state"] == "climb" and r["climb"], f"standoff should engage with room: {r}"
     assert r["use_parkour"] and r["targets_act"] is None, f"parkour backend hot-swap: {r}"
     print("approach_engage OK  (jammed skipped; standoff engages with room; parkour hot-swap)")
+
+
+def test_ghost_engage_veto_pure_function():
+    """stair_engage_person_ghost_veto in isolation: sized from run_sim_20260712_013638_835's
+    ghost engage (leading_edge_m=0.648, GT patient gap stable at 1.08-1.11 m across the whole
+    +/-2s bracket around the engage -> diff ~0.448 m) vs its real engage (leading_edge_m=0.451,
+    GT patient gap ~1.7 m -> diff ~1.25 m)."""
+    # Ghost: within the 0.5 m window -> veto.
+    assert stair_engage_person_ghost_veto(
+        leading_edge_distance_m=0.648, person_gap_m=1.096, window_m=0.5) is True
+    # Real engage: far outside even a generous window -> never vetoed.
+    assert stair_engage_person_ghost_veto(
+        leading_edge_distance_m=0.451, person_gap_m=1.7, window_m=0.5) is False
+    # Either input missing (real hardware: no GT person_gap_m; or no leading-edge reading
+    # this frame) -> cannot compare -> no veto (fails toward NOT vetoing a real engage on
+    # missing data, rather than guessing).
+    assert stair_engage_person_ghost_veto(
+        leading_edge_distance_m=0.648, person_gap_m=None, window_m=0.5) is False
+    assert stair_engage_person_ghost_veto(
+        leading_edge_distance_m=None, person_gap_m=1.096, window_m=0.5) is False
+
+
+def test_ghost_engage_veto_blocks_person_as_risers_stall_engage():
+    """Integration: run_sim_20260712_013638_835's exact ghost engage signature
+    (engage_reason="wedge_stall", riser_dist_ahead_m=None, leading_edge_m=0.648,
+    level_heights_m starting with a non-zero first riser -- a leg, not ground) at a GT
+    patient distance of 1.096 m must NOT engage once ghost_engage_gap_window_m is active,
+    even though every other stall_engage condition (has_stairs, stalled, near_enough) is
+    satisfied -- exactly as it was in the un-fixed run."""
+    cfg = HandoffConfig(climb_attempt=True, climb_engage_standoff_m=0.65, climb_min_room_m=0.40,
+                        stair_commit_enabled=True, require_controller_stairs=False,
+                        stair_commit_arm_after_secs=0.0, ghost_engage_gap_window_m=0.5)
+    ho = HandoffController(cfg, _FakePgtt(), logger=None)
+    # Force the detector output to the run's exact ghost reading -- avoids depending on the
+    # synthetic depth-image geometry to land at a specific leading_edge_distance.
+    ho.detector.detect = lambda depth_hw: {
+        "stair_detected": True, "stair_count": 11, "leading_edge_distance": 0.648,
+        "level_heights_m": [0.0, 0.232, 0.32, 0.371],
+    }
+    base = dict(go2=object(), depth_hw=object(), stairs_action_active=True, base_z=2.30,
+                body_speed=0.02, roll=0.0, pitch=-0.06, roll_rate=0.0, pitch_rate=0.0,
+                height_above_step=0.30, person_detected=True, yaw=-0.23, y_lateral=0.13,
+                body_fwd=0.02, cmd_vx=0.20)
+    r = None
+    for i in range(20):  # commanded-but-not-moving long enough to satisfy stall_consec_sec
+        r = ho.update(now=1.0 + i * 0.1, dt=0.1, riser_dist_ahead=None,
+                      base_x=6.709, person_gap_m=1.096, **base)
+    assert r["state"] == "walk" and not r["climb"], \
+        f"person-as-risers ghost must be vetoed, not engaged: {r}"
+
+
+def test_ghost_engage_veto_does_not_block_real_engage_with_far_patient():
+    """Same standoff-engage scenario as test_approach_engage, but now WITH a GT
+    person_gap_m far from the riser (5.0 m, mirroring the run's real engage where the
+    patient was ~1.7 m ahead while leading_edge_m=0.451) -- the veto must not interfere."""
+    cfg = HandoffConfig(climb_attempt=True, climb_engage_standoff_m=0.65, climb_min_room_m=0.40,
+                        stair_commit_enabled=True, require_controller_stairs=False,
+                        stair_commit_max_sec=25.0, stair_commit_arm_after_secs=0.0,
+                        ghost_engage_gap_window_m=0.5)
+    ho = HandoffController(cfg, _FakePgtt(), logger=None)
+    D = synth_staircase_depth()
+    base = dict(go2=object(), depth_hw=D, stairs_action_active=True, base_z=0.30, body_speed=0.2,
+                roll=0.0, pitch=0.0, roll_rate=0.0, pitch_rate=0.0, height_above_step=0.30,
+                person_detected=False, yaw=0.0, y_lateral=0.0, body_fwd=0.2, cmd_vx=0.22)
+    ho.update(now=1.0, dt=0.05, riser_dist_ahead=0.30, person_gap_m=5.0, **base)
+    r = ho.update(now=1.1, dt=0.05, riser_dist_ahead=0.50, person_gap_m=5.0, **base)
+    assert r["state"] == "climb" and r["climb"], f"far patient must not veto a real engage: {r}"
+
+
+def test_stair_entry_lead_ok_pure_function():
+    """stair_entry_lead_ok in isolation: sized from run_sim_20260712_023126_786 (run 14),
+    whose "wedge_stall" engage fired at a GT planar gap of just 0.765 m (well under the
+    2.4 m default) and closed to a 0.452 m collision eight climb-steps later."""
+    # Below the required lead -> not OK (gate holds the dog at the base).
+    assert stair_entry_lead_ok(patient_lead_m=0.765, min_lead_m=2.4) is False
+    assert stair_entry_lead_ok(patient_lead_m=0.0, min_lead_m=2.4) is False
+    # At/above the required lead -> OK.
+    assert stair_entry_lead_ok(patient_lead_m=2.4, min_lead_m=2.4) is True
+    assert stair_entry_lead_ok(patient_lead_m=3.0, min_lead_m=2.4) is True
+    # No GT (real hardware, or no patient sidecar) -> cannot compare -> gate is a no-op
+    # (mirrors stair_engage_person_ghost_veto's None contract).
+    assert stair_entry_lead_ok(patient_lead_m=None, min_lead_m=2.4) is True
+
+
+def test_stair_entry_gate_holds_a_close_approach_engage_and_releases_once_ahead():
+    """Same standoff-engage scenario as test_approach_engage (riser at a standoff + room +
+    committing -> would otherwise engage), but with the patient's GT lead below
+    stair_entry_min_lead_m: ENGAGE must be held (state stays "walk"). Once the SAME frame's
+    lead crosses the threshold, the (still-valid) engage condition fires immediately."""
+    cfg = HandoffConfig(climb_attempt=True, climb_engage_standoff_m=0.65, climb_min_room_m=0.40,
+                        stair_commit_enabled=True, require_controller_stairs=False,
+                        stair_commit_max_sec=25.0, stair_commit_arm_after_secs=0.0,
+                        stair_entry_min_lead_m=2.4)
+    ho = HandoffController(cfg, _FakePgtt(), logger=None)
+    D = synth_staircase_depth()
+    base = dict(go2=object(), depth_hw=D, stairs_action_active=True, base_z=0.30, body_speed=0.2,
+                roll=0.0, pitch=0.0, roll_rate=0.0, pitch_rate=0.0, height_above_step=0.30,
+                person_detected=False, yaw=0.0, y_lateral=0.0, body_fwd=0.2, cmd_vx=0.22)
+    # Standoff + committing (as test_approach_engage), but the patient's lead is only 0.765 m
+    # (run 14's exact engage-time number) -- must be HELD, not engaged.
+    r = ho.update(now=1.0, dt=0.05, riser_dist_ahead=0.50, patient_lead_m=0.765, **base)
+    assert r["state"] == "walk", f"insufficient lead must hold at the base, not engage: {r}"
+    r = ho.update(now=1.05, dt=0.05, riser_dist_ahead=0.50, patient_lead_m=1.5, **base)
+    assert r["state"] == "walk", f"still below the 2.4 m threshold -> still held: {r}"
+    # Lead now clears the threshold -> the still-valid engage condition fires.
+    r = ho.update(now=1.10, dt=0.05, riser_dist_ahead=0.50, patient_lead_m=2.4, **base)
+    assert r["state"] == "climb" and r["climb"], f"lead >= threshold must release the gate: {r}"
+
+
+def test_stair_entry_gate_no_gt_lead_does_not_block_real_engage():
+    """patient_lead_m=None (no GT -- real hardware, or waypoint test with no patient) must
+    not interfere with an otherwise-valid engage, mirroring the ghost veto's None contract."""
+    cfg = HandoffConfig(climb_attempt=True, climb_engage_standoff_m=0.65, climb_min_room_m=0.40,
+                        stair_commit_enabled=True, require_controller_stairs=False,
+                        stair_commit_max_sec=25.0, stair_commit_arm_after_secs=0.0,
+                        stair_entry_min_lead_m=2.4)
+    ho = HandoffController(cfg, _FakePgtt(), logger=None)
+    D = synth_staircase_depth()
+    base = dict(go2=object(), depth_hw=D, stairs_action_active=True, base_z=0.30, body_speed=0.2,
+                roll=0.0, pitch=0.0, roll_rate=0.0, pitch_rate=0.0, height_above_step=0.30,
+                person_detected=False, yaw=0.0, y_lateral=0.0, body_fwd=0.2, cmd_vx=0.22)
+    ho.update(now=1.0, dt=0.05, riser_dist_ahead=0.30, patient_lead_m=None, **base)
+    r = ho.update(now=1.1, dt=0.05, riser_dist_ahead=0.50, patient_lead_m=None, **base)
+    assert r["state"] == "climb" and r["climb"], f"no GT lead must not block a real engage: {r}"
+
+
+def test_stair_entry_gate_never_clamps_an_ongoing_climb():
+    """Incident 8.15: the gate only guards the walk->climb TRANSITION. Once engaged, a
+    patient_lead_m that later drops below the threshold (she fell behind mid-climb) must
+    never abort or hold the ongoing climb."""
+    cfg = HandoffConfig(climb_attempt=True, climb_engage_standoff_m=0.65, climb_min_room_m=0.40,
+                        stair_commit_enabled=True, require_controller_stairs=False,
+                        stair_commit_arm_after_secs=0.0, climb_backend="blind_rl",
+                        climb_max_sec=999.0, climb_stall_timeout_sec=999.0,
+                        stair_entry_min_lead_m=2.4)
+    ho = HandoffController(cfg, _FakePgtt(), logger=None)
+    Dstairs = synth_staircase_depth()
+    base = dict(go2=object(), depth_hw=Dstairs, stairs_action_active=True, body_speed=0.2,
+                roll=0.0, pitch=0.0, roll_rate=0.0, pitch_rate=0.0, height_above_step=0.30,
+                person_detected=False, yaw=0.0, y_lateral=0.0, body_fwd=0.2, cmd_vx=0.22,
+                riser_dist_ahead=0.50, stairs_ahead_gt=True, base_x=0.0)
+    ho.update(now=1.0, dt=0.05, base_z=0.30, patient_lead_m=3.0, **base)
+    assert ho.state == "climb", "should engage with a sufficient lead"
+    # Lead now reads BELOW the entry threshold mid-climb -- must not touch the ongoing climb.
+    r = ho.update(now=1.05, dt=0.05, base_z=0.32, patient_lead_m=0.5, **base)
+    assert r["state"] == "climb" and r["climb"], \
+        f"an ONGOING climb must not be held/aborted by the S1 entry gate: {r}"
+
+
+def test_stair_entry_gate_interval_is_non_empty_against_isaac_env_hard_wait():
+    """Static source-scan (same approach as test_taper_has_exactly_one_call_site_in_main_
+    gated_on_post_crest_latch -- isaac_env.py imports isaacsim and cannot be imported on a
+    plain host). Reads PATIENT_HARD_WAIT_LEAD_M's literal value out of isaac_env.py's source
+    and asserts [HandoffConfig().stair_entry_min_lead_m, PATIENT_HARD_WAIT_LEAD_M) is
+    non-empty -- the non-deadlock interval both docstrings (HandoffConfig.
+    stair_entry_min_lead_m, isaac_env.py's PATIENT_HARD_WAIT_LEAD_M comment) derive."""
+    isaac_env_py = os.path.join(REPO, "sim", "isaac", "isaac_env.py")
+    with open(isaac_env_py, encoding="utf-8") as f:
+        src = f.read()
+    m = re.search(r"^PATIENT_HARD_WAIT_LEAD_M\s*=\s*([0-9.]+)", src, re.MULTILINE)
+    assert m is not None, "PATIENT_HARD_WAIT_LEAD_M not found in isaac_env.py"
+    hard_wait_m = float(m.group(1))
+    gate_m = float(HandoffConfig().stair_entry_min_lead_m)
+    assert gate_m < hard_wait_m, (
+        f"stair_entry_min_lead_m ({gate_m}) must be strictly below isaac_env.py's "
+        f"PATIENT_HARD_WAIT_LEAD_M ({hard_wait_m}), or the dog's entry gate and the "
+        "patient's hard-wait could both hold simultaneously (deadlock)."
+    )
 
 
 def test_top_egress():
@@ -504,16 +674,85 @@ def test_caller_hold_blocks_engage_and_walk_floor():
     print("caller_hold OK  (hold vetoes engage + walk floors; release engages; mid-climb unaffected)")
 
 
+def test_run18_wedge_stall_releases_once_patient_lead_crosses_threshold():
+    """Fix C documentation-as-test (2026-07-12 review, run 18 wedge,
+    run_sim_20260712_103237_267). Runs 15-18 all settled short of the stairs; run 18 got
+    the dog to within 0.30 m of riser 1 (JAMMED -- below climb_min_room_m 0.40, so
+    approach_room can never engage; every one of run 18's logged vetoes was
+    reason="wedge_stall") and wedged there. The Isaac-side stair-commit vx_floor
+    (independent of main.py's own STAIR_LOSS_FLOOR forward command -- see the Fix A/B
+    near-field/too-close review on the same incident) already drove the walker into the
+    riser and kept it stalled for the whole tail of the run (fall_diag telemetry:
+    handoff_state=walk, stair_commit=True, stalled=True, stall_cmd_sec~20 s continuously
+    from sim_t=36.2 onward, hold_request=False throughout -- caller_hold was never the
+    live blocker in this run). Every OTHER wedge_stall precondition was therefore already
+    satisfied (has_stairs, near_enough, not caller_hold, not ghost-vetoed once the
+    patient is this far up the stairs). The ONLY gate still closed was
+    stair_entry_min_lead_m (2.4 m): the run's LAST logged frame (vision_main_trace.jsonl
+    sim_t=41.895) has gt_patient.x=4.1326 and robot x_m=1.741 -> patient_lead_m=2.392 --
+    0.008 m short of the 2.4 m threshold -- and the run simply ran out of frames right
+    there (isaac_env.jsonl's last handoff_engage_vetoed_lead, sim_t~35.35, already shows
+    patient_lead_m=2.306 climbing toward it; zero handoff_engage events anywhere in the
+    file). CONCLUSION: wedge_stall does NOT need a widened engage window (no
+    HandoffConfig / handoff_controller.py change) -- it fires the instant patient_lead_m
+    crosses the existing 2.4 m gate, exactly as designed. This test reproduces that exact
+    boundary against the real HandoffController state machine so a future change to
+    stair_entry_min_lead_m or the wedge_stall preconditions cannot silently invalidate
+    this "no sim-side change needed" conclusion without failing a test."""
+    cfg = HandoffConfig(climb_attempt=True, climb_engage_standoff_m=0.65, climb_min_room_m=0.40,
+                        stair_commit_enabled=True, require_controller_stairs=False,
+                        stair_commit_max_sec=25.0, stair_commit_arm_after_secs=0.0,
+                        stair_entry_min_lead_m=2.4, stall_consec_sec=0.3,
+                        ghost_engage_gap_window_m=0.5)
+    ho = HandoffController(cfg, _FakePgtt(), logger=None)
+    D = synth_staircase_depth()
+    base = dict(go2=object(), depth_hw=D, stairs_action_active=True, base_z=0.30,
+                roll=0.0, pitch=0.0, roll_rate=0.0, pitch_rate=0.0, height_above_step=0.30,
+                person_detected=False, yaw=0.0, y_lateral=0.0, body_fwd=0.0, body_speed=0.0,
+                caller_hold=False, base_x=1.74)
+    # Wedged JAMMED at the riser (0.30 < climb_min_room_m 0.40 -- approach_room can never
+    # fire): commanded forward (the walk-state commit floor / main.py's own loss floor,
+    # either source -- the stall detector only sees the effective commanded speed) but
+    # not moving -> stall accumulates. Patient lead held just below the run-18 final-frame
+    # value (2.39) for long enough to satisfy stall_consec_sec -- must stay HELD.
+    t = 0.0
+    r = None
+    for _ in range(20):  # 1.0 s >> stall_consec_sec (0.3 s)
+        t += 0.05
+        r = ho.update(now=t, dt=0.05, cmd_vx=0.16, riser_dist_ahead=0.30,
+                      person_gap_m=2.39, patient_lead_m=2.39, **base)
+    assert r["state"] == "walk", f"lead still below threshold -> must stay held: {r}"
+    assert r["stalled"], f"the wedge itself must register as a stall: {r}"
+    # The SAME wedge, one more frame later, with the patient's lead now past the gate
+    # (2.41 > 2.4) -- the already-satisfied wedge_stall condition fires immediately, no
+    # other code path touched.
+    r = ho.update(now=t + 0.05, dt=0.05, cmd_vx=0.16, riser_dist_ahead=0.30,
+                  person_gap_m=2.41, patient_lead_m=2.41, **base)
+    assert r["state"] == "climb" and r["climb"], \
+        f"lead crossing 2.4 m must release the SAME wedge into wedge_stall engage: {r}"
+    print("run18 wedge_stall OK  (jammed + stalled wedge held below the lead gate, "
+          "releases the instant lead crosses 2.4 m -- no sim-side change needed)")
+
+
 if __name__ == "__main__":
     test_detector()
     test_stall()
     test_fsm()
     test_stair_commit()
     test_approach_engage()
+    test_ghost_engage_veto_pure_function()
+    test_ghost_engage_veto_blocks_person_as_risers_stall_engage()
+    test_ghost_engage_veto_does_not_block_real_engage_with_far_patient()
+    test_stair_entry_lead_ok_pure_function()
+    test_stair_entry_gate_holds_a_close_approach_engage_and_releases_once_ahead()
+    test_stair_entry_gate_no_gt_lead_does_not_block_real_engage()
+    test_stair_entry_gate_never_clamps_an_ongoing_climb()
+    test_stair_entry_gate_interval_is_non_empty_against_isaac_env_hard_wait()
     test_top_egress()
     test_egress_stops_at_goal()
     test_no_false_crest_between_risers()
     test_climb_progress_watchdog()
     test_post_climb_reacquire()
     test_caller_hold_blocks_engage_and_walk_floor()
+    test_run18_wedge_stall_releases_once_patient_lead_crosses_threshold()
     print("ALL HANDOFF TESTS PASS")

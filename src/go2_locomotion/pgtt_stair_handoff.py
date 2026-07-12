@@ -38,7 +38,12 @@ from go2_locomotion.handoff_config import (  # noqa: F401
     GO2_LEG_CLEARANCE_M,
     HandoffConfig,
 )
-from go2_locomotion.handoff_controller import HandoffController, log_event  # noqa: F401
+from go2_locomotion.handoff_controller import (  # noqa: F401
+    HandoffController,
+    log_event,
+    stair_engage_person_ghost_veto,
+    stair_entry_lead_ok,
+)
 from go2_locomotion.handoff_detectors import (  # noqa: F401
     DepthStairDetector,
     StallDetector,

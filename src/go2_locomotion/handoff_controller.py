@@ -39,6 +39,68 @@ def _wrap_pi(a: float) -> float:
     return float((float(a) + math.pi) % (2.0 * math.pi) - math.pi)
 
 
+def stair_engage_person_ghost_veto(
+    *,
+    leading_edge_distance_m: Optional[float],
+    person_gap_m: Optional[float],
+    window_m: float,
+) -> bool:
+    """True => veto a stair ENGAGE this frame: the depth detector's leading-edge reading is
+    close enough to the (sim-GT) followed-person distance that the "staircase" it is reading
+    is actually the standing/close PATIENT, not real stairs (incident 8.3 class: a body
+    back-projects into a stack of fake risers -- see ``handoff_engage`` callers below).
+
+    Pure / host-safe (no Isaac imports, unit-testable in isolation): both inputs are plain
+    floats the caller (``HandoffController.update``) already has in scope -- ``det.get(
+    "leading_edge_distance")`` (the depth detector's own reading, already read for
+    ``near_enough`` a few lines above each call site) and ``person_gap_m`` (an explicit
+    parameter of ``update`` since its introduction -- the sim GT planar dog<->patient
+    distance, threaded from ``isaac_env._run_pgtt_handoff``'s live ``_patient_state``; ``None``
+    on real hardware, where this veto is therefore always a no-op -- incident 8.5: never
+    re-derived from a downstream read).
+
+    ``None`` for either input (no GT available, e.g. real hardware, or no leading-edge
+    reading this frame) means the comparison cannot be made at all -- returns False (no veto)
+    rather than guessing; this mirrors how the REST of this module's GT-only safety nets
+    (``stairs_ahead_gt``, ``_gt_lead_m`` in core/main.py) are sim-only and inert elsewhere.
+
+    ``window_m`` default (``HandoffConfig.ghost_engage_gap_window_m``, see that field's
+    docstring for the full numeric derivation) is 0.5 m, NOT the 0.35 m originally suggested
+    by the task brief -- re-measured against run_sim_20260712_013638_835's actual ghost engage
+    (leading_edge_m=0.648 vs a GT patient gap stable at 1.08-1.11 m -- diff ~0.448 m, which
+    0.35 m would have missed) and confirmed to still leave ~0.9 m of margin below that same
+    run's real engage (diff ~1.25 m).
+    """
+    if leading_edge_distance_m is None or person_gap_m is None:
+        return False
+    return abs(float(leading_edge_distance_m) - float(person_gap_m)) <= float(window_m)
+
+
+def stair_entry_lead_ok(
+    *,
+    patient_lead_m: Optional[float],
+    min_lead_m: float,
+) -> bool:
+    """True => the patient has enough of a head start onto the staircase for the dog to
+    COMMIT (ENGAGE) the climb this frame -- the S1 stair-entry head-start gate.
+
+    Pure / host-safe, same shape as ``stair_engage_person_ghost_veto`` above: the caller
+    (``HandoffController.update``) already has ``patient_lead_m`` in scope as an explicit
+    parameter (isaac_env.py's ``_run_pgtt_handoff`` threads ``_patient_state.x - base_x`` --
+    the SAME along-path measure isaac_env's ``PATIENT_HARD_WAIT_LEAD_M`` pacing check uses,
+    so the two constants describe one consistent "lead" axis; see
+    ``HandoffConfig.stair_entry_min_lead_m``'s docstring for the full deadlock-interval math
+    against that constant).
+
+    ``patient_lead_m`` ``None`` (no sim GT -- real hardware, or no patient-tracking sidecar)
+    means the comparison cannot be made at all -- returns True (gate is a no-op) rather than
+    guessing, mirroring how the ghost-veto's GT-only safety net is inert off-sim.
+    """
+    if patient_lead_m is None:
+        return True
+    return float(patient_lead_m) >= float(min_lead_m)
+
+
 class HandoffController:
     """Task 2c: WALK(PGTT) <-> CLIMB(ClosedLoopStairClimber) state machine.
 
@@ -88,6 +150,8 @@ class HandoffController:
         self._commit_yaw0: Optional[float] = None
         # --- post-climb re-acquisition state ---
         self._post_climb_reacquire: bool = False  # True after top_egress_done until yaw realigned
+        # --- S1 stair-entry head-start gate: rate-limit the veto log (8.8) -----------------
+        self._lead_gate_last_log_t: float = -1e9   # self._elapsed_dt at the last veto log
 
     def reset(self) -> None:
         self.stall.reset()
@@ -114,6 +178,7 @@ class HandoffController:
         self._climb_stall_retries = 0
         self._commit_yaw0 = None
         self._post_climb_reacquire = False
+        self._lead_gate_last_log_t = -1e9
 
     def update(
         self,
@@ -142,6 +207,7 @@ class HandoffController:
         stairs_ahead_gt: Optional[bool] = None,
         forward_goal_dist_m: Optional[float] = None,
         caller_hold: bool = False,
+        patient_lead_m: Optional[float] = None,
     ) -> Dict[str, Any]:
         # ``caller_hold`` (incident 8.15 / F1 extension, run_sim_20260711_155123_326): the
         # perception controller's stance-hold decision, passed as an explicit argument (8.5)
@@ -309,13 +375,69 @@ class HandoffController:
             # FALLBACK engage: already wedged at the riser (stall) -- a backstop for when
             # the riser distance is unknown. Likely jammed, so less ideal.
             stall_engage = has_stairs and stalled and near_enough
+            # E2 (2026-07-12 review of run_sim_20260712_013638_835): person-as-risers ghost
+            # veto (incident 8.3 class). That run's second engage fired reason="wedge_stall",
+            # riser_dist_ahead_m=null, level_heights_m=[0.0, 0.232, 0.32, ...] -- a standing
+            # patient read as an 11-step staircase -- while the dog was FOLLOWING (caller_hold
+            # False, so the 8.15-corr-3 ENGAGE veto did not apply). See
+            # stair_engage_person_ghost_veto's docstring for the full numeric derivation of
+            # ghost_engage_gap_window_m. Applied to BOTH engage arms (not just stall_engage,
+            # which is what that run happened to hit) since a person-as-risers reading could in
+            # principle also satisfy the room/riser_dist_ahead test for approach_engage.
+            ghost_veto = stair_engage_person_ghost_veto(
+                leading_edge_distance_m=le,
+                person_gap_m=person_gap_m,
+                window_m=float(self.cfg.ghost_engage_gap_window_m),
+            )
             # caller_hold veto (see header note; run_sim_20260711_155123_326): no NEW climb
             # may start while the perception controller commands a stance-hold -- both
             # spurious landing engages (20:00:56 wedge_stall at the patient, 20:01:42
             # post-flip) fired during a continuous caller STOP/hold=True/vx=0 stretch.
+            # S1 stair-entry head-start gate (2026-07-12 review of run_sim_20260712_023126_786,
+            # run 14): no NEW climb may start until the patient has pulled ``stair_entry_min_
+            # lead_m`` ahead -- see stair_entry_lead_ok's docstring and HandoffConfig.
+            # stair_entry_min_lead_m's docstring for the full numeric derivation + the
+            # non-deadlock interval math against isaac_env.py's PATIENT_HARD_WAIT_LEAD_M.
+            # Applied to BOTH engage arms, same reasoning as the ghost veto above: run 14's
+            # collision engaged via stall_engage (already jammed) at a lead of only 0.765 m,
+            # but a person-as-risers-adjacent approach_engage could equally fire too close.
+            # PRE-CLIMB ONLY BY CONSTRUCTION (incident 8.15): this whole block only runs
+            # while ``self.state == "walk"``, so an ONGOING climb is never touched by this
+            # gate -- it can only ever prevent a climb from STARTING.
+            lead_ok = stair_entry_lead_ok(
+                patient_lead_m=patient_lead_m,
+                min_lead_m=float(self.cfg.stair_entry_min_lead_m),
+            )
             trigger = (bool(self.cfg.enabled) and armed
                        and (approach_engage or stall_engage)
-                       and not caller_hold)
+                       and not caller_hold
+                       and not ghost_veto
+                       and lead_ok)
+            if not trigger and (approach_engage or stall_engage) and armed and not caller_hold and ghost_veto:
+                log_event(
+                    self.logger, logging.INFO, "handoff_engage_vetoed_ghost",
+                    "Stair ENGAGE vetoed: depth leading edge matches the GT patient distance -- "
+                    "the 'staircase' reading is the standing patient, not real stairs",
+                    reason=("approach_room" if approach_engage else "wedge_stall"),
+                    leading_edge_m=le, person_gap_m=person_gap_m,
+                    window_m=float(self.cfg.ghost_engage_gap_window_m),
+                    stair_count=int(det.get("stair_count", 0)),
+                    level_heights_m=det.get("level_heights_m"),
+                )
+            if (not trigger and (approach_engage or stall_engage) and armed and not caller_hold
+                    and not ghost_veto and not lead_ok):
+                # Rate-limited (8.8): this can otherwise log every frame for the whole hold.
+                if (self._elapsed_dt - self._lead_gate_last_log_t) >= 2.0:
+                    self._lead_gate_last_log_t = self._elapsed_dt
+                    log_event(
+                        self.logger, logging.INFO, "handoff_engage_vetoed_lead",
+                        "Stair ENGAGE held: patient lead below the required stair-entry "
+                        "head start -- waiting for her to pull further ahead before committing",
+                        reason=("approach_room" if approach_engage else "wedge_stall"),
+                        patient_lead_m=patient_lead_m,
+                        required_lead_m=float(self.cfg.stair_entry_min_lead_m),
+                        stair_count=int(det.get("stair_count", 0)),
+                    )
             if trigger:
                 reason = "approach_room" if approach_engage else "wedge_stall"
                 backend = str(self.cfg.climb_backend)

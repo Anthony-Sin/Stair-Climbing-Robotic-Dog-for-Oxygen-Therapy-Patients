@@ -270,6 +270,7 @@ from go2_locomotion.go2_locomotion_utils import PARKOUR_DEFAULT_POSE, PGTT_DEFAU
 from go2_locomotion.locomotion_arbiter import (
     ClimbWzInputs, arbitrate_climb_wz, arbitrate_climb_vx,
 )
+from go2_locomotion.hold_park import HoldParkController, HoldParkConfig
 from world.sim_person_actor import spawn_sim_person
 from perception.sim_lidar_xt16 import Xt16Config, cast_scan, render_preview, profile_from_scan
 
@@ -358,6 +359,12 @@ _LATEST_PARKOUR_DEPTH = None
 # swapped in at the stairs. None on the IK backend / parkour-as-primary / when disabled.
 _PGTT_CLIMB_POLICY = None
 _HANDOFF_CLIMBING = False  # tracks the walk<->climb transition so the drive gains swap once
+# D1 (run-12 review, 2026-07-12): sustained-hold PARK for the PGTT flat-walk path (see
+# go2_locomotion/hold_park.py). None when disabled (--pgtt-hold-park-sec <= 0) or on the
+# --locomotion-policy parkour path. _PGTT_HOLD_PARK_FROM_ACT is the joint pose (ACT order)
+# captured ONCE at the engage transition -- the slew-from pose for the stand-pose blend.
+_PGTT_HOLD_PARK = None
+_PGTT_HOLD_PARK_FROM_ACT = None
 
 # Graceful-stop flag: set by a SIGINT/SIGTERM/SIGBREAK handler or by the launcher's stop
 # sentinel so the render loop breaks cleanly and the finally block FINALIZES the video
@@ -397,6 +404,11 @@ _cmd_vel    = {
     "person_detected": False,
     "gap_m": None,
     "stairs_detected": False,
+    # Incident E1 (2026-07-12 review of run_sim_20260712_013638_835): the caller's already-
+    # computed [0..1] mid-climb patient-gap brake scale (see sim_robot_controller._send's
+    # docstring-comment for the full wire contract). 1.0 = no brake (backward-compatible
+    # default for a stale/older sender that never sets this key).
+    "gap_brake_scale": 1.0,
 }
 _running    = True
 _front_camera_smoothed_position = None
@@ -487,6 +499,16 @@ def _cmd_receiver_thread(port: int) -> None:
             gap_m = payload.get("gap_m")
             if gap_m is not None:
                 gap_m = float(gap_m)
+            # Incident E1: caller's mid-climb patient-gap brake scale, [0,1]. Absent (older/
+            # stale sender) or malformed -> 1.0 (no brake, backward compatible). Clamped
+            # defensively -- this scales isaac_env's OWN climb_vx floor multiplicatively
+            # (never boosts it: applying max(1.0, x) here would defeat the whole point), so an
+            # out-of-range payload value must never push the floor ABOVE its unbraked default.
+            try:
+                gap_brake_scale = float(payload.get("gap_brake_scale", 1.0))
+            except (TypeError, ValueError):
+                gap_brake_scale = 1.0
+            gap_brake_scale = max(0.0, min(1.0, gap_brake_scale))
             # Followed person's bbox in RGB-frame normalized [0,1] coords (or None
             # if no detection this frame). Forwarded so the parkour depth policy can
             # mask the person out of its depth input. List of 4 floats or None.
@@ -520,6 +542,7 @@ def _cmd_receiver_thread(port: int) -> None:
                 _cmd_vel["hold"] = hold
                 _cmd_vel["person_detected"] = person_detected
                 _cmd_vel["gap_m"] = gap_m
+                _cmd_vel["gap_brake_scale"] = gap_brake_scale
                 _cmd_vel["ts"] = time.monotonic()
                 _cmd_vel["count"] = int(_cmd_vel.get("count", 0)) + 1
                 cmd_count = int(_cmd_vel["count"])
@@ -1659,7 +1682,16 @@ PATIENT_WALK_SPEED_FLAT_MPS = 0.35
 # rescales leg cadence to this speed automatically (no skate -- the stance foot stays
 # world-fixed). Nudge toward ~0.11-0.12 to actively reel the gap DOWN to 1.2 m rather than
 # merely hold it.
-PATIENT_WALK_SPEED_STAIR_MPS = 0.13
+# 0.13 -> 0.22 (2026-07-12, runs 23-26): the paragraph above was tuned for the OLD slow
+# climber (~0.13 m/s body_vx, never mounting) so the patient wouldn't outrun it. The
+# stage-5 climber mounts at a 0.40 command and its commanded-ZERO creep alone is ~0.1 m/s
+# (stop-probe), so at 0.13 the patient barely outruns a FULLY-BRAKED dog -- all four
+# full-climb runs (23-26) ground to the same GT min-gap equilibrium 0.529-0.594 vs the
+# 0.65 grader floor with the dog commanded (0,0,0) at the minimum (run 26 fall_diag
+# t=53.8: cmd 0,0,0, hold=True, gap 0.534). 0.22 is still a slow, careful stair pace and
+# restores a >=0.1 m/s escape margin over the creep; the dog's own gap brake + GT taper
+# handle the closing half of the loop.
+PATIENT_WALK_SPEED_STAIR_MPS = 0.22
 PATIENT_WALK_SPEED_POST_STAIR_MPS = 0.18
 
 # Gap-aware patient pacing (the patient watches the dog and eases off if it falls behind).
@@ -1673,8 +1705,23 @@ PATIENT_PACE_GAP_MAX_M = 2.7       # lead at/above which the patient slows to th
 PATIENT_PACE_SLOW_FLOOR = 0.12     # min speed scale when the dog is far behind (near-wait)
 # Hard cap on how far the patient may get ahead of the dog: beyond this lead the patient STOPS
 # (speed 0) and waits, so the climber's person-proxy never recedes out of reach and wedges the
-# dog partway up the stairs. Just above PACE_GAP_COMFORT so the patient eases (pacing) then holds.
-PATIENT_HARD_WAIT_LEAD_M = 1.7
+# dog partway up the stairs.
+#
+# RAISED 1.7 -> 3.2 (2026-07-12, S1 stair-entry head-start gate review, CLAUDE.md 8.7): this
+# constant is the SAME "lead" measure (state.x - _rob_x, see the local ``lead`` a few lines
+# below) that HandoffConfig.stair_entry_min_lead_m (default 2.4 m) gates a NEW climb ENGAGE
+# on. DEADLOCK CHECK: the interval [stair_entry_min_lead_m, PATIENT_HARD_WAIT_LEAD_M) =
+# [2.4, 3.2) must stay non-empty, or the dog would hold waiting for a lead the patient's own
+# hard-wait would never let her reach. It does: while the dog holds below 2.4 m (ENGAGE
+# vetoed by stair_entry_lead_ok; any near-riser forward push is separately braked toward 0 by
+# core.control.stair_policy.climb_gap_brake_scale/mid_climb_floor_capped_command once she is
+# close), she is BELOW 3.2 m and keeps walking -- the two conditions can never hold
+# simultaneously, so the lead always keeps growing until the gate releases at 2.4, strictly
+# before she would ever freeze at 3.2. PATIENT_PACE_GAP_MAX_M (2.7) sits INSIDE this interval,
+# so the transition is a smooth pace-down (full speed -> eases through [1.6, 2.7] -> her slow-
+# walk floor from 2.7 to 3.2), not an abrupt stop on either side. At the old 1.7 the interval
+# [2.4, 1.7) would have been EMPTY (inverted) -- the dog's gate would never have released.
+PATIENT_HARD_WAIT_LEAD_M = 3.2
 
 # Flat-landing follow HOLD. The RL locomotion policy drifts FORWARD even at commanded vx~=0
 # (lean-on-creep, incident 8.9) and the follow controller's reverse is suppressed + the sim
@@ -2108,6 +2155,18 @@ def _run_pgtt_handoff(go2, rl_policy, vx, stairs_action_active, person_detected,
                                           float(_patient_state.y) - base_y))
     except Exception:
         person_gap = None
+    # S1 stair-entry head-start gate (see HandoffConfig.stair_entry_min_lead_m /
+    # stair_entry_lead_ok's docstrings): the along-path lead used to gate a NEW climb
+    # ENGAGE, computed the SAME way as isaac_env's own PATIENT_HARD_WAIT_LEAD_M pacing
+    # check (``update_person_patrol``'s local ``lead`` -- ``state.x - _rob_x``) so both
+    # constants describe one consistent axis. Sim GT only; None (no patient sidecar, e.g.
+    # real hardware or the stair-waypoint test) makes the gate a no-op downstream.
+    patient_lead = None
+    try:
+        if _patient_state is not None:
+            patient_lead = float(_patient_state.x) - base_x
+    except Exception:
+        patient_lead = None
     # Explicit forward GOAL distance for the egress stop. In the stair-waypoint test there is no
     # person to follow up -- the goal is the fixed waypoint, so stop the egress push AT it (don't
     # overrun the landing). In the follow case the goal IS the patient, handled by person_gap.
@@ -2130,6 +2189,7 @@ def _run_pgtt_handoff(go2, rl_policy, vx, stairs_action_active, person_detected,
         base_x=float(base_x), person_gap_m=person_gap, stairs_ahead_gt=stairs_ahead_gt,
         forward_goal_dist_m=forward_goal,
         caller_hold=bool(caller_hold),
+        patient_lead_m=patient_lead,
     )
 
 
@@ -2147,9 +2207,24 @@ def _step_go2_locomotion(
     person_bbox: Optional[list] = None,
     hold: bool = False,
     person_detected: bool = True,
+    climb_vx_brake_scale: float = 1.0,
 ) -> None:
-    global _HANDOFF_CLIMBING
+    global _HANDOFF_CLIMBING, _PGTT_HOLD_PARK_FROM_ACT
     vx = max(0.0, float(vx))
+    # Incident E1 (2026-07-12 review of run_sim_20260712_013638_835): the caller's already-
+    # computed [0..1] mid-climb patient-gap brake, forwarded over UDP as the `gap_brake_scale`
+    # payload field (see sim_robot_controller._send's docstring-comment) -- scales ONLY the
+    # unconditional `handoff_climb_vx` FLOOR the blind_rl / parkour hot-swap branches apply below
+    # (arbitrate_climb_vx's `climb_vx` argument / the parkour branch's raw max()), never the
+    # caller's own `vx` term and never the person-gated top_egress `climb_vx_floor` path (already
+    # proven working, left untouched per the task brief). Clamped again here (defense in depth;
+    # the UDP receiver already clamps) so a malformed value can only ever pull the floor DOWN,
+    # never boost it above its unbraked default. Person-not-detected already yields a caller-side
+    # scale of 1.0 by construction (core/control/stair_policy.climb_gap_brake_scale's first branch,
+    # ~L142-143: "if not bool(person_detected): return 1.0") -- this function trusts that contract
+    # rather than re-deriving visibility from `person_detected` here (incident 8.3 blind-carry must
+    # keep its full floor).
+    _climb_vx_brake_scale = max(0.0, min(1.0, float(climb_vx_brake_scale)))
     # incident 8.15 / F1: the caller's stop decision (main.py's motion_allowed / hold_request,
     # sent over UDP as this `hold` argument), captured BEFORE the PGTT stair-commit / egress
     # logic below can override it. That logic (the wz_override / vx_floor block a few hundred
@@ -2176,6 +2251,87 @@ def _step_go2_locomotion(
     # heading-mode/delta_yaw injection, the person depth-mask, and the scripted /
     # closed-loop stair climbers entirely. command = [vx, vy, wz].
     if str(getattr(args, "locomotion_policy", "pgtt")) == "pgtt":
+        # --- D1 sustained-hold PARK (incident 8.15/8.16 continuation, run-12 review, "the
+        # fall": PGTT's hold is cmd=(0,0,0) + CONTINUED INFERENCE, so a caller hold does not
+        # stop PHYSICAL creep -- run 12 crept x 6.84->7.31 over 12s of continuous hold=True,
+        # then accelerated to ~0.19 m/s and walked off the far top-landing edge). Checked
+        # FIRST, before _run_pgtt_handoff() / the climb hot-swap branches below, so a
+        # sustained hold short-circuits ALL of it this frame -- the HandoffController's
+        # update() is simply never called while parked, which is what guarantees a
+        # person-as-risers ghost (incident 8.3) cannot ENGAGE a climb from the parked stand
+        # (its ENGAGE is also already vetoed by caller_hold, incident 8.15 correction 3, but
+        # not-calling-it-at-all is the stronger guarantee the task brief asked to verify).
+        # This call site is reachable EVERY pgtt-policy frame regardless of climb state --
+        # unlike the walk-only F1 clamp further down (~L2407, `if _motion_hold_requested:`),
+        # which only runs once every hot-swap branch above it has already returned early.
+        # BECAUSE of that reachability, the park MUST be gated off during an ONGOING climb:
+        # mid-climb the caller can legitimately assert hold for long stretches that the climb
+        # branches deliberately ignore (incident 8.15 -- "an ONGOING climb is never clamped"),
+        # and crest EGRESS runs ~24 s at tilt ~0.01 rad (run 12: handoff_crest 04:54:38 ->
+        # handoff_disengage 04:55:02, tilt_rad 0.02) -- level enough to pass the tilt gate.
+        # Parking there would freeze the HandoffController FSM in "climb" (update() is skipped
+        # below while parked) and, on release, restore PGTT position gains while
+        # _HANDOFF_CLIMBING (still True) skips the torque-gain re-install in the hot-swap
+        # branch below (the `if not _HANDOFF_CLIMBING:` guard ahead of
+        # reason="handoff_climb_blind_rl_torque") -- double-driving the joints. Gate on BOTH
+        # _HANDOFF_CLIMBING (the hot-swap gain-mode flag; set at both hot-swap entries, cleared
+        # at the reason="handoff_walk_pgtt_position" restore) and the handoff FSM state
+        # ("climb" covers the IK-backend climb, which never sets _HANDOFF_CLIMBING). Feeding
+        # hold_requested=False during a climb resets the
+        # accumulator each frame (hold_park.py update(), no spurious release actions: its
+        # released_this_frame is False when state was already "walk").
+        # See go2_locomotion/hold_park.py for the full state machine + root cause.
+        if _PGTT_HOLD_PARK is not None:
+            _climb_fsm_active = bool(_HANDOFF_CLIMBING) or (
+                _PGTT_HANDOFF is not None
+                and str(getattr(_PGTT_HANDOFF, "state", "walk")) == "climb")
+            _roll_hp, _pitch_hp, _, _ = _body_rp_rates(go2)
+            _tilt_hp = max(abs(_roll_hp), abs(_pitch_hp))
+            _hp_decision = _PGTT_HOLD_PARK.update(
+                dt,
+                hold_requested=(_motion_hold_requested and not _climb_fsm_active),
+                tilt_rad=_tilt_hp)
+            if _hp_decision.engaged_this_frame:
+                # Seed the slew-from pose BEFORE swapping gains (current_act_positions reads
+                # the LIVE measured joint positions, same call the climb handoff slew uses).
+                _PGTT_HOLD_PARK_FROM_ACT = rl_policy.current_act_positions(go2)
+                _set_go2_drive_gains(go2, 800.0, 40.0, 1000.0,
+                                     reason="pgtt_hold_park_engaged")
+                log_event(
+                    LOGGER, logging.INFO, "pgtt_hold_park_engaged",
+                    "PGTT sustained-hold PARK engaged: stopped stepping the walk policy and "
+                    "slewing to the stand pose under stiff position-hold gains",
+                    hold_elapsed_sec=round(float(_hp_decision.hold_elapsed_sec), 2),
+                    tilt_deg=round(math.degrees(_tilt_hp), 2),
+                )
+            if _hp_decision.released_this_frame:
+                # Mirrors the climb-exit gain restore (~L2369 below) -- same kp/kd/1000.
+                _set_go2_drive_gains(go2, float(args.pgtt_kp), float(args.pgtt_kd), 1000.0,
+                                     reason="pgtt_hold_park_released")
+                rl_policy.reset()
+                log_event(
+                    LOGGER, logging.INFO, "pgtt_hold_park_released",
+                    "PGTT sustained-hold PARK released: caller commanded motion; restored "
+                    "PGTT drive gains and reset the policy for a clean resume",
+                )
+            if _hp_decision.state in ("slewing", "parked"):
+                if _PGTT_HOLD_PARK_FROM_ACT is None:
+                    # Defensive only -- engaged_this_frame always fires the capture first on
+                    # the very transition into "slewing"/"parked", so this should be dead.
+                    _PGTT_HOLD_PARK_FROM_ACT = rl_policy.current_act_positions(go2)
+                _alpha = float(_hp_decision.slew_alpha if _hp_decision.slew_alpha is not None else 1.0)
+                # Smoothstep ease, mirrors env/go2_control.py's _Go2StandUp.tick() ramp.
+                _s = _alpha * _alpha * (3.0 - 2.0 * _alpha)
+                _targets_act = ((1.0 - _s) * _PGTT_HOLD_PARK_FROM_ACT
+                                 + _s * rl_policy.default_act)
+                rl_policy.apply_external_act_targets(go2, _targets_act)
+                _go2_locomotion_state.leg_summary = rl_policy.leg_command_summary()
+                _go2_locomotion_state.policy_name = rl_policy.policy_path.name
+                record_go2_telemetry(
+                    go2, _go2_locomotion_state, base_link_name=BASE_LINK_NAME,
+                    logger=LOGGER, vx=0.0, vy=0.0, wz=0.0,
+                )
+                return
         _hf = None
         if str(getattr(args, "pgtt_height_backend", "ground_truth")) == "raycast":
             try:
@@ -2217,9 +2373,39 @@ def _step_go2_locomotion(
                 # the stale bearing; hold-last decay only without a lock) lives in that module.
                 # Only the sim-only glue -- the _PGTT_CLIMB_POLICY._last_climb_wz attribute
                 # state and the canonical frame-count 0.92 decay factor -- stays here.
+                #
+                # Incident E1: the non-egress floor (`climb_vx` argument, only reachable via the
+                # final `max(cmd_vx, climb_vx)` branch inside arbitrate_climb_vx -- top_egress uses
+                # `egress_vx_floor` instead, untouched) is pre-scaled by the caller's gap brake
+                # BEFORE arbitrate_climb_vx ever sees it. This can only ever pull the floor down
+                # (never boosts `vx` itself, never touches the egress path) -- see this function's
+                # docstring-comment above for the full contract.
+                # GT-gap taper (runs 23+24, run_sim_20260712_120703_280 / _121801_365): the
+                # 0.40 mount floor makes the dog FASTER than the patient ON the stairs, and
+                # the perception brake is blind at close range mid-climb (incident 8.3, by
+                # design) -- both runs bottomed out at GT gap 0.53 vs the 0.65 grader floor,
+                # UNCHANGED by +0.2 m of entry lead (the lead is consumed mid-climb). The sim
+                # already paces the patient from GT, so taper the SIM-side climb floor on the
+                # same GT lead: full floor at >=1.4 m, zero at <=1.0 m (run 25,
+                # run_sim_20260712_123123_319: the original 1.2/0.85 band lifted min gap only
+                # 0.529 -> 0.594 because the policy's commanded-zero creep (~0.1 m/s, stage-5
+                # stop-probe) continues inside the zero zone; starting the brake 0.2 m earlier
+                # moves the creep window above the 0.65 grader floor). (Mirrors the caller's
+                # climb_gap_brake_scale semantics; velocity brake only, never a stance lock --
+                # 8.9/8.15; the stage-4/5 halt makes commanded-zero mid-stairs safe, 0/64
+                # topples). None (no GT patient, e.g. real hardware) => 1.0 (8.15-corr-2).
+                _gt_gap_scale = 1.0
+                if _patient_state is not None:
+                    try:
+                        _bp_gt, _ = go2.get_world_pose()
+                        _gt_lead = float(_patient_state.x) - float(_bp_gt[0])
+                        _gt_gap_scale = max(0.0, min(1.0, (_gt_lead - 1.0) / (1.4 - 1.0)))
+                    except Exception:
+                        _gt_gap_scale = 1.0
                 _cvx = arbitrate_climb_vx(
                     vx,
-                    climb_vx=float(getattr(args, "handoff_climb_vx", 0.22)),
+                    climb_vx=(float(getattr(args, "handoff_climb_vx", 0.22))
+                              * _climb_vx_brake_scale * _gt_gap_scale),
                     top_egress=bool(_ho.get("top_egress")),
                     egress_vx_floor=_ho.get("climb_vx_floor"),
                 )
@@ -2286,10 +2472,19 @@ def _step_go2_locomotion(
                 # does not park the dog mid-climb. The parkour net self-paces above this.
                 # AT THE TOP (egress): same person-gated floor as the blind_rl branch -- 0 holds
                 # the dog when the patient is close on the landing; non-egress climbs unchanged.
+                #
+                # Incident E1: the non-egress floor below is pre-scaled by the caller's gap brake,
+                # mirroring the blind_rl branch above -- this comment block predates the stage-4
+                # halt policy and the 2026-07-11 stop-probe that proved velocity-braking is viable
+                # mid-stairs (CLAUDE.md 8.15); "applied EVEN when the person is visible" is still
+                # correct (the floor itself is unconditional), but it is no longer UNSCALED when
+                # the person is close -- see this function's docstring-comment for the full
+                # contract (never boosts vx, never touches the egress path).
                 if bool(_ho.get("top_egress")) and _ho.get("climb_vx_floor") is not None:
                     _cvx = max(float(vx), float(_ho.get("climb_vx_floor")))
                 else:
-                    _cvx = max(float(vx), float(getattr(args, "handoff_climb_vx", 0.22)))
+                    _cvx = max(float(vx),
+                               float(getattr(args, "handoff_climb_vx", 0.22)) * _climb_vx_brake_scale)
                 telemetry = _PGTT_CLIMB_POLICY.step(
                     go2, (_cvx, vy, wz), dt, delta_yaw=_cl_dyaw, stairs_active=True,
                     hold=False, body_speed=_cl_speed, scripted_climb=False,
@@ -3170,9 +3365,25 @@ def main() -> None:
     # stair counter that hand the legs to the closed-loop climber for one riser, then
     # back. None on the parkour path / when --no-pgtt-stair-handoff.
     global _PGTT_HANDOFF, _LATEST_PARKOUR_DEPTH, _PGTT_CLIMB_POLICY, _HANDOFF_CLIMBING
+    global _PGTT_HOLD_PARK, _PGTT_HOLD_PARK_FROM_ACT
     _LATEST_PARKOUR_DEPTH = None
     _PGTT_CLIMB_POLICY = None
     _HANDOFF_CLIMBING = False
+    # D1 (run-12 review): sustained-hold PARK, PGTT-walk path only (see hold_park.py).
+    # <= 0 disables (legacy behavior -- PGTT keeps stepping/creeping through a hold).
+    _PGTT_HOLD_PARK_FROM_ACT = None
+    if (str(getattr(args, "locomotion_policy", "pgtt")) == "pgtt"
+            and float(getattr(args, "pgtt_hold_park_sec", 2.5)) > 0.0):
+        _PGTT_HOLD_PARK = HoldParkController(HoldParkConfig(
+            park_after_sec=float(args.pgtt_hold_park_sec),
+            tilt_max_rad=float(getattr(args, "pgtt_hold_park_tilt_max_rad", 0.14)),
+        ))
+        log_event(LOGGER, logging.INFO, "pgtt_hold_park_ready",
+                  "PGTT sustained-hold PARK armed (flat-walk path only)",
+                  park_after_sec=float(args.pgtt_hold_park_sec),
+                  tilt_max_rad=float(getattr(args, "pgtt_hold_park_tilt_max_rad", 0.14)))
+    else:
+        _PGTT_HOLD_PARK = None
     _PGTT_HANDOFF = _build_pgtt_handoff(rl_policy)
     if _PGTT_HANDOFF is not None:
         _PGTT_HANDOFF.reset()
@@ -3658,6 +3869,12 @@ def main() -> None:
                     hold = True
                     person_detected = False
                     gap_m = None
+                    # Incident E1: stale command -> no braked-vx info available. 1.0 (no brake) is
+                    # the pre-existing/backward-compatible default anyway; hold=True already zeros
+                    # the walk-state command, and an ONGOING climb is never held (incident 8.9/8.15),
+                    # so this only affects the mid-climb floor's magnitude on a stale link, not
+                    # whether the dog moves at all.
+                    gap_brake_scale = 1.0
                 else:
                     vx = _cmd_vel["vx"]
                     vy = _cmd_vel["vy"]
@@ -3670,6 +3887,7 @@ def main() -> None:
                     hold = _cmd_vel.get("hold", False)
                     person_detected = _cmd_vel.get("person_detected", False)
                     gap_m = _cmd_vel.get("gap_m")
+                    gap_brake_scale = _cmd_vel.get("gap_brake_scale", 1.0)
             # Self-test: bypass the Docker/vision controller entirely and drive a
             # constant forward command straight into the locomotion policy. Lets us
             # verify flat-ground walking and balance in isolation (headless, no UDP).
@@ -3678,6 +3896,10 @@ def main() -> None:
                 yaw_err = 0.0
                 stairs_detected = False
                 stairs_action_active = False
+                # Incident E1: open-loop self-test drives a fixed vx with no UDP controller/gap
+                # info at all -- full (unbraked) mid-climb floor, matching this mode's existing
+                # intent to test full-speed climbs in isolation.
+                gap_brake_scale = 1.0
                 person_bbox = None
                 command_fresh = True
                 person_detected = False
@@ -3940,14 +4162,19 @@ def main() -> None:
                                      stairs_detected=stairs_detected, yaw_err=yaw_err,
                                      stairs_action_active=stairs_action_active,
                                      person_bbox=person_bbox, hold=hold,
-                                     person_detected=person_detected)
+                                     person_detected=person_detected,
+                                     climb_vx_brake_scale=gap_brake_scale)
             else:
                 # Demo running, momentarily no fresh command: hold a balanced stand
                 # with the policy (the robot has already started walking, so do not
                 # re-freeze -- that would teleport it back). person_detected is forwarded
                 # so the stair-commit heading-hold can still drive up if it is latched.
+                # gap_brake_scale forwarded too (incident E1) -- an ONGOING climb is never
+                # held (8.9/8.15), so a stale-but-not-yet-timed-out link must not silently
+                # revert to an unbraked floor just because this frame had no fresh command.
                 _step_go2_locomotion(go2, rl_policy, 0.0, 0.0, 0.0, dt, stairs_detected=False,
-                                     hold=True, person_detected=person_detected)
+                                     hold=True, person_detected=person_detected,
+                                     climb_vx_brake_scale=gap_brake_scale)
 
             # Domain-randomization push disturbances: periodically shove the base
             # with a random horizontal velocity impulse to test the policy's
@@ -4494,7 +4721,26 @@ def main() -> None:
                 # the flat (approach / top-landing). A truly wedged climb is bounded by the hard
                 # wall-clock episode cap, not this. (A fall still ends the run via the watchdog.)
                 _on_staircase = (stair_phase_now == "staircase")
-                if _robot_has_moved and _robot_idle_sim_sec >= ROBOT_SETTLE_EXIT_SEC and not _on_staircase:
+                # ...and do NOT settle-exit while a handoff CLIMB is engaged or a stair entry
+                # is still PENDING (stairs detected, patient not yet at her destination): the
+                # stair-entry head-start gate (HandoffConfig.stair_entry_min_lead_m) makes the
+                # dog WAIT at the base by design, and that wait reads as "idle" here. Run 20
+                # (run_sim_20260712_111619_979): the wedge_stall engage fired at ~t=36 with the
+                # handoff state "climb", but this exit's idle window (accumulated during the
+                # designed base wait) fired the same window and killed the run at x=1.83 before
+                # the climb took a step. A genuinely-stuck base wait is still bounded by
+                # DEMO_SIM_TIMEOUT_SEC / MaxRunTimeSec, not this exit.
+                _handoff_climb_engaged = bool(
+                    _PGTT_HANDOFF is not None
+                    and str(getattr(_PGTT_HANDOFF, "state", "walk")) == "climb")
+                _stair_entry_pending = bool(
+                    _PGTT_HANDOFF is not None
+                    and bool((getattr(_PGTT_HANDOFF, "_det", None) or {}).get("stair_detected", False))
+                    and _patient_state is not None
+                    and not bool(getattr(_patient_state, "at_destination", False)))
+                if (_robot_has_moved and _robot_idle_sim_sec >= ROBOT_SETTLE_EXIT_SEC
+                        and not _on_staircase and not _handoff_climb_engaged
+                        and not _stair_entry_pending):
                     evaluation_done = True
                     evaluation_exit_reason = "robot_settled"
                     log_event(

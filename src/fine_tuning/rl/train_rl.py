@@ -104,6 +104,9 @@ def _build_patch_params(args) -> "config_patch.StairPatchParams":
         "spawn_tilt_max_rad": args.spawn_tilt_max_rad,
         "payload_mass_scale": args.payload_mass_scale,
         "rel_standing_envs": args.rel_standing_envs,
+        "pitch_dip_hinge_rad": args.pitch_dip_hinge_rad,
+        "pitch_dip_weight": args.pitch_dip_weight,
+        "trunk_thigh_contact_weight": args.trunk_thigh_contact_weight,
     }
     accepted = {f.name for f in dataclasses.fields(config_patch.StairPatchParams)}
     kwargs = {k: v for k, v in wanted.items() if k in accepted}
@@ -350,6 +353,28 @@ def main(argv: Optional[list] = None) -> int:
                          "stage-3 policy (model_3200) climbs well but lean-creeps 0.146 m/s mean / 0.367 m/s "
                          "p95 at commanded vx=0 mid-stairs, and toppled after a ~3 min near-crest hold (sim "
                          "run 2026-07-11_161710_451). Raise toward 0.12 (6x) so halting gets real signal.")
+    ap.add_argument("--pitch-dip-hinge-rad", type=float, default=envb.get_float("FT_RL_PITCH_DIP_HINGE_RAD", 0.26),
+                    help="Stage-5 mount-softening fix (config_patch.StairPatchParams.pitch_dip_hinge_rad): "
+                         "trigger angle (rad, ~15 deg) for the pitch_dip_hinge reward; 0 disables. The "
+                         "deployed stage-4 policy strikes each riser nose-first (press-stall-push mounts "
+                         "measured at ~22-34 deg pitch dips vs a normal ~8-12 deg climb lean). Compared "
+                         "against THIS training env's OWN verified pitch sign (positive == nose-down; see "
+                         "the _reward_pitch_dip_hinge docstring in config_patch.py) -- NOT the deployed-sim "
+                         "telemetry sign. 0.26 rad sits just past the normal lean so it costs nothing.")
+    ap.add_argument("--pitch-dip-weight", type=float, default=envb.get_float("FT_RL_PITCH_DIP_WEIGHT", -1.0),
+                    help="Stage-5 mount-softening fix (config_patch.StairPatchParams.pitch_dip_weight): "
+                         "pitch_dip_hinge reward weight; 0 disables. Hinge+square shape keeps this "
+                         "self-limiting (a few hundredths to low tenths per step), well under the "
+                         "~53%%-of-budget scale that caused the 2026-07-10_21-39-53 collapse.")
+    ap.add_argument("--trunk-thigh-contact-weight", type=float,
+                    default=envb.get_float("FT_RL_TRUNK_THIGH_CONTACT_WEIGHT", -0.25),
+                    help="Stage-5 mount-softening fix (config_patch.StairPatchParams."
+                         "trunk_thigh_contact_weight): weight for a NEW reward term scoped to trunk+thigh "
+                         "contacts only; 0 disables. REUSES robot_lab's own undesired_contacts function "
+                         "(already bound on the parent's self.rewards.undesired_contacts, weight -1.0, ALL "
+                         "non-foot bodies) at a smaller weight, on just the bodies that strike the riser "
+                         "edge during a nose-first mount. SHAPING only -- adds no termination (CLAUDE.md "
+                         "8.11: belly-drag climbs on risers are legitimate).")
 
     ap.add_argument("--python", default=envb.get_str("FT_RL_PYTHON"),
                     help="Python interpreter with Isaac Sim (default: this one).")
@@ -420,14 +445,16 @@ def main(argv: Optional[list] = None) -> int:
         LOGGER.info("[patch] params: lin_vel_x=(%s,%s) step_h=(%s,%s) step_w=(%s|%s..%s) "
                     "tall_start=%s tall_step_min=%s orient=%s ascent=%s roll=%s crest=%s track_linvel=%s "
                     "max_init_level=%s com_jitter=%s upward=%s lin_vel_z=%s fall_limit_angle_deg=%s "
-                    "spawn_tilt_max_rad=%s payload_mass_scale=%s rel_standing_envs=%s",
+                    "spawn_tilt_max_rad=%s payload_mass_scale=%s rel_standing_envs=%s "
+                    "pitch_dip_hinge_rad=%s pitch_dip_weight=%s trunk_thigh_contact_weight=%s",
                     args.lin_vel_x_min, args.lin_vel_x_max, args.step_height_min, args.step_height_max,
                     args.step_width_nominal, args.step_width_min, args.step_width_max,
                     args.tall_start_prop, args.tall_step_min, args.orientation_reward, args.ascent_reward,
                     args.roll_penalty, args.crest_reward, args.track_lin_vel_weight,
                     args.max_init_terrain_level, args.com_jitter_m,
                     args.upward_weight, args.lin_vel_z_weight, args.fall_limit_angle_deg,
-                    args.spawn_tilt_max_rad, args.payload_mass_scale, args.rel_standing_envs)
+                    args.spawn_tilt_max_rad, args.payload_mass_scale, args.rel_standing_envs,
+                    args.pitch_dip_hinge_rad, args.pitch_dip_weight, args.trunk_thigh_contact_weight)
         if dry:
             LOGGER.info("[patch] would write %s.py + register %s in %s",
                         config_patch.STAIRS_CFG_MODULE, args.task, config_patch.go2_config_pkg(repo))

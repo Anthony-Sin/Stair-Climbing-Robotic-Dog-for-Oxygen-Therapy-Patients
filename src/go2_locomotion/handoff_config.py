@@ -60,7 +60,92 @@ class HandoffConfig:
     # YOLO+depth gate is FLAKY (fired 0% in run_20260620_202910, blocking the handoff)
     # whereas the Isaac depth detector reliably reports the riser count; gate on the
     # reliable signal. Set True to additionally require the controller's confirmation.
+    #
+    # E2 DECISION (2026-07-12 review of run_sim_20260712_013638_835, kept False): re-checked
+    # against that run's REAL (non-ghost) engage -- wall-clock-correlated to
+    # vision_main_trace.jsonl frame_timing, sim_t=39.515s, robot x=1.612m (the engage itself
+    # logged riser_dist_ahead_m=0.4, right at the base) -- debug_info["stairs_action_active"]
+    # read False THERE (stairs_action_active_genuine also False; only stairs_detected/
+    # stair_climbing_latch were True). The controller's flag did not go True until x=1.888m
+    # (later, per the grader), by which point riser_dist_ahead would likely have dropped below
+    # climb_min_room_m (front feet jammed) -- flipping this to True would have delayed the
+    # smooth "approach_room" engage into a worse "wedge_stall" one, or missed the window
+    # entirely (independently re-verified by scanning vision_main_trace.jsonl for the first
+    # True frame: stairs_action_active does not go True until sim_t=52.43s, x=1.884m -- ~13 s
+    # / 0.27 m LATER than the real engage at sim_t=39.515s, x=1.612m). Left False; the
+    # person-as-risers ghost (incident 8.3 class) is instead vetoed
+    # directly by leading-edge-vs-GT-patient-distance -- see
+    # ``stair_engage_person_ghost_veto`` / ``ghost_engage_gap_window_m`` below.
     require_controller_stairs: bool = False
+
+    # --- E2: person-as-risers ghost-engage veto (incident 8.3 class) ---------
+    # A standing/close patient back-projects into the depth detector as a stack of fake
+    # risers (CLAUDE.md 8.3/8.15-corr-3); when the GT patient distance is available (sim
+    # only -- see HandoffController.update's person_gap_m parameter, already threaded from
+    # isaac_env._run_pgtt_handoff's live sim GT), a leading_edge_distance reading that lands
+    # within this window of the GT patient distance is that patient, not real stairs, and
+    # ENGAGE is vetoed. Sized from run_sim_20260712_013638_835's ghost engage (05:48:23.9
+    # wall time -> wall-clock-correlated vision_main_trace.jsonl frame at delta=0.11s):
+    # leading_edge_m=0.648 (from the handoff_engage log) vs a GT planar patient gap that was
+    # STABLE at 1.08-1.11 m across the full +/-2s bracket around the engage (computed from
+    # frame_meta.gt_patient and stair_demo.robot.x_m/y_m, both true-sim-state and much less
+    # noisy than the perceived depth_distance_m, which swung 0.63-1.36 m in the same window)
+    # -- a measured diff of ~0.45 m. The task brief's originally-suggested 0.35 m window does
+    # NOT cover this measured diff (0.448 > 0.35) -- verified numerically, not assumed (see
+    # CLAUDE.md's "verify geometric claims numerically" lesson) -- so this ships at 0.5 m
+    # instead, which still leaves ~0.9 m of clearance below the SAME run's real engage
+    # separation (leading_edge_m=0.451 vs a GT patient distance of ~1.7 m => diff ~1.25 m,
+    # never vetoed at any window below ~1.2 m).
+    ghost_engage_gap_window_m: float = 0.5
+
+    # --- S1: stair-entry head-start gate (2026-07-12 review of the S1/S2 patient-
+    # clearance pass; runs 13/14 both graded proximity failures DURING the climb rather
+    # than at the final state) ------------------------------------------------
+    # ENGAGE (state=="walk" -> "climb") is additionally gated on the patient having a
+    # sufficient head start onto the staircase: ``patient_lead_m`` (sim GT, the SAME
+    # along-path measure -- ``patient.x - base_x`` -- as ``PATIENT_HARD_WAIT_LEAD_M`` in
+    # isaac_env.py's ``update_person_patrol``) must be ``None`` (real hardware, no GT --
+    # mirrors ``ghost_engage_gap_window_m``'s None contract, this gate is a no-op there)
+    # OR >= this value. run_sim_20260712_023126_786 (run 14) engaged via "wedge_stall" at a
+    # GT planar gap of just 0.765 m (handoff_engage log, sim t=28.35-28.5, base_x=1.76-1.8)
+    # -- already inside the ``climb_gap_brake_scale`` taper zone (brake_stop_m default
+    # 0.85 m) -- then closed to 0.452 m eight climb-steps later (fall_diag sim t=30.975,
+    # base_x=2.126) while ``policy_cmd`` stayed pinned at the unbraked
+    # ``--stair-forward-floor`` (0.16 m/s) because of a SEPARATE bug in the caller's brake
+    # clamp (see ``core.control.stair_policy.mid_climb_floor_capped_command``, S2 of the
+    # same review). S1 stops the dog COMMITTING onto the staircase at all until she has
+    # pulled well ahead, so S2's mid-climb brake never needs to arrest a close-quarters
+    # climb in the first place. ~2.4 m is about 4-5 tread depths (``step_depth_m`` ~0.5-
+    # 0.6 m in this demo's stair preset), i.e. she is already several steps up before the
+    # dog takes its first riser.
+    #
+    # DEADLOCK CHECK (incident 8.7: state the anchors, don't just assert the property):
+    # isaac_env.py's ``PATIENT_HARD_WAIT_LEAD_M`` (patient hard-STOPS once she leads the
+    # dog by more than that constant) was raised from 1.7 -> 3.2 m in the SAME change so
+    # the interval [stair_entry_min_lead_m, PATIENT_HARD_WAIT_LEAD_M) = [2.4, 3.2) stays
+    # NON-EMPTY: while the dog holds below this gate's lead (it vetoes ENGAGE, and the
+    # near-riser forward push is separately braked to ~0 by the S2-fixed
+    # ``climb_gap_brake_scale`` once she is close, so she keeps opening the gap), she is
+    # BELOW her own 3.2 m hard-wait threshold and keeps walking -- both sides can never
+    # hold simultaneously. (``PATIENT_PACE_GAP_MAX_M`` = 2.7 sits inside [gate, 3.2) --
+    # she eases toward her slow-walk floor through [1.6, 2.7], then continues at that
+    # floor from 2.7 to 3.2 -- so the hand-off from "gate releases" to "she'd otherwise
+    # freeze" is a smooth pace-down, not an abrupt stop either side.)
+    #
+    # 2.4 -> 2.0 (2026-07-12, runs 18+19): the non-empty interval guarantees the lead
+    # GROWS, but not how FAST near the gate -- inside her ease band the CLOSURE RATE
+    # collapses (run 19 vetoed_lead trail: 2.065 -> 2.215 -> 2.339 over ~24 wall-s,
+    # ~0.01 m/s; run 18 died 0.008 m short at 2.392) and the evaluator's robot_settled
+    # idle-15s exit wins the race while the dog presses the riser waiting. 2.0 is BELOW
+    # the slow-closure knee (run 19 hit 2.065 with ~25 s of run left) yet still ~2.4x the
+    # 0.84 m tailgate entry that caused run 14's 0.452 m mid-climb gap -- she is 3-4
+    # treads up before the dog's first riser.
+    # 2.0 -> 2.2 (run 23, run_sim_20260712_120703_280): full chain finally completed
+    # (engage->climb->crest->settle upright at x=6.92) but GT min patient gap was 0.53 vs
+    # the 0.65 grader floor during the blind-carry climb toward her crest hard-wait; +0.2 m
+    # of entry lead carries through the climb. Run 19's closure-rate trail showed 2.215
+    # reached with ~12 s to spare, and post-unwedge runs reach the gate far faster.
+    stair_entry_min_lead_m: float = 2.2
 
     # --- 2c: handoff / climb-one-stair ---------------------------------------
     # leading edge must be within this to switch. The near-horizontal parkour cam's

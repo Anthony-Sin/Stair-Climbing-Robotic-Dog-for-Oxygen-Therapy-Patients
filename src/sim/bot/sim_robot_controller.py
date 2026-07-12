@@ -52,15 +52,15 @@ class SimRobotController:
              yaw_err: float = 0.0, person_bbox=None,
              stairs_action_active: bool = False, hold: bool = False,
              person_detected: bool = False, gap_m: Optional[float] = None,
-             depth_img=None) -> None:
+             depth_img=None, gap_brake_scale: Optional[float] = None) -> None:
         # depth_img is accepted for caller compatibility but NOT sent: this controller transmits the
         # velocity command over a fixed-size UDP datagram (a depth frame would not fit); the sim's
         # depth lives on the Isaac side. Ignored here so callers may pass it uniformly.
         self._send(vx, vy, wz, stairs_detected, yaw_err, person_bbox,
-                   stairs_action_active, hold, person_detected, gap_m)
+                   stairs_action_active, hold, person_detected, gap_m, gap_brake_scale)
 
     def stop(self) -> None:
-        self._send(0.0, 0.0, 0.0, False, 0.0, None, False, True, False, None)
+        self._send(0.0, 0.0, 0.0, False, 0.0, None, False, True, False, None, None)
 
     def shutdown(self) -> None:
         self.stop()
@@ -80,7 +80,8 @@ class SimRobotController:
     def _send(self, vx: float, vy: float, wz: float, stairs_detected: bool = False,
               yaw_err: float = 0.0, person_bbox=None,
               stairs_action_active: bool = False, hold: bool = False,
-              person_detected: bool = False, gap_m: Optional[float] = None) -> None:
+              person_detected: bool = False, gap_m: Optional[float] = None,
+              gap_brake_scale: Optional[float] = None) -> None:
         if not self._sock:
             return
         vx_raw = float(vx)
@@ -107,6 +108,17 @@ class SimRobotController:
         # stairs_action_active pairs with the Isaac decoder in isaac_env.py -- update
         # both together. It tells the parkour policy (hybrid heading mode) the climb has
         # engaged, so it self-steers from depth instead of the person bearing there.
+        #
+        # Incident E1 (2026-07-12 review of run_sim_20260712_013638_835): gap_brake_scale is the
+        # caller's OWN already-computed [0..1] mid-climb patient-gap brake (core/control/
+        # stair_policy.climb_gap_brake_scale, folded with that call site's hard collision/staleness
+        # blocks -- see core/main.py's "Incident E1" comments at each controller.move() climb call
+        # site). Without this, isaac_env's mid-climb `handoff_climb_vx` floor (arbitrate_climb_vx /
+        # the parkour max() expression) applied UNCONDITIONALLY, re-inflating a vx the caller had
+        # just braked to near-zero for patient proximity (run 13 fall_diag t=71.52s, x=5.81:
+        # policy_cmd [0.22, 0, 0] with person_detected=true, gap_m=0.303 -- the caller's own vx was
+        # already 0.0 that whole window). None (not sent / older caller) decodes to 1.0 (no brake,
+        # backward compatible) on the isaac_env receiving end -- see _cmd_receiver_thread there.
         seq = self._cmd_seq
         self._cmd_seq += 1
         payload = json.dumps({"seq": int(seq),
@@ -116,7 +128,10 @@ class SimRobotController:
                               "person_bbox": _pbb,
                               "hold": bool(hold),
                               "person_detected": bool(person_detected),
-                              "gap_m": float(gap_m) if gap_m is not None else None}).encode()
+                              "gap_m": float(gap_m) if gap_m is not None else None,
+                              "gap_brake_scale": (
+                                  float(gap_brake_scale) if gap_brake_scale is not None else 1.0
+                              )}).encode()
         try:
             self._sock.sendto(payload, (self._host, self._port))
             self._total_sent += 1

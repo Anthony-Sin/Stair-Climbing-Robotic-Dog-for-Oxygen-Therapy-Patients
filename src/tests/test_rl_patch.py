@@ -96,6 +96,8 @@ def test_register_block_idempotent():
 # so this richer stub is a superset that keeps the write/patch test green too.)
 _FAKE_ROUGH_ENV_CFG = '''\
 class UnitreeGo2RoughEnvCfg:
+    base_link_name = "base"
+
     def __post_init__(self):
         # tokens verify_patch_targets scans for:
         self.events.randomize_reset_base.params = {
@@ -112,6 +114,7 @@ class UnitreeGo2RoughEnvCfg:
         self.rewards.flat_orientation_l2 = None
         self.rewards.upward = None
         self.rewards.lin_vel_z_l2 = None
+        self.rewards.undesired_contacts = None
         self.commands.base_velocity = None
         self.scene.terrain.terrain_generator = None
         self.scene.robot.actuators["legs"] = None
@@ -206,6 +209,61 @@ def test_reward_terms_present():
     print("reward terms OK  (ascent/roll/crest rendered when non-zero, omitted when zero)")
 
 
+def test_pitch_dip_and_trunk_thigh_contact_present():
+    payload = payload_spec.load_payload_numbers()
+    # default (non-zero) weights -> both stage-5 terms + the pitch reward fn are rendered
+    on = config_patch.render_stairs_cfg_module(payload)
+    ast.parse(on)
+    for tok in (
+        "def _reward_pitch_dip_hinge(env, hinge_rad: float",
+        "self.rewards.pitch_dip_hinge = RewTerm(",
+        "func=_reward_pitch_dip_hinge,",
+        '"hinge_rad": 0.26',
+        "self.rewards.trunk_thigh_contact = RewTerm(",
+        "func=self.rewards.undesired_contacts.func,",
+        'SceneEntityCfg("contact_forces", body_names=[self.base_link_name, ".*_thigh"])',
+        "asset.data.projected_gravity_b[:, 0]",
+    ):
+        assert tok in on, tok
+    # default weights render as -1.0 / -0.25
+    assert 'func=_reward_pitch_dip_hinge,\n            weight=-1.0,\n            params={"hinge_rad": 0.26}' in on
+    assert ('func=self.rewards.undesired_contacts.func,\n            weight=-0.25,' in on)
+    # sign-convention citation must survive rendering (guards against silent drift back to the
+    # wrong sign -- CLAUDE.md 8.7: comments asserting a sign/ordering property must be re-verified).
+    # Whitespace-normalised so the assertion doesn't depend on exact docstring line-wrap points.
+    on_flat = " ".join(on.split())
+    assert "POSITIVE pitch IS nose-down" in on_flat
+    assert "OPPOSITE of the informal" in on_flat
+    # SHAPING only: neither term may add a termination
+    assert "self.terminations.pitch_dip" not in on
+    assert "self.terminations.trunk_thigh" not in on
+    # zero weights -> both omitted entirely, no dead code (mirrors ascent/roll/crest gating)
+    off = config_patch.render_stairs_cfg_module(
+        payload, config_patch.StairPatchParams(pitch_dip_weight=0.0, trunk_thigh_contact_weight=0.0)
+    )
+    ast.parse(off)
+    for tok in ("_reward_pitch_dip_hinge", "pitch_dip_hinge", "trunk_thigh_contact"):
+        assert tok not in off, tok
+    # a custom hinge/weight propagates through StairPatchParams like every other tunable
+    custom = config_patch.render_stairs_cfg_module(
+        payload,
+        config_patch.StairPatchParams(
+            pitch_dip_hinge_rad=0.3, pitch_dip_weight=-2.0, trunk_thigh_contact_weight=-0.5
+        ),
+    )
+    ast.parse(custom)
+    assert 'weight=-2.0,\n            params={"hinge_rad": 0.3}' in custom
+    assert (
+        "self.rewards.trunk_thigh_contact = RewTerm(\n            func=self.rewards.undesired_contacts.func,"
+        "\n            weight=-0.5," in custom
+    )
+    # this NEW term must NOT alter the pre-existing broad undesired_contacts term itself
+    assert "self.rewards.undesired_contacts.weight" not in on
+    assert "self.rewards.undesired_contacts.params" not in on
+    print("pitch_dip_hinge + trunk_thigh_contact OK  "
+          "(rendered when non-zero, omitted when zero, custom values propagate, existing term untouched)")
+
+
 def test_rel_standing_envs_rendered():
     payload = payload_spec.load_payload_numbers()
     # default (0.12): stage-4 halt fix -- robot_lab/IsaacLab ship rel_standing_envs=0.02, under
@@ -262,6 +320,7 @@ if __name__ == "__main__":
     test_apply_to_repo_writes_and_patches()
     test_com_event_present()
     test_reward_terms_present()
+    test_pitch_dip_and_trunk_thigh_contact_present()
     test_rel_standing_envs_rendered()
     test_verify_patch_targets()
     print("ALL RL-PATCH TESTS PASS")

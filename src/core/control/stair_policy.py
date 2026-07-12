@@ -17,6 +17,21 @@ from core.vision.depth_processor import DepthProcessor
 # ground receding toward the bottom rows). Same threshold the front-obstacle gate uses.
 _RISER_GRADIENT_MM_PER_ROW = 20.0
 
+# Shared "same physical surface" tolerance (m) between a live near-field/gap depth
+# reading and the geometric depth-stair detector's OWN leading-edge reading -- used by
+# both _stair_loss_forward_block's nearfield-riser context override and
+# too_close_riser_gap_suppressed below. Sized well above the measured run-18 wedge
+# agreement (|0.304-0.302|=0.002 m, run_sim_20260712_103237_267, sim_t=40.88 -- see both
+# call sites' docstrings) while staying tight enough that an unrelated wall/body would
+# not coincidentally match a real staircase's own leading edge.
+NEARFIELD_LEADING_EDGE_AGREE_M = 0.15
+# Nearest distance (m) at which the run-18 pass-as-riser context override still applies;
+# closer than this the near-field block re-asserts so the dog holds at APPROACH distance
+# instead of pressing the riser (see the override comment in _stair_loss_forward_block:
+# stage-5 cannot mount from a dead-stand contact press, run 21). 0.45 sits inside the
+# HandoffController approach_room window [0.40, 0.65] measured at the leading edge.
+NEARFIELD_RISER_HOLD_STANDOFF_M = 0.45
+
 
 @dataclass
 class DepthStairGate:
@@ -159,6 +174,134 @@ def climb_gap_brake_scale(
     return float(np.clip((g - stop) / span, 0.0, 1.0))
 
 
+def too_close_riser_gap_suppressed(
+    *,
+    person_detected: bool,
+    gap_for_hold: Optional[float],
+    depth_stair_confirmed: bool,
+    depth_stair_leading_edge_m: Optional[float],
+) -> bool:
+    """True => the main loop's too-close stance-lock gap is actually the STAIRCASE, not
+    the patient, and that specific ``too_close`` assertion should be suppressed.
+
+    Mirror of incident 8.3 in the opposite direction: there, the person's own footprint
+    was misread as stair risers; here, a stair reading is what a stale/contaminated
+    follow-gap history could misread as the person. ``too_close`` (``core/main.py``
+    ~L2005-2012) stance-locks on ``standoff_gap_ctrl_m`` -- a MEDIAN of the last few
+    ``depth_distance_m`` samples (the person's own measured gap) -- falling below the
+    standoff lower bound. That gap is only ever meaningful while a person IS detected; if
+    ``person_detected`` is False THIS frame, whatever the median is currently reporting is
+    stale by construction, and the specific failure mode this guards is a NEAR reading
+    (from any producer feeding the same median) that happens to describe the confirmed
+    staircase's own leading edge, not a person the tracker no longer sees at all.
+
+    Requires ALL of: person NOT detected, a geometrically CONFIRMED multi-riser structure
+    THIS frame (``depth_stair_confirmed`` -- not just any stray near reading, same
+    reasoning as ``_stair_loss_forward_block``'s context override above), and that
+    structure's own leading edge agreeing with the fused hold-gap within
+    ``NEARFIELD_LEADING_EDGE_AGREE_M`` (the same "same physical surface" tolerance, sized
+    from the run-18 wedge citation on ``_stair_loss_forward_block``).
+
+    FAILS TOWARD HOLDING (CLAUDE.md 8.8) on every ambiguous case: person detected (the
+    ordinary too-close case is untouched), no confirmed staircase this frame, or either
+    reading missing -- returns False (do NOT suppress; the pre-existing stance-lock still
+    applies) rather than guessing. Explicit keyword arguments only (CLAUDE.md 8.5): the
+    caller (``core/main.py`` ~L2005) passes its own same-frame ``person_detected``/
+    ``depth_stair_confirmed``/``depth_stair_leading_edge_m`` reads, never re-derived here.
+    """
+    if bool(person_detected):
+        return False
+    if not bool(depth_stair_confirmed):
+        return False
+    if gap_for_hold is None or depth_stair_leading_edge_m is None:
+        return False
+    return (
+        abs(float(gap_for_hold) - float(depth_stair_leading_edge_m))
+        <= float(NEARFIELD_LEADING_EDGE_AGREE_M)
+    )
+
+
+def effective_climb_gap_brake_scale(
+    gap_brake_scale: float,
+    *,
+    person_detected: bool,
+    hard_block: bool,
+) -> float:
+    """The EFFECTIVE (0..1) floor-authority fraction sent to ``controller.move``'s
+    ``gap_brake_scale`` argument and forwarded over UDP to isaac_env's INDEPENDENT mid-climb
+    floor (``handoff_climb_vx`` * this scale) -- a DIFFERENT authority from the caller's own
+    ``trans_x``/``vx`` for this frame, which callers zero directly on ``hard_block`` and must
+    keep doing so unchanged (this function does not touch that).
+
+    Regression fix (run 15, run_sim_20260712_030822_222): the three mid-climb call sites in
+    core/main.py (persistence-latch forced climb, committed climb, STAIR_LOSS_FLOOR) each
+    folded an unrelated HARD-BLOCK flag (a stale-gap collision floor, a wall-clock blind-
+    detection-timeout ceiling, a live near-field non-riser return, ...) into the stored/sent
+    scale UNCONDITIONALLY -- including on every frame the person was simply not detected,
+    which is the NORMAL incident-8.3 designed blind-carry (the patient climbing/standing out
+    of the close-range FOV), not a proximity risk. Trace evidence
+    (log/run_sim_20260712_030822_222/debug/debug_trace/vision_main_trace.jsonl, sim_t=43.8-
+    45.0): ``person_detected=False`` and ``stair_climb_latch_blind_timeout=True`` the entire
+    window -> the OLD fold pinned the stored scale at 0.0 on every one of those frames ->
+    isaac_env's own independent floor obeyed (0.22 * 0.0 = 0.0) -> the blind-carry commanded
+    zero indefinitely -> a sustained hold let ``hold_park`` park the dog at the stair base
+    (x=1.78) -> ``_run_pgtt_handoff`` is skipped while parked -> ENGAGE never fires. Runs 13/14
+    (pre-fold) climbed fine because the sim-side floor then ignored the caller's scale
+    entirely and carried the dog through exactly this window.
+
+    * ``person_detected`` False -> 1.0 ALWAYS, regardless of ``hard_block`` or the raw
+      ``gap_brake_scale`` -- mirrors ``climb_gap_brake_scale``'s own 8.15-correction-2
+      None-split for the identical reason: absence of a detected person is not a proximity
+      risk, and the hard collision floors that fed ``hard_block`` already act on the CALLER's
+      own vx term (unchanged), which is the correct place for a frozen/stale-gap backstop to
+      bite.
+    * ``person_detected`` True -> the pre-existing fold, unchanged: 0.0 if ``hard_block`` else
+      the raw ``gap_brake_scale``.
+    """
+    if not bool(person_detected):
+        return 1.0
+    return 0.0 if bool(hard_block) else float(gap_brake_scale)
+
+
+def mid_climb_floor_capped_command(
+    trans_x_cmd: float,
+    *,
+    forward_floor: float,
+    base_cap: float,
+    gap_brake_scale: float,
+) -> float:
+    """Apply the stair forward floor, then clamp to the (gap-braked) speed cap.
+
+    Incident S2 (2026-07-12 review of run_sim_20260712_023126_786): extracted from
+    core/main.py's stair-climb persistence-latch call site (~L1343-1400), which computed
+    the braked cap as ``base_cap * gap_brake_scale`` but only APPLIED it when the result
+    was ``> 0.0`` -- a guard meant to mean "capping disabled" (``base_cap`` itself is 0,
+    e.g. ``--stair-speed-scale 0``) but which, checked AFTER the brake multiplication, also
+    silently skipped a LEGITIMATE full-strength brake (``gap_brake_scale == 0.0``, i.e.
+    "stop -- the patient is right there"). With the clamp skipped, the raw UNBRAKED
+    ``forward_floor`` (0.16 m/s, ``--stair-forward-floor``) leaked straight through for 8+
+    consecutive frames while ``person_detected=True`` and the true GT dog<->patient gap sat
+    at 0.45-0.52 m (fall_diag sim_t=30.975, x=2.126, gap_m=0.452, policy_cmd=[0.16, 0, 0];
+    cross-checked against vision_main_trace.jsonl at its OWN sim_t=36.155 -- the two logs do
+    NOT share a clock origin, offset ~5.62 s measured by matching robot x -- which showed
+    ``stair_climb_gap_filtered_m=0.501`` (<< the 0.85 m ``climb_gap_brake_stop`` ->
+    ``gap_brake_scale=0.0``) and ``stair_climb_latch_collision_block=False`` (the sim-GT-lead
+    unblock, main.py ~L1380, had already cleared the separate hard floor check) yet
+    ``command_trans_x_limited`` stayed pinned at 0.16). Neither
+    ``_apply_stair_command_policy`` (this module, mid-climb dispatch) nor the STAIR_LOSS_FLOOR
+    call site in core/main.py has this bug -- both clamp with a plain comparison against the
+    (possibly-zero) braked value, never an ``if cap > 0`` gate on the ALREADY-braked number.
+    Fixed here by taking the enable/disable test (``base_cap``, the UNBRAKED cap -- the true
+    "capping disabled" sentinel) as an explicit separate argument from the value actually
+    applied (``base_cap * gap_brake_scale``, which may legitimately be exactly 0.0).
+    """
+    out = max(float(trans_x_cmd), float(forward_floor))
+    base = float(base_cap)
+    if base > 0.0:
+        out = min(out, base * float(gap_brake_scale))
+    return float(out)
+
+
 @dataclass
 class ClimbGapFilterState:
     """Caller-owned rolling-window state for ``filtered_climb_gap_m`` (incident 8.15 / F2
@@ -235,6 +378,164 @@ def filtered_climb_gap_m(
     if not state.samples:
         return None
     return min(g for _, g in state.samples)
+
+
+@dataclass
+class DetectionAgeState:
+    """Caller-owned anchor for ``detection_age_sec`` (incident 8.6 fix, 2026-07-12 review of
+    run_sim_20260712_033341_649, "run 16"). Mirrors ``ClimbGapFilterState`` /
+    ``LandingMarginState`` above -- one instance owned by the main loop for the whole run,
+    never a module global.
+
+    Records the last matched-detection instant in BOTH clock families at once (whichever were
+    available at that instant), so ``detection_age_sec`` can pick the trustworthy clock for
+    THIS frame's query without blending them.
+    """
+    last_wall_ts: Optional[float] = None   # time.perf_counter() at the last matched detection
+    last_sim_t: Optional[float] = None     # frame_meta["sim_t"] at that same instant, or None
+                                            # if sim_t was unavailable then (e.g. real hardware)
+
+
+def note_detection_match(state: DetectionAgeState, *, now_wall: float, sim_t: Optional[float]) -> None:
+    """Record a fresh matched-detection instant into ``state``.
+
+    SINGLE PRODUCER (mirrors ``lost_person_speed_taper_scale``'s one-call-site contract,
+    incident 8.15): call this from the exact site that already sets
+    ``last_matched_visual_ts = time.perf_counter()`` in ``core/main.py`` (~L709-710, guarded
+    on ``matched_visual_lock``) -- do not add a second call site. ``last_matched_visual_ts``
+    itself is untouched by this fix (it also drives ``recent_visual_lock``/``lock_held``,
+    outside this task's scope); this is a parallel, independent anchor used ONLY by
+    ``detection_age_sec``.
+    """
+    state.last_wall_ts = float(now_wall)
+    state.last_sim_t = None if sim_t is None else float(sim_t)
+
+
+def detection_age_sec(state: DetectionAgeState, *, now_wall: float, sim_t: Optional[float]) -> float:
+    """How long ago the last matched detection was -- in the clock family that actually paces
+    the quantity ``--stair-blind-climb-timeout-sec`` bounds (incident 8.6: a duration must be
+    measured in the same clock as the thing it bounds, never a different one, and never a
+    blend of both).
+
+    ROOT CAUSE (2026-07-12 review, runs 15+16, identical deadlock at the stair base): both
+    call sites that read this age (``core/main.py``'s persistence-latch shaping ~L1398-1400
+    and the STAIR_LOSS_FLOOR dispatch ~L2747-2749) compared a WALL-CLOCK
+    (``time.perf_counter()``) age against the 8.0 s default ceiling, but the quantity being
+    bounded -- "how long may the dog blind-carry while the patient walks ahead to build the
+    2.4 m ``HandoffConfig.stair_entry_min_lead_m`` head-start lead" -- is paced by the SIM
+    WORLD, which in the headless demo runs several times slower than the wall clock. Measured
+    directly off run 16's own trace (``run_sim_20260712_033341_649``,
+    ``log/.../debug_trace/vision_main_trace.jsonl``): the last matched detection before the
+    terminal blind stretch lands at frame index 801, ``sim_t=31.675`` (``stair_climb_latch_det_
+    age_sec`` resets to 0.12 there); by the end of the captured window at ``sim_t=47.075`` the
+    WALL age had climbed to 88.17 s while ``sim_t`` had advanced only 15.40 s -- a measured
+    ~5.7x wall:sim ratio in that stretch (``ts_mono`` delta 88.32 s / ``sim_t`` delta 15.40 s).
+    Under the OLD wall-only rule the 8.0 s ceiling tripped after only ~1-2 SIM-seconds of loss
+    (``stair_climb_latch_blind_timeout`` reads True by ``sim_t=32.795``, ~0.84-1.1 sim-s after
+    the ``sim_t=31.955`` loss) -- nowhere near the several sim-seconds the patient needs to
+    walk out to a 2.4 m lead -- so the dog held ``vx=0``/``hold=True`` for the rest of the
+    trace (fsm_state stayed "STAIR_LOSS_FLOOR", trans_x_cmd pinned at 0.0 through
+    ``sim_t=47.075``) and the head-start gate never got the runway it needed. With sim-time
+    ageing the SAME 8.0 s default instead buys a full 8 SIM-seconds of blind-carry per loss
+    (first tripping around ``sim_t=39.955`` in this trace, not ``32.795``) -- ample against the
+    ~3-5 sim-second lead-building window the gate needs; it was NOT, however, "under 8 sim-s by
+    sim_t~46" as a first-pass estimate assumed -- this run's loss segment happened to run past
+    that too (measure, don't assume; CLAUDE.md 8.7).
+
+    SEMANTICS (present / absent / vanishing -- an explicit either/or, never blended):
+
+      * ``sim_t`` present THIS frame, ``state.last_sim_t`` present (recorded at the last
+        match), and ``sim_t >= state.last_sim_t`` ("monotonically advancing" since that match)
+        -> SIM-TIME age: ``sim_t - state.last_sim_t``. This is the normal in-sim path.
+      * ``sim_t`` is ``None`` this frame (real hardware, where ``frame_meta`` never carries
+        ``sim_t`` at all per ``shared/frame_source.py``'s ``FRAME_META_OPTIONAL_KEYS`` contract
+        -- wall IS world there, so this is the CORRECT clock, not a degraded fallback) -> WALL
+        age: ``now_wall - state.last_wall_ts``.
+      * ``sim_t`` present now but ``state.last_sim_t`` is ``None`` (sim_t was unavailable AT
+        the last match -- sim_t "appearing" mid-run) -> WALL age (no sim-time anchor exists to
+        diff against).
+      * ``sim_t`` present now and at the last match, but has gone BACKWARD
+        (``sim_t < state.last_sim_t`` -- e.g. an episode/scene reset snapping ``sim_t`` back
+        toward 0) -> WALL age. A negative or falsely-fresh "age=0" reading here would silently
+        re-open the blind-carry window right after a reset; falling back to wall reproduces
+        EXACTLY today's pre-fix behaviour, which is a safe (if conservative) known quantity,
+        never worse than what already ships.
+      * Never matched this run at all (``state.last_wall_ts is None``) -> ``1e9`` (unchanged
+        sentinel, matches the pre-fix ``last_matched_visual_ts is None`` branch exactly).
+
+    CAVEAT (CLAUDE.md 8.7 -- do not over-claim): this does not detect a FROZEN-but-present
+    ``sim_t`` (paused sim reporting the same value every frame without a reset). That reads as
+    "monotonically advancing" (``>=`` with equal values) and the computed age would stay flat
+    at whatever it was when the freeze began, silently disabling the ceiling for the freeze's
+    duration. Out of scope here -- no evidence of a paused-sim-clock failure mode exists in any
+    reviewed run -- but a future agent extending this must not assume frozen clocks are
+    handled.
+    """
+    if state.last_wall_ts is None:
+        return 1e9
+    if (sim_t is not None and state.last_sim_t is not None
+            and float(sim_t) >= state.last_sim_t):
+        return float(sim_t) - state.last_sim_t
+    return float(now_wall) - state.last_wall_ts
+
+
+def stair_loss_gap_block(
+    last_person_gap_m: Optional[float],
+    *,
+    collision_floor_m: float,
+    detection_age_sec: float,
+    immediate_guard_sec: float,
+) -> bool:
+    """Whether the FROZEN last-known patient gap should still zero a stair loss-drive
+    branch's forward command THIS frame (True => block / drive at 0.0).
+
+    Incident 8.15-corr / run-17 fix (2026-07-12 review): runs 15, 16, AND 17 all settled
+    IDENTICALLY at x~=1.77, dog completely STATIONARY, climb never engaged --
+    isaac_env.jsonl logged ZERO ``handoff_engage`` / ``handoff_engage_vetoed_lead`` events
+    across the whole run, because the wedge/approach engage path needs the CALLER to command
+    a nonzero vx to even ATTEMPT one, and this guard's ORIGINAL, unaged form zeroed the
+    caller's own vx for the rest of the run once it fired once.
+
+    ``last_person_gap_m`` is a ONE-SHOT snapshot taken the instant the patient was last
+    actually detected (``core/main.py`` ~L1271-1276) -- normally close (~0.4-0.8 m, the
+    stair-approach follow standoff) right before they climb/rise out of the close-range FOV
+    (incident 8.3, the NORMAL trigger at the stair base, not a fault). The two call sites this
+    guards (``core/main.py``'s STAIR_LOSS_FLOOR ``_loss_block`` and STAIR_APPROACH_COMMIT
+    ``_ap_block``) originally held that snapshot as "current" with NO aging at all -- "if it
+    was unsafe, do not assume that elapsed time means the patient moved away; keep hold=False
+    and wait for a real lock" -- but the patient keeps walking (climbing) away autonomously
+    the ENTIRE time either branch holds vx=0 (there is no stance-lock here, per CLAUDE.md 8.9 /
+    8.15 -- the gait stays alive), so elapsed time since that snapshot is exactly the evidence
+    the true gap has reopened, not evidence to distrust. Held with no aging, the guard zeroed
+    the dog's own forward command for the rest of the run and no downstream engage machinery
+    (``go2_locomotion/handoff_controller.py``'s wedge-stall / approach-room engage) ever saw a
+    commanded vx>0 to attempt on.
+
+    Age-gated with the caller-supplied, sim-time-aware ``detection_age_sec`` (produced by this
+    module's own ``detection_age_sec()`` function against the shared ``DetectionAgeState``,
+    incident 8.6 -- passed in here as an explicit float, never recomputed, per incident 8.5)
+    against ``immediate_guard_sec`` (callers pass ``--stair-loss-block-immediate-guard-sec``,
+    default 2.0 sim-aware seconds): the frozen gap is trusted as "current" only for that first
+    window since the patient was last actually seen -- long enough to still catch the "patient
+    paused right at the step and detection happened to drop at that exact instant" case the
+    LIVE near-field guard (``_stair_loss_forward_block``) and the longer detection-age
+    staleness ceiling (``--stair-blind-climb-timeout-sec``) exist alongside this one to catch,
+    short enough that by the time it expires the patient has unquestionably moved on (climbing
+    at roughly 0.5 m/s, per CLAUDE.md 8.15's measured pacing).
+
+    Returns ``False`` (no block) whenever ``last_person_gap_m`` is ``None`` (nobody has been
+    detected yet this run -- there is no frozen gap to distrust) or is already at/above
+    ``collision_floor_m`` (the last known reading was a safe distance, regardless of age).
+    This does NOT replace either of the other two independent guards at each call site (the
+    live near-field probe, or the detection-age staleness ceiling) -- both stay exactly as
+    they were; they are correctly unaged-by-design backstops, not instances of this same
+    frozen-gap-as-current defect.
+    """
+    if last_person_gap_m is None:
+        return False
+    if float(last_person_gap_m) >= float(collision_floor_m):
+        return False
+    return float(detection_age_sec) < float(immediate_guard_sec)
 
 
 def lost_person_speed_taper_scale(
@@ -457,6 +758,95 @@ def landing_edge_guard_suppress_crest_artifact(
     return False
 
 
+@dataclass
+class LandingEdgeLatchState:
+    """Caller-owned hysteresis state for the post-crest landing-edge block (incident
+    8.15/8.16 F2 hardening, run 11 review). One instance owned by the main loop, mirroring
+    ``ClimbGapFilterState`` / ``LandingMarginState`` -- never a module global.
+    """
+    latched_until: Optional[float] = None  # perf_counter deadline the block stays asserted through
+
+
+def landing_edge_block_latched(
+    raw_block: bool,
+    *,
+    state: LandingEdgeLatchState,
+    now: float,
+    dwell_sec: float,
+) -> bool:
+    """Seconds-based (incident 8.6) hysteresis over the raw per-frame landing-edge finding.
+
+    Run 11 (run_sim_20260711_234004_424) evidence: ``landing_edge_block`` fired True at
+    sim_t=71.78 then FLICKERED False at t=72.14 / 79.14 / 79.48 -- hold_request=False with
+    rotation_cmd=+/-0.6283 at the platform edge in those exact frames -- because the raw probe
+    (``detect_landing_edge_dropoff``) only sees the drop-off while it is inside the forward
+    depth FOV, and the lost-person spin-search (F1) was rotating the cliff in and out of that
+    FOV every leg of its scan. A raw True (re)arms the latch through ``now + dwell_sec``; a
+    raw False does NOT clear it early -- the PRE-EXISTING deadline keeps counting down, so the
+    block stays asserted until ``dwell_sec`` has elapsed since the LAST True reading, covering
+    the FOV-rotation gaps between re-detections. ``now`` MUST be ``time.perf_counter()``
+    (incident 8.6 -- a wall-clock duration, never a frame count, matching every other latch in
+    this module).
+
+    Returns the latched boolean the caller should use in place of the raw per-frame finding
+    for BOTH ``debug_info["landing_edge_block"]`` and the trans_x/rotation_cmd clamp -- see
+    ``core/main.py``'s landing-edge-guard block.
+    """
+    now_f = float(now)
+    if bool(raw_block):
+        state.latched_until = now_f + max(0.0, float(dwell_sec))
+        return True
+    if state.latched_until is not None and now_f < state.latched_until:
+        return True
+    state.latched_until = None
+    return False
+
+
+def landing_lost_person_hold_active(
+    *,
+    post_crest_landing_latched: bool,
+    fully_on_top_landing: bool,
+    person_detected: bool,
+) -> bool:
+    """Whether the post-crest top-landing lost-person hold (incident 8.15/8.16 F1) should
+    override the ordinary follow dispatch with an immediate STAND STILL (vx=0, wz=0, hold),
+    instead of letting the flat-ground ``PersonFollower`` bounded lost-search scan run.
+
+    Run 11 (run_sim_20260711_234004_424): once genuinely clear of the stairs, the fused
+    person-range died at close range (``fused_gap_m`` unavailable while the patient stood at
+    her destination, sim_t~65.8 -- NORMAL close-range ranging loss, incident 8.3, not a
+    fault). The ordinary flat-ground lost-search
+    (``core/control/follow_controller.py:641-725``) then engaged, and its
+    ``recovery_cmd_active=True`` alone satisfies ``recovery_motion_allowed`` in
+    ``core/main.py`` regardless of ``person_detected`` -- so its +/-0.6283 rad ("36 deg")
+    ping-pong ``rotation_cmd`` rode straight through the "elif motion_allowed" dispatch to
+    ``controller.move`` with ``hold_request`` False, spinning the dog ~12 s at the platform
+    edge (it also closed on the patient mid-spin -- fused gap 1.13 -> 0.59 -> 0.31 m at
+    sim_t~69.3-70.0, the run's graded ``person_collision``) before it rolled off (roll 98 deg).
+    The patient is known to be at the destination ahead; standing still preserves whatever
+    standoff the dog last held instead of hunting for a re-acquire near an edge.
+
+    Gated on BOTH ``post_crest_landing_latched`` (``_post_crest_landing_latched`` in
+    ``core/main.py``) AND ``fully_on_top_landing`` (``_fully_on_top_landing``'s result) --
+    explicit arguments, never a same-frame ``debug_info`` re-read (incident 8.5) -- so this
+    can only ever fire once genuinely clear of the stairs, mirroring
+    ``lost_person_speed_taper_scale``'s post-crest-only scope (incident 8.15 correction): it
+    must NEVER suppress the flat pre-stairs approach lost-search (that one has never caused a
+    graded failure) or any mid-climb incident-8.3 blind-carry path, where a person loss is the
+    DESIGNED trigger, not a fault.
+
+    No hysteresis here (unlike ``landing_edge_block_latched``): this is meant to toggle
+    instantaneously with ``person_detected`` -- the moment the person is re-ranged, normal
+    follow must take back over immediately, per the task brief ("release back to normal
+    follow the moment the person is re-ranged").
+    """
+    return (
+        bool(post_crest_landing_latched)
+        and bool(fully_on_top_landing)
+        and not bool(person_detected)
+    )
+
+
 def _depth_from_bbox(depth_img: np.ndarray, bbox: Optional[List[float]]) -> Optional[float]:
     if bbox is None:
         return None
@@ -549,6 +939,14 @@ def _crest_reached(
     written to ``debug_info`` at ``core/main.py:1077``, before this function's caller is
     invoked at ``core/main.py:1145`` -- no ordering hazard). Defaults to False so any other
     caller that does not pass it gets the SAFE (more restrictive) behaviour.
+
+    E3 (2026-07-12, run_sim_20260712_013638_835): ``stairs_ever_confirmed`` alone still let the
+    sim-GT fallback's "flat_follow" / level-pitch arms false-latch on the ordinary PRE-stairs
+    approach (YOLO/depth confirm the staircase from ~x=1.6, well before the x=2.0 base) --
+    those two arms now ALSO require ``climb_episode_evidence`` (the GT robot height,
+    ``stair_demo.robot.z_m``, exceeding 0.5 m -- unreachable pre-stairs, reachable a few risers
+    into a genuine climb), computed inline from the SAME ``frame_meta["stair_demo"]`` dict this
+    function already reads (no new parameter/state). See the inline comment at that block.
     """
     fm = frame_meta if isinstance(frame_meta, dict) else {}
     # 1. Hardware sensors (preferred; work on the robot). Backward-compatible: absent => skip.
@@ -589,24 +987,84 @@ def _crest_reached(
     # _post_crest_landing_latched fired at t=48.76s, x=1.27m, phase=="flat_follow",
     # pitch=-0.29 deg -- 4+ metres before start_x_m=2.0).
     #
-    # Fix: gate BOTH arms on stairs_ever_confirmed (True once real stair evidence -- a
-    # genuine depth-confirmed reading, not just a distant sighting -- has been seen at least
-    # once this run). A real climb cannot happen without that confirmation happening first, so
-    # this only narrows the PRE-stairs false-positive window; it never blocks a genuine
-    # crest/finish detection during or after an actual climb.
+    # Fix (incident 8.15 / F5): gate BOTH arms on stairs_ever_confirmed (True once real stair
+    # evidence -- a genuine depth-confirmed reading, not just a distant sighting -- has been
+    # seen at least once this run). A real climb cannot happen without that confirmation
+    # happening first -- but this alone does NOT narrow the window enough: YOLO/depth confirm
+    # the stairs ON APPROACH from ~x=1.6 (run_sim_20260712_013638_835's t=38.9s frame: x=1.62,
+    # phase=="flat_follow", pitch level, stairs_ever_confirmed already True -- 0.38 m before
+    # start_x_m=2.0 -- _crest_reached still returned True there with only the F5 gate, arming
+    # _post_crest_landing_latched via debug_info["stair_finish_completed"] on the flat
+    # approach). E3 fix (2026-07-12): ALSO require ``climb_episode_evidence`` -- the robot's
+    # GT world height (``stair_demo.robot.z_m``, already present in frame_meta, no new
+    # sensor/state) exceeding 0.5 m. Flat pre-stairs ground reads ~0.25-0.30 m body height (see
+    # the t=38.9 frame above: z_m=0.257); the 2.1 m staircase pushes it toward ~2.1-2.4 m a few
+    # risers into a genuine climb. 0.5 m is unreachable pre-stairs (0.2+ m of margin over any
+    # gait bob) and reachable early in a real climb -- proof a climb episode has ACTUALLY
+    # happened, not just that stairs were sighted/confirmed. Being a SAME-FRAME height check
+    # (no falling-edge/history state needed -- avoids threading a new caller-owned state
+    # dataclass through _apply_stair_command_policy for a single boolean), it also makes the
+    # "phase == 'flat_follow'" half of the OR below STRUCTURALLY unreachable: _terrain_phase
+    # (world/sim_go2_stairs.py:121-131) returns "flat_follow" ONLY for x < start_x_m - 0.35,
+    # and z_m cannot exceed 0.5 m at that same x (the dog has not reached the risers yet) --
+    # 8.7 note: the ORIGINAL docstring/comment above claiming this arm's intent was "back on
+    # flat ground AFTER climbing" was never actually reachable post-climb either, since
+    # _terrain_phase never reverts to "flat_follow" once x >= end_x_m (it returns "top_landing"
+    # forever, already handled unconditionally above) -- left in place (not deleted, minimal
+    # surgical change) since the height gate now makes it provably inert rather than a latent
+    # false-positive, and a different terrain preset could in principle reintroduce a
+    # legitimate mid-route flat segment.
     stair_demo = fm.get("stair_demo")
     if isinstance(stair_demo, dict):
         phase = stair_demo.get("phase")
         if phase == "top_landing":
             return True
-        pitch_deg = (stair_demo.get("robot", {}) or {}).get("pitch_deg", 0.0)
+        robot_gt = stair_demo.get("robot", {}) or {}
+        pitch_deg = robot_gt.get("pitch_deg", 0.0)
+        climbed_z_m = robot_gt.get("z_m")
         try:
-            if bool(stairs_ever_confirmed) and (
-                    phase == "flat_follow" or abs(float(pitch_deg)) <= 5.0):
+            climb_episode_evidence = (
+                climbed_z_m is not None and float(climbed_z_m) > 0.5
+            )
+            if (bool(stairs_ever_confirmed) and climb_episode_evidence and (
+                    phase == "flat_follow" or abs(float(pitch_deg)) <= 5.0)):
                 return True
         except (TypeError, ValueError):
             pass
     return False
+
+
+def _landing_pitch_deg(
+    frame_meta: Optional[Dict[str, Any]], debug_info: Dict[str, Any]
+) -> Optional[float]:
+    """Body pitch (deg), preferring the hardware sensor path over the sim-GT fallback --
+    same preference order ``_crest_reached`` uses: ``sensor_imu_pitch`` (rad, from
+    ``frame_meta`` then ``debug_info``) first, else ``stair_demo.robot.pitch_deg`` (sim GT).
+    ``None`` when neither reading is available this frame.
+
+    Extracted out of ``_fully_on_top_landing`` (2026-07-12, D2 / run-12 review) so
+    ``stair_climbing_latch_release_eligible`` below gates on IDENTICAL pitch semantics
+    instead of a second, potentially-drifting copy of this extraction. Pure refactor of
+    ``_fully_on_top_landing``'s own logic -- no behavior change there.
+    """
+    fm = frame_meta if isinstance(frame_meta, dict) else {}
+    pitch = fm.get("sensor_imu_pitch")
+    if pitch is None:
+        pitch = debug_info.get("sensor_imu_pitch")
+    if pitch is not None:
+        try:
+            return math.degrees(float(pitch))
+        except (TypeError, ValueError):
+            pass
+    stair_demo = fm.get("stair_demo")
+    if isinstance(stair_demo, dict):
+        robot = stair_demo.get("robot")
+        if isinstance(robot, dict) and robot.get("pitch_deg") is not None:
+            try:
+                return float(robot["pitch_deg"])
+            except (TypeError, ValueError):
+                pass
+    return None
 
 
 @dataclass
@@ -663,11 +1121,39 @@ def _fully_on_top_landing(
               travelled ``margin_m`` past THAT point. Reuses the exact GT fields
               (``stair_demo.phase`` / ``stair_demo.robot.x_m``) the crest handback / egress logic
               already reads -- no new sensor.
-            * No GT phase available (real hardware, or sim before phase has ever genuinely read
-              "top_landing"): falls back to requiring the level-pitch condition to hold
-              CONTINUOUSLY for ``margin_time_sec`` seconds (wall-clock, incident 8.6) -- a
-              hardware-portable proxy built from the SAME pitch reading, sustained instead of
-              instantaneous, per "do not invent a new sensor".
+            * GT present but NOT YET "top_landing" (sim: phase is "flat_follow" /
+              "stair_approach" / "staircase"): GT is an AUTHORITATIVE, purely x-position-
+              derived signal here (``_terrain_phase``, ``world/sim_go2_stairs.py``) -- it
+              already answers "are we on the landing" directly, so ``margin_ok`` is simply
+              False, unconditionally. Does NOT fall into the level-pitch proxy below (fixed
+              2026-07-12, run-17 audit -- see the incident note below).
+            * No GT phase available AT ALL this frame (``frame_meta["stair_demo"]`` absent --
+              real hardware, or sim before the sidecar has ever populated): falls back to
+              requiring the level-pitch condition to hold CONTINUOUSLY for
+              ``margin_time_sec`` seconds (wall-clock, incident 8.6) -- a hardware-portable
+              proxy built from the SAME pitch reading, sustained instead of instantaneous,
+              per "do not invent a new sensor".
+
+    Incident 8.15-corr / run-17 audit fix (2026-07-12 review): the ORIGINAL code took the
+    level-pitch-proxy branch whenever ``phase != "top_landing"``, which conflated "GT is
+    unavailable" (the proxy's actual intended trigger) with "GT IS available and says we are
+    still on the ordinary flat pre-stairs approach" (``phase == "flat_follow"``). A dog
+    stalled anywhere on FLAT GROUND before ever reaching the stairs -- pitch trivially level,
+    by definition -- satisfied the proxy's ``margin_time_sec`` (default 1.5 s) sustained-level
+    check after standing still for over a second and a half, and this function then
+    (incorrectly) reported "fully on the landing" (``post_crest_fully_on_landing=True``)
+    despite GT robot x/z showing the dog had never left the stair BASE (run
+    run_sim_20260712_0955xx / "run 17": x=1.63, z_m=0.284 -- flat-ground height, not a climb).
+    This defeated ``stair_loss_floor_eligible``'s latch-only arm (its
+    ``not fully_on_top_landing`` requirement), so dispatch fell through STAIR_LOSS_FLOOR and
+    STAIR_APPROACH_COMMIT all the way to a plain ``controller.stop()`` for the rest of the
+    run -- runs 15, 16, and 17 all settled identically at x~=1.77, dog stationary, climb never
+    engaged. This mirrors ``_crest_reached``'s OWN already-fixed version of the identical
+    defect (its ``stairs_ever_confirmed`` / ``climb_episode_evidence`` gates, see its inline
+    comment above) -- that fix was never carried over to this sibling function.
+    ``_terrain_phase`` also never reverts to "flat_follow"/etc. once genuinely past the crest
+    (it returns "top_landing" forever once reached, per ``_crest_reached``'s own 8.7 note
+    above), so there is no legitimate post-climb scenario this narrowing could break.
 
     State is reset (not one-way) whenever the qualifying condition is not currently met, so it
     correctly re-arms if the dog leaves and re-enters a landing-like state.
@@ -676,24 +1162,7 @@ def _fully_on_top_landing(
     now_f = float(now)
 
     # (a) Level pitch -- same preference order as _crest_reached (hardware sensor first).
-    pitch_deg: Optional[float] = None
-    pitch = fm.get("sensor_imu_pitch")
-    if pitch is None:
-        pitch = debug_info.get("sensor_imu_pitch")
-    if pitch is not None:
-        try:
-            pitch_deg = math.degrees(float(pitch))
-        except (TypeError, ValueError):
-            pitch_deg = None
-    if pitch_deg is None:
-        stair_demo = fm.get("stair_demo")
-        if isinstance(stair_demo, dict):
-            robot = stair_demo.get("robot")
-            if isinstance(robot, dict) and robot.get("pitch_deg") is not None:
-                try:
-                    pitch_deg = float(robot["pitch_deg"])
-                except (TypeError, ValueError):
-                    pitch_deg = None
+    pitch_deg = _landing_pitch_deg(frame_meta, debug_info)
     if pitch_deg is None:
         # No pitch reading at all this frame -- cannot confirm level. Fail toward "not fully on
         # the landing" (incident 8.8): the taper/hold-easing this gates must not turn on blind.
@@ -715,6 +1184,15 @@ def _fully_on_top_landing(
         if state.landing_entry_x is None:
             state.landing_entry_x = x_f
         margin_ok = abs(x_f - state.landing_entry_x) >= float(margin_m)
+    elif isinstance(stair_demo, dict):
+        # Incident 8.15-corr / run-17 audit fix: GT IS available this frame and explicitly
+        # says we are not (yet) on the top landing -- do NOT fall into the level-pitch proxy
+        # below, which is a hardware-portable stand-in for exactly the case GT cannot answer
+        # (see the docstring's incident note). Trusting the weaker proxy here false-positived
+        # on a dog stalled anywhere on the flat pre-stairs ground for over margin_time_sec.
+        state.landing_entry_x = None
+        state.level_since = None
+        margin_ok = False
     else:
         state.landing_entry_x = None
         if pitch_ok:
@@ -792,6 +1270,111 @@ def stair_loss_floor_eligible(
         and not bool(person_detected)
         and not bool(fully_on_top_landing)
     )
+
+
+@dataclass
+class StairLatchGhostReleaseState:
+    """Caller-owned hysteresis state for ``stair_climbing_latch_release_eligible`` (D2 /
+    run-12 review, 2026-07-12). One instance owned by the main loop, mirroring
+    ``LandingEdgeLatchState`` / ``LandingMarginState`` -- never a module global.
+    """
+    sustained_since: Optional[float] = None  # perf_counter when all 3 release conditions
+                                               # most recently became continuously true
+
+
+def stair_climbing_latch_release_eligible(
+    frame_meta: Optional[Dict[str, Any]],
+    debug_info: Dict[str, Any],
+    *,
+    post_crest_landing_latched: bool,
+    stairs_action_active_genuine: bool,
+    state: StairLatchGhostReleaseState,
+    now: float,
+    level_deg: float,
+    hysteresis_sec: float,
+) -> bool:
+    """Whether ``core/main.py`` should force-release ``stair_climbing_latch`` (and, via the
+    ``_climbing_latched and not _genuine_stairs`` re-force block, transitively
+    ``stairs_action_active``) THIS frame even though the sim-GT ``_on_top_landing`` phase
+    check (``core/main.py``, the ``if _on_top_landing:`` block right above this function's
+    call site) has not fired.
+
+    RUN-12 EVIDENCE (2026-07-12 review, run_sim trace t=54.x-74.1): the dog sat LEVEL on the
+    landing lip (x~6.2-6.3, GT phase still "staircase" -- short of ``end_x_m``, so the
+    unconditional ``_on_top_landing`` release never ran) with
+    ``debug_info["stairs_action_active"]==True`` but
+    ``debug_info["stairs_action_active_genuine"]==False`` and ``stairs_raw_detected`` (YOLO)
+    False the whole window -- a depth-only person-as-risers ghost (incident 8.3 class: the
+    STANDING PATIENT ~2 m ahead back-projects as a stack of risers) kept re-arming
+    ``stair_climbing_latch`` (``core/main.py``'s ``_climbing_persist_until`` block, ~L1222-
+    1325) via its ``_depth_climb_engage`` / ``_gt_on_stairs`` entry arms, neither of which
+    requires YOLO. With the latch alive, ``stair_loss_floor_eligible``'s latch-only arm kept
+    firing (person not detected, ``fully_on_top_landing`` False the whole window -- a HELD dog
+    never travels the 0.45 m ``_fully_on_top_landing`` margin) and pulsed the persistence-
+    latch forced-climb's forward floor toward the patient (min GT gap 0.549 m, the run's
+    graded ``person_collision``) while the landing-edge probe stayed gated off (it requires
+    ``not stairs_action_active``, ``core/main.py`` ~L1741) -- 15+ seconds blind to the far
+    drop-off with the dog stopped dead on the lip.
+
+    Release requires ALL THREE, each an explicit argument (incident 8.5 -- never a same-frame
+    ``debug_info`` re-read of a value this function's own caller has not yet produced):
+
+      1. ``post_crest_landing_latched`` (``core/main.py``'s ``_post_crest_landing_latched``,
+         computed earlier this same frame at ~L1715 -- a ONE-WAY latch, so once the crest is
+         genuinely reached this stays True for the rest of the run and cannot itself be a
+         ghost artifact).
+      2. Level pitch, via ``_landing_pitch_deg`` (the SAME hardware-sensor-preferred reading
+         and the SAME ``level_deg`` threshold ``_fully_on_top_landing`` uses -- callers should
+         pass ``args.landing_margin_level_deg``, default 5.0 deg). INTERPLAY VERIFICATION
+         (task brief / CLAUDE.md 8.16-3): ``stair_loss_floor_eligible``'s latch-only arm exists
+         specifically to cover a CREST STRADDLE (front feet on the landing, rear feet still on
+         a riser) without stance-locking mid-incline (CLAUDE.md 8.9/8.15). A straddle's pitch
+         is well outside the 5.0 deg level band -- incident 8.16 run 6 measured -8.5 deg at the
+         straddle that motivated ``stair_loss_floor_eligible`` itself, and the F4 crest-
+         artifact follow-up separately measured -8.6 to -9.9 deg for 40+ frames right after
+         cresting -- so this level-pitch gate can never be satisfied during a straddle and
+         cannot defeat ``stair_loss_floor_eligible``'s straddle protection: releasing the latch
+         on a genuinely LEVEL lip (this function) and keeping it alive through a STEEP straddle
+         (``stair_loss_floor_eligible``) are the same 5.0 deg boundary read two ways, not two
+         independent thresholds that could disagree.
+      3. NOT ``stairs_action_active_genuine`` (the PRE-OVERRIDE per-frame value stashed at
+         ``core/main.py`` ~L1247, before the persistence latch / close-range dropout force
+         ``stairs_action_active`` True -- a real, YOLO-corroborated stair reading must keep the
+         latch alive; only a ghost-only frame counts toward release).
+
+    ...sustained CONTINUOUSLY for ``hysteresis_sec`` (~1.5 s recommended) via ``state`` -- a
+    single noisy frame (a stray genuine detection, a momentary pitch spike) must not release a
+    latch that is still covering a real climb tail; ANY frame where the three conditions are
+    not ALL true resets the accumulator (mirrors ``ClimbGapFilterState``'s caller-owned-state
+    style, not ``landing_edge_block_latched``'s re-arm-and-hold style -- this predicate needs
+    the OPPOSITE bias, sustained truth to fire, since a ghost that flickers genuine every
+    couple of frames is exactly the ambiguous case that must NOT release the latch on a real
+    climb tail).
+
+    Deliberately does NOT require ``_fully_on_top_landing``'s travel/time margin (unlike
+    ``stair_loss_floor_eligible``'s own ``fully_on_top_landing`` check) -- run 12's
+    ``post_crest_fully_on_landing`` stayed False for the entire t=54-74 window (a dog held
+    stationary by the very latch this function releases never accrues the 0.45 m / 1.5 s
+    margin), so requiring it here would make this function unreachable in exactly the
+    scenario it exists to fix.
+
+    Does not touch the depth detector, YOLO gating (``depth_stair_latch_allowed``), or any
+    mid-climb blind-carry path -- CLAUDE.md 8.3's designed person-loss-mid-climb blind-carry is
+    untouched: this only fires post-crest (gate 1), a state blind-carry never reaches (the
+    committed-climb / persistence-latch / STAIR_LOSS_FLOOR paths never set
+    ``_post_crest_landing_latched``).
+    """
+    ok = bool(post_crest_landing_latched) and not bool(stairs_action_active_genuine)
+    if ok:
+        pitch_deg = _landing_pitch_deg(frame_meta, debug_info)
+        ok = pitch_deg is not None and abs(float(pitch_deg)) <= float(level_deg)
+    now_f = float(now)
+    if not ok:
+        state.sustained_since = None
+        return False
+    if state.sustained_since is None:
+        state.sustained_since = now_f
+    return (now_f - state.sustained_since) >= max(0.0, float(hysteresis_sec))
 
 
 def _apply_stair_command_policy(
@@ -949,7 +1532,19 @@ def _apply_stair_command_policy(
     _gap_capped = float(max_forward) * _gap_brake_scale
     if trans_x_cmd > _gap_capped:
         trans_x_cmd = _gap_capped
-    debug_info["stair_climb_gap_brake_scale"] = round(float(_gap_brake_scale), 3)
+    # Incident E1 (2026-07-12 review of run_sim_20260712_013638_835): the STORED value is the
+    # EFFECTIVE floor fraction applied this frame -- 0.0 whenever the hard _climb_block above
+    # also fired, not just the raw gap taper -- so a downstream consumer that trusts this single
+    # number (core/main.py forwards it to isaac_env as the UDP `gap_brake_scale` payload field,
+    # which scales isaac_env's OWN mid-climb `handoff_climb_vx` floor -- see
+    # go2_locomotion/locomotion_arbiter.arbitrate_climb_vx / isaac_env._step_go2_locomotion)
+    # cannot re-inflate a vx this function already zeroed for a DIFFERENT reason than the taper.
+    # In practice these two conditions rarely disagree by construction (brake_stop_m, default
+    # 0.85 m, sits above stair_climb_collision_floor, default 0.55 m, per climb_gap_brake_scale's
+    # own docstring -- so _gap_brake_scale is already ~0 whenever _climb_block's raw gap is this
+    # close), but folding _climb_block in directly removes the reliance on that coincidence.
+    debug_info["stair_climb_gap_brake_scale"] = round(
+        float(0.0 if _climb_block else _gap_brake_scale), 3)
 
     # NOT the lost-person forward-speed taper here. The brief_loss window above (person not
     # detected but within lost_search_timeout_sec) is incident-8.3-class designed blind-carry
@@ -1111,7 +1706,15 @@ def _roi_depth_row_gradient(depth_img: np.ndarray, roi) -> Optional[float]:
         return None
 
 
-def _stair_loss_forward_block(args, depth_img, debug_info: Dict[str, Any]) -> bool:
+def _stair_loss_forward_block(
+    args,
+    depth_img,
+    debug_info: Dict[str, Any],
+    *,
+    committed_climb: bool = False,
+    depth_stair_confirmed: bool = False,
+    depth_stair_leading_edge_m: Optional[float] = None,
+) -> bool:
     """LIVE near-field guard for the person-loss stair forward drive (returns True => block).
 
     The STAIR_LOSS_FLOOR path drives a modest forward floor UP the stairs when the patient
@@ -1122,6 +1725,34 @@ def _stair_loss_forward_block(args, depth_img, debug_info: Dict[str, Any]) -> bo
     when something is close ahead that is NOT a stair riser (a body/wall). A real riser reads
     "near" too, so it is distinguished by the row-wise depth gradient and is NOT blocked
     (blocking on every riser would freeze the climb at the base).
+
+    STRUCTURAL LIMIT of the gradient test (2026-07-12 review, run 18 wedge,
+    run_sim_20260712_103237_267): at close range (observed <~0.45 m, this guard's own
+    ROI) the riser FACE fills the ENTIRE ROI -- there is no tread visible below it to
+    produce the downward row-gradient the test above relies on -- so a genuine riser
+    reads exactly like a flat wall/body slab (run 18's decisive frame, vision_main_trace
+    sim_t=40.88: stairs_loss_nearfield_depth_m=0.304, stairs_loss_nearfield_gradient=
+    -1.0, riser=False -- 342 consecutive such frames, dog pressed against riser 1 at
+    base_x=1.74, staircase confirmed 2.0 m ahead). The gradient test therefore CANNOT be
+    fixed by loosening its own threshold (CLAUDE.md 8.1 "do not refactor architecture" /
+    minimal-fix spirit; a looser threshold would also swallow real body/wall reads at the
+    same range). Instead, use CONTEXT the gradient test does not have: main.py's OWN
+    geometric depth-stair gate (``evaluate_depth_stair_gate``, ~L890-917, always computed
+    well before this call site so these are safe same-frame reads per CLAUDE.md 8.5)
+    independently confirmed a multi-riser structure the SAME frame
+    (``depth_stair_confirmed=True``, ``depth_stair_leading_edge_m=0.302`` in run 18) --
+    and that confirmed structure's own leading edge is ~the same surface as this guard's
+    near-field return (``|0.304-0.302|=0.002 m``, well inside
+    ``NEARFIELD_LEADING_EDGE_AGREE_M``). When the loss window is COMMITTED to a climb
+    (``committed_climb`` -- main.py's STAIR_LOSS_FLOOR dispatch branch, this function's
+    only caller, passes the literal ``True`` it structurally always is there; see that
+    call site) AND a confirmed staircase's own leading edge AGREES with this near-field
+    return, classify the surface as the riser we are already climbing, not a wall.
+    Requiring BOTH the commit context and an independently-confirmed multi-riser
+    structure (not just any near reading) means a genuine body/wall ahead -- which has no
+    confirmed staircase to agree with -- is UNAFFECTED and still blocks (fails toward
+    blocking on disagreement/missing signals, CLAUDE.md 8.8). Explicit keyword arguments
+    only (CLAUDE.md 8.5) -- never re-derived from a downstream debug_info read here.
     """
     if depth_img is None:
         # No depth frame at all this iteration -> the depth pipeline is stale, not garbage.
@@ -1150,6 +1781,30 @@ def _stair_loss_forward_block(args, depth_img, debug_info: Dict[str, Any]) -> bo
     if grad is not None:
         debug_info["stairs_loss_nearfield_gradient"] = round(float(grad), 1)
     is_riser = grad is not None and grad > _RISER_GRADIENT_MM_PER_ROW
+    # Context override -- see the docstring above for the full run-18 numeric citation.
+    # Only reclassifies a would-BLOCK (not-riser) verdict; never overrides a gradient
+    # read that already passed as a riser.
+    leading_edge_agree = (
+        bool(committed_climb)
+        and bool(depth_stair_confirmed)
+        and depth_stair_leading_edge_m is not None
+        and abs(float(nearest_m) - float(depth_stair_leading_edge_m))
+        <= float(NEARFIELD_LEADING_EDGE_AGREE_M)
+    )
+    debug_info["stairs_loss_nearfield_leading_edge_agree"] = bool(leading_edge_agree)
+    # APPROACH HOLD-STANDOFF (run 21, run_sim_20260712_112519_790): the override below
+    # originally passed the riser at ANY range, letting the loss floor press the dog to
+    # 0.30 m of riser 1 -- the wedge_stall engage then hot-swapped the climber into a
+    # DEAD-STAND contact mount, which the stage-5 policy cannot execute (climb_stalled
+    # after all retries, worst pitch 7.3 deg = never reared). Run 13's successful engage
+    # had riser_dist 0.4 / leading_edge 0.451 of run-up. So the pass-as-riser override
+    # only applies at or beyond NEARFIELD_RISER_HOLD_STANDOFF_M: nearer than that the
+    # block re-asserts and the dog HOLDS at approach distance (inside HandoffController's
+    # approach_room window [climb_min_room_m 0.40, climb_engage_standoff_m 0.65]) until
+    # the stair-entry lead gate opens, then engages WITH momentum instead of from a press.
+    if not is_riser and leading_edge_agree and float(nearest_m) >= float(
+            NEARFIELD_RISER_HOLD_STANDOFF_M):
+        is_riser = True
     debug_info["stairs_loss_nearfield_riser"] = bool(is_riser)
     blocked = not is_riser
     debug_info["stairs_loss_nearfield_block"] = bool(blocked)

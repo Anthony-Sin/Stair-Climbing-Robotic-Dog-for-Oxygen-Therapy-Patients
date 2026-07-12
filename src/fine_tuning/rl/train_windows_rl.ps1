@@ -70,6 +70,17 @@ $PayloadMassScale = if ($env:FT_RL_PAYLOAD_MASS_SCALE) { $env:FT_RL_PAYLOAD_MASS
 # mid-stairs and toppled after a ~3 min near-crest hold (sim run 2026-07-11_161710_451); robot_lab/
 # IsaacLab only sample a TRUE zero command on 2% of envs, so raise 6x to give halting real signal.
 $RelStandingEnvs = if ($env:FT_RL_REL_STANDING_ENVS) { $env:FT_RL_REL_STANDING_ENVS } else { "0.12" }
+# pitch_dip_hinge_rad / pitch_dip_weight / trunk_thigh_contact_weight: stage-5 mount-softening fix
+# (see config_patch.py StairPatchParams docstrings) -- the deployed stage-4 policy strikes each riser
+# nose-first (press-stall-push mounts measured ~22-34 deg pitch dips vs a normal ~8-12 deg climb lean).
+# pitch_dip_hinge (0.26 rad ~15 deg) is compared against THIS training env's OWN verified pitch sign
+# (positive == nose-down; see _reward_pitch_dip_hinge in config_patch.py -- NOT the deployed-sim sign),
+# so the normal lean costs zero and only a genuine deep mount is penalised. trunk_thigh_contact reuses
+# robot_lab's own undesired_contacts function at a smaller weight, scoped to just trunk+thigh bodies.
+# Both are shaping only (no termination added, CLAUDE.md 8.11).
+$PitchDipHingeRad = if ($env:FT_RL_PITCH_DIP_HINGE_RAD) { $env:FT_RL_PITCH_DIP_HINGE_RAD } else { "0.26" }
+$PitchDipWeight = if ($env:FT_RL_PITCH_DIP_WEIGHT) { $env:FT_RL_PITCH_DIP_WEIGHT } else { "-1.0" }
+$TrunkThighContactWeight = if ($env:FT_RL_TRUNK_THIGH_CONTACT_WEIGHT) { $env:FT_RL_TRUNK_THIGH_CONTACT_WEIGHT } else { "-0.25" }
 # entropy_coef 0.008 -> 0.005: 0.008 stabilized noise_std around ~0.7, but sigma decay was
 # too slow for tracking precision to recover -- run 2026-07-11_01-53 held track reward flat
 # (+0.05/500 iters) with terrain level pinned at 0 while sigma~0.7 execution noise itself
@@ -95,6 +106,7 @@ Write-Host "repo=$RobotLabDir  exptid=$ExptId  load_run=$LoadRun  num_envs=$NumE
 Write-Host "resume_ckpt=$ResumeCkpt  orient=$Orient  ascent=$Ascent  track_linvel=$TrackLinVel  max_level=$MaxLevel  linvel_x=$LinVelXMin..$LinVelX"
 Write-Host "upward=$UpwardWeight  linvel_z=$LinVelZWeight  tall_step_min=$TallStepMin  tall_prop=$TallProp  explore=$ExploreExtra"
 Write-Host "payload_mass_scale=$PayloadMassScale  rel_standing_envs=$RelStandingEnvs"
+Write-Host "pitch_dip_hinge_rad=$PitchDipHingeRad  pitch_dip_weight=$PitchDipWeight  trunk_thigh_contact_weight=$TrunkThighContactWeight"
 Write-Host "============================================="
 
 # Verify setup
@@ -184,7 +196,10 @@ try {
         "--tall-step-min", $TallStepMin,
         "--tall-start-prop", $TallProp,
         "--payload-mass-scale", $PayloadMassScale,
-        "--rel-standing-envs", $RelStandingEnvs
+        "--rel-standing-envs", $RelStandingEnvs,
+        "--pitch-dip-hinge-rad", $PitchDipHingeRad,
+        "--pitch-dip-weight", $PitchDipWeight,
+        "--trunk-thigh-contact-weight", $TrunkThighContactWeight
     )
     
     # Safely combine default runner args and user-supplied scripts arguments ($args)

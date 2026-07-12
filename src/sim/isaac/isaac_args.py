@@ -184,6 +184,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pgtt-heightscan-scale", type=float, default=1.0,
                         help="Multiplier on the (subtract-min) heightscan. Sim=1.0; the real "
                              "robot used 1.5 (a sim2real knob, not the trained sim value).")
+    parser.add_argument("--pgtt-heightscan-drop-cap-m", type=float, default=0.6,
+                        help="Incident 8.15/8.16 F3: clamp each heightscan cell's raw height "
+                             "from below to (base-height - this) before the subtract-min "
+                             "normalization, so one over-the-edge cell (e.g. a 2.1 m top-"
+                             "landing drop, run 11: hs_max 0.0->2.1, action_norm 1.1->3.15) "
+                             "cannot shift the whole 99-cell grid out of the training "
+                             "distribution. Default 0.6 m stays deeper than a legitimate "
+                             "descending-stair read at the crest straddle. <= 0 disables the "
+                             "clamp (not recommended).")
     parser.add_argument("--pgtt-height-backend", type=str, default="ground_truth",
                         choices=("ground_truth", "raycast"),
                         help="PGTT heightmap source: 'ground_truth' (analytic terrain height, the "
@@ -198,6 +207,31 @@ def build_parser() -> argparse.ArgumentParser:
                         choices=("position", "torque"),
                         help="PGTT actuation: 'position' (engine PD at Kp/Kd, faithful to MuJoCo "
                              "position servos, default) or 'torque' (explicit-PD efforts, sim2real).")
+    # --- Sustained-hold PARK (D1, run-12 review, 2026-07-12) -------------------------
+    # PGTT's hold is cmd=(0,0,0) + CONTINUED INFERENCE -- the trained gait trots in place and
+    # physically drifts under a zero command (run 12: 0.038 m/s creeping to ~0.19 m/s as the
+    # heightscan drop-cap engaged near the top-landing edge, walking the dog off it while the
+    # controller sent hold=True/vx=0 continuously). No command-side clamp can stop PHYSICAL
+    # creep from a running policy; see go2_locomotion/hold_park.py's module docstring for the
+    # full root cause and the fix (stop stepping PGTT and hold the stand pose kinematically,
+    # under the same stiff gains that already hold the robot rock-solid at boot).
+    parser.add_argument("--pgtt-hold-park-sec", type=float, default=2.5,
+                        help="Sim-seconds of CONTINUOUS caller hold (the F1 "
+                             "_motion_hold_requested capture) before the PGTT walker stops "
+                             "stepping and PARKS at the default stand pose under stiff "
+                             "position-hold gains (800/40/1000) instead of continuing to "
+                             "trot-in-place and physically creep. Any non-hold frame resets "
+                             "the accumulator. <= 0 disables the park (legacy behavior: PGTT "
+                             "keeps stepping through the whole hold).")
+    parser.add_argument("--pgtt-hold-park-tilt-max-rad", type=float, default=0.14,
+                        help="Body tilt (rad, max of |pitch|,|roll|) BELOW which the "
+                             "sustained-hold park is allowed to ENGAGE (checked once, at the "
+                             "moment --pgtt-hold-park-sec is first satisfied). Must stay below "
+                             "a genuine crest straddle (incident 8.16: observed -8.5 to -9.9 "
+                             "deg / ~0.15-0.17 rad) so this full kinematic position hold can "
+                             "never engage mid-incline (CLAUDE.md 8.9/8.15 -- this park is a "
+                             "flat-ground-only walk-path mechanism; see the isaac_env.py wiring "
+                             "comment for why the call site can never be mid-climb).")
     # --- Dual-policy stair handoff (PGTT walker <-> closed-loop stair climber) -------
     # When the PGTT walker STALLS in front of >=2 stairs the legs are handed to the
     # deterministic ClosedLoopStairClimber for one riser, then handed back. All knobs
@@ -293,10 +327,15 @@ def build_parser() -> argparse.ArgumentParser:
                              "documented face-plant cause), so they are disabled on the climb policy by "
                              "default so the trained net can lift fully onto the riser.")
     parser.set_defaults(handoff_climb_keep_governor=False)
-    parser.add_argument("--handoff-climb-vx", type=float, default=0.22,
-                        help="Forward command (m/s) floor during the parkour climb, applied EVEN when the "
-                             "person is visible -- so the controller's 0.55 m collision-floor / standoff "
-                             "does not park the dog mid-climb. The parkour net self-paces above this.")
+    parser.add_argument("--handoff-climb-vx", type=float, default=0.40,
+                        help="Forward command (m/s) floor during the blind/parkour climb. 0.22 -> 0.40 "
+                             "(2026-07-12, runs 21-22 vs waypoint self-test run_sim_20260712_114751_716): "
+                             "the stage-5 policy climb_stalled at commanded 0.22 from the base (all "
+                             "retries, never reared) but mounted cleanly and climbed to x=4.09 at the "
+                             "self-test's ~0.4-0.5 drive -- and its training stop-probe approach phase "
+                             "also used 0.4. Scaled by the caller's gap_brake_scale (wave-3), so it "
+                             "still tapers to 0 near the visible patient; the old 'EVEN when the person "
+                             "is visible' unconditional wording predates that brake wiring.")
     # ---- Top-of-stairs egress -> PGTT handback (replaces the arbitrary climb timeout) ----
     # When the dog crests the staircase (no more risers ahead, debounced), STAY in the climb
     # policy and walk a short distance forward to pull the rear feet off the last riser, THEN

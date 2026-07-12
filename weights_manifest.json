@@ -37,10 +37,10 @@
     },
     {
       "path": "src/sim/models/locomotion/go2_robot_lab_policy.pt",
-      "sha256": "6d97e4afa0b0758ddb8b34e6244444a048b8349378335ae544f1939575f048d4",
+      "sha256": "9888d066c3d4c5c4d0caa603cd5e61467cac40662f8f962063958c5040e2e8b1",
       "size_bytes": 769298,
       "purpose": "Blind RL locomotion policy (climb backend)",
-      "source": "O2 stair stage-4 halt fine-tune 2026-07-11, run 2026-07-11_16-46-41 model_4699.pt (resumed from stage-3 model_3200 with rel_standing_envs 0.02->0.12; exported via robot_lab play.py). Stop-probe vs stage-3: mid-stairs creep at commanded 0 improved 0.146->0.097 m/s mean, 0.367->0.216 p95; flat-hold 0/59 topples over 60 s. Stage-3 preserved as go2_robot_lab_policy.pt.bak_stage3_model3200_20260711 (sha256 93612080a1087b13515e54d57e9e6d505cefe5ea0d24241176e3be5de6e42693); earlier pretrain baseline as .bak_pre_o2stage3_20260711 (sha256 9f14cb95e74ac9e5e30954da0fc0c33eaa41e337852ebed19fcee869279ade0b).",
+      "source": "O2 stair stage-5 pitch-softening fine-tune 2026-07-12, run 2026-07-12_04-00-56 model_6198.pt (resumed from stage-4 model_4699 with pitch_dip_hinge 0.26 rad @ weight -12.0 + trunk_thigh_contact @ -1.0, all stage-4 params retained; exported via robot_lab play.py --checkpoint ABSOLUTE path). Training end-state vs stage-4: fell_over 3.35% (was 4.3-5.7%), ascent_rate 0.075 (was 0.061-0.065), terrain 5.55. Stop-probe: first-7s creep 0.115 m/s mean / 0.305 p95 (stage-4: 0.097/0.216); 60s on-stairs hold 0/6 resets (stage-4: 1/5), creep settles ~0.07; flat 60s 2/58 late topples (demo parks at 2.5s so long-hold regime unused). Stage-4 preserved as go2_robot_lab_policy.pt.bak_stage4_model4699_20260712 (sha256 6d97e4afa0b0758ddb8b34e6244444a048b8349378335ae544f1939575f048d4); stage-3 as .bak_stage3_model3200_20260711 (sha256 93612080a1087b13515e54d57e9e6d505cefe5ea0d24241176e3be5de6e42693); earlier pretrain baseline as .bak_pre_o2stage3_20260711 (sha256 9f14cb95e74ac9e5e30954da0fc0c33eaa41e337852ebed19fcee869279ade0b).",
       "portable": true
     },
     {

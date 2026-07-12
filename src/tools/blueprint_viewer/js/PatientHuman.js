@@ -942,10 +942,15 @@ function _toeBasePitch( footPose, t, speed, params ) {
  * this file's own _lastSync-field convention, e.g. leftAnkleTargetWorld a few
  * hundred lines below) so sync() can report the SAME point via
  * `_lastSync.leftFootContact/rightFootContact` (see its own step-6/step-20
- * comments) without duplicating the formula. `pivotForwardOffsetM` is the contact
- * point's own forward-facing offset from the nominal plant point (NEGATIVE for the
- * heel, i.e. `-heelBackM`; POSITIVE for the toe, i.e. `+toeForwardLenM`; ZERO
- * reproduces the plant point itself, the flat/mid-stance case).
+ * comments) without duplicating the formula. `pivotForwardOffsetM` is the SIGNED
+ * offset such that the contact lands at `plantPos - facing*offset`: F11-SIGN
+ * corrected (2026-07-10, incident #18) so the callers pass POSITIVE `+heelBackM` for
+ * the heel (contact BEHIND the plant, matching IK_OVERHAUL_SPEC.md §6b's
+ * `heelPoint = plantPos - facing*heelBackM`) and NEGATIVE `-toeForwardLenM` for the
+ * toe (contact AHEAD); ZERO reproduces the plant point itself (flat/mid-stance). The
+ * PRE-#18 convention was the OPPOSITE sign at the call sites (−heelBackM/+toeForwardLen),
+ * which placed both pivots on the wrong side and dug the toe into the ground at every
+ * landing -- do NOT "restore" it.
  */
 function _footContactPoint( plantPos, yaw, pivotForwardOffsetM ) {
 
@@ -960,9 +965,9 @@ function _footContactPoint( plantPos, yaw, pivotForwardOffsetM ) {
 
 /**
  * Pivot a foot's flat ankle target about a FIXED heel or toe contact point by
- * `pitch` radians (PITCH_AXIS convention). `pivotForwardOffsetM` is the contact
- * point's own forward-facing offset from the nominal plant point (NEGATIVE for the
- * heel, i.e. `-heelBackM`; POSITIVE for the toe, i.e. `+toeForwardLenM`); at
+ * `pitch` radians (PITCH_AXIS convention). `pivotForwardOffsetM` is the SIGNED offset
+ * defined in `_footContactPoint` above (F11-SIGN / incident #18: `+heelBackM` = heel
+ * pivot BEHIND, `-toeForwardLenM` = toe pivot AHEAD); at
  * `pitch=0` this exactly reproduces the pre-existing flat formula
  * `plantPos + ankleHeightM*up` (see the call sites' own comments) -- I2's "contact
  * point stays fixed, ankle moves only via analytic rotation about it" invariant holds
@@ -1990,7 +1995,25 @@ export class PatientHuman {
 			// durations vs rollDownSec/heelOffSec) case where BOTH windows would be
 			// simultaneously nonzero is resolved by this same if/else priority (heel
 			// wins) -- see _pivotAnkleTarget's own call-site comment below.
-			const forwardOffset = leftRollPitch > 0 ? - P.heelBackM : this._toeForwardLenM;
+			//
+			// F11-SIGN (M8 diag, 2026-07-10): the pivot-side sign was BACKWARDS vs
+			// IK_OVERHAUL_SPEC.md S6b. The spec pivots heel-strike about the HEEL
+			// contact `heelPoint = plantPos - facing*heelBackM` (BEHIND the plant) and
+			// toe-off about the TOE contact `plantPos + facing*toeForwardLen` (AHEAD).
+			// _footContactPoint returns `plantPos - facing*offset`, so a BEHIND heel
+			// needs offset=+heelBackM and an AHEAD toe needs offset=-toeForwardLen --
+			// but this passed -heelBackM / +toeForwardLen, placing the heel pivot AHEAD
+			// (toe side) and the toe pivot BEHIND (heel side). Consequence: a
+			// "dorsiflex" (heel down, toe UP) rotated the foot about the wrong (ahead)
+			// point and drove the rendered TOE bone DOWN ~2.3 cm into the tread/floor at
+			// every landing (M8 planted soleClearance -0.0233 m on BOTH clips; heelStrike
+			// Rad=0 zeroed it, confirming the roll was the cause). The flat reduction
+			// (pitch=0 -> plantPos + ankleHeight*up) is sign-independent, which is why
+			// this survived every prior review: it only shows at nonzero roll. Flipping
+			// both signs dropped M8 to -0.0066 m (89% less than the original -0.059 m
+			// swing bug) with NO M9b/fkError/plantedDrift regression -- see the swing
+			// branch below (its blend endpoints flip in lockstep to stay continuous).
+			const forwardOffset = leftRollPitch > 0 ? P.heelBackM : - this._toeForwardLenM;
 			leftTargetWorld = _pivotAnkleTarget(
 				new THREE.Vector3( pose.leftFoot.x, pose.leftFoot.y, pose.leftFoot.z ), pose.leftFoot.yaw,
 				forwardOffset, this._ankleHeightM, leftRollPitch, new THREE.Vector3(),
@@ -2015,7 +2038,9 @@ export class PatientHuman {
 			// the SAME `_pivotAnkleTarget` the stance windows use, with
 			// `forwardOffset` blended (plain smoothstep of swingU, zero slope at both
 			// ends -- matches _footRollPitch's own C1-at-the-boundary discipline) from
-			// `_toeForwardLenM` (liftoff, u=0) to `-heelBackM` (landing, u=1) -- the
+			// `-_toeForwardLenM` (liftoff, u=0) to `+heelBackM` (landing, u=1) -- the
+				// F11-SIGN-corrected endpoints, flipped in lockstep with the stance
+				// windows (OLD spec-mismatched values were +toeFwd@u0 / -heelBack@u1) -- the
 			// STANCE branch's own two endpoint values, so the target is bit-identical
 			// to the stance formula's ending value at u=0 and to its upcoming starting
 			// value at u=1 (both `forwardOffset` AND `leftRollPitch` match exactly at
@@ -2027,7 +2052,7 @@ export class PatientHuman {
 			// reproduces plantPos + ankleHeightM*up").
 			const leftSwingU = ( typeof pose.leftFoot.swingU === 'number' ) ? THREE.MathUtils.clamp( pose.leftFoot.swingU, 0, 1 ) : 0;
 			const leftBlend = _smoothstep( leftSwingU );
-			const forwardOffset = this._toeForwardLenM + ( - P.heelBackM - this._toeForwardLenM ) * leftBlend;
+			const forwardOffset = - this._toeForwardLenM + ( P.heelBackM + this._toeForwardLenM ) * leftBlend; // F11-SIGN endpoints (-toeFwd@u0 -> +heelBack@u1); see stance branch above
 			leftTargetWorld = _pivotAnkleTarget(
 				new THREE.Vector3( pose.leftFoot.x, pose.leftFoot.y, pose.leftFoot.z ), pose.leftFoot.yaw,
 				forwardOffset, this._ankleHeightM, leftRollPitch, new THREE.Vector3(),
@@ -2042,7 +2067,7 @@ export class PatientHuman {
 		}
 		if ( pose.rightFoot.planted && rightRollPitch !== 0 ) {
 
-			const forwardOffset = rightRollPitch > 0 ? - P.heelBackM : this._toeForwardLenM;
+			const forwardOffset = rightRollPitch > 0 ? P.heelBackM : - this._toeForwardLenM; // F11-SIGN: see left-foot branch
 			rightTargetWorld = _pivotAnkleTarget(
 				new THREE.Vector3( pose.rightFoot.x, pose.rightFoot.y, pose.rightFoot.z ), pose.rightFoot.yaw,
 				forwardOffset, this._ankleHeightM, rightRollPitch, new THREE.Vector3(),
@@ -2054,7 +2079,7 @@ export class PatientHuman {
 			// R1 fix -- mirror of the left-foot swing branch above, see its own comment.
 			const rightSwingU = ( typeof pose.rightFoot.swingU === 'number' ) ? THREE.MathUtils.clamp( pose.rightFoot.swingU, 0, 1 ) : 0;
 			const rightBlend = _smoothstep( rightSwingU );
-			const forwardOffset = this._toeForwardLenM + ( - P.heelBackM - this._toeForwardLenM ) * rightBlend;
+			const forwardOffset = - this._toeForwardLenM + ( P.heelBackM + this._toeForwardLenM ) * rightBlend; // F11-SIGN endpoints; see left/stance branch
 			rightTargetWorld = _pivotAnkleTarget(
 				new THREE.Vector3( pose.rightFoot.x, pose.rightFoot.y, pose.rightFoot.z ), pose.rightFoot.yaw,
 				forwardOffset, this._ankleHeightM, rightRollPitch, new THREE.Vector3(),

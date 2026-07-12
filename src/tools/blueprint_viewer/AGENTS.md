@@ -662,3 +662,69 @@ this file only covers gotchas specific to this pipeline/viewer.
 - **WHY:** "follow = flat, climb = stairs" is true for ~84% of the follow clip's
   duration, which is exactly enough for a statistic to look clean while its tail
   compares apples to oranges.
+
+### 18 — stairs foot placement: toe punches through the riser mid-swing, and the heel/toe roll PIVOT SIDE was backwards (2026-07-10, user-reported "climb up the stairs not seamless / foot placement off")
+- **TRIGGER:** Touching the foot-swing height clamp (`PatientGait._buildSwingProfile` /
+  `swingToeClearMarginM` / `swingPeakUClimb`) or the foot-roll ankle pivot
+  (`PatientHuman._footContactPoint`/`_pivotAnkleTarget` and their call sites' signed
+  `forwardOffset`). Verify with `window.__viewer.patientDiag({dt:0.05})` M8
+  (`soleClearanceMin`, measures the real ToeBase BONE vs terrain), M9b (pitch
+  continuity), and M14 (kneeBend/plantedDrift/fkError) — numbers decide, per this
+  ledger's recurring lesson.
+- **LESSON, bug A (swing toe-through-riser):** the swing-height clamp
+  (`_buildSwingProfile`) sampled terrain only under the ANKLE path, but the rendered
+  TOE bone leads that sole reference ~toeForwardLen (~0.11 m) horizontally — so a foot
+  swinging from a lower tread to a higher one has its ankle still over the LOW tread
+  (clamp reads "fine") while the toe overhangs the HIGHER tread and punches ~6 cm
+  through its riser (M8 −0.059 m, climb t≈1.4s). Made the clamp TOE-AWARE (also sample
+  terrain `footLeadX` ahead of the ankle path). CAUTION found doing it: a positive
+  `swingToeClearMarginM` pushes the clamp's tread-crossing to the FIRST swing sample
+  (the plant's stair-snap keeps the toe within nosingMargin of the riser), where the
+  clamp floor must jump a full riser (0.145 m) while the foot is still at from.z — a
+  14.5 cm LIFTOFF POP (`maxToeStepM` 0.146 m). The clamp fundamentally CANNOT lift the
+  foot at liftoff without a pop (it's planted at from.z there). Fix: `swingToeClearMarginM=0`
+  (crossing lands at u≥0.22 where the arc has already risen → no pop) and lower
+  `swingPeakUClimb` 0.30→0.18 so the smooth ARC (not the step clamp) provides the early
+  clearance. `maxToeStepM` scales ~linearly with the diag `dt` → it is smooth fast
+  motion, not a discontinuity (a real pop stays constant vs dt — a cheap pop-vs-smooth
+  discriminator).
+- **LESSON, bug B (roll pivot side backwards — the "surprise"):** with bug A fixed the
+  worst M8 was a PLANTED foot at heel-strike, toe dipping −0.023 m into the tread on
+  BOTH clips (heelStrikeRad=0 zeroed it, confirming the roll was the cause). Root cause:
+  the heel/toe pivot was on the WRONG SIDE of the foot vs IK_OVERHAUL_SPEC.md §6b. The
+  spec pivots heel-strike about `heelPoint = plantPos − facing·heelBackM` (BEHIND) and
+  toe-off about `plantPos + facing·toeForwardLen` (AHEAD). `_footContactPoint` returns
+  `plantPos − facing·offset`, so a BEHIND heel needs `offset=+heelBackM` and an AHEAD
+  toe needs `offset=−toeForwardLen` — but the call sites passed `−heelBackM` / `+toeForwardLen`,
+  placing the heel pivot AHEAD (toe side) and toe pivot BEHIND. So a "dorsiflex" (heel
+  down, toe UP) rotated the foot about the wrong point and drove the toe DOWN into the
+  ground at every landing. The flat reduction (pitch=0 → plantPos + ankleHeight·up) is
+  SIGN-INDEPENDENT, which is why this survived every prior review: it only manifests at
+  nonzero roll. Fix: negate the `forwardOffset` at all 4 sites (2 stance heel/toe
+  conditionals + 2 swing-blend endpoints, flipped in lockstep so swing/stance continuity
+  holds). Result: M8 −0.0233 → −0.0066 m (89% below the original −0.059), with NO M9b /
+  fkError / plantedDrift / M8b regression. COUPLING TO KNOW: correct rolls raise the
+  ankle during the heel-strike/toe-off windows, which adds natural pre-swing knee
+  flexion — follow stance-knee median rose 31.7°→37.8° (climb 45°→48°), both still under
+  their bars. This is the CORRECT push-off flexion the backwards roll was masking (the
+  old roll kept the knee artificially straight by digging the toe in), not a crouch
+  regression — verified visually (heel now correctly lifts at toe-off) and against every
+  M-bar. Do NOT "fix" the knee rise by re-tuning `standingReachRaiseM` (incident #16:
+  that couples into the cane-arm reach budget).
+- **RESIDUAL:** M8 is −0.0066 m (a hair over the strict −0.002 bar) — a sub-visible
+  ~6.6 mm ToeBase-bone dip at the heel-strike instant, an irreducible bind-geometry
+  remainder after the pivot fix; not chased further (over-tuning risk, imperceptible).
+- **WHY:** Same shape as incidents #4/#5/#10/#15 — a cross-convention sign/pivot mistake
+  that doesn't throw and is invisible at the flat/zero-roll pose most reviews check;
+  only a numeric probe of the real rendered TOE bone across the whole sweep (M8) plus a
+  controlled param-zeroing experiment (heelStrikeRad=0) isolates it. And per CLAUDE.md
+  8.7: `_footContactPoint`'s own docstring asserted "NEGATIVE for the heel, POSITIVE for
+  the toe" — self-consistent with the (wrong) call sites but contradicting the spec's
+  physical placement; the doc was never cross-checked against §6b's `heelPoint` formula.
+
+
+### 19 — stairs "step up then back DOWN on the SAME stair", plus a re-phasing idle regression the fix exposed (2026-07-10, user-reported "on the stairs it tries to move one up then moves it back down on the same stair, makes no sense" + "near the start it walks then glitches back to walking up")
+- **TRIGGER:** A scheduled foot swing on the staircase that lifts a full riser-clearing arc and lands back on the tread it left; and, more generally, ANY schedule change that re-phases the recorded clip's step timing near a recorded stop.
+- **LESSON, bug A (same-tread shuffle -- the user glitch):** `buildSchedule` triggers a step once a foot drifts `stepTriggerClimb` (0.12 m) from nominal, but a tread's valid plant window is only `stepD - heelMargin - toeForwardLen - nosingMargin` ~= 0.098 m wide. From a foot planted at the front of tread N, the nominal must advance ~0.157 m before the touchdown snaps onto tread N+1 -- MORE than the 0.12 m trigger -- so the FIRST trigger after every stair plant resolves SAME-TREAD, producing a pointless in-place hop (full `swingClearanceClimb` 0.14 m up, ~0.08 m forward, back down on the same step). Measured via a Node diag (replay real climb clip through `buildSchedule` + `terrain.treadIndexAt`): 9 such hops on climb (every ~3rd step), 1 at the flat->T0 base entry on follow -- exactly the two reported glitches. FIX: after the tread-snap, defer (`continue`) any step whose `treadIndexAt(toX) === treadIndexAt(from.x)` while both are on the staircase -- the growing need re-resolves next sample to a real tread-N->N+1 advance. Gives a clean cautious "step-to" climb: every step now +0.145 m to the next tread, T1->...->T13->top (verified 0 same-tread steps, 0 retreats). Do NOT "fix" it by snapping the touchdown FORWARD to tread N+1 instead of deferring: tried, it fires while the hip is still a tread behind -> the foot gets ahead of the hip (over-reach) and it still tips M5 (below).
+- **LESSON, bug B (the SURPRISE -- removing the hops re-phased a step INTO a recorded stop):** the wasted same-tread hops were SWING (single-support) frames; removing 8 of them raised climb double-support toward its ceiling AND re-phased the flat top-landing walk so a step now lifted off at t=32.13 -- right at the tail of a genuine recorded STUTTER-STOP (root parked t~=31.5-32.2 s, x moves ~3 mm total). Baseline had "gotten lucky" (its steps straddled the stop). This broke M10 idle-foot-motion (0->0.022 m) and M7 phaseC idle-violations. Root cause is an ESTIMATOR mismatch (CLAUDE.md 8.7 comment-drift): the trigger's idle gate uses `_rootNearIdleAtIndex` (neighbour-SAMPLE central diff, reads 0.024 m/s at the twitch) but the M10 diagnostic uses poseAt's `_speedAt` (+-0.02 s interpolated, reads 0.010 m/s) -- `idleSpeedThreshold`'s comment CLAIMED they "can never disagree", but they use different estimators and DO diverge at a stutter-stop. FIX: a DEEP-stop look-back -- defer a trigger whose recent `idleDeepStopWindowSec` (0.2 s) window holds any sample under HALF the idle floors (`_deepStopWithin`, shared helper). Half-floor trips only on the near-zero "dead stop" samples, NOT the ordinary 0.01-0.05 m/s slow creep, so it adds ~no double-support (vs. widening `idleSustainSamples` 3->4/5, which delayed EVERY near-idle-adjacent trigger and tipped M5 over 0.5 -- tried and rejected). The paired CANE bypasses the foot trigger (its schedule is derived from left-foot events and leads by `caneLeadSec`), so it re-entered the stop tail even after the foot deferred -> apply the SAME `_deepStopWithin` clamp to the cane liftoff in `_buildCaneEvents`. Net: all Node audit metrics green on follow+climb+3 synthetic fixtures; rig-level `patientDiag` idleFootMotion=0 on climb, foot-placement metrics (soleClearance/plantedDrift/fkError) unchanged from #18.
+- **WHY:** Bug A is a threshold-vs-geometry mismatch (0.12 m trigger < 0.157 m tread-crossing distance) invisible until you map each event's from/to TREAD INDEX. Bug B is the classic "a correct fix that changes step timing moves a swing onto a recorded stop" -- the same phasing-sensitivity class as incident #6/8.6, and the estimator-disagreement is a live case of CLAUDE.md 8.7 (a comment asserting a safety property -- "can never disagree" -- that the code contradicts). Measure with a per-event tread-index dump + a per-frame idle-overlap probe, never a screenshot (a still frame cannot show a hop or a 2-frame idle slide).
