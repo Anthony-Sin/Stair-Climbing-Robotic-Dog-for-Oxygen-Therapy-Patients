@@ -768,6 +768,24 @@ function buildLivingRoom() {
 	const consoleBody = box( 1.5, 0.62, 0.44, couchMat2 ); consoleBody.position.set( 0, 0.37, 0 ); consoleBody.castShadow = true; console.add( consoleBody );
 	room.add( console );
 
+	// A low side table + plant sitting near the MIDDLE of the walk line (not on
+	// the far background wall like the rest of the set) so the crossing reads as
+	// the pair navigating a lived-in room, not walking an empty runway. Placed
+	// just outside the follow clip's own lateral sway band (measured z in about
+	// [-0.45, 0.4] across the clip) so it's close enough to look stepped-around
+	// without ever actually being on the baked path.
+	const sideTable = new THREE.Group(); sideTable.position.set( -1.5, 0, -0.95 );
+	const sideTableTop = cyl( 0.26, 0.26, 0.06, woodMat ); sideTableTop.position.set( 0, 0.5, 0 ); sideTableTop.castShadow = true; sideTable.add( sideTableTop );
+	const sideTableLeg = cyl( 0.04, 0.05, 0.47, lampPoleMat ); sideTableLeg.position.set( 0, 0.235, 0 ); sideTable.add( sideTableLeg );
+	const midPot = cyl( 0.14, 0.11, 0.22, potMat ); midPot.position.set( 0, 0.64, 0 ); midPot.castShadow = true; sideTable.add( midPot );
+	for ( const [ px, py, pz, pr ] of [ [ 0, 0.86, 0, 0.18 ], [ -0.1, 0.78, 0.05, 0.13 ], [ 0.1, 0.8, -0.04, 0.13 ] ] ) {
+
+		const leaf = new THREE.Mesh( new THREE.SphereGeometry( pr, 10, 8 ), leafMat );
+		leaf.position.set( px, py, pz ); sideTable.add( leaf );
+
+	}
+	room.add( sideTable );
+
 	scene.add( room );
 	livingRoom = room;
 
@@ -1058,11 +1076,15 @@ let cineTime = 0;          // seconds since this mode was last enabled, drives t
 // Framing angle in three.js SCENE space. The -90deg-about-X isaac_world
 // rotation maps the pipeline's Z-up/X-forward frame to three's Y-up, so here:
 //   +X = travel / up-the-stairs direction, +Y = world up, +Z = the near side.
-// The camera sits behind-side-above and looks forward/down at the pair, which
-// shows the climbing profile and the stairs ahead while staying over open
-// space -- a leading shot (camera ahead) risks clipping into the handrails
-// during the climb.
-const CINE_BASE_AZ = 118 * Math.PI / 180; // azimuth measured from +X in the XZ (ground) plane
+// Near-profile (~90deg) rather than the old trailing-quarter (118deg) angle:
+// robot travels +X, and a camera on the +Z side looking back toward -Z reads
+// world +X as screen-right (standard THREE look-at chirality with up=+Y), so
+// this stages the walk as a clean LEFT-TO-RIGHT crossing of the frame instead
+// of a foreshortened three-quarter chase that made the robot/patient gap look
+// tighter than it actually is (real separation stays 1.1-1.75 m the whole
+// follow clip -- see the pygltflib measurement in the 2026-07-13 session, no
+// actual collision in the baked data, just an angle that hid the gap).
+const CINE_BASE_AZ = 95 * Math.PI / 180; // azimuth measured from +X in the XZ (ground) plane
 const CINE_BASE_EL = 24 * Math.PI / 180;  // elevation above the ground plane
 const CINE_SWAY_AZ = 9 * Math.PI / 180;   // slow left/right drift amplitude
 const CINE_SWAY_EL = 4 * Math.PI / 180;   // slow rise/fall amplitude
@@ -1073,7 +1095,16 @@ const CINE_SWAY_EL_PERIOD = 19;           // s, one full rise-fall sway
 // so the living-room set around the pair â€” wood floor, rug, couch + window, the
 // staircase â€” reads in shot, not just the two subjects. This slide's whole point
 // is "the living room", so the environment has to be visible.
-const CINE_SUBJECT_PAD = 1.25;   // extra framing radius so neither subject kisses the frame edge (m)
+// 1.9 (was 1.25): the framing radius is 0.5*separation + this pad, so it used to
+// track the live robot/patient gap fairly closely. That was fine at the old ~1.65 m
+// average follow gap, but once the follow distance was tightened to ~0.3 m (real
+// recorded data, not a camera bug) the SAME formula pulled the camera dramatically
+// closer -- radius dropped from ~2.08 to ~1.4, i.e. the whole shot (robot, patient,
+// room) zoomed in ~1.5x, reading as everything "growing too big". Raising the pad
+// keeps the radius (and therefore the framing) roughly where it was regardless of
+// how tight the live follow gap is -- the room should stay in shot either way, per
+// the pullback this constant already existed for.
+const CINE_SUBJECT_PAD = 1.9;   // extra framing radius so neither subject kisses the frame edge (m)
 const CINE_FRAME_MARGIN = 1.42;  // >1 leaves breathing room around the pair + room
 const CINE_MIN_DIST = 2.6;       // never dolly closer than this (m)
 const CINE_MAX_DIST = 9.5;       // never drift further than this (m)
@@ -1084,6 +1115,16 @@ const CINE_TARGET_UP_BIAS = 0.15; // aim a touch above the base/hip midpoint so 
 // read as the camera gliding to catch up.
 const CINE_POS_SMOOTH_BASE = 0.0030;
 const CINE_TGT_SMOOTH_BASE = 0.0015;
+
+// Entry reveal: CINE_POS_SMOOTH_BASE alone converges in well under a second, so
+// arriving on the Potential slide used to SNAP the camera onto the framing from
+// wherever it last sat (a different slide's orbit distance/angle) instead of
+// reading as a deliberate move. For the first ENTRY_REVEAL_SEC after activation
+// the position lerp uses a much slower base (a real glide-in), ramping linearly
+// to the normal snappy tracking rate so the camera still keeps up with the
+// subjects once the reveal is over.
+const CINE_ENTRY_REVEAL_SEC = 2.4;
+const CINE_ENTRY_POS_SMOOTH_BASE = 0.35;
 
 const _cineRobotPos = new THREE.Vector3();
 const _cinePatientPos = new THREE.Vector3();
@@ -1151,7 +1192,9 @@ function updateCinematicCamera( dtSec ) {
 
 	_cinePosGoal.copy( _cineTargetGoal ).addScaledVector( _cineOffsetDir, dist );
 
-	const posLerp = Math.min( 1, 1 - Math.pow( CINE_POS_SMOOTH_BASE, dtSec ) );
+	const entryT = Math.min( 1, cineTime / CINE_ENTRY_REVEAL_SEC );
+	const posSmoothBase = THREE.MathUtils.lerp( CINE_ENTRY_POS_SMOOTH_BASE, CINE_POS_SMOOTH_BASE, entryT );
+	const posLerp = Math.min( 1, 1 - Math.pow( posSmoothBase, dtSec ) );
 	const tgtLerp = Math.min( 1, 1 - Math.pow( CINE_TGT_SMOOTH_BASE, dtSec ) );
 
 	camera.position.lerp( _cinePosGoal, posLerp );
@@ -1184,11 +1227,18 @@ const patientHumanReady = patientHuman.load();
 // console.error and degrade exactly like an Xbot load failure (no patient gait built
 // â€” patientHuman.buildGait() is simply never called below, so the human stays
 // un-posed rather than silently falling back to some invented default staircase).
-const robotMetaReady = fetch( './models/robot.meta.json' )
+// robot_potential.glb/.meta.json: this viewer (the Potential/living-room cinematic
+// scene) uses its OWN dedicated bake -- a real zigzag-follow + full climb-with-
+// patient capture -- kept separate from the shared models/robot.glb that hero.js's
+// small per-policy panels use, so tuning one scene's clip never touches the other's
+// (2026-07-13 session: the two used to share one file/clip pair, which made a
+// climb-only capture for the blind-RL panel silently break the patient's pose in
+// this viewer too -- see that incident's fix).
+const robotMetaReady = fetch( './models/robot_potential.meta.json' )
 	.then( ( r ) => r.json() )
 	.catch( ( error ) => {
 
-		console.error( '[blueprint-viewer] failed to load ./models/robot.meta.json â€” patient gait will not be built:', error );
+		console.error( '[blueprint-viewer] failed to load ./models/robot_potential.meta.json â€” patient gait will not be built:', error );
 		return null;
 
 	} );
@@ -1932,7 +1982,7 @@ function loadRealModel() {
 	return new Promise( ( resolve ) => {
 
 		loader.load(
-			'./models/robot.glb',
+			'./models/robot_potential.glb',
 			( gltf ) => {
 
 				usingPlaceholder = false;
@@ -1989,7 +2039,7 @@ function loadRealModel() {
 			undefined,
 			( error ) => {
 
-				console.error( '[blueprint-viewer] GLTFLoader failed to load ./models/robot.glb:', error );
+				console.error( '[blueprint-viewer] GLTFLoader failed to load ./models/robot_potential.glb:', error );
 				loadPlaceholder( error?.message || 'load error' );
 				resolve();
 

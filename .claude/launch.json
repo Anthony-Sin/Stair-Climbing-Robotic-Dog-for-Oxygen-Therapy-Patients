@@ -7,16 +7,6 @@
       "runtimeArgs": ["src/tools/blueprint_viewer/serve.py"],
       "port": 8741,
       "autoPort": true
-    },
-    {
-      "name": "blueprint-viewer-wt",
-      "runtimeExecutable": "python",
-      "runtimeArgs": [
-        "C:\\Users\\antho\\Downloads\\Stair-Climbing-Robotic-Dog-for-Oxygen-Therapy-Patients\\.claude\\worktrees\\ik-overhaul\\src\\tools\\blueprint_viewer\\serve.py",
-        "8742"
-      ],
-      "port": 8742,
-      "autoPort": false
     }
   ]
 }
