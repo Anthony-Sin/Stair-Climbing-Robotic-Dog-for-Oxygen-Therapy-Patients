@@ -64,6 +64,7 @@ param(
     [switch]$StairWaypointTest,
     [double]$StairWaypointX = 6.77,
     [double]$StairWaypointY = 0.0,
+    [string]$StairWaypointPath = "",
     # Let autonomous scene motion (the patient patrol) start immediately instead of
     # waiting for the Docker controller's first command. Enables a Docker-free
     # patient-locomotion walk_log run.
@@ -237,8 +238,21 @@ $handoffArg = "--handoff-climb-backend $HandoffClimbBackend"
 $waypointArg = ""
 if ($StairWaypointTest) {
     $waypointArg = "--stair-waypoint-test --stair-waypoint-x $StairWaypointX --stair-waypoint-y $StairWaypointY"
+    # The waypoint go-to-goal law's speed cap is --self-test-vx (isaac_env.py reads it
+    # unconditionally, not just under --self-test-walk) -- but this arg string never
+    # forwarded it, so every waypoint-test run silently used isaac_env.py's OWN default
+    # (0.5 m/s) no matter what -SelfTestVx was passed in. Forward it here too.
+    $waypointArg += " --self-test-vx $SelfTestVx"
     if ($Headless) { $waypointArg += " --headless" }
-    Write-ConsoleLog "  Stair waypoint test: target=($StairWaypointX, $StairWaypointY), climb backend=$HandoffClimbBackend (no controller)"
+    if ($StairWaypointPath) {
+        # --stair-waypoint-path=VALUE (not a separate token) -- the path routinely starts
+        # with a negative x coordinate ('-3.5,0.0;...'), and argparse treats a next-token
+        # starting with '-' as a new flag, not this one's value, under the space form.
+        $waypointArg += " --stair-waypoint-path=`"$StairWaypointPath`""
+        Write-ConsoleLog "  Stair waypoint test: PATH mode ($($StairWaypointPath.Split(';').Count) points), final target=($StairWaypointX, $StairWaypointY), climb backend=$HandoffClimbBackend (no controller)"
+    } else {
+        Write-ConsoleLog "  Stair waypoint test: target=($StairWaypointX, $StairWaypointY), climb backend=$HandoffClimbBackend (no controller)"
+    }
 }
 
 # Oxygen-concentrator payload (mounting rails + O2 tank) on the Go2's back. isaac_env

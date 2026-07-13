@@ -802,6 +802,15 @@ def build_parser() -> argparse.ArgumentParser:
                              "whole run_stair_sweep.ps1 sweep; adjust for a different --stair-preset.")
     parser.add_argument("--stair-waypoint-y", type=float, default=0.0,
                         help="Target Y (m) for the stair waypoint test (0 = staircase centreline).")
+    parser.add_argument("--stair-waypoint-path", type=str, default=None,
+                        help="Optional chain of waypoints for the stair-waypoint-test steering law: "
+                             "'x1,y1;x2,y2;...'. When set, the go-to-goal controller drives to each point "
+                             "in order (advancing once within --stair-waypoint-reach-radius of the current "
+                             "one) instead of the single (--stair-waypoint-x, --stair-waypoint-y) target -- "
+                             "lets the isolated PGTT waypoint-follow rig trace an arbitrary real path (e.g. "
+                             "a recorded person's walked route) with no Docker/YOLO controller involved. "
+                             "The FINAL point is still what --stair-waypoint-x/y-shaped exit logic latches "
+                             "on as 'reached'; --stair-waypoint-x/y are ignored when this is set.")
     parser.add_argument("--max-episode-wall-sec", type=float, default=900.0,
                         help="HARD wall-clock cap (s) on one episode, checked every loop step OUTSIDE the "
                              "scene-motion gate so it cannot freeze. The existing DEMO_SIM_TIMEOUT counts "

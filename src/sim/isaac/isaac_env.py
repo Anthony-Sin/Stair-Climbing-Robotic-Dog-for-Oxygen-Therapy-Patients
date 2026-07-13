@@ -3884,6 +3884,16 @@ def main() -> None:
     waypoint_reached_sim_sec = None
     # Latches the one-time "reached the planar target but COLLIDED" honesty warning.
     _wp_quality_warned = False
+    # Optional multi-point --stair-waypoint-path ('x1,y1;x2,y2;...'): parsed once per
+    # episode into a list, _wp_path_idx advances as each point is reached. None/empty
+    # means "no path" -- the steering law falls back to the single (x,y) target exactly
+    # as before (this is a strictly additive, opt-in code path).
+    _wp_path = []
+    if getattr(args, "stair_waypoint_path", None):
+        for _pt in str(args.stair_waypoint_path).split(";"):
+            _px, _py = _pt.split(",")
+            _wp_path.append((float(_px), float(_py)))
+    _wp_path_idx = 0
     motion_start_time = None
     motion_elapsed_sim_sec = 0.0
     # Continuous sim clock (advances EVERY loop step, unlike motion_elapsed_sim_sec which is
@@ -4165,9 +4175,26 @@ def main() -> None:
                             # forward speed decelerates with the TRUE remaining distance (hypot), and
                             # inside the reach radius the dog STANDS (vx=wz=0, hold) so it settles ON
                             # the landing instead of trotting off it. Applies to run_stair_sweep.ps1.
-                            _wp_dx = float(args.stair_waypoint_x) - float(_pp[0])
-                            _wp_dy = float(args.stair_waypoint_y) - float(_pp[1])
+                            # Multi-point --stair-waypoint-path: steer at the CURRENT path point;
+                            # advance to the next one on reach instead of stopping, UNLESS this is
+                            # already the last point (then fall through to the normal stop-and-hold
+                            # below, same as the single-target case). No path set -> _wp_path is
+                            # empty -> behaves exactly as before (single x/y target).
+                            if _wp_path:
+                                _wp_tx, _wp_ty = _wp_path[_wp_path_idx]
+                            else:
+                                _wp_tx, _wp_ty = float(args.stair_waypoint_x), float(args.stair_waypoint_y)
+                            _wp_dx = _wp_tx - float(_pp[0])
+                            _wp_dy = _wp_ty - float(_pp[1])
                             _wp_dist = math.hypot(_wp_dx, _wp_dy)
+                            if _wp_path and _wp_dist <= float(args.stair_waypoint_reach_radius) \
+                                    and _wp_path_idx < len(_wp_path) - 1:
+                                _wp_path_idx += 1
+                                _wp_tx, _wp_ty = _wp_path[_wp_path_idx]
+                                _wp_dx = _wp_tx - float(_pp[0])
+                                _wp_dy = _wp_ty - float(_pp[1])
+                                _wp_dist = math.hypot(_wp_dx, _wp_dy)
+                            _wp_on_last = (not _wp_path) or (_wp_path_idx >= len(_wp_path) - 1)
                             if _wp_dist <= float(args.stair_waypoint_reach_radius):
                                 vx, wz, hold = 0.0, 0.0, True
                             else:
@@ -4176,8 +4203,19 @@ def main() -> None:
                                                          math.cos(_desired_yaw - _yaw))
                                 wz = float(np.clip(float(args.stair_waypoint_heading_kp) * _yaw_err_wp,
                                                    -0.8, 0.8))
-                                vx = float(np.clip(float(args.stair_waypoint_approach_kp) * _wp_dist,
-                                                   0.0, float(args.self_test_vx)))
+                                if _wp_on_last:
+                                    # Final target (or single-target/no-path mode): decelerate with
+                                    # TRUE remaining distance as before, so the dog brakes into a
+                                    # clean stop-and-hold instead of overshooting onto/off the landing.
+                                    vx = float(np.clip(float(args.stair_waypoint_approach_kp) * _wp_dist,
+                                                       0.0, float(args.self_test_vx)))
+                                else:
+                                    # Intermediate path point: hold constant walking speed straight
+                                    # through -- the proportional brake law exists to stop cleanly AT
+                                    # a target, which is wrong for a point we're only passing through
+                                    # on the way to the next one (was reading as speed "pulsing" at
+                                    # each of the 8 waypoints instead of one smooth continuous walk).
+                                    vx = float(args.self_test_vx)
                         else:
                             # Non-waypoint self-test: simple face-+X heading hold (no y correction).
                             wz = float(np.clip(-2.0 * _yaw, -0.8, 0.8))

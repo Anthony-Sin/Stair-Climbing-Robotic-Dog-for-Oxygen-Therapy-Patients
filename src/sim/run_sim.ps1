@@ -79,6 +79,10 @@ param(
     # moves the top's Z, not its X), so this X is correct for every height in the sweep.
     [double]$StairWaypointX = 6.77,
     [double]$StairWaypointY = 0.0,
+    # Optional multi-point chain for the waypoint-test steering law, 'x1,y1;x2,y2;...' --
+    # see --stair-waypoint-path in isaac_args.py. Empty (default) = single-target behavior,
+    # unchanged.
+    [string]$StairWaypointPath = "",
     [switch]$NoParkourPersonMask,
     # Oxygen tank is ON by default (this is the oxygen-therapy demo -- the dog carries the tank).
     # Still a real toggle for an A/B baseline: pass -WithO2Payload:$false (or -NoO2Payload, which the
@@ -1656,6 +1660,18 @@ if ($NoIsaac) {
         $isaacArgs += "-StairWaypointTest"
         $isaacArgs += "-StairWaypointX"; $isaacArgs += [string]$StairWaypointX
         $isaacArgs += "-StairWaypointY"; $isaacArgs += [string]$StairWaypointY
+        # The waypoint steering law's speed cap is --self-test-vx (isaac_env.py reads it
+        # regardless of --self-test-walk) -- but SelfTestVx used to only get threaded
+        # through under $SelfTestWalk above, so a waypoint-test run silently kept the
+        # 0.5 m/s default no matter what -SelfTestVx was passed. Thread it here too
+        # (only if not already added by the SelfTestWalk branch, to avoid a duplicate
+        # -SelfTestVx flag when both switches happen to be set).
+        if (-not $SelfTestWalk) {
+            $isaacArgs += "-SelfTestVx"; $isaacArgs += [string]$SelfTestVx
+        }
+        if ($StairWaypointPath) {
+            $isaacArgs += "-StairWaypointPath"; $isaacArgs += $StairWaypointPath
+        }
     }
 
     # Warm mode: reuse a live warm Isaac if present (skip the ~120s boot); otherwise
