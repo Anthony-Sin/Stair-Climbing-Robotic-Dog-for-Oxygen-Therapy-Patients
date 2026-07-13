@@ -59,6 +59,11 @@ docker/*.deb
 # on one machine (review §9, a live data-loss risk). Keep requirements*.txt tracked.
 !requirements*.txt
 !**/requirements*.txt
+# ...and the blueprint viewer's render images ARE part of the committed site
+# (js/content.js problemPhotos references assets/renders/*.png). *.png above had
+# silently left them untracked, so the live viewer showed broken image cards.
+!src/tools/blueprint_viewer/assets/renders/
+!src/tools/blueprint_viewer/assets/renders/*.png
 robot-dog-thing/src/person_following/src/xfeat_output/
 
 # Local dependency trees
