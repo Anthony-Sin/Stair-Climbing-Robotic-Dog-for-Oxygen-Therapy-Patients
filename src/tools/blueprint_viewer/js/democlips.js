@@ -6,9 +6,11 @@
 //   - lazy-loads every clip (they ship preload="none" + data-src so nothing
 //     downloads until the demo is actually reached), and
 //   - auto-plays them when the Live demo scrolls into view, pausing when it
-//     scrolls away so a stack of muted loops isn't decoding off-screen, and
-//   - jumps to the Potential slide's 3D viewer (at the climb) when a clip tile
-//     is clicked, so the strip doubles as a "show me this in 3D" control.
+//     scrolls away so a stack of muted loops isn't decoding off-screen.
+//
+// The deck is a scroll/clicker-driven presentation, so the tiles are display
+// only — a stray click must NOT trigger navigation (it previously jumped to the
+// Potential slide after a 5 s delay, a surprising mid-talk scroll).
 //
 // Kept out of main.js on purpose: pure DOM/video wiring, no three.js dependency
 // (it only touches the public window.__viewer API, never main.js internals).
@@ -68,25 +70,5 @@ if ( demo ) {
 		( entries ) => { entries[ 0 ].isIntersecting ? playAll() : pauseAll(); },
 		{ threshold: 0.35 },
 	).observe( demo );
-
-	// Click a clip -> jump to the Potential slide's 3D viewer at the matching phase
-	// (follow for the flat-ground tile, climb for the stair tiles).
-	// window.__viewer is set up by main.js once the model is ready.
-	for ( const tile of demo.querySelectorAll( '.demo-clip' ) ) {
-
-		tile.addEventListener( 'click', () => {
-
-			const pot = document.getElementById( 's-potential' );
-			if ( pot ) {
-				setTimeout(() => {
-					pot.scrollIntoView( { behavior: 'smooth', block: 'start' } );
-				}, 5000);
-			}
-			const v = window.__viewer;
-			if ( v && typeof v.setPhase === 'function' ) v.setPhase( tile.dataset.phase === 'follow' ? 'follow' : 'climb' );
-
-		} );
-
-	}
 
 }
