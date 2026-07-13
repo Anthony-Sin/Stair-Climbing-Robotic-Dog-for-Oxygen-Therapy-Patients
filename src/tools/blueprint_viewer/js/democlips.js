@@ -50,7 +50,16 @@ if ( demo ) {
 
 	}
 
-	function pauseAll() { for ( const v of videos ) if ( v ) v.pause(); }
+	function pauseAll() {
+		for ( const v of videos ) {
+			if ( v ) {
+				v.pause();
+				try {
+					v.currentTime = 0;
+				} catch ( e ) {}
+			}
+		}
+	}
 
 	// Auto play/pause with the demo's visibility. threshold 0.35 so the clips only
 	// spin up once a good chunk of the demo is on screen (the user has arrived at

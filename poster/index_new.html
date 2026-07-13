@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
+<title>Patient-assisting Quadruped Robot</title>
+<style>
+  :root {
+    --bg: #f9f9f9;
+    --text: #222;
+    --border: #ccc;
+    --accent: #2c5282;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 40px;
+    font-family: 'Open Sans', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  .poster-container {
+    max-width: 3456px;
+    margin: 0 auto;
+    background: #fff;
+    padding: 60px;
+    border: 1px solid #ddd;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+  }
+  .header {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    border-bottom: 2px solid var(--accent);
+    padding-bottom: 30px;
+    margin-bottom: 40px;
+    text-align: center;
+  }
+  .header h1 {
+    font-family: 'Playfair Display', serif;
+    font-size: 80px;
+    margin: 0 0 20px 0;
+    color: var(--text);
+  }
+  .authors {
+    font-size: 32px;
+    font-weight: 600;
+    color: #444;
+  }
+  .org {
+    font-size: 28px;
+    color: #666;
+    margin-top: 10px;
+  }
+  
+  .columns {
+    display: flex;
+    gap: 40px;
+  }
+  .col {
+    display: flex;
+    flex-direction: column;
+    gap: 30px;
+  }
+  .col-1, .col-3 {
+    flex: 1;
+  }
+  .col-2 {
+    flex: 1.5;
+  }
+  
+  .card {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 30px;
+  }
+  .card h2 {
+    font-family: 'Open Sans', sans-serif;
+    font-size: 40px;
+    margin-top: 0;
+    margin-bottom: 20px;
+    text-align: center;
+    color: var(--text);
+    border-bottom: 1px solid #eee;
+    padding-bottom: 10px;
+  }
+  
+  .card p, .card li {
+    font-size: 20px;
+    line-height: 1.6;
+  }
+  
+  .fig-wrap img {
+    width: 100%;
+    border-radius: 8px;
+  }
+  .image-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-bottom: 30px;
+  }
+  .image-grid img {
+    width: 100%;
+    border-radius: 8px;
+    border: 1px solid #ddd;
+  }
+  
+  .svg-container {
+    display: flex;
+    justify-content: space-around;
+    align-items: flex-end;
+    margin-top: 30px;
+  }
+  .svg-container svg {
+    width: 45%;
+    height: auto;
+  }
+  
+</style>
+</head>
+<body>
+<div class="poster-container">
+  <div class="header">
+    <h1>Stair-Climbing Robotic Dog for Oxygen Therapy Patients</h1>
+    <div class="authors">Anthony Sinchi, Tasnia Simin, Khanh Hung Truong</div>
+    <div class="org">USF College of Engineering • Team Robodog (Project #6)</div>
+  </div>
+  
+  <div class="columns">
+    <div class="col col-1">
+      <div class="card">
+        <h2>Motivation</h2>
+        
+      <div class="hl"><p>Patients on long-term oxygen therapy must haul a portable concentrator everywhere â€” and stairs are the highest fall-risk, highest-exertion obstacle in the home.</p></div>
+      <div dangerouslySetInnerHTML={{__html: ARTPROBLEM_SVG}} />
+      <ul>
+        <li>A patient needs a free hand for the railing, yet must also manage the tank â€” usually while short of breath.</li>
+        <li>Older, cautious stair-users climb slowly and step-to-step, with measurably higher stride variability and fall risk (Startzell 2000; Hausdorff 1997).</li>
+        <li>Our companion robot carries the ~2.2 kg concentrator on its back, follows autonomously, recognizes the stairs, and climbs them itself â€” beside the patient.</li>
+      </ul>
+    
+      </div>
+      <div class="card">
+        <h2>Hardware</h2>
+        
+      <div class="fig"><div class="fig-wrap">
+        <img src="assets/real_go2.png" alt="Physical Unitree Go2 robot with an oxygen-payload cradle strapped to its back" />
+      </div>
+      <div class="cap">Hardware bring-up: a physical <b>Unitree Go2</b> with the oxygen-payload cradle. Sim-to-real deployment is in progress â€” <b>on-hardware stair climbing is not yet validated.</b></div>
+      </div>
+      <ul>
+        <li>Unitree Go2 quadruped (~6.9 kg), 12-DOF legs</li>
+        <li>NVIDIA Jetson Orin onboard compute</li>
+        <li>Intel RealSense D435 RGB-D + LiDAR (Hesai XT16 / Livox Mid-360)</li>
+        <li>Oxygen payload: ~2.22 kg mock concentrator + rail cradle (~32% of trunk mass)</li>
+      </ul>
+    
+      </div>
+      <div class="card">
+        <h2>System Architecture</h2>
+        <div class="fig"><div class="fig-wrap">
+      <img src="assets/diagram_system_overview.png" alt="System architecture diagram: Isaac Sim, Docker perception and control, and shared locomotion policies" />
+    </div>
+    <div class="cap">One shared codebase runs in <b>NVIDIA Isaac Sim</b> and on the real Go2 â€” only the sensor source is swapped. Perception + control (Jetson/Docker) emit velocity commands; a shared policy library returns 12-DOF joint targets.</div>
+    </div>
+      </div>
+    </div>
+    
+    <div class="col col-2">
+      <div class="card" style="border: 2px solid var(--accent);">
+        <h2>Results and Discussions</h2>
+        
+        <div class="image-grid">
+          <img src="assets/climb_pen_cinematic.png" alt="Climbing View" />
+          <img src="assets/stairs_climb.png" alt="Stairs Climb" />
+          <img src="assets/patient_carry.png" alt="Patient Carry" />
+          <img src="assets/real_go2.png" alt="Real Go2 Robot" />
+        </div>
+        
+        <p style="text-align: center; font-weight: 600; font-size: 24px; margin: 40px 0 20px 0;">Training Progress</p>
+        
+        <div class="svg-container">
+          <!-- We will inject the SVGs here -->
+          <div id="learning-svg"></div>
+          <div id="curriculum-svg"></div>
+        </div>
+        <p style="text-align: center; margin-top: 20px; font-style: italic; color: #555;">
+          Blind-RL retrain — 6,000 iterations, Go2 + 2.22 kg tank. Mean reward ~ 95.7, terrain curriculum plateaued at 138 mm riser.
+        </p>
+      </div>
+    </div>
+    
+    <div class="col col-3">
+      <div class="card">
+        <h2>Approach: Perceive â†’ Follow â†’ Detect â†’ Hand off â†’ Climb</h2>
+        <ul>
+      <li><b>Perceive</b> â€” RealSense D435 RGB-D + LiDAR feed two vision heads (person pose + open-vocabulary stairs).</li>
+      <li><b>Follow</b> â€” ByteTrack single-person lock (3 s occlusion hold) â†’ 3-zone PID holds a 0.45 m standoff; depth-reactive avoidance routes around furniture.</li>
+      <li><b>Detect stairs</b> â€” YOLO-World counts risers; a geometric depth detector corroborates. â‰¥2 risers within 1.6 m triggers the climb (dual-evidence gate fixes an earlier false-positive on the patient's own body).</li>
+      <li><b>Hand off</b> â€” a 50 Hz HandoffController (WALK â†” CLIMB â†” TOP-EGRESS â†” ABORT) swaps the walker for a climb policy on a motion-stall + riser trigger.</li>
+      <li><b>Climb</b> â€” a proprioceptive 'blind' RL policy drives the legs up; at the crest the robot walks clear and hands back to the walker.</li>
+    </ul>
+      </div>
+      <div class="card">
+        <h2>Results â€” Isaac Sim</h2>
+        
+      <div class="fig">
+        <div class="pchart2" dangerouslySetInnerHTML={{__html: SWEEP_SVG + CLIMBTIME_SVG}} />
+        <div class="cap">Stair-height sweep (full stack: walk + blind-RL climb + YOLO follow + O2 payload).</div>
+      </div>
+      <div class="hl"><p><b>4 / 6 full climbs.</b> The robot tops out on 0.12â€“0.15 m risers â€” including <b>0.15 m, the ADA-maximum real target stair</b> â€” staying upright the whole time (peak tilt â‰¤ 31Â°, far below the 60Â° fall threshold).</p></div>
+      <ul><li>The strict grader flags these 'COLLIDED' = climbed nose-down / belly-dragging, not a clean gait (see Limitations). 0.175 m and 0.198 m risers were not reached.</li></ul>
+    
+      </div>
+      <div class="card">
+        <h2>Conclusions & Limitations</h2>
+        <ul>
+      <li><b>Nose-down gait</b> â€” the blind-RL climber climbs pitched down and belly-drags; verified to be a gait-posture problem, NOT a follow-distance, lost-person, or command/handoff bug.</li>
+      <li><b>High Center of Gravity</b> â€” as noted by Dr. Kearns, the oxygen carrier raises the robot's center of gravity. We are exploring a wider leg placement (stance width) for improved stability.</li>
+      <li><b>Safety grade-gate not yet clean</b> â€” on the incline, stance-locking is suppressed (locking mid-step topples the dog) and the frozen policy creeps forward at zero command, defeating a 0.55 m patient-clearance floor (min gap 0.209 m observed). A genuine clearance-vs-topple trade-off, not a quick patch.</li>
+      <li><b>Real-hardware climb unproven</b> â€” implemented with fail-safes (abort-to-walk on tilt, watchdog damping) but not yet validated on the physical Go2.</li>
+    </ul>
+        
+      <ul>
+        <li>An end-to-end followâ†’detectâ†’hand-offâ†’climb autonomy stack, built and validated in NVIDIA Isaac Sim on a shared sim/real codebase (401 passing host-side tests).</li>
+        <li>Reaches the top landing of the real 0.15 m staircase end-to-end in the best recorded demo; clean-gait climbing and hardware validation are the active next steps.</li>
+      </ul>
+      <div class="links"><div class="ll"><b>References:</b> PGTT (arXiv:2510.18348) Â· robot_lab / IsaacLab Â· NVIDIA Isaac Sim Â· YOLO-World Â· ByteTrack Â· OSNet Â· Unitree Go2 Â· RealSense D435 Â· Startzell 2000 Â· Hausdorff 1997</div></div>
+      <div class="credit">Anthony Sinchi Â· USF College of Engineering</div>
+    
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Inject the SVGs
+  fetch('learning.svg').then(r => r.text()).then(html => document.getElementById('learning-svg').innerHTML = html);
+  fetch('curriculum.svg').then(r => r.text()).then(html => document.getElementById('curriculum-svg').innerHTML = html);
+</script>
+
+</body>
+</html>

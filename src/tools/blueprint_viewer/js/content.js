@@ -61,7 +61,7 @@ export const POLICIES = {
 		id: 'blind-rl', motion: 'climb', fx: 'feel',
 		title: 'Blind-RL policy — it climbs by feel',
 		body: 'The staircase is <b>climbed on feel alone</b>. Cameras <b>can’t see the steps underfoot</b>, so a reinforcement-learning policy leans entirely on <b>proprioception and foot contact</b> — <b>sensing each riser as a paw lands</b> — to place its feet and drive the payload upward, step after step, while <b>keeping the concentrator upright</b> on the incline.',
-		clip: { src: './assets/clips/stairs.mp4', cap: 'Isaac Sim rollout — blind stair traversal.' },
+		clip: { src: './assets/clips/climb_0p130_trimmed.mp4', cap: 'Isaac Sim rollout — 0.15 m riser climb.' },
 		points: [
 			{ node: 'robot_base', side: 'left', label: 'IMU · attitude', sub: 'stays upright' },
 			{ node: 'FR_hip', side: 'left', label: 'joint feedback', sub: 'proprioception' },
@@ -211,12 +211,12 @@ function chartSurvival() {
 
 function chartSweep() {
 	const bars = [
-		{ x: 52.33, h: 218,   y: 30,    cls: 'ch-bar-reached', v: '14.0', m: '0.12',  n: '4.7″' },
-		{ x: 123.0, h: 216.4, y: 31.6,  cls: 'ch-bar-reached', v: '13.9', m: '0.13',  n: '5.1″' },
-		{ x: 193.67, h: 216.4, y: 31.6, cls: 'ch-bar-reached', v: '13.9', m: '0.14',  n: '5.5″' },
-		{ x: 264.33, h: 218,   y: 30,   cls: 'ch-bar-reached', v: '14.0', m: '0.15',  n: '6″ ADA' },
-		{ x: 335.0, h: 68.5,  y: 179.5, cls: 'ch-bar-partial', v: '4.4',  m: '0.175', n: '7″' },
-		{ x: 405.67, h: 2,    y: 246,   cls: 'ch-bar-none',    v: '0.0',  m: '0.198', n: '7.75″' },
+		{ x: 52.33, h: 103.2, y: 144.8, cls: 'ch-bar-reached', v: '28.4°', m: '0.12',  n: '4.7″' },
+		{ x: 123.0, h: 86.5,  y: 161.5, cls: 'ch-bar-reached', v: '23.8°', m: '0.13',  n: '5.1″' },
+		{ x: 193.67, h: 99.2,  y: 148.8, cls: 'ch-bar-reached', v: '27.3°', m: '0.14',  n: '5.5″' },
+		{ x: 264.33, h: 111.2, y: 136.8, cls: 'ch-bar-reached', v: '30.6°', m: '0.15',  n: '6″ ADA' },
+		{ x: 335.0, h: 115.2, y: 132.8, cls: 'ch-bar-partial', v: '31.7°', m: '0.175', n: '7″' },
+		{ x: 405.67, h: 21.8,  y: 226.2, cls: 'ch-bar-none',    v: '6.0°',  m: '0.198', n: '7.75″' },
 	];
 	const rects = bars.map( ( b ) => `<rect class="${ b.cls }" x="${ b.x }" y="${ b.y }" width="46" height="${ b.h }" rx="3"/>` ).join( '' );
 	const vals = bars.map( ( b ) => `<text class="ch-val" x="${ b.x + 23 }" y="${ b.y - 6 }" text-anchor="middle">${ b.v }</text>` ).join( '' );
@@ -224,13 +224,13 @@ function chartSweep() {
 		`<text class="ch-tick" x="${ b.x + 23 }" y="262" text-anchor="middle">${ b.m }</text>` +
 		`<text class="ch-tick" x="${ b.x + 23 }" y="274" text-anchor="middle">${ b.n }</text>`,
 	).join( '' );
-	return `<div class="hero-chart"><p class="hero-chart-title">Stair-height sweep · steps climbed (of 14)</p>
-	<svg viewBox="0 0 480 300" role="img" aria-label="Steps climbed at each riser height">
+	return `<div class="hero-chart"><p class="hero-chart-title">Stair-height sweep · peak body tilt (deg)</p>
+	<svg viewBox="0 0 480 300" role="img" aria-label="Peak body tilt at each riser height">
 		<line class="ch-target" x1="40" y1="30" x2="464" y2="30"/>
-		<text class="ch-note" x="462" y="24" text-anchor="end">full staircase · 14 steps</text>
+		<text class="ch-note" x="462" y="24" text-anchor="end">fall line · 60°</text>
 		<line class="ch-axis" x1="40" y1="248" x2="464" y2="248"/>
-		<text class="ch-tick" x="36" y="33" text-anchor="end">14</text>
-		<text class="ch-tick" x="36" y="251" text-anchor="end">0</text>
+		<text class="ch-tick" x="36" y="33" text-anchor="end">60°</text>
+		<text class="ch-tick" x="36" y="251" text-anchor="end">0°</text>
 		${ rects }${ vals }${ labs }
 	</svg></div>`;
 }
