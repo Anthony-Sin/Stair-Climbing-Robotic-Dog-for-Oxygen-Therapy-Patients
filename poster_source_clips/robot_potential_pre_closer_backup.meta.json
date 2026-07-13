@@ -1,0 +1,81 @@
+{
+  "source": "C:\\Users\\antho\\AppData\\Local\\Temp\\claude\\C--Users-antho-Downloads-SCRD-poster\\29233233-593a-41c0-b6c6-fdb4be50b5c3\\scratchpad\\robot_frames_destalled.jsonl",
+  "mesh_source": "isaac_go2_usd",
+  "mesh_sources_per_link": {
+    "base": "usd",
+    "FL_hip": "usd",
+    "FL_thigh": "usd",
+    "FL_calf": "usd",
+    "FL_foot": "usd",
+    "FR_hip": "usd",
+    "FR_thigh": "usd",
+    "FR_calf": "usd",
+    "FR_foot": "usd",
+    "RL_hip": "usd",
+    "RL_thigh": "usd",
+    "RL_calf": "usd",
+    "RL_foot": "usd",
+    "RR_hip": "usd",
+    "RR_thigh": "usd",
+    "RR_calf": "usd",
+    "RR_foot": "usd"
+  },
+  "clips": {
+    "follow": {
+      "duration_s": 24.5333,
+      "t0": 0.005,
+      "t1": 24.55
+    },
+    "climb": {
+      "duration_s": 24.3667,
+      "t0": 24.55,
+      "t1": 48.925
+    }
+  },
+  "nodes": [
+    "robot_base",
+    "FL_hip",
+    "FL_thigh",
+    "FL_calf",
+    "FL_foot",
+    "FR_hip",
+    "FR_thigh",
+    "FR_calf",
+    "FR_foot",
+    "RL_hip",
+    "RL_thigh",
+    "RL_calf",
+    "RL_foot",
+    "RR_hip",
+    "RR_thigh",
+    "RR_calf",
+    "RR_foot",
+    "oxygen_tank",
+    "cradle_rails",
+    "stairs",
+    "handrails",
+    "ground",
+    "patient_root",
+    "isaac_world"
+  ],
+  "stair_spec": {
+    "name": "commercial",
+    "start_x_m": 2.0,
+    "step_height_m": 0.15,
+    "step_depth_m": 0.305,
+    "step_count": 14,
+    "half_width_m": 0.7,
+    "landing_depth_m": 1.0,
+    "handrail": true
+  },
+  "landing_far_x_m": 8.9725,
+  "triangle_counts": {
+    "robot": 323922,
+    "stairs": 180,
+    "handrails": 576,
+    "ground": 12,
+    "patient": 0,
+    "total": 324690
+  },
+  "generated_utc": "2026-07-13T02:09:40.002199+00:00"
+}

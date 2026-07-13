@@ -113,6 +113,17 @@
     color: rgba(255,255,255,0.80);
   }
 
+  .hdr-conf {
+    margin-left: auto;
+    flex-shrink: 0;
+    font-size: 40px;
+    font-weight: 800;
+    color: #fff;
+    letter-spacing: -0.01em;
+    text-align: right;
+    line-height: 1.05;
+  }
+
   /* gold stripe */
   .goldrule {
     height: 6px;
@@ -361,6 +372,7 @@
       <div class="hdr-sub">An autonomous quadruped that follows a patient on supplemental oxygen, detects a staircase, and climbs it carrying the tank — freeing both hands for the railing.</div>
       <div class="hdr-affil">Team Robodog (Project #6)</div>
     </div>
+    <div class="hdr-conf">TASH 2026</div>
   </div>
   <div class="goldrule"></div>
 
@@ -403,28 +415,31 @@
       </div>
 
       <div class="sec">
-        <div class="sh">System Architecture</div>
+        <div class="sh">Walking Policy — It Follows You</div>
         <div class="fig">
           <div class="dg-wrap">
-            <svg viewBox="0 0 320 178" role="img" aria-label="Docker / simulation split architecture diagram" style="width:480px;height:auto;display:block;margin:0 auto;">
-              <rect class="dg-box" x="6" y="44" width="86" height="28" rx="5"/><text class="dg-t" x="49" y="62" text-anchor="middle">Isaac Sim</text>
-              <rect class="dg-box" x="6" y="98" width="86" height="28" rx="5"/><text class="dg-t" x="49" y="116" text-anchor="middle">real Go2</text>
-              <path class="dg-ln" d="M92 58 H102 V71 H116"/>
-              <path class="dg-ln" d="M92 112 H102 V71 H116"/>
-              <path class="dg-ah" d="M110 67l6 4-6 4"/>
-              <text class="dg-c" x="174" y="40" text-anchor="middle">docker container</text>
-              <rect class="dg-dock" x="108" y="46" width="130" height="82" rx="8"/>
-              <rect class="dg-box" x="116" y="58" width="116" height="26" rx="5"/><text class="dg-t" x="174" y="75" text-anchor="middle">perception</text>
-              <rect class="dg-box" x="116" y="94" width="116" height="26" rx="5"/><text class="dg-t" x="174" y="111" text-anchor="middle">policy π · frozen</text>
-              <path class="dg-ln" d="M174 84 V94"/><path class="dg-ah" d="M170 90l4 4 4-4"/>
-              <rect class="dg-box" x="252" y="92" width="64" height="30" rx="5"/><text class="dg-t" x="284" y="111" text-anchor="middle">12× joints</text>
-              <path class="dg-ln" d="M232 107 H250"/><path class="dg-ah" d="M244 103l6 4-6 4"/>
-              <text class="dg-c" x="160" y="150" text-anchor="middle">identical container · sim ⇄ real</text>
-              <text class="dg-c" x="160" y="165" text-anchor="middle">only the sensor source is swapped</text>
+            <svg viewBox="0 0 320 180" role="img" aria-label="Walking policy closed-loop control diagram: camera to YOLO-World to state estimation to policy to PD control to Go2 rigid-body plant, feeding back to camera" style="width:380px;height:auto;display:block;margin:0 auto;">
+              <rect class="dg-box" x="8" y="18" width="56" height="26" rx="5"/><text class="dg-t" x="36" y="35" text-anchor="middle">camera</text>
+              <rect class="dg-box" x="78" y="18" width="76" height="26" rx="5"/><text class="dg-t" x="116" y="35" text-anchor="middle">YOLO-World</text>
+              <rect class="dg-box" x="168" y="18" width="64" height="26" rx="5"/><text class="dg-t" x="200" y="35" text-anchor="middle">state est.</text>
+              <path class="dg-ln" d="M64 31 H78"/><path class="dg-ah" d="M72 27l6 4-6 4"/>
+              <text class="dg-c" x="71" y="14" text-anchor="middle">RGB</text>
+              <path class="dg-ln" d="M154 31 H168"/><path class="dg-ah" d="M162 27l6 4-6 4"/>
+              <rect class="dg-box" x="176" y="110" width="56" height="36" rx="6"/><text class="dg-t" x="204" y="128" text-anchor="middle">policy π</text><text class="dg-c" x="204" y="140" text-anchor="middle">MLP</text>
+              <path class="dg-ln" d="M200 44 V78 H204 V110"/><path class="dg-ah" d="M200 104l4 6 4-6"/>
+              <rect class="dg-box" x="104" y="116" width="56" height="26" rx="5"/><text class="dg-t" x="132" y="133" text-anchor="middle">PD control</text>
+              <path class="dg-ln" d="M176 128 H160"/><path class="dg-ah" d="M166 124l-6 4 6 4"/>
+              <text class="dg-c" x="168" y="100" text-anchor="middle">target</text>
+              <rect class="dg-box" x="8" y="108" width="88" height="40" rx="6"/><text class="dg-t" x="52" y="126" text-anchor="middle">Go2 · 12 DoF</text><text class="dg-c" x="52" y="139" text-anchor="middle">rigid-body plant</text>
+              <path class="dg-ln" d="M104 129 H96"/><path class="dg-ah" d="M102 125l-6 4 6 4"/>
+              <text class="dg-c" x="100" y="100" text-anchor="middle">torque</text>
+              <path class="dg-ln" d="M52 108 V76 H36 V44"/><path class="dg-ah" d="M32 50l4-6 4 6"/>
+              <text class="dg-c" x="160" y="172" text-anchor="middle">closed loop, every frame · it follows you</text>
             </svg>
           </div>
-          <div class="cap">Fig. 3 — <b>One shared codebase</b> runs in NVIDIA Isaac Sim and on the real Go2; only the sensor source is swapped. Perception + control (Jetson / Docker) emit velocity commands; a shared policy library returns <b>12-DOF joint targets</b>.</div>
+          <div class="cap">Fig. 3 — Walking-policy control loop: <b>YOLO-World</b> relocates the patient every frame; <b>policy π</b> (MLP) and a PD loop turn that into torque on the Go2.</div>
         </div>
+        <p>YOLO-World re-detects the patient every frame; the <b>policy π</b> MLP turns that state into joint targets, and a PD loop converts them into torque — closing the loop so the walk policy keeps the Go2 beside the patient.</p>
       </div>
 
       <div class="sec">
@@ -592,8 +607,8 @@
             <tr><td>0.130 m (~5″)</td><td class="ok">13.9</td><td>24°</td><td class="ok">✔ Full climb</td></tr>
             <tr><td>0.140 m (~6″)</td><td class="ok">13.9</td><td>27°</td><td class="ok">✔ Full climb</td></tr>
             <tr><td>0.150 m (6″ ADA)</td><td class="ok">14.0</td><td>31°</td><td class="ok">✔ Full climb</td></tr>
-            <tr><td>0.175 m (7″ IBC)</td><td>4.4</td><td>32°</td><td class="no">✗ Partial</td></tr>
-            <tr><td>0.198 m (7.75″)</td><td>0.0</td><td>6°</td><td class="no">✗ No climb</td></tr>
+            <tr><td>0.175 m (7″ IBC)</td><td>4.4</td><td>32°</td><td class="no">Slows, stalls part-way</td></tr>
+            <tr><td>0.198 m (7.75″)</td><td>0.0</td><td>6°</td><td class="no">Stalls at stairs</td></tr>
           </tbody>
         </table>
 
