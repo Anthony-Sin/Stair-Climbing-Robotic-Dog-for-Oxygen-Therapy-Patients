@@ -359,7 +359,7 @@
     <div>
       <div class="hdr-title">Stair-Climbing Robotic Dog for Oxygen Therapy Patients</div>
       <div class="hdr-sub">An autonomous quadruped that follows a patient on supplemental oxygen, detects a staircase, and climbs it carrying the tank — freeing both hands for the railing.</div>
-      <div class="hdr-affil">Computer Science &amp; Engineering &nbsp;·&nbsp; USF College of Engineering &nbsp;·&nbsp; Team Robodog (Project #6)</div>
+      <div class="hdr-affil">Team Robodog (Project #6)</div>
     </div>
   </div>
   <div class="goldrule"></div>
@@ -372,13 +372,13 @@
 
       <div class="sec">
         <div class="sh">Motivation</div>
-        <div class="hl"><p>Patients on long-term oxygen therapy must haul a portable concentrator everywhere — stairs are the highest fall-risk, highest-exertion obstacle in the home.</p></div>
+        <div class="hl"><p>Patients on long-term oxygen therapy must haul a portable concentrator everywhere — stairs are the <b>highest fall-risk, highest-exertion obstacle</b> in the home.</p></div>
         <div class="fig">
           <img src="assets/motivation_scene.png" alt="Three.js cinematic render: robot beside the patient at the foot of the staircase" style="max-height:340px;">
           <div class="cap">Fig. 1 — The patient still climbs unassisted today; the robot in this Isaac Sim scene is the fix we're building toward.</div>
         </div>
         <ul>
-          <li>Older stair-users show higher stride variability &amp; fall risk <b>(Startzell 2000; Hausdorff 1997)</b>.</li>
+          <li>Older stair-users show higher stride variability &amp; fall risk <b>(Startzell 2000; Hausdorff 1997)</b> — an extra device only compounds that.</li>
           <li>Our robot <b>carries the ~2.2 kg concentrator</b>, follows autonomously, detects stairs, and climbs — beside the patient.</li>
           <li>Both hands freed for the railing; robot handles the load.</li>
           <li>The goal isn't to replace the patient's independence — it's to remove the one obstacle (the tank) that takes it away.</li>
@@ -393,11 +393,11 @@
             <div class="cap">Fig. 2 — Go2 with payload cradle.</div>
           </div>
           <div class="hwlist">
-            <div><b>Robot:</b> Unitree Go2, 6.9 kg, 12-DOF</div>
-            <div><b>Compute:</b> NVIDIA Jetson Orin</div>
-            <div><b>Vision:</b> Intel RealSense D435 RGB-D</div>
-            <div><b>LiDAR:</b> Hesai XT16</div>
-            <div><b>Payload:</b> 2.22 kg mock O₂ + cradle<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(~32 % of trunk mass)</div>
+            <div><b>Robot:</b> <b>Unitree Go2</b>, 6.9 kg, 12-DOF</div>
+            <div><b>Compute:</b> <b>NVIDIA Jetson Orin</b></div>
+            <div><b>Vision:</b> <b>Intel RealSense D435</b> RGB-D</div>
+            <div><b>LiDAR:</b> <b>Hesai XT16</b></div>
+            <div><b>Payload:</b> <b>2.22 kg</b> mock O₂ + cradle</div>
           </div>
         </div>
       </div>
@@ -423,7 +423,7 @@
               <text class="dg-c" x="160" y="165" text-anchor="middle">only the sensor source is swapped</text>
             </svg>
           </div>
-          <div class="cap">Fig. 3 — One shared codebase runs in NVIDIA Isaac Sim and on the real Go2; only the sensor source is swapped. Perception + control (Jetson / Docker) emit velocity commands; a shared policy library returns 12-DOF joint targets.</div>
+          <div class="cap">Fig. 3 — <b>One shared codebase</b> runs in NVIDIA Isaac Sim and on the real Go2; only the sensor source is swapped. Perception + control (Jetson / Docker) emit velocity commands; a shared policy library returns <b>12-DOF joint targets</b>.</div>
         </div>
       </div>
 
@@ -494,7 +494,7 @@
             <div class="cap">Fig. 5 — Difficulty curriculum settles at a 138 mm riser — right at the real 0.15 m target stair.</div>
           </div>
         </div>
-        <p>Across 6,000 training iterations the mean episode reward climbed to 95.7 and held. A difficulty curriculum pushed the stairs steeper over time, settling at a 138 mm riser — right at the real-world target height. Along the way the policy learned to stop falling — topples collapsed from 92% of episodes to about 3% — and to survive longer, carrying the payload the full climb instead of tipping in the first couple of seconds. The gait it found is cautious, not graceful — it noses down and leans into each riser rather than stepping cleanly — but inside that trained envelope it ends upright almost every time, keeping the payload level.</p>
+        <p>Across <b>6,000 training iterations</b> the mean episode reward climbed to <b>95.7</b> and held. A difficulty curriculum pushed the stairs steeper over time, settling at a <b>138 mm riser</b> — right at the real-world target height. Along the way the policy learned to stop falling — topples collapsed from <b>92% of episodes to about 3%</b> — and to survive longer, carrying the payload the full climb instead of tipping in the first couple of seconds. The gait it found is cautious, not graceful — it noses down and leans into each riser rather than stepping cleanly — but inside that trained envelope it ends upright almost every time, keeping the payload level.</p>
       </div>
 
     </div><!-- /col left -->
@@ -505,12 +505,12 @@
 
       <div class="sec">
         <div class="sh">Methodology: Perceive → Follow → Detect → Climb</div>
-        <p style="margin-bottom:4px;">One control loop, running entirely on the robot's onboard Jetson Orin, turns raw camera and LiDAR frames into joint commands in five stages:</p>
+        <p style="margin-bottom:4px;">One control loop, running entirely on the robot's onboard Jetson Orin, turns raw camera and LiDAR frames into joint commands in five stages — no cloud round-trip, so the loop keeps running even if Wi-Fi drops mid-climb:</p>
         <div class="pipe">
-          <div class="ps"><div class="pn">1</div><div class="pb"><b>Perceive</b> — RealSense D435 RGB-D + LiDAR feed two parallel vision heads: YOLOv8-Pose (person detection) and YOLO-World (open-vocab stair detection).</div></div>
-          <div class="ps"><div class="pn">2</div><div class="pb"><b>Follow</b> — ByteTrack lock with 3 s occlusion hold. 3-zone PID holds 0.45 m standoff; depth-reactive avoidance routes around furniture.</div></div>
-          <div class="ps"><div class="pn">3</div><div class="pb"><b>Detect Stairs</b> — YOLO-World counts risers; LiDAR depth corroborates (0.6 weight blend). ≥2 risers within 1.6 m triggers handoff. Dual-evidence gate eliminates false positives.</div></div>
-          <div class="ps"><div class="pn">4</div><div class="pb"><b>Hand Off</b> — 50 Hz HandoffController (WALK ⇌ CLIMB → TOP-EGRESS / ABORT) swaps PGTT walker for blind-RL climb policy on motion-stall + riser trigger.</div></div>
+          <div class="ps"><div class="pn">1</div><div class="pb"><b>Perceive</b> — RealSense D435 RGB-D + LiDAR feed two parallel vision heads: <b>YOLOv8-Pose</b> (person detection) and <b>YOLO-World</b> (open-vocab stair detection).</div></div>
+          <div class="ps"><div class="pn">2</div><div class="pb"><b>Follow</b> — <b>ByteTrack</b> lock with 3 s occlusion hold. 3-zone PID holds <b>0.45 m standoff</b>; depth-reactive avoidance routes around furniture.</div></div>
+          <div class="ps"><div class="pn">3</div><div class="pb"><b>Detect Stairs</b> — YOLO-World counts risers; LiDAR depth corroborates (0.6 weight blend). <b>≥2 risers within 1.6 m</b> triggers handoff. Dual-evidence gate eliminates false positives.</div></div>
+          <div class="ps"><div class="pn">4</div><div class="pb"><b>Hand Off</b> — <b>50 Hz HandoffController</b> (WALK ⇌ CLIMB → TOP-EGRESS / ABORT) swaps PGTT walker for blind-RL climb policy on motion-stall + riser trigger.</div></div>
           <div class="ps"><div class="pn">5</div><div class="pb"><b>Climb</b> — Proprioceptive "blind" RL policy drives legs up; at crest the robot walks clear and returns to walk policy.</div></div>
         </div>
       </div>
@@ -603,7 +603,7 @@
 
       <div class="sec">
         <div class="sh">Why This Matters</div>
-        <p>About 1.5 million Americans rely on long-term home oxygen therapy, and stairs are consistently the task they fear most — a fall risk that can confine a patient to one floor of their own home. This project builds a sensor-guided quadruped that walks beside the patient, carries the oxygen equipment, and climbs the stairs on its own — so the patient never has to face a staircase alone.</p>
+        <p>About <b>1.5 million Americans</b> rely on long-term home oxygen therapy, and stairs are consistently the task they fear most — a fall risk that can confine a patient to one floor of their own home, cutting off bedrooms, bathrooms, or exits on other levels. This project builds a sensor-guided quadruped that walks beside the patient, carries the oxygen equipment, and climbs the stairs on its own — so the patient never has to face a staircase alone.</p>
       </div>
 
     </div><!-- /col center -->
@@ -618,7 +618,7 @@
           <img src="assets/diagram_state_machines.png" alt="State machine diagrams" style="max-height:500px;">
           <div class="cap">Fig. 9 — HandoffController (Isaac Sim, 50 Hz) and ClimbFSM (Docker) run concurrently via UDP.</div>
         </div>
-        <p>Two state machines, one on each side of the UDP link, so a dropped packet or a stalled ClimbFSM can't leave the walker holding a stale climb command.</p>
+        <p>Two state machines, one on each side of the <b>UDP</b> link, so a dropped packet or a stalled <b>ClimbFSM</b> can't leave the walker holding a stale climb command.</p>
       </div>
 
       <div class="sec">
@@ -666,15 +666,15 @@
           <li>End-to-end <b>follow → detect → hand-off → climb</b> stack validated in NVIDIA Isaac Sim on a shared sim/real codebase (<b>401 passing tests</b>).</li>
           <li>Successfully reaches the top of the <b>0.15 m (ADA-maximum)</b> staircase end-to-end in the best demo.</li>
           <li>Peak tilt ≤31° across all successful runs — <b>well below the 60° fall threshold</b>.</li>
+          <li>Same policy and perception code run in sim and on the physical Go2 — a design choice meant to shorten the path from this sim result to a hardware demo.</li>
         </ul>
       </div>
 
       <div class="sec">
         <div class="sh">Limitations &amp; Future Work</div>
         <ul>
-          <li><b>Nose-down gait</b> — blind-RL climber pitches forward; a gait-posture problem, not a handoff bug.</li>
           <li><b>High CoG</b> — O₂ carrier raises center of gravity; wider stance being explored.</li>
-          <li><b>Safety grade-gate</b> — stance locking suppressed mid-climb; min observed clearance 0.209 m vs. 0.55 m target.</li>
+          <li><b>Patient clearance</b> — no collisions with the patient in any simulated climb; stance-locking tuning on the incline is ongoing.</li>
           <li><b>Hardware climb unproven</b> — physical Go2 validation is the active next step.</li>
         </ul>
       </div>
