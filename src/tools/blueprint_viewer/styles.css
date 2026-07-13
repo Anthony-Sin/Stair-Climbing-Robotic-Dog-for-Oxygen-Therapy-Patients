@@ -1029,6 +1029,73 @@ button { font: inherit; color: inherit; }
 }
 
 /* =====================================================================
+   References & credits — the closing slide. A full-width header sits over
+   a 4-column grid of grouped citations (what the system is built on + the
+   methods the learned model is based on). Same paper/ink palette as the
+   content slides; oak leader bars + teal group headings for accent.
+   ===================================================================== */
+.slide.references {
+	display: flex;
+	padding: var(--sheet-margin);
+	max-height: 100dvh;
+}
+.references .slide-sheet {
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	gap: clamp(16px, 3vh, 30px);
+	padding: clamp(20px, 3vw, 46px) clamp(20px, 3vw, 46px) clamp(26px, 4vh, 52px);
+	overflow: hidden;
+}
+.ref-head { display: flex; flex-direction: column; gap: 8px; }
+.ref-head .slide-title { font-size: clamp(22px, 2.4vw, 34px); }
+.ref-head .hero-copy-lead { margin: 0; max-width: 62ch; }
+.ref-head .hero-tags { margin-top: 2px; }
+
+.ref-grid {
+	flex: 0 1 auto;
+	min-height: 0;
+	display: grid;
+	grid-template-columns: repeat(4, 1fr);
+	gap: clamp(14px, 1.6vw, 28px) clamp(16px, 2vw, 34px);
+	overflow: auto;
+	scrollbar-width: none;
+}
+.ref-grid::-webkit-scrollbar { display: none; }
+.ref-group { display: flex; flex-direction: column; gap: 9px; }
+.ref-group-title {
+	margin: 0;
+	font-family: var(--font-mono);
+	font-size: 11px;
+	letter-spacing: 0.11em;
+	text-transform: uppercase;
+	color: #0e9b8e;
+	padding-bottom: 7px;
+	border-bottom: 1px solid var(--sheet-border);
+}
+.ref-group ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.ref-item {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding-left: 10px;
+	border-left: 2px solid #c07d3c;
+}
+.ref-name {
+	font-family: var(--font-display);
+	font-weight: 700;
+	font-size: clamp(12.5px, 1vw, 14.5px);
+	line-height: 1.25;
+	color: var(--ink);
+}
+.ref-src {
+	font-size: clamp(10.5px, 0.85vw, 12px);
+	line-height: 1.32;
+	color: var(--ink);
+	opacity: 0.62;
+}
+
+/* =====================================================================
    Responsive: stack the two-column slides; nav rail moves to the bottom
    ===================================================================== */
 
@@ -1050,6 +1117,13 @@ button { font: inherit; color: inherit; }
 	.slide.sol-step { max-height: none; }
 	.slide-sheet { overflow: visible; }
 	.slide-visual { overflow: visible; height: auto; }
+
+	/* References: let the closing slide grow and its grid drop to two columns.
+	   Top-align (not centered) here since the slide now scrolls rather than
+	   being capped at one viewport, so centering would just add a dead top gap. */
+	.slide.references { max-height: none; }
+	.references .slide-sheet { overflow: visible; justify-content: flex-start; padding-top: clamp(22px, 8vh, 60px); }
+	.ref-grid { grid-template-columns: 1fr 1fr; overflow: visible; }
 
 	/* Demo: gallery rides above the OpenCV/explainer; keep six tiles as 2 or 3
 	   columns and give the region real height so the clips stay legible. */

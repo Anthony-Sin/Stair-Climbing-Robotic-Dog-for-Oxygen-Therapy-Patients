@@ -225,7 +225,60 @@
 			</div>
 		</section>
 
-		<!-- 7 · TEAM -->
+		<!-- 7 · REFERENCES & CREDITS — the closing slide: what the system is built
+		     on and the methods the learned model is based on. Bespoke layout: a
+		     full-width header over a grid of grouped citations (js/content.js
+		     fills the eyebrow/title/intro; the grid itself is static below). -->
+		<section id="s-references" class="slide references" aria-label="References &amp; credits">
+			<div class="slide-sheet reveal">
+				<header class="ref-head">
+					<span class="slide-eyebrow"></span>
+					<h2 class="slide-title"></h2>
+					<div class="slide-body" data-copy></div>
+				</header>
+				<div class="ref-grid">
+					<section class="ref-group">
+						<h3 class="ref-group-title">Robot &amp; hardware</h3>
+						<ul>
+							<li class="ref-item"><span class="ref-name">Unitree Go2</span><span class="ref-src">quadruped platform · Unitree Robotics</span></li>
+							<li class="ref-item"><span class="ref-name">NVIDIA Jetson Orin</span><span class="ref-src">onboard edge compute</span></li>
+							<li class="ref-item"><span class="ref-name">Intel RealSense D435</span><span class="ref-src">depth camera · perception input</span></li>
+							<li class="ref-item"><span class="ref-name">Go2 USD asset</span><span class="ref-src">3D model — NVIDIA Isaac Sim</span></li>
+						</ul>
+					</section>
+					<section class="ref-group">
+						<h3 class="ref-group-title">Simulation &amp; reinforcement learning</h3>
+						<ul>
+							<li class="ref-item"><span class="ref-name">Isaac Sim · Isaac Lab</span><span class="ref-src">GPU physics sim &amp; RL framework · NVIDIA</span></li>
+							<li class="ref-item"><span class="ref-name">robot_lab</span><span class="ref-src">Go2 rough-terrain RL config · fan-ziqi (base this extends)</span></li>
+							<li class="ref-item"><span class="ref-name">RSL-RL · PPO</span><span class="ref-src">policy optimizer · ETH Zürich Robotic Systems Lab</span></li>
+							<li class="ref-item"><span class="ref-name">Rudin et al., CoRL 2021</span><span class="ref-src">“Learning to Walk in Minutes … Massively Parallel Deep RL”</span></li>
+							<li class="ref-item"><span class="ref-name">Schulman et al., 2017</span><span class="ref-src">“Proximal Policy Optimization Algorithms”</span></li>
+						</ul>
+					</section>
+					<section class="ref-group">
+						<h3 class="ref-group-title">Perception &amp; tracking</h3>
+						<ul>
+							<li class="ref-item"><span class="ref-name">YOLO-World</span><span class="ref-src">open-vocabulary detection · Cheng et al., CVPR 2024 (Ultralytics)</span></li>
+							<li class="ref-item"><span class="ref-name">ByteTrack</span><span class="ref-src">multi-object tracking · Zhang et al., ECCV 2022</span></li>
+							<li class="ref-item"><span class="ref-name">RealSense SDK</span><span class="ref-src">pyrealsense2 · depth streaming</span></li>
+							<li class="ref-item"><span class="ref-name">OpenCV</span><span class="ref-src">image ops &amp; the follow HUD</span></li>
+						</ul>
+					</section>
+					<section class="ref-group">
+						<h3 class="ref-group-title">Deploy &amp; presentation</h3>
+						<ul>
+							<li class="ref-item"><span class="ref-name">ROS 2 · rclpy</span><span class="ref-src">robot middleware</span></li>
+							<li class="ref-item"><span class="ref-name">Docker</span><span class="ref-src">identical sim ⇄ real container</span></li>
+							<li class="ref-item"><span class="ref-name">PyTorch</span><span class="ref-src">policy training &amp; inference</span></li>
+							<li class="ref-item"><span class="ref-name">Three.js r170</span><span class="ref-src">this interactive presentation</span></li>
+						</ul>
+					</section>
+				</div>
+			</div>
+		</section>
+
+		<!-- 8 · TEAM -->
 		<section id="s-team" class="slide content" aria-label="Team" hidden>
 			<div class="slide-sheet reveal">
 				<div class="slide-visual" data-visual></div>

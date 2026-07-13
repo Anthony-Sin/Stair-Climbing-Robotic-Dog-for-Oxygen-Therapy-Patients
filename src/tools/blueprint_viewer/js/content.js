@@ -24,6 +24,7 @@ export const SECTIONS = [
 	{ id: 's-sweep',     label: 'Height sweep', group: 'Progress & results',     kind: 'content' },
 	{ id: 's-challenges',label: 'Challenges',   group: 'Engineering challenges',  kind: 'content' },
 	{ id: 's-potential', label: 'Potential',    group: 'Real-world potential',   kind: 'content' },
+	{ id: 's-references',label: 'References',   group: 'References & credits',    kind: 'content' },
 	// 's-team' (the "Anthony Sinchi" credits slide) is hidden from the deck --
 	// its CONTENT/copy entry below is left intact, just not in SECTIONS, so
 	// deck.js's SECTIONS-driven nav/scroll never renders or links to it.
@@ -459,6 +460,15 @@ export const CONTENT = {
 				{ v: 'Jetson', l: 'Orin edge compute' },
 			],
 			tags: [ 'home pilot', 'care facilities', 'aging in place' ],
+		},
+	},
+	's-references': {
+		group: 'References & credits', title: 'Built on — references & credits',
+		// Bespoke section: the reference grid is static in index.html; this entry
+		// only fills the eyebrow/title and the short intro + tag row above it.
+		copy: {
+			lead: 'The learned climb and the follow stack stand on <b>open robotics research and tools</b> — here’s what they’re based on.',
+			tags: [ 'Unitree Go2', 'Isaac Sim · Isaac Lab', 'robot_lab · RSL-RL', 'YOLO-World + ByteTrack', 'ROS 2 · Docker', 'Three.js' ],
 		},
 	},
 	's-team': {
