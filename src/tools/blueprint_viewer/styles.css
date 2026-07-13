@@ -166,8 +166,11 @@ button { font: inherit; color: inherit; }
 	transition: opacity 130ms ease, transform 130ms ease;
 }
 
-.nav-dot:hover .nav-dot-label,
-.nav-dot.active .nav-dot-label { opacity: 0.92; transform: translateY(-50%) translateX(0); }
+/* Label on hover only. The active section is already indicated by the filled
+   dot (.nav-dot.active above); showing the label for the active dot too made
+   the pill sit permanently over the right edge of the slide copy, clipping the
+   last word of full-width lines. */
+.nav-dot:hover .nav-dot-label { opacity: 0.92; transform: translateY(-50%) translateX(0); }
 
 /* =====================================================================
    Content slides: paper sheet with a visual (left) + explainer (right)
@@ -594,7 +597,11 @@ button { font: inherit; color: inherit; }
 	box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
 }
 
-#hero-stage canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
+/* The 3D stage is display-only: the deck is scroll-driven, so the canvas must
+   never capture pointer/wheel/touch (that would hijack scrolling and let the
+   user orbit the model). The camera is still driven programmatically by scroll
+   position and autoRotate. */
+#hero-stage canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; pointer-events: none; touch-action: auto; }
 
 #hero-leaders { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 4; overflow: visible; transition: opacity 240ms ease; }
 .hero-leader { fill: none; stroke: var(--ink); stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; opacity: 0.82; stroke-dasharray: 1; stroke-dashoffset: 1; transition: stroke-dashoffset 520ms ease; }
@@ -624,7 +631,9 @@ button { font: inherit; color: inherit; }
 
 #hero-stage-tag { position: absolute; left: clamp(14px, 1.8vw, 22px); bottom: clamp(12px, 1.8vw, 20px); z-index: 6; font-family: var(--font-mono); font-size: 12px; color: var(--ink); opacity: 0.6; pointer-events: none; }
 
-#hero-zoom { position: absolute; right: clamp(14px, 1.8vw, 22px); bottom: clamp(12px, 1.8vw, 20px); z-index: 6; display: flex; gap: 6px; }
+/* Zoom cluster hidden: the 3D stage is a scroll-driven visual, not an
+   interactive viewer, so it exposes no manual camera controls. */
+#hero-zoom { display: none; }
 .hero-zoombtn { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 8px; border: 1px solid var(--ink); background: color-mix(in srgb, var(--sheet) 78%, transparent); cursor: pointer; transition: background 130ms ease; }
 .hero-zoombtn svg { width: 18px; height: 18px; fill: none; stroke: var(--ink); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transition: stroke 130ms ease; }
 .hero-zoombtn:hover { background: var(--ink); }
@@ -692,7 +701,8 @@ button { font: inherit; color: inherit; }
 }
 
 #canvas-host { position: absolute; inset: 0; }
-#canvas-host canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
+/* Display-only viewer (see #hero-stage canvas note): never capture scroll/drag. */
+#canvas-host canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; pointer-events: none; touch-action: auto; }
 
 #ui-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 10; }
 
@@ -960,7 +970,7 @@ button { font: inherit; color: inherit; }
 	overflow: hidden;
 	box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
 }
-#topple-stage canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
+#topple-stage canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; pointer-events: none; touch-action: auto; }
 #topple-tag { position: absolute; left: clamp(12px, 1.6vw, 18px); bottom: clamp(10px, 1.6vw, 16px); z-index: 4; font-family: var(--font-mono); font-size: 11.5px; color: var(--ink); opacity: 0.58; pointer-events: none; }
 #topple-hud {
 	position: absolute; top: clamp(12px, 1.6vw, 18px); left: clamp(12px, 1.6vw, 18px); z-index: 5;
@@ -1028,6 +1038,18 @@ button { font: inherit; color: inherit; }
 	.demo-sheet,
 	.pot-sheet,
 	#s-solution { grid-template-columns: 1fr; }
+
+	/* Stacked single-column slides are taller than one viewport, so the desktop
+	   "cap at 100dvh + overflow:hidden" (which prevents an oversized visual from
+	   pushing content below the fold on desktop) would instead CLIP the charts/
+	   copy on mobile. Here we let content slides grow to their natural height and
+	   let the deck scroll through them; snap becomes proximity so an over-tall
+	   slide is fully reachable instead of being force-snapped at its top. */
+	#deck { scroll-snap-type: y proximity; }
+	.slide.content,
+	.slide.sol-step { max-height: none; }
+	.slide-sheet { overflow: visible; }
+	.slide-visual { overflow: visible; height: auto; }
 
 	/* Demo: gallery rides above the OpenCV/explainer; keep six tiles as 2 or 3
 	   columns and give the region real height so the clips stay legible. */
